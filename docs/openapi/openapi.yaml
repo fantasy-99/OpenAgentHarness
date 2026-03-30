@@ -1,0 +1,718 @@
+openapi: 3.1.0
+info:
+  title: Open Agent Harness API
+  version: 0.1.0
+  summary: Headless distributed agent runtime API
+  description: >
+    Open Agent Harness is a headless agent runtime for multi-workspace,
+    distributed usage. Identity, membership, and authentication are expected
+    to be managed by an external service or upstream gateway. This document
+    defines the HTTP API for workspace management, session messaging, run
+    lifecycle, action invocation, and SSE event streaming.
+servers:
+  - url: http://localhost:3000/api/v1
+    description: Local development
+tags:
+  - name: Workspaces
+  - name: Catalog
+  - name: Sessions
+  - name: Messages
+  - name: Runs
+  - name: Actions
+  - name: Events
+security:
+  - bearerAuth: []
+paths:
+  /workspaces:
+    post:
+      tags: [Workspaces]
+      summary: Create workspace
+      operationId: createWorkspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkspaceRequest'
+      responses:
+        '201':
+          description: Workspace created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workspace'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /workspaces/{workspaceId}:
+    get:
+      tags: [Workspaces]
+      summary: Get workspace
+      operationId: getWorkspace
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      responses:
+        '200':
+          description: Workspace metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workspace'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /workspaces/{workspaceId}/catalog:
+    get:
+      tags: [Catalog]
+      summary: Get workspace catalog
+      operationId: getWorkspaceCatalog
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      responses:
+        '200':
+          description: Workspace-discovered capabilities
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceCatalog'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /workspaces/{workspaceId}/sessions:
+    post:
+      tags: [Sessions]
+      summary: Create session
+      operationId: createSession
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSessionRequest'
+      responses:
+        '201':
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /workspaces/{workspaceId}/actions/{actionName}/runs:
+    post:
+      tags: [Actions]
+      summary: Trigger action run
+      operationId: triggerActionRun
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+        - $ref: '#/components/parameters/ActionName'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateActionRunRequest'
+      responses:
+        '202':
+          description: Action run accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionRunAccepted'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /sessions/{sessionId}:
+    get:
+      tags: [Sessions]
+      summary: Get session
+      operationId: getSession
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      responses:
+        '200':
+          description: Session metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /sessions/{sessionId}/messages:
+    get:
+      tags: [Messages]
+      summary: List session messages
+      operationId: listSessionMessages
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Message page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessagePage'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+    post:
+      tags: [Messages]
+      summary: Create session message and enqueue run
+      operationId: createSessionMessage
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateMessageRequest'
+      responses:
+        '202':
+          description: Message accepted and run enqueued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageAccepted'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /sessions/{sessionId}/events:
+    get:
+      tags: [Events]
+      summary: Subscribe to session SSE events
+      operationId: streamSessionEvents
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/RunIdQuery'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Server-Sent Events stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE stream of session and run events
+              examples:
+                runStarted:
+                  summary: Run started event
+                  value: |
+                    event: run.started
+                    data: {"runId":"run_123","sessionId":"ses_123","status":"running"}
+                tokenDelta:
+                  summary: Token delta event
+                  value: |
+                    event: message.delta
+                    data: {"runId":"run_123","messageId":"msg_456","delta":"hello"}
+                toolCompleted:
+                  summary: Tool completed event
+                  value: |
+                    event: tool.completed
+                    data: {"runId":"run_123","callId":"tc_001","toolName":"code.review","sourceType":"action"}
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /runs/{runId}:
+    get:
+      tags: [Runs]
+      summary: Get run
+      operationId: getRun
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Run state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Run'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /runs/{runId}/cancel:
+    post:
+      tags: [Runs]
+      summary: Cancel run
+      operationId: cancelRun
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '202':
+          description: Cancellation requested
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancelRunAccepted'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: Bearer
+      description: Bearer token issued by an upstream identity or access service
+  parameters:
+    WorkspaceId:
+      name: workspaceId
+      in: path
+      required: true
+      schema:
+        type: string
+    SessionId:
+      name: sessionId
+      in: path
+      required: true
+      schema:
+        type: string
+    RunId:
+      name: runId
+      in: path
+      required: true
+      schema:
+        type: string
+    ActionName:
+      name: actionName
+      in: path
+      required: true
+      schema:
+        type: string
+    PageSize:
+      name: pageSize
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+    RunIdQuery:
+      name: runId
+      in: query
+      required: false
+      schema:
+        type: string
+  responses:
+    ErrorResponse:
+      description: Error response
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+  schemas:
+    Timestamp:
+      type: string
+      format: date-time
+    JsonObject:
+      type: object
+      additionalProperties: true
+    Workspace:
+      type: object
+      required:
+        - id
+        - name
+        - rootPath
+        - executionPolicy
+        - status
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+        externalRef:
+          type: string
+        name:
+          type: string
+        rootPath:
+          type: string
+        executionPolicy:
+          type: string
+          enum: [local, container, remote_runner]
+        defaultAgent:
+          type: string
+        status:
+          type: string
+          enum: [active, archived, disabled]
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+        updatedAt:
+          $ref: '#/components/schemas/Timestamp'
+    AgentCatalogItem:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+    ModelCatalogItem:
+      type: object
+      required: [ref, name, source, provider]
+      properties:
+        ref:
+          type: string
+          pattern: '^(platform|workspace)/.+$'
+        name:
+          type: string
+        source:
+          type: string
+          enum: [platform, workspace]
+        provider:
+          type: string
+        modelName:
+          type: string
+        url:
+          type: string
+    ActionCatalogItem:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        exposeToLlm:
+          type: boolean
+        callableByUser:
+          type: boolean
+        callableByApi:
+          type: boolean
+    SkillCatalogItem:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        exposeToLlm:
+          type: boolean
+    McpCatalogItem:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        transportType:
+          type: string
+        toolPrefix:
+          type: string
+    HookCatalogItem:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        events:
+          type: array
+          items:
+            type: string
+    WorkspaceCatalog:
+      type: object
+      required:
+        - workspaceId
+        - agents
+        - models
+        - actions
+        - skills
+        - mcp
+        - hooks
+        - nativeTools
+      properties:
+        workspaceId:
+          type: string
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentCatalogItem'
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelCatalogItem'
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ActionCatalogItem'
+        skills:
+          type: array
+          items:
+            $ref: '#/components/schemas/SkillCatalogItem'
+        mcp:
+          type: array
+          items:
+            $ref: '#/components/schemas/McpCatalogItem'
+        hooks:
+          type: array
+          items:
+            $ref: '#/components/schemas/HookCatalogItem'
+        nativeTools:
+          type: array
+          items:
+            type: string
+    Session:
+      type: object
+      required:
+        - id
+        - workspaceId
+        - subjectRef
+        - activeAgentName
+        - status
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+        workspaceId:
+          type: string
+        subjectRef:
+          type: string
+        agentName:
+          type: string
+        activeAgentName:
+          type: string
+        title:
+          type: string
+        status:
+          type: string
+          enum: [active, archived, closed]
+        lastRunAt:
+          $ref: '#/components/schemas/Timestamp'
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+        updatedAt:
+          $ref: '#/components/schemas/Timestamp'
+    Message:
+      type: object
+      required:
+        - id
+        - sessionId
+        - role
+        - content
+        - createdAt
+      properties:
+        id:
+          type: string
+        sessionId:
+          type: string
+        runId:
+          type: string
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+        content:
+          type: string
+        toolName:
+          type: string
+        toolCallId:
+          type: string
+        metadata:
+          $ref: '#/components/schemas/JsonObject'
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+    MessagePage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+        nextCursor:
+          type: string
+    Run:
+      type: object
+      required:
+        - id
+        - workspaceId
+        - triggerType
+        - effectiveAgentName
+        - status
+        - createdAt
+      properties:
+        id:
+          type: string
+        workspaceId:
+          type: string
+        sessionId:
+          type: string
+        initiatorRef:
+          type: string
+        triggerType:
+          type: string
+          enum: [message, manual_action, api_action, hook, system]
+        triggerRef:
+          type: string
+        agentName:
+          type: string
+        effectiveAgentName:
+          type: string
+        switchCount:
+          type: integer
+          minimum: 0
+        status:
+          type: string
+          enum: [queued, running, waiting_tool, completed, failed, cancelled, timed_out]
+        cancelRequestedAt:
+          $ref: '#/components/schemas/Timestamp'
+        startedAt:
+          $ref: '#/components/schemas/Timestamp'
+        endedAt:
+          $ref: '#/components/schemas/Timestamp'
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+        errorCode:
+          type: string
+        errorMessage:
+          type: string
+        metadata:
+          $ref: '#/components/schemas/JsonObject'
+    CreateWorkspaceRequest:
+      type: object
+      required:
+        - name
+        - rootPath
+      properties:
+        externalRef:
+          type: string
+        name:
+          type: string
+          minLength: 1
+        rootPath:
+          type: string
+          minLength: 1
+        executionPolicy:
+          type: string
+          enum: [local, container, remote_runner]
+          default: local
+        defaultAgent:
+          type: string
+      additionalProperties: false
+    CreateSessionRequest:
+      type: object
+      properties:
+        title:
+          type: string
+        agentName:
+          type: string
+      additionalProperties: false
+    RunStep:
+      type: object
+      required:
+        - id
+        - runId
+        - seq
+        - stepType
+        - status
+      properties:
+        id:
+          type: string
+        runId:
+          type: string
+        seq:
+          type: integer
+          minimum: 1
+        stepType:
+          type: string
+          enum: [model_call, tool_call, agent_switch, agent_delegate, hook, system]
+        name:
+          type: string
+        agentName:
+          type: string
+        status:
+          type: string
+          enum: [queued, running, completed, failed, cancelled]
+        input:
+          $ref: '#/components/schemas/JsonObject'
+        output:
+          $ref: '#/components/schemas/JsonObject'
+        startedAt:
+          $ref: '#/components/schemas/Timestamp'
+        endedAt:
+          $ref: '#/components/schemas/Timestamp'
+    CreateMessageRequest:
+      type: object
+      required:
+        - content
+      properties:
+        content:
+          type: string
+          minLength: 1
+        metadata:
+          $ref: '#/components/schemas/JsonObject'
+      additionalProperties: false
+    MessageAccepted:
+      type: object
+      required:
+        - messageId
+        - runId
+        - status
+      properties:
+        messageId:
+          type: string
+        runId:
+          type: string
+        status:
+          type: string
+          enum: [queued]
+    CreateActionRunRequest:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        agentName:
+          type: string
+        input:
+          oneOf:
+            - type: object
+              additionalProperties: true
+            - type: 'null'
+      additionalProperties: false
+    ActionRunAccepted:
+      type: object
+      required:
+        - runId
+        - status
+        - actionName
+      properties:
+        runId:
+          type: string
+        status:
+          type: string
+          enum: [queued]
+        actionName:
+          type: string
+        sessionId:
+          type: string
+    CancelRunAccepted:
+      type: object
+      required:
+        - runId
+        - status
+      properties:
+        runId:
+          type: string
+        status:
+          type: string
+          enum: [cancellation_requested]
+    Error:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          $ref: '#/components/schemas/JsonObject'
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          $ref: '#/components/schemas/Error'
