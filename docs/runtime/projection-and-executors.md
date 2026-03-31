@@ -101,6 +101,7 @@ Skill 采用按需加载：
 - 读取 skill 资源文件时，继续通过 `activate_skill` 并附带 `resource_path`
 - `scripts/`、`references/`、`assets/` 中的内容仅在需要时加载
 - 默认扫描 `.openharness/skills/*`
+- 服务端公共 skill 先从 `paths.skill_dir` 加载
 - 可从 `settings.skill_dirs` 追加额外 skill 根目录
 - 跨层同名冲突记录 warning 并按优先级覆盖，同层冲突直接报错
 
@@ -130,6 +131,28 @@ Action 采用目录式注册：
 - action 入口统一使用 `command`
 - `command` 为字符串
 - shell 命令和本地脚本都通过 `command` 表达
+
+公共 MCP 建议由服务端 `paths.mcp_dir` 统一加载。
+
+它们的语义是：
+
+- 不属于 native tool
+- 不属于 workspace 私有 action / skill / mcp
+- 属于服务端提供的公共 MCP 能力
+
+脚本若需要调用服务端预设模型，建议不要直接访问第三方 provider。
+
+推荐通过模型网关调用：
+
+- `POST /internal/v1/models/generate`
+- `POST /internal/v1/models/stream`
+
+运行时可向 action / script 注入：
+
+- `OPENHARNESS_MODEL_SOCKET`
+- `OPENHARNESS_DEFAULT_MODEL`
+
+详细设计见 [model-gateway.md](./model-gateway.md)。
 
 ## Invocation Routing
 

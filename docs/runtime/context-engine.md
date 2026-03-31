@@ -7,7 +7,9 @@
 - session 历史消息
 - 平台内建 agent 定义
 - 当前 agent 定义
-- 平台级模型入口清单
+- 服务端 `paths.models_dir` 中的平台模型入口清单
+- 服务端 `paths.mcp_dir` 中的公共 MCP 定义
+- 服务端 `paths.skill_dir` 中的公共 skill 定义
 - workspace 级模型入口清单
 - `AGENTS.md`
 - `.openharness` 目录中的声明式配置
@@ -15,8 +17,9 @@
 
 说明：
 
-- 运行时会同时读取平台内建 agent / model 与当前 workspace 文件
+- 运行时会同时读取服务端公共能力目录与当前 workspace 文件
 - 平台模板仅用于初始化 workspace，不参与运行时加载或 merge
+- `kind=chat` workspace 仍沿用同一套加载入口，但只装配只读对话所需的静态配置
 
 ## 输出
 
@@ -26,6 +29,13 @@
 - 允许暴露给 LLM 的 tools 列表
 - 运行策略
 - hook 管道
+
+`kind=chat` workspace 的额外约束：
+
+- 只读取 `AGENTS.md`、`.openharness/settings.yaml`、`.openharness/agents/*.md`、`.openharness/models/*.yaml`
+- 不装配 `actions`、`skills`、`mcp`、`hooks`
+- 输出的 tool 列表固定为空
+- 不生成执行 backend 所需的运行环境摘要
 
 ## 上下文装配顺序
 
@@ -78,3 +88,8 @@ agent 可见性与覆盖规则：
 - 当前 run 的 `agent_name` 与上一轮 active agent 不同
 - 同一 agent 连续执行时默认不重复注入
 - run 内发生 `agent.switch`，且 `effective_agent_name` 改变
+
+补充说明：
+
+- `kind=chat` workspace 仍可通过 API 或 session 显式选择不同 agent
+- 但由于没有工具控制面，默认不支持 run 中途由模型主动切换 agent

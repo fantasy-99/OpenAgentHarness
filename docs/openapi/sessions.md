@@ -25,6 +25,7 @@
 说明：
 
 - `agentName` 可指向当前 workspace 可见 catalog 中的 platform agent 或 workspace agent
+- `kind=chat` workspace 下创建 session 时，行为与普通对话一致，但不会启用任何执行型工具
 
 ### `GET /sessions/{sessionId}`
 
@@ -64,3 +65,5 @@
 - 同一 session 可连续写入多条 message，它们会形成串行 run 队列
 - session 会维护 `activeAgentName`，作为后续默认 primary agent
 - 若 run 内发生 `agent.switch`，session 的 `activeAgentName` 可在 run 完成后同步更新
+- `kind=chat` workspace 的 session / message / run 仍保存到中心数据库
+- `kind=chat` workspace 不会在 workspace 目录内生成 `.openharness/data/history.db`

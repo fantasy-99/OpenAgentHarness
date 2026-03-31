@@ -10,6 +10,7 @@
 ## 资源分组
 
 - workspaces
+- models
 - catalog
 - sessions
 - messages
@@ -19,9 +20,11 @@
 
 ## 约束
 
-- 所有接口位于 `/api/v1`
-- 所有接口都需要可验证的 caller context
+- 对外 HTTP API 位于 `/api/v1`
+- 内部脚本模型网关位于 `/internal/v1/models/*`
+- 对外 API 需要可验证的 caller context
 - Bearer Token 是默认接入方式，也可以由上游网关完成认证后向运行时透传身份上下文
+- `/internal/v1/models/*` 是本地通道接口，不面向外部客户端，也不要求 Bearer Token
 - 发送 message 和触发 action run 使用异步语义
 - 异步执行入口返回 `202`
 - 流式结果通过 SSE 获取
@@ -46,6 +49,8 @@
   - 总体约束和接口形态
 - [openapi/workspaces.md](./openapi/workspaces.md)
   - workspace 与 catalog
+- [openapi/models.md](./openapi/models.md)
+  - 模型网关
 - [openapi/sessions.md](./openapi/sessions.md)
   - session 与 message
 - [openapi/runs.md](./openapi/runs.md)

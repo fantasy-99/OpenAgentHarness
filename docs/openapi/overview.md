@@ -8,6 +8,7 @@
 ## 资源分组
 
 - Workspace
+- Model Gateway
 - Catalog
 - Session
 - Message
@@ -17,8 +18,10 @@
 
 ## 统一约束
 
-- 所有接口位于 `/api/v1`
-- 所有接口需要 Bearer Token
+- 对外 API 位于 `/api/v1`
+- 内部脚本模型网关位于 `/internal/v1/models/*`
+- 对外 API 需要 Bearer Token
+- `/internal/v1/models/*` 不要求 Bearer Token
 - 异步执行入口返回 `202`
 - 流式输出统一走 SSE
 - 最终执行状态以 run 资源为准

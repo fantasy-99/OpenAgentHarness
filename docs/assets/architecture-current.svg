@@ -1,0 +1,241 @@
+<svg width="1800" height="1280" viewBox="0 0 1800 1280" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="120" y1="40" x2="1680" y2="1240" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F5F8FF"/>
+      <stop offset="1" stop-color="#EEF6F0"/>
+    </linearGradient>
+    <linearGradient id="header" x1="0" y1="0" x2="1200" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#143D6B"/>
+      <stop offset="1" stop-color="#1E6F5C"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#12314D" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#47607A"/>
+    </marker>
+    <style>
+      .title { font: 700 34px 'IBM Plex Sans','PingFang SC','Microsoft YaHei',sans-serif; fill: #FFFFFF; }
+      .subtitle { font: 400 16px 'IBM Plex Sans','PingFang SC','Microsoft YaHei',sans-serif; fill: rgba(255,255,255,0.82); }
+      .section { font: 700 18px 'IBM Plex Sans','PingFang SC','Microsoft YaHei',sans-serif; fill: #17324D; }
+      .cardtitle { font: 700 18px 'IBM Plex Sans','PingFang SC','Microsoft YaHei',sans-serif; fill: #17324D; }
+      .cardmeta { font: 600 12px 'IBM Plex Sans','PingFang SC','Microsoft YaHei',sans-serif; fill: #5A7088; letter-spacing: 0.06em; text-transform: uppercase; }
+      .body { font: 400 14px 'IBM Plex Sans','PingFang SC','Microsoft YaHei',sans-serif; fill: #35506A; }
+      .small { font: 400 12px 'IBM Plex Sans','PingFang SC','Microsoft YaHei',sans-serif; fill: #49637B; }
+      .mono { font: 500 12px 'SFMono-Regular','Menlo','Consolas',monospace; fill: #36506B; }
+      .pill { font: 700 12px 'IBM Plex Sans','PingFang SC','Microsoft YaHei',sans-serif; fill: #274B71; }
+      .legend { font: 600 13px 'IBM Plex Sans','PingFang SC','Microsoft YaHei',sans-serif; fill: #274056; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1800" height="1280" fill="url(#bg)"/>
+  <rect x="44" y="38" width="1712" height="118" rx="28" fill="url(#header)" filter="url(#shadow)"/>
+  <text x="86" y="88" class="title">OpenAgentHarness 当前服务架构</text>
+  <text x="86" y="120" class="subtitle">Headless Agent Runtime · REST + SSE · 多 workspace 并发 · 外部身份体系 · 中心数据库 + 本地历史镜像</text>
+
+  <g transform="translate(86 196)">
+    <rect width="142" height="58" rx="18" fill="#DCEBFF"/>
+    <text x="71" y="24" text-anchor="middle" class="cardmeta">Clients</text>
+    <text x="71" y="42" text-anchor="middle" class="body">Web / Desktop / CLI</text>
+  </g>
+  <g transform="translate(280 196)">
+    <rect width="168" height="58" rx="18" fill="#E5F4EA"/>
+    <text x="84" y="24" text-anchor="middle" class="cardmeta">External Identity</text>
+    <text x="84" y="42" text-anchor="middle" class="body">认证、用户、组织在外部</text>
+  </g>
+  <g transform="translate(500 188)">
+    <rect width="242" height="74" rx="22" fill="#FFFFFF" stroke="#C7D8EA" filter="url(#shadow)"/>
+    <text x="26" y="28" class="cardtitle">API Gateway</text>
+    <text x="26" y="50" class="body">OpenAPI 入口、参数校验、访问控制、SSE 流事件</text>
+  </g>
+  <line x1="228" y1="225" x2="280" y2="225" stroke="#47607A" stroke-width="3" marker-end="url(#arrow)"/>
+  <line x1="448" y1="225" x2="500" y2="225" stroke="#47607A" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <text x="86" y="314" class="section">主执行链路</text>
+
+  <g transform="translate(86 336)">
+    <rect width="540" height="188" rx="28" fill="#FFFFFF" stroke="#C7D8EA" filter="url(#shadow)"/>
+    <text x="28" y="34" class="cardtitle">Session Orchestrator</text>
+    <text x="28" y="58" class="body">负责 run 创建、session 串行调度、取消、超时、失败恢复。</text>
+    <text x="28" y="86" class="small">1. 接收 message / run 请求并写入 PostgreSQL</text>
+    <text x="28" y="108" class="small">2. 将 run 按 session 投递到 Redis 队列并加锁串行</text>
+    <text x="28" y="130" class="small">3. 驱动“模型输出 → tool call → 执行结果 → 继续推理”的循环</text>
+    <text x="28" y="152" class="small">4. 将状态变化与增量内容通过 SSE 回推给客户端</text>
+    <rect x="344" y="28" width="168" height="34" rx="17" fill="#EAF2FF"/>
+    <text x="428" y="50" text-anchor="middle" class="pill">同一 session 串行</text>
+  </g>
+
+  <g transform="translate(684 336)">
+    <rect width="520" height="188" rx="28" fill="#FFFFFF" stroke="#C7D8EA" filter="url(#shadow)"/>
+    <text x="28" y="34" class="cardtitle">Context Engine</text>
+    <text x="28" y="58" class="body">在 run 开始时装配 prompt、历史消息、agent 配置和能力目录。</text>
+    <text x="28" y="86" class="small">- 读取 workspace `AGENTS.md`、`.openharness/settings.yaml`、agents / models</text>
+    <text x="28" y="108" class="small">- 读取 actions、skills、MCP、hooks，并与平台公共目录合并</text>
+    <text x="28" y="130" class="small">- 输出最终 system prompt、tool catalog、运行策略与环境摘要</text>
+    <text x="28" y="152" class="small">- `chat` workspace 只加载只读对话配置，不暴露执行型工具</text>
+    <rect x="346" y="28" width="146" height="34" rx="17" fill="#E7F6EC"/>
+    <text x="419" y="50" text-anchor="middle" class="pill">project / chat</text>
+  </g>
+
+  <g transform="translate(1262 336)">
+    <rect width="452" height="188" rx="28" fill="#FFFFFF" stroke="#C7D8EA" filter="url(#shadow)"/>
+    <text x="28" y="34" class="cardtitle">LLM Loop + Invocation Dispatcher</text>
+    <text x="28" y="58" class="body">统一处理模型推理、tool calling、路由与结果回填。</text>
+    <text x="28" y="86" class="small">- 将 action / skill / mcp / native tool 保持领域分离</text>
+    <text x="28" y="108" class="small">- 对 LLM 暴露统一 tool schema 和调用协议</text>
+    <text x="28" y="130" class="small">- 根据来源路由到不同执行器，回收结构化结果</text>
+    <text x="28" y="152" class="small">- 允许在同一 run 中切换 agent 配置与 system_reminder</text>
+  </g>
+
+  <line x1="626" y1="430" x2="684" y2="430" stroke="#47607A" stroke-width="3" marker-end="url(#arrow)"/>
+  <line x1="1204" y1="430" x2="1262" y2="430" stroke="#47607A" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <text x="86" y="578" class="section">能力执行与运行环境</text>
+
+  <g transform="translate(86 602)">
+    <rect width="1228" height="262" rx="30" fill="#FFFFFF" stroke="#C7D8EA" filter="url(#shadow)"/>
+    <text x="28" y="36" class="cardtitle">Tool Projection 与 Runtime 层</text>
+    <text x="28" y="60" class="body">所有能力最终都以 tool calling 形式暴露给模型，但在配置和治理层仍保持分离。</text>
+
+    <g transform="translate(28 92)">
+      <rect width="186" height="92" rx="20" fill="#EEF5FF"/>
+      <text x="20" y="28" class="cardtitle">Native Tools</text>
+      <text x="20" y="50" class="small">shell、文件读写、进程等基础能力</text>
+      <text x="20" y="70" class="small">由执行 backend 提供</text>
+    </g>
+    <g transform="translate(236 92)">
+      <rect width="186" height="92" rx="20" fill="#EEF5FF"/>
+      <text x="20" y="28" class="cardtitle">Actions</text>
+      <text x="20" y="50" class="small">目录式注册：`actions/*/ACTION.yaml`</text>
+      <text x="20" y="70" class="small">入口统一为字符串 `command`</text>
+    </g>
+    <g transform="translate(444 92)">
+      <rect width="186" height="92" rx="20" fill="#EEF5FF"/>
+      <text x="20" y="28" class="cardtitle">Skills</text>
+      <text x="20" y="50" class="small">`activate_skill` 按需注入 SKILL.md 原文</text>
+      <text x="20" y="70" class="small">支持 workspace 与公共 skill 目录</text>
+    </g>
+    <g transform="translate(652 92)">
+      <rect width="186" height="92" rx="20" fill="#EEF5FF"/>
+      <text x="20" y="28" class="cardtitle">MCP</text>
+      <text x="20" y="50" class="small">`settings.yaml` + `servers/*`</text>
+      <text x="20" y="70" class="small">支持本地 command 与远程 URL</text>
+    </g>
+    <g transform="translate(860 92)">
+      <rect width="186" height="92" rx="20" fill="#EEF5FF"/>
+      <text x="20" y="28" class="cardtitle">Hooks</text>
+      <text x="20" y="50" class="small">command / http / prompt / agent</text>
+      <text x="20" y="70" class="small">参考 Claude Code 式生命周期扩展</text>
+    </g>
+
+    <g transform="translate(1046 84)">
+      <rect width="154" height="146" rx="22" fill="#E7F6EC" stroke="#B8DEC4"/>
+      <text x="20" y="30" class="cardtitle">Execution Backend</text>
+      <text x="20" y="54" class="small">本地目录级执行为默认实现</text>
+      <text x="20" y="78" class="small">抽象为可替换 backend 接口</text>
+      <text x="20" y="102" class="small">未来可切换容器 / VM / 远程沙箱</text>
+      <text x="20" y="126" class="small">`chat` workspace 不进入这里</text>
+    </g>
+
+    <line x1="122" y1="198" x2="1124" y2="198" stroke="#7B97B3" stroke-width="2.5" marker-end="url(#arrow)"/>
+    <text x="458" y="222" class="small">Dispatcher 根据 tool 来源路由到对应 runtime，最后统一回填给模型</text>
+  </g>
+
+  <text x="1338" y="578" class="section">平台目录与 workspace 形态</text>
+
+  <g transform="translate(1338 602)">
+    <rect width="376" height="262" rx="30" fill="#FFFFFF" stroke="#C7D8EA" filter="url(#shadow)"/>
+    <text x="24" y="34" class="cardtitle">Server Config Paths</text>
+    <text x="24" y="58" class="mono">workspace_dir / chat_dir / template_dir</text>
+    <text x="24" y="78" class="mono">models_dir / mcp_dir / skill_dir</text>
+
+    <rect x="24" y="98" width="328" height="60" rx="18" fill="#FFF4DE"/>
+    <text x="44" y="124" class="cardtitle">project workspace</text>
+    <text x="44" y="146" class="small">可写，可执行，可启用 shell / action / skill / MCP / hook</text>
+
+    <rect x="24" y="174" width="328" height="60" rx="18" fill="#F2F6FA"/>
+    <text x="44" y="200" class="cardtitle">chat workspace</text>
+    <text x="44" y="222" class="small">只读普通对话模式，不修改文件、不启用执行型工具、不落本地历史库</text>
+  </g>
+
+  <path d="M 1088 336 C 1116 260, 1360 220, 1490 250" stroke="#7B97B3" stroke-width="3" stroke-dasharray="8 8" marker-end="url(#arrow)"/>
+  <text x="1236" y="256" class="small">Context Engine 读取平台与 workspace 两层定义</text>
+
+  <text x="86" y="930" class="section">存储、分布式协调与历史镜像</text>
+
+  <g transform="translate(86 954)">
+    <rect width="1068" height="236" rx="30" fill="#FFFFFF" stroke="#C7D8EA" filter="url(#shadow)"/>
+    <text x="28" y="36" class="cardtitle">Storage + Reliability</text>
+    <text x="28" y="60" class="body">PostgreSQL 是唯一事实源；Redis 负责队列、锁、限流和短期事件协调；history.db 只是异步镜像。</text>
+
+    <g transform="translate(28 92)">
+      <rect width="240" height="92" rx="20" fill="#F3ECFF"/>
+      <text x="22" y="30" class="cardtitle">PostgreSQL</text>
+      <text x="22" y="54" class="small">sessions、runs、messages、events、audit 的中心存储</text>
+      <text x="22" y="76" class="small">多实例部署共享同一事实数据</text>
+    </g>
+    <g transform="translate(306 92)">
+      <rect width="230" height="92" rx="20" fill="#F3ECFF"/>
+      <text x="22" y="30" class="cardtitle">Redis</text>
+      <text x="22" y="54" class="small">session 串行队列、分布式锁、SSE 事件分发、限流</text>
+      <text x="22" y="76" class="small">支持并发 run 的横向扩展</text>
+    </g>
+    <g transform="translate(574 92)">
+      <rect width="212" height="92" rx="20" fill="#F3ECFF"/>
+      <text x="22" y="30" class="cardtitle">History Syncer</text>
+      <text x="22" y="54" class="small">异步消费历史增量，失败不阻塞主请求链路</text>
+      <text x="22" y="76" class="small">仅对 project workspace 生效</text>
+    </g>
+    <g transform="translate(824 92)">
+      <rect width="216" height="92" rx="20" fill="#F3ECFF"/>
+      <text x="22" y="30" class="cardtitle">`.openharness/data/history.db`</text>
+      <text x="22" y="54" class="small">workspace 内本地镜像，便于离线查看与备份</text>
+      <text x="22" y="76" class="small">不是在线调度事实源</text>
+    </g>
+
+    <line x1="268" y1="138" x2="306" y2="138" stroke="#6E5E9B" stroke-width="3" marker-end="url(#arrow)"/>
+    <line x1="536" y1="138" x2="574" y2="138" stroke="#6E5E9B" stroke-width="3" marker-end="url(#arrow)"/>
+    <line x1="786" y1="138" x2="824" y2="138" stroke="#6E5E9B" stroke-width="3" marker-end="url(#arrow)"/>
+  </g>
+
+  <text x="1196" y="930" class="section">脚本直接调用模型</text>
+
+  <g transform="translate(1196 954)">
+    <rect width="518" height="236" rx="30" fill="#FFFFFF" stroke="#C7D8EA" filter="url(#shadow)"/>
+    <text x="24" y="36" class="cardtitle">Internal Model Gateway</text>
+    <text x="24" y="60" class="body">供 action、本地脚本、CLI/TUI 直接调用平台模型，不暴露 provider key。</text>
+
+    <rect x="24" y="90" width="182" height="94" rx="20" fill="#EAF2FF"/>
+    <text x="44" y="120" class="cardtitle">Callers</text>
+    <text x="44" y="144" class="small">action / shell script / JS / Python</text>
+    <text x="44" y="166" class="small">`oah model` / `curl` / `oah tui`</text>
+
+    <rect x="238" y="90" width="126" height="94" rx="20" fill="#E7F6EC"/>
+    <text x="258" y="120" class="cardtitle">Gateway</text>
+    <text x="258" y="144" class="small">`/internal/v1/models/generate`</text>
+    <text x="258" y="166" class="small">`/internal/v1/models/stream`</text>
+
+    <rect x="396" y="90" width="98" height="94" rx="20" fill="#FFF4DE"/>
+    <text x="416" y="120" class="cardtitle">AI SDK</text>
+    <text x="416" y="144" class="small">按模型名</text>
+    <text x="416" y="166" class="small">解析 provider</text>
+
+    <line x1="206" y1="138" x2="238" y2="138" stroke="#47607A" stroke-width="3" marker-end="url(#arrow)"/>
+    <line x1="364" y1="138" x2="396" y2="138" stroke="#47607A" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <text x="24" y="212" class="small">本地优先通过 Unix socket 或 loopback 暴露；直接使用服务端模型名，如 `openai-default`。</text>
+  </g>
+
+  <g transform="translate(86 1210)">
+    <rect width="1628" height="40" rx="20" fill="#FFFFFF" stroke="#D8E4EF"/>
+    <circle cx="24" cy="20" r="6" fill="#C9D9EA"/>
+    <text x="40" y="25" class="legend">蓝色：入口与运行时编排</text>
+    <circle cx="270" cy="20" r="6" fill="#BFE6CA"/>
+    <text x="286" y="25" class="legend">绿色：执行与模型调用</text>
+    <circle cx="514" cy="20" r="6" fill="#F1DCAA"/>
+    <text x="530" y="25" class="legend">黄色：workspace / 模式目录</text>
+    <circle cx="802" cy="20" r="6" fill="#D8C9F4"/>
+    <text x="818" y="25" class="legend">紫色：存储与可靠性</text>
+    <text x="1094" y="25" class="legend">核心原则：外部身份体系、中心数据库事实源、workspace first、domain separate / invocation unified</text>
+  </g>
+</svg>

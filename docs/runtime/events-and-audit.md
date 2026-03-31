@@ -21,6 +21,9 @@
 - `tool.started`
 - `tool.completed`
 - `tool.failed`
+- `history.mirror.started`
+- `history.mirror.updated`
+- `history.mirror.failed`
 - `run.completed`
 - `run.failed`
 - `run.cancelled`
@@ -36,6 +39,7 @@
 - action run
 - hook run
 - backend shell 执行
+- history mirror sync
 
 日志中至少要包含：
 
@@ -48,3 +52,5 @@
 - `tool_name`
 - `duration_ms`
 - `status`
+- `history_event_id`
+- `mirror_last_event_id`

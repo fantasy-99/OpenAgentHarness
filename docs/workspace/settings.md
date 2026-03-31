@@ -9,6 +9,12 @@
 
 它不用于定义具体 agent 的个性化行为；agent 自身定义仍放在 `agents/*.md`。
 
+说明：
+
+- `project` workspace 与 `chat` workspace 都使用同一份 `settings.yaml` 结构
+- `chat` workspace 中，`settings.yaml` 主要用于选择默认 agent、system prompt 和模型
+- `chat` workspace 不会因为 `settings.yaml` 中出现其他能力引用而获得执行权限
+
 ## 示例
 
 ```yaml
@@ -85,6 +91,7 @@ skill_dirs:
 - 若出现同名 skill，优先级为：
   1. `.openharness/skills/*`
   2. `skill_dirs` 中按声明顺序扫描到的第一个定义
+  3. 服务端 `paths.skill_dir`
 - 跨层同名冲突：
   - 记录 warning，并按优先级覆盖
 - 同层同名冲突：

@@ -11,6 +11,8 @@
 - 执行边界：workspace 是能力发现边界，session 是上下文边界，run 是执行边界
 - 运行时来源：平台内建 agent / model 与 workspace 当前文件声明；平台模板仅用于初始化生成文件
 - 模型接入：平台级与 workspace 级双层 model entries，底层 `provider` 字段对齐 AI SDK
+- 存储边界：PostgreSQL 是唯一事实源，workspace 下 `.openharness/data/history.db` 是异步历史镜像
+- 服务端配置：可通过独立配置文件声明 `chat` workspace 根目录等运行时级选项
 
 ## 文档索引
 
@@ -18,6 +20,10 @@
   - 总体目标、系统边界、分层架构和关键决策
 - [domain-model.md](./domain-model.md)
   - 领域对象、注册表和能力边界
+- [server-config.md](./server-config.md)
+  - 服务端配置文件与 `chat` workspace 根目录发现规则
+- [debug-cli-tui.md](./debug-cli-tui.md)
+  - 调试用 CLI / TUI 设计
 - [workspace-spec.md](./workspace-spec.md)
   - workspace 规范导航页
 - [workspace/README.md](./workspace/README.md)
@@ -31,7 +37,7 @@
 - [openapi/README.md](./openapi/README.md)
   - OpenAPI 3.1 草案与模块化接口说明
 - [storage-design.md](./storage-design.md)
-  - PostgreSQL、Redis、审计与恢复策略
+  - PostgreSQL、Redis、workspace 历史镜像、审计与恢复策略
 - [implementation-roadmap.md](./implementation-roadmap.md)
   - 实施顺序、风险与后续演进
 - [schemas/README.md](./schemas/README.md)
@@ -41,7 +47,9 @@
 
 1. [architecture-overview.md](./architecture-overview.md)
 2. [domain-model.md](./domain-model.md)
-3. [workspace/README.md](./workspace/README.md)
-4. [runtime/README.md](./runtime/README.md)
-5. [api-design.md](./api-design.md)
-6. [storage-design.md](./storage-design.md)
+3. [server-config.md](./server-config.md)
+4. [debug-cli-tui.md](./debug-cli-tui.md)
+5. [workspace/README.md](./workspace/README.md)
+6. [runtime/README.md](./runtime/README.md)
+7. [api-design.md](./api-design.md)
+8. [storage-design.md](./storage-design.md)

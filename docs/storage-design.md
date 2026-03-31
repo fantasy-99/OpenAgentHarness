@@ -8,11 +8,13 @@
 - 高并发调度
 - 审计与追踪
 - SSE 的实时事件支撑
+- workspace 历史记录的本地留存与可迁移备份
 
-因此当前建议采用：
+因此采用三层存储职责划分：
 
 - PostgreSQL 作为系统事实库
 - Redis 作为运行时状态、队列和锁的辅助层
+- `.openharness/data/history.db` 作为 workspace 历史镜像库
 
 ## 2. 边界说明
 
@@ -24,9 +26,34 @@
 - `auth_context`
 - `external_ref`
 
-## 3. PostgreSQL 职责
+## 3. 存储职责总览
 
-PostgreSQL 存放必须可靠落盘、可查询、可审计的数据：
+### 3.1 PostgreSQL
+
+PostgreSQL 存放必须可靠落盘、可查询、可审计的数据，并作为唯一事实源。
+
+### 3.2 Redis
+
+Redis 负责高频、短生命周期、性能敏感的数据，不承载不可恢复的业务真相。
+
+### 3.3 Workspace History Mirror
+
+每个 workspace 下保留一个本地历史镜像文件：
+
+- 路径：`.openharness/data/history.db`
+- 形态：SQLite
+- 角色：异步镜像、备份、副本、便携导出入口
+
+它的边界必须明确：
+
+- 不参与在线事务主路径
+- 不是中心库的并列主库
+- 不接受来自 runtime 的反向写入
+- 不承担队列、锁、调度或权限判断职责
+
+## 4. PostgreSQL 职责
+
+PostgreSQL 存放以下核心实体：
 
 - workspace
 - session
@@ -37,10 +64,13 @@ PostgreSQL 存放必须可靠落盘、可查询、可审计的数据：
 - action_run
 - hook_run
 - artifact
+- history_event
 
-## 4. 建议表结构
+其中前九类用于在线查询与审计，`history_event` 用于驱动 workspace 本地历史镜像同步。
 
-### 4.1 workspace
+## 5. 建议表结构
+
+### 5.1 workspace
 
 字段：
 
@@ -60,7 +90,7 @@ PostgreSQL 存放必须可靠落盘、可查询、可审计的数据：
 - `(external_ref)`
 - `(status, updated_at desc)`
 
-### 4.2 session
+### 5.2 session
 
 字段：
 
@@ -82,7 +112,7 @@ PostgreSQL 存放必须可靠落盘、可查询、可审计的数据：
 - `(subject_ref, created_at desc)`
 - `(status, updated_at desc)`
 
-### 4.3 message
+### 5.3 message
 
 字段：
 
@@ -101,13 +131,14 @@ PostgreSQL 存放必须可靠落盘、可查询、可审计的数据：
 - `(session_id, created_at)`
 - `(run_id, created_at)`
 
-### 4.4 run
+### 5.4 run
 
 字段：
 
 - `id`
 - `workspace_id`
 - `session_id`
+- `parent_run_id`
 - `trigger_type`
 - `trigger_ref`
 - `initiator_ref`
@@ -137,8 +168,9 @@ PostgreSQL 存放必须可靠落盘、可查询、可审计的数据：
 - `initiator_ref` 来自外部 caller context
 - `effective_agent_name` 用于记录 run 内当前生效的 agent
 - `switch_count` 用于审计和策略限制
+- `parent_run_id` 用于记录 subagent/background run 关系
 
-### 4.5 run_step
+### 5.5 run_step
 
 字段：
 
@@ -154,7 +186,11 @@ PostgreSQL 存放必须可靠落盘、可查询、可审计的数据：
 - `started_at`
 - `ended_at`
 
-### 4.6 tool_call
+索引建议：
+
+- `(run_id, seq)`
+
+### 5.6 tool_call
 
 字段：
 
@@ -170,11 +206,16 @@ PostgreSQL 存放必须可靠落盘、可查询、可审计的数据：
 - `started_at`
 - `ended_at`
 
+索引建议：
+
+- `(run_id, started_at)`
+- `(source_type, tool_name, started_at desc)`
+
 说明：
 
 - `source_type` 可取 `native`、`action`、`skill`、`mcp`
 
-### 4.7 action_run
+### 5.7 action_run
 
 字段：
 
@@ -188,7 +229,7 @@ PostgreSQL 存放必须可靠落盘、可查询、可审计的数据：
 - `started_at`
 - `ended_at`
 
-### 4.8 hook_run
+### 5.8 hook_run
 
 字段：
 
@@ -203,7 +244,7 @@ PostgreSQL 存放必须可靠落盘、可查询、可审计的数据：
 - `ended_at`
 - `error_message`
 
-### 4.9 artifact
+### 5.9 artifact
 
 字段：
 
@@ -215,7 +256,36 @@ PostgreSQL 存放必须可靠落盘、可查询、可审计的数据：
 - `metadata jsonb`
 - `created_at`
 
-## 5. Redis 职责
+### 5.10 history_event
+
+用途：
+
+- 为 `.openharness/data/history.db` 提供统一的增量同步事件流
+- 避免镜像同步直接扫描多张业务表
+
+字段：
+
+- `id`
+- `workspace_id`
+- `entity_type`
+- `entity_id`
+- `op`
+- `payload jsonb`
+- `occurred_at`
+
+索引建议：
+
+- `(workspace_id, id)`
+- `(workspace_id, occurred_at desc)`
+
+说明：
+
+- `id` 必须单调递增，可作为每个 workspace 的同步游标
+- `op` 建议支持 `upsert`、`delete`、`replace`
+- `payload` 保存镜像库需要写入的结构化行数据
+- 业务写入与 `history_event` 追加应放在同一事务中，确保镜像源事件不丢失
+
+## 6. Redis 职责
 
 Redis 负责高频、短生命周期、性能敏感的数据：
 
@@ -225,9 +295,9 @@ Redis 负责高频、短生命周期、性能敏感的数据：
 - 短期事件缓存
 - worker 协调信息
 
-## 6. 建议 Redis Key 设计
+## 7. 建议 Redis Key 设计
 
-### 6.1 Session Queue
+### 7.1 Session Queue
 
 - `oah:session:{sessionId}:queue`
 
@@ -235,7 +305,7 @@ Redis 负责高频、短生命周期、性能敏感的数据：
 
 - 存该 session 的待执行 run id 列表
 
-### 6.2 Session Lock
+### 7.2 Session Lock
 
 - `oah:session:{sessionId}:lock`
 
@@ -243,7 +313,7 @@ Redis 负责高频、短生命周期、性能敏感的数据：
 
 - 保证同一个 session 同时只有一个 worker 在执行
 
-### 6.3 Global Run Queue
+### 7.3 Global Run Queue
 
 - `oah:runs:ready`
 
@@ -251,7 +321,7 @@ Redis 负责高频、短生命周期、性能敏感的数据：
 
 - 保存准备调度的 run id 或 session id
 
-### 6.4 Event Buffer
+### 7.4 Event Buffer
 
 - `oah:session:{sessionId}:events`
 
@@ -259,30 +329,125 @@ Redis 负责高频、短生命周期、性能敏感的数据：
 
 - 短期缓存最近事件，便于 SSE 重连恢复
 
-### 6.5 Rate Limit
+### 7.5 Rate Limit
 
 - `oah:workspace:{workspaceId}:rate`
 - `oah:subject:{subjectRef}:rate`
 
-### 6.6 Concurrency
+### 7.6 Concurrency
 
 - `oah:workspace:{workspaceId}:active_runs`
 - `oah:subject:{subjectRef}:active_runs`
 
-## 7. 持久化与缓存的边界
+## 8. Workspace History Mirror 设计
+
+### 8.1 目标
+
+`.openharness/data/history.db` 用于提供：
+
+- workspace 内的本地历史备份
+- 脱离中心服务时的离线检视能力
+- 项目目录级迁移、归档、打包时的历史随行副本
+
+范围约束：
+
+- 该镜像机制默认面向 `kind=project` workspace
+- `kind=chat` workspace 不在本地目录内保存历史数据库
+
+### 8.2 核心原则
+
+- 中心 PostgreSQL 是唯一事实源
+- 本地 SQLite 是单向镜像，不是主库
+- 镜像同步允许短暂延迟，采用最终一致
+- 镜像失败不得阻塞在线请求
+- 镜像库损坏后可以完全重建
+
+### 8.3 路径与所有权
+
+- 路径固定为 `.openharness/data/history.db`
+- `.openharness/data/` 由 runtime 托管
+- 运行时可自动创建该目录和数据库文件
+- 调用方可读取此库，但不应由业务逻辑直接写入
+- `kind=chat` workspace 不创建该目录和数据库文件
+
+### 8.4 建议镜像范围
+
+建议镜像以下表的 workspace 子集：
+
+- `session`
+- `message`
+- `run`
+- `run_step`
+- `tool_call`
+- `action_run`
+- `hook_run`
+- `artifact`
+
+额外维护本地同步状态表：
+
+- `mirror_state`
+
+`mirror_state` 建议字段：
+
+- `workspace_id`
+- `last_event_id`
+- `last_synced_at`
+- `status`
+- `error_message`
+
+说明：
+
+- 本地镜像不必完整复制中心库中的 `workspace` 主表
+- 若需要便捷展示，可在本地额外放一个轻量 `workspace_meta` 快照表
+
+## 9. 同步模型
+
+### 9.1 写入路径
+
+在线请求路径只写中心库：
+
+1. runtime 将业务记录写入 PostgreSQL
+2. 同一事务内追加 `history_event`
+3. 事务提交后，由异步 syncer 消费增量事件
+4. syncer 将变更幂等写入 `.openharness/data/history.db`
+5. 更新本地 `mirror_state.last_event_id`
+
+### 9.2 同步粒度
+
+建议以 `workspace_id + history_event.id` 为最小同步游标。
+
+这样有几个好处：
+
+- 不需要分别维护多张表的游标
+- 支持 append 和 update 混合场景
+- 支持未来的 delete / redact 事件
+- 重试时更容易做到幂等
+
+### 9.3 同步语义
+
+- 默认批量拉取，如每批 100 到 1000 条事件
+- 本地写入采用 upsert
+- 事件重复投递时必须安全重放
+- `delete` 或 `replace` 事件由 syncer 显式处理
+
+## 10. 持久化与缓存的边界
 
 建议原则：
 
 - PostgreSQL 是最终事实来源
 - Redis 中的内容随时可重建
-- 不要只在 Redis 中保存关键业务状态
+- 本地 `history.db` 也是可重建副本
+- 不要只在 Redis 或本地镜像中保存关键业务状态
 
 例如：
 
 - `run.status` 必须落 PostgreSQL
 - `session 当前是否被 worker 占有` 可以只存在 Redis
+- `history.db` 中的 `run` 记录只能视为中心库的延迟副本
 
-## 8. 恢复策略
+## 11. 恢复与重建策略
+
+### 11.1 Worker 恢复
 
 worker 启动后，需执行恢复流程：
 
@@ -291,7 +456,26 @@ worker 启动后，需执行恢复流程：
 3. 清理失效 Redis lock
 4. 重建必要的 ready queue
 
-## 9. 审计策略
+### 11.2 Mirror 恢复
+
+镜像同步器恢复时：
+
+1. 读取 `.openharness/data/history.db` 中的 `mirror_state.last_event_id`
+2. 从 PostgreSQL `history_event` 继续拉取后续事件
+3. 若本地文件缺失，则从头回放该 workspace 的事件流
+4. 若本地文件损坏，可删除后全量重建
+
+### 11.3 故障影响
+
+- PostgreSQL 不可用：在线请求受影响
+- Redis 不可用：调度与实时能力受影响，但理论上可恢复
+- `history.db` 或 syncer 故障：不影响主请求执行，只影响本地镜像新鲜度
+
+补充说明：
+
+- `kind=chat` workspace 不涉及本地镜像故障域，其会话历史仅存在中心库
+
+## 12. 审计策略
 
 至少记录以下审计内容：
 
@@ -303,8 +487,9 @@ worker 启动后，需执行恢复流程：
 - tool 来源类型是什么
 - 何时失败、何时取消、何时超时
 - Hook 对请求做了哪些改写
+- 历史镜像当前是否落后、最近同步到哪个事件
 
-## 10. 日志与可观测性
+## 13. 日志与可观测性
 
 建议引入结构化日志字段：
 
@@ -318,6 +503,8 @@ worker 启动后，需执行恢复流程：
 - `tool_call_id`
 - `action_name`
 - `hook_name`
+- `history_event_id`
+- `mirror_last_event_id`
 - `status`
 - `duration_ms`
 - `request_id`

@@ -10,6 +10,8 @@
   - API 总览与统一约束
 - [workspaces.md](./workspaces.md)
   - workspace、catalog、model 可见性
+- [models.md](./models.md)
+  - 模型网关，供脚本、CLI 和 action 直接调用模型
 - [sessions.md](./sessions.md)
   - session 与 message
 - [runs.md](./runs.md)

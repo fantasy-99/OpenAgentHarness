@@ -7,6 +7,8 @@ OpenAPI 主规范中的 `components/schemas` 目前主要包括：
 - `Workspace`
 - `WorkspaceCatalog`
 - `ModelCatalogItem`
+- `ChatMessage`
+- `Usage`
 - `Session`
 - `Message`
 - `MessagePage`
@@ -16,11 +18,70 @@ OpenAPI 主规范中的 `components/schemas` 目前主要包括：
 - `CreateSessionRequest`
 - `CreateMessageRequest`
 - `CreateActionRunRequest`
+- `ModelGenerateRequest`
+- `ModelStreamRequest`
+- `ModelGenerateResponse`
 - `MessageAccepted`
 - `ActionRunAccepted`
 - `CancelRunAccepted`
 - `Error`
 - `ErrorResponse`
+
+## 模型网关对象
+
+### `ChatMessage`
+
+用于模型网关中的消息输入。
+
+字段：
+
+- `role`
+  - `system | user | assistant | tool`
+- `content`
+
+### `Usage`
+
+用于返回模型 token 使用量。
+
+字段：
+
+- `inputTokens`
+- `outputTokens`
+- `totalTokens`
+
+### `ModelGenerateRequest`
+
+用于 `/internal/v1/models/generate`。
+
+字段：
+
+- `model`
+  - 服务端模型名，例如 `openai-default`
+- `prompt`
+- `messages`
+- `temperature`
+- `maxTokens`
+
+约束：
+
+- `prompt` 与 `messages` 至少提供一个
+
+### `ModelStreamRequest`
+
+用于 `/internal/v1/models/stream`。
+
+当前与 `ModelGenerateRequest` 保持同结构。
+
+### `ModelGenerateResponse`
+
+用于一次性模型生成返回。
+
+字段：
+
+- `model`
+- `text`
+- `finishReason`
+- `usage`
 
 ## 通用参数
 
@@ -63,3 +124,6 @@ OpenAPI 主规范中的 `components/schemas` 目前主要包括：
 - `POLICY_DENIED`
 - `AGENT_SWITCH_DENIED`
 - `SUBAGENT_DENIED`
+- `MODEL_NOT_FOUND`
+- `MODEL_GATEWAY_DISABLED`
+- `MODEL_GATEWAY_LOCAL_ONLY`

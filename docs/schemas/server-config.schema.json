@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openharness.dev/schemas/server-config.schema.json",
+  "title": "OpenAgentHarness Server Config",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "server": {
+      "type": "object",
+      "required": [
+        "host",
+        "port"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "required": [
+        "postgres_url",
+        "redis_url"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "postgres_url": {
+          "type": "string"
+        },
+        "redis_url": {
+          "type": "string"
+        }
+      }
+    },
+    "paths": {
+      "type": "object",
+      "required": [
+        "workspace_dir",
+        "chat_dir",
+        "template_dir",
+        "models_dir",
+        "mcp_dir",
+        "skill_dir"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "workspace_dir": {
+          "type": "string"
+        },
+        "chat_dir": {
+          "type": "string"
+        },
+        "template_dir": {
+          "type": "string"
+        },
+        "models_dir": {
+          "type": "string"
+        },
+        "mcp_dir": {
+          "type": "string"
+        },
+        "skill_dir": {
+          "type": "string"
+        }
+      }
+    },
+    "llm": {
+      "type": "object",
+      "required": [
+        "default_model"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "default_model": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

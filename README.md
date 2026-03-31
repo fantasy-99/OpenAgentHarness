@@ -11,6 +11,9 @@ Open Agent Harness 是一个基于 TypeScript + Node.js 的 headless Agent Runti
 - 支持大量并发 session / run，适合多实例分布式部署
 - 对 LLM 暴露统一的 tool calling 视图，但在领域层保持 `action`、`skill`、`mcp` 分离
 - 通过 REST API 发起请求，通过 SSE 接收流式事件
+- 同时支持常规项目 workspace 和只读普通对话 workspace
+
+调试形态上，建议额外提供一个轻量 `oah` CLI / TUI，用于开发和排障，但它不改变本项目“headless runtime”的产品定位。
 
 ## 负责什么
 
@@ -19,6 +22,11 @@ Open Agent Harness 是一个基于 TypeScript + Node.js 的 headless Agent Runti
 - 统一接入平台级和 workspace 级 agent / model
 - 执行 shell、本地脚本、Action、Skill、MCP、Hook
 - 提供审计、日志、取消、超时、恢复和事件流
+
+补充：
+
+- 只读普通对话 workspace 可作为“对话模式包”使用
+- 这类 workspace 只提供 prompt、agent、model 等静态定义，不提供 shell 或其他执行型工具
 
 ## 不负责什么
 
@@ -36,6 +44,8 @@ workspace/
   AGENTS.md
   .openharness/
     settings.yaml
+    data/
+      history.db
     agents/
       builder.md
     models/
@@ -65,6 +75,22 @@ workspace/
 - `skills/*/SKILL.md` 定义技能目录
 - `mcp/settings.yaml` 定义 MCP server 连接方式
 - `hooks/` 定义运行时扩展点，并可放置 hook 使用的脚本、提示词和其他资源目录
+- `.openharness/data/history.db` 是该 workspace 的本地历史镜像库，由中心数据库异步同步生成
+
+另外支持一种只读普通对话 workspace：
+
+- 服务端配置文件可通过 `paths.chat_dir` 指定一个目录，其下每个直接子目录都会被发现为一个 `chat` workspace
+- `chat` workspace 仍可使用 `AGENTS.md`、`settings.yaml`、`agents/*.md`、`models/*.yaml`
+- `chat` workspace 不允许修改目录内容，不允许执行 shell / action / skill / mcp / hook
+- `chat` workspace 的会话历史仅保存在中心数据库，不会在该目录下创建 `.openharness/data/history.db`
+
+## 存储角色
+
+- `PostgreSQL`：唯一事实源，保存 session、message、run、tool call、审计记录等核心数据
+- `Redis`：保存队列、锁、限流计数和短期事件缓存
+- `.openharness/data/history.db`：保存 workspace 历史的本地镜像副本，便于备份、迁移和离线检视
+
+这里的关键边界是：本地 `history.db` 不是主库，不参与在线调度和一致性判断，也不会反向写回中心数据库。这样既能保留分布式部署的灵活性，也能让每个 workspace 自带一份历史副本。
 
 ## 文档入口
 

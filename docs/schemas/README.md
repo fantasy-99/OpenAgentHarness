@@ -1,6 +1,11 @@
 # JSON Schemas
 
-这里保存 workspace 配置文件的 JSON Schema，用于校验 `.openharness/` 目录下的声明式配置。
+这里保存 OpenAgentHarness 配置文件的 JSON Schema。
+
+其中既包括：
+
+- workspace 内 `.openharness/` 目录下的声明式配置
+- 服务端部署级配置文件
 
 ## 文件
 
@@ -9,6 +14,7 @@
 - [action.schema.json](./action.schema.json)
 - [mcp-settings.schema.json](./mcp-settings.schema.json)
 - [hook.schema.json](./hook.schema.json)
+- [server-config.schema.json](./server-config.schema.json)
 
 ## 说明
 
@@ -19,6 +25,7 @@
 - `settings` 也可声明额外 skill 目录
 - `skill` 不走本地 YAML schema，而是采用目录式 `SKILL.md` 规范
 - `mcp` 采用 `mcp/settings.yaml` + `mcp/servers/*`
+- `server-config` 用于校验服务端部署级 `server.yaml`
 - schema 目标是约束当前 DSL，而不是一次性覆盖未来所有扩展
 
 ## 当前约束

@@ -7,12 +7,14 @@
 - 自动发现 workspace 能力并构建上下文
 - 将 LLM tool calls 映射到 Action、Skill、MCP、Native Tool
 - 统一处理超时、取消、日志、审计和事件流
+- 将中心历史异步同步到 workspace 下的 `.openharness/data/history.db`
 
 ## 文档导航
 
 - [lifecycle.md](./lifecycle.md)
 - [context-engine.md](./context-engine.md)
 - [projection-and-executors.md](./projection-and-executors.md)
+- [model-gateway.md](./model-gateway.md)
 - [hook-runtime.md](./hook-runtime.md)
 - [execution-backend.md](./execution-backend.md)
 - [queue-and-reliability.md](./queue-and-reliability.md)

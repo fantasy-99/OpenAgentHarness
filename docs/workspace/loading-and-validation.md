@@ -8,11 +8,25 @@
 - 文件变更可通过 mtime 或 hash 触发缓存失效
 - 运行时可维护基于 workspace 的内存缓存
 
+### 运行时托管目录
+
+以下路径属于 runtime 托管资源，而不是用户声明式配置：
+
+- `.openharness/data/`
+- `.openharness/data/history.db`
+
+约束：
+
+- 不参与 YAML / Markdown 能力定义加载
+- 可在首次同步时由 runtime 自动创建
+- 若 `history.db` 缺失或损坏，可由中心库重新构建
+
 ### 失败策略
 
 - YAML 语法错误时，标记该定义加载失败
 - 单个定义失败不应导致整个 workspace 不可用
 - Agent 启动时若引用不存在的 action / skill / mcp / hook，则该 run 失败并返回明确错误
+- `history.db` 同步失败不应导致 workspace 配置加载失败
 
 ## 配置校验
 

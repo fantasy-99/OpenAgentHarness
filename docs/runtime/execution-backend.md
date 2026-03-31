@@ -25,6 +25,12 @@ export interface ExecutionBackend {
   - 在宿主机执行 shell
   - 提供文件读写能力
 
+补充规则：
+
+- `kind=project` workspace 可进入 `LocalWorkspaceBackend`
+- `kind=chat` workspace 不创建任何 backend session
+- `kind=chat` workspace 不允许 shell、文件写入、文件列举等执行型能力
+
 ## 后续实现
 
 - `SandboxBackend`

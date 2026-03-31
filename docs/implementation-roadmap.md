@@ -15,12 +15,14 @@
 ### 2.1 包含
 
 - TypeScript + Node.js 服务端骨架
+- 调试用 `oah` CLI 基础骨架
 - OpenAPI 3.1
 - PostgreSQL + Redis 基础设施
 - workspace / session / message / run 领域模型
 - workspace 根目录 `AGENTS.md` 加载
 - `.openharness/settings.yaml` 加载
 - `.openharness/` 自动发现与校验
+- 服务端配置文件加载
 - AgentRegistry / ModelRegistry / ActionRegistry / SkillRegistry / McpRegistry / HookRegistry
 - 平台内建 agent 注册与装配
 - LocalWorkspaceBackend
@@ -43,6 +45,7 @@
 - 接入 OpenAPI 生成和校验
 - 初始化 PostgreSQL 和 Redis
 - 建立基础日志和错误处理
+- 定义服务端配置文件结构
 
 ### Phase 2: 核心领域模型
 
@@ -59,6 +62,8 @@
 ### Phase 4: Context Engine 与配置加载
 
 - 实现 workspace 根目录扫描
+- 实现服务端 `paths.chat_dir` 扫描
+- 实现服务端 `paths.workspace_dir` 扫描
 - 解析 `AGENTS.md`
 - 加载平台内建 agent 注册表
 - 解析 `.openharness/settings.yaml`
@@ -78,6 +83,8 @@
 - 实现 agent 切换检测与 `<system_reminder>` 注入
 - 实现 `agent.switch` 与 `agent.delegate` 的 allowlist 校验
 - 实现 `agent.await` 与并发 subagent 调度
+- 将 `paths.chat_dir` 下子目录自动注册为 `kind=chat` workspace
+- 将 `paths.workspace_dir` 下子目录自动注册为 `kind=project` workspace
 
 ### Phase 5: 执行器与调用分发
 
@@ -94,7 +101,17 @@
 - 事件协议
 - 增量输出
 
-### Phase 7: Hook 与治理能力
+### Phase 7: 调试 CLI / TUI
+
+- 实现 `oah workspace list`
+- 实现 `oah catalog show`
+- 实现 `oah session chat`
+- 实现 `oah action run`
+- 实现 `oah model generate`
+- 实现 `oah run inspect`
+- 在上述 CLI 能力基础上实现 `oah tui`
+
+### Phase 8: Hook 与治理能力
 
 - Hook runtime
 - capability 校验

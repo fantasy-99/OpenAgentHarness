@@ -15,6 +15,7 @@ servers:
 tags:
   - name: Workspaces
   - name: Catalog
+  - name: Models
   - name: Sessions
   - name: Messages
   - name: Runs
@@ -118,6 +119,73 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ActionRunAccepted'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /internal/v1/models/generate:
+    post:
+      tags: [Models]
+      summary: Generate text with an internal platform model
+      description: >
+        Internal local-only model gateway for actions, scripts, and the `oah model`
+        CLI. This endpoint is not intended for external clients or public network
+        exposure.
+      operationId: internalGenerateModel
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelGenerateRequest'
+      responses:
+        '200':
+          description: Model generation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelGenerateResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /internal/v1/models/stream:
+    post:
+      tags: [Models]
+      summary: Stream text with an internal platform model
+      description: >
+        Internal local-only model gateway for actions, scripts, and the `oah model`
+        CLI. This endpoint is not intended for external clients or public network
+        exposure.
+      operationId: internalStreamModel
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelStreamRequest'
+      responses:
+        '200':
+          description: Server-Sent Events stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE stream of model response events
+              examples:
+                started:
+                  summary: Response started event
+                  value: |
+                    event: response.started
+                    data: {"model":"openai-default"}
+                delta:
+                  summary: Text delta event
+                  value: |
+                    event: text.delta
+                    data: {"delta":"hello"}
+                completed:
+                  summary: Response completed event
+                  value: |
+                    event: response.completed
+                    data: {"model":"openai-default","finishReason":"stop"}
         default:
           $ref: '#/components/responses/ErrorResponse'
   /sessions/{sessionId}:
@@ -367,6 +435,29 @@ components:
           type: string
         url:
           type: string
+    ChatMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+        content:
+          type: string
+      additionalProperties: false
+    Usage:
+      type: object
+      properties:
+        inputTokens:
+          type: integer
+          minimum: 0
+        outputTokens:
+          type: integer
+          minimum: 0
+        totalTokens:
+          type: integer
+          minimum: 0
+      additionalProperties: false
     ActionCatalogItem:
       type: object
       required: [name]
@@ -674,6 +765,46 @@ components:
             - type: object
               additionalProperties: true
             - type: 'null'
+      additionalProperties: false
+    ModelGenerateRequest:
+      type: object
+      properties:
+        model:
+          type: string
+          minLength: 1
+          description: Platform model name from the server models directory
+        prompt:
+          type: string
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+        temperature:
+          type: number
+        maxTokens:
+          type: integer
+          minimum: 1
+      additionalProperties: false
+      anyOf:
+        - required: [prompt]
+        - required: [messages]
+    ModelStreamRequest:
+      allOf:
+        - $ref: '#/components/schemas/ModelGenerateRequest'
+    ModelGenerateResponse:
+      type: object
+      required:
+        - model
+        - text
+      properties:
+        model:
+          type: string
+        text:
+          type: string
+        finishReason:
+          type: string
+        usage:
+          $ref: '#/components/schemas/Usage'
       additionalProperties: false
     ActionRunAccepted:
       type: object
