@@ -1,4 +1,5 @@
 import { createOpenAI } from "@ai-sdk/openai";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { generateText, stepCountIs, streamText, tool, type LanguageModel, type ModelMessage, type ToolSet } from "ai";
 
 import type { PlatformModelDefinition, PlatformModelRegistry } from "@oah/config";
@@ -15,8 +16,17 @@ import type {
 } from "@oah/runtime-core";
 import { AppError } from "@oah/runtime-core";
 import { prepareMcpTools } from "./mcp-tools.js";
+import { formatSupportedModelProviders } from "./providers.js";
 
 export { prepareMcpTools } from "./mcp-tools.js";
+export {
+  SUPPORTED_MODEL_PROVIDERS,
+  SUPPORTED_MODEL_PROVIDER_IDS,
+  formatSupportedModelProviders,
+  isSupportedModelProvider,
+  type SupportedModelProviderDefinition,
+  type SupportedModelProviderId
+} from "./providers.js";
 
 function normalizeMessages(messages: GenerateModelInput["messages"]): ModelMessage[] | undefined {
   return messages?.map((message) => ({
@@ -125,6 +135,18 @@ function toToolResult(toolResult: { toolCallId: string; toolName: string; output
   };
 }
 
+function toError(error: unknown): Error {
+  if (error instanceof Error) {
+    return error;
+  }
+
+  if (typeof error === "string") {
+    return new Error(error);
+  }
+
+  return new Error("Unknown model stream error.");
+}
+
 export interface AiSdkModelGatewayOptions {
   defaultModelName: string;
   models: PlatformModelRegistry;
@@ -175,6 +197,7 @@ export class AiSdkModelGateway implements ModelGateway {
       cleanedUp = true;
       await preparedMcpTools.close();
     };
+    let observedStreamError: Error | undefined;
 
     const result = streamText({
       model,
@@ -182,6 +205,9 @@ export class AiSdkModelGateway implements ModelGateway {
       ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
       ...(input.maxTokens !== undefined ? { maxOutputTokens: input.maxTokens } : {}),
       ...(options?.signal ? { abortSignal: options.signal } : {}),
+      onError: ({ error }) => {
+        observedStreamError ??= toError(error);
+      },
       ...(aiTools
         ? {
             tools: aiTools,
@@ -262,6 +288,9 @@ export class AiSdkModelGateway implements ModelGateway {
           finishReason,
           usage: toUsage(usage)
         }))
+        .catch((error) => {
+          throw observedStreamError ?? error;
+        })
         .finally(cleanup)
     };
   }
@@ -278,23 +307,46 @@ export class AiSdkModelGateway implements ModelGateway {
       throw new AppError(404, "model_not_found", `Model ${modelName} was not found.`);
     }
 
-    if (definition.provider !== "openai") {
-      throw new AppError(
-        400,
-        "unsupported_model_provider",
-        `Provider ${definition.provider} is not supported in Phase 1A.`,
-        { provider: definition.provider, model: modelName }
-      );
-    }
-
-    const provider = createOpenAI({
-      ...(definition.key ? { apiKey: definition.key } : {}),
-      ...(definition.url ? { baseURL: definition.url } : {})
-    });
-
-    const model = provider(definition.name);
+    const model = this.#createLanguageModel(definition, modelName);
     this.#clients.set(cacheKey, model);
     return model;
+  }
+
+  #createLanguageModel(definition: PlatformModelDefinition, modelName: string): LanguageModel {
+    switch (definition.provider) {
+      case "openai": {
+        const provider = createOpenAI({
+          ...(definition.key ? { apiKey: definition.key } : {}),
+          ...(definition.url ? { baseURL: definition.url } : {})
+        });
+        return provider(definition.name);
+      }
+      case "openai-compatible": {
+        if (!definition.url) {
+          throw new AppError(
+            400,
+            "invalid_model_definition",
+            `Provider ${definition.provider} requires a base URL for model ${modelName}.`,
+            { provider: definition.provider, model: modelName }
+          );
+        }
+
+        const provider = createOpenAICompatible({
+          name: definition.provider,
+          baseURL: definition.url,
+          ...(definition.key ? { apiKey: definition.key } : {}),
+          includeUsage: true
+        });
+        return provider(definition.name);
+      }
+      default:
+        throw new AppError(
+          400,
+          "unsupported_model_provider",
+          `Provider ${definition.provider} is not supported in Phase 1A. Supported providers: ${formatSupportedModelProviders()}.`,
+          { provider: definition.provider, model: modelName }
+        );
+    }
   }
 
   #canonicalModelName(modelName: string): string {

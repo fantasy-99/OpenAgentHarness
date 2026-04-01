@@ -3,6 +3,7 @@ import {
   Activity,
   Bot,
   CircleSlash2,
+  Database,
   Folder,
   FolderPlus,
   Network,
@@ -22,6 +23,7 @@ import type {
   Session,
   SessionEventContract,
   Workspace,
+  WorkspaceHistoryMirrorStatus,
   WorkspaceCatalog,
   WorkspaceTemplateList
 } from "@oah/api-contracts";
@@ -72,10 +74,56 @@ interface ModelDraft {
   prompt: string;
 }
 
+interface ModelProviderRecord {
+  id: "openai" | "openai-compatible";
+  packageName: string;
+  description: string;
+  requiresUrl: boolean;
+  useCases: string[];
+}
+
 interface SseFrame {
   cursor?: string;
   event: string;
   data: Record<string, unknown>;
+}
+
+interface HealthReportResponse {
+  status: "ok" | "degraded";
+  storage: {
+    primary: "postgres" | "memory";
+    events: "redis" | "memory";
+    runQueue: "redis" | "in_process";
+  };
+  checks: {
+    postgres: "up" | "down" | "not_configured";
+    redisEvents: "up" | "down" | "not_configured";
+    redisRunQueue: "up" | "down" | "not_configured";
+    historyMirror: "up" | "degraded" | "not_configured";
+  };
+  worker: {
+    mode: "inline" | "external" | "disabled";
+  };
+  mirror: {
+    worker: "running" | "disabled";
+    enabledWorkspaces: number;
+    idleWorkspaces: number;
+    missingWorkspaces: number;
+    errorWorkspaces: number;
+  };
+}
+
+interface ReadinessReportResponse {
+  status: "ready" | "not_ready";
+  checks: {
+    postgres: "up" | "down" | "not_configured";
+    redisEvents: "up" | "down" | "not_configured";
+    redisRunQueue: "up" | "down" | "not_configured";
+  };
+}
+
+interface ModelProviderListResponse {
+  items: ModelProviderRecord[];
 }
 
 const storageKeys = {
@@ -147,6 +195,11 @@ function toErrorMessage(error: unknown) {
   return String(error);
 }
 
+function isNotFoundError(error: unknown) {
+  const message = toErrorMessage(error);
+  return message.startsWith("404 ") || message.toLowerCase().includes("not found");
+}
+
 function prettyJson(value: unknown) {
   try {
     return JSON.stringify(value, null, 2);
@@ -157,6 +210,25 @@ function prettyJson(value: unknown) {
 
 function addRecentId(list: string[], id: string) {
   return [id, ...list.filter((entry) => entry !== id)].slice(0, 8);
+}
+
+function compareIsoTimestampDesc(left?: string, right?: string) {
+  const leftValue = left ? Date.parse(left) : Number.NaN;
+  const rightValue = right ? Date.parse(right) : Number.NaN;
+
+  if (Number.isFinite(leftValue) && Number.isFinite(rightValue)) {
+    return rightValue - leftValue;
+  }
+
+  if (Number.isFinite(leftValue)) {
+    return -1;
+  }
+
+  if (Number.isFinite(rightValue)) {
+    return 1;
+  }
+
+  return 0;
 }
 
 function isTerminalRunEvent(event: string) {
@@ -192,6 +264,26 @@ function statusTone(status: string) {
       return "border-rose-200 bg-rose-50 text-rose-700";
     default:
       return "";
+  }
+}
+
+function probeTone(status: string): "sky" | "emerald" | "rose" | "amber" {
+  switch (status) {
+    case "ok":
+    case "ready":
+    case "up":
+      return "emerald";
+    case "degraded":
+    case "not_configured":
+    case "checking":
+    case "idle":
+      return "amber";
+    case "error":
+    case "not_ready":
+    case "down":
+      return "rose";
+    default:
+      return "sky";
   }
 }
 
@@ -280,6 +372,7 @@ export function App() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [workspaceTemplates, setWorkspaceTemplates] = useState<string[]>([]);
   const [catalog, setCatalog] = useState<WorkspaceCatalog | null>(null);
+  const [mirrorStatus, setMirrorStatus] = useState<WorkspaceHistoryMirrorStatus | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [events, setEvents] = useState<SessionEventContract[]>([]);
@@ -289,7 +382,10 @@ export function App() {
   const [draftMessage, setDraftMessage] = useState("你好，帮我简单确认一下当前 session 和 run 是否正常工作。");
   const [liveOutput, setLiveOutput] = useState<Record<string, string>>({});
   const [healthStatus, setHealthStatus] = useState("idle");
-  const [streamState, setStreamState] = useState<"idle" | "connecting" | "open" | "error">("idle");
+  const [healthReport, setHealthReport] = useState<HealthReportResponse | null>(null);
+  const [readinessReport, setReadinessReport] = useState<ReadinessReportResponse | null>(null);
+  const [modelProviders, setModelProviders] = useState<ModelProviderRecord[]>([]);
+  const [streamState, setStreamState] = useState<"idle" | "connecting" | "listening" | "open" | "error">("idle");
   const [activity, setActivity] = useState("等待连接");
   const [errorMessage, setErrorMessage] = useState("");
   const [generateOutput, setGenerateOutput] = useState<ModelGenerateResponse | null>(null);
@@ -302,13 +398,24 @@ export function App() {
   const [showSessionCreator, setShowSessionCreator] = useState(false);
   const [showWorkspaceCreator, setShowWorkspaceCreator] = useState(false);
   const [showConnectionPanel, setShowConnectionPanel] = useState(false);
+  const [mirrorToggleBusy, setMirrorToggleBusy] = useState(false);
+  const [mirrorRebuildBusy, setMirrorRebuildBusy] = useState(false);
 
   const deferredEvents = useDeferredValue(events);
   const streamAbortRef = useRef<AbortController | null>(null);
   const lastCursorRef = useRef<string | undefined>(undefined);
   const messageRefreshTimerRef = useRef<number | undefined>(undefined);
   const runRefreshTimerRef = useRef<number | undefined>(undefined);
-  const activeWorkspaceSessions = savedSessions.filter((entry) => entry.workspaceId === workspaceId);
+  const activeWorkspaceSessions = [...savedSessions]
+    .filter((entry) => entry.workspaceId === workspaceId)
+    .sort((left, right) => {
+      const timestampComparison = compareIsoTimestampDesc(left.createdAt, right.createdAt);
+      if (timestampComparison !== 0) {
+        return timestampComparison;
+      }
+
+      return right.id.localeCompare(left.id);
+    });
   const selectedRunIdValue = selectedRunId.trim();
   const streamRunId = filterSelectedRun ? selectedRunIdValue : "";
 
@@ -389,23 +496,42 @@ export function App() {
     ].slice(0, 48));
   }
 
-  function removeSavedWorkspace(workspaceToRemoveId: string) {
+  function forgetWorkspace(workspaceToRemoveId: string) {
+    if (workspaceId === workspaceToRemoveId) {
+      clearWorkspaceSelection(workspaceToRemoveId);
+      return;
+    }
+
     setSavedWorkspaces((current) => current.filter((entry) => entry.id !== workspaceToRemoveId));
     setSavedSessions((current) => current.filter((entry) => entry.workspaceId !== workspaceToRemoveId));
     setRecentWorkspaces((current) => current.filter((entry) => entry !== workspaceToRemoveId));
+  }
 
-    if (workspaceId === workspaceToRemoveId) {
-      setWorkspaceId("");
-      setWorkspace(null);
-      setCatalog(null);
-      setSessionId("");
-      setSession(null);
-      setMessages([]);
-      setEvents([]);
-      setSelectedRunId("");
-      setRun(null);
-      setRunSteps([]);
-      setLiveOutput({});
+  async function deleteWorkspace(workspaceToRemoveId: string) {
+    const targetWorkspace = savedWorkspaces.find((entry) => entry.id === workspaceToRemoveId);
+    const confirmed = window.confirm(
+      `确认删除 workspace "${targetWorkspace?.name ?? workspaceToRemoveId}" 吗？这会删除服务端记录，并同步清理受管目录中的 workspace 文件夹。`
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      await request<void>(`/api/v1/workspaces/${workspaceToRemoveId}`, {
+        method: "DELETE"
+      });
+      forgetWorkspace(workspaceToRemoveId);
+      setActivity(`Workspace ${workspaceToRemoveId} 已删除`);
+      setErrorMessage("");
+    } catch (error) {
+      if (isNotFoundError(error)) {
+        forgetWorkspace(workspaceToRemoveId);
+        setActivity(`Workspace ${workspaceToRemoveId} 已从列表清理`);
+        setErrorMessage("");
+        return;
+      }
+
+      setErrorMessage(toErrorMessage(error));
     }
   }
 
@@ -422,6 +548,41 @@ export function App() {
       setRun(null);
       setRunSteps([]);
       setLiveOutput({});
+    }
+  }
+
+  function clearSessionSelection(sessionToClearId?: string) {
+    const targetId = sessionToClearId ?? sessionId;
+    lastCursorRef.current = undefined;
+    streamAbortRef.current?.abort();
+    setStreamState("idle");
+    setSessionId("");
+    setSession(null);
+    setMessages([]);
+    setEvents([]);
+    setSelectedRunId("");
+    setRun(null);
+    setRunSteps([]);
+    setLiveOutput({});
+
+    if (targetId) {
+      setSavedSessions((current) => current.filter((entry) => entry.id !== targetId));
+      setRecentSessions((current) => current.filter((entry) => entry !== targetId));
+    }
+  }
+
+  function clearWorkspaceSelection(workspaceToClearId?: string) {
+    const targetId = workspaceToClearId ?? workspaceId;
+    clearSessionSelection();
+    setWorkspaceId("");
+    setWorkspace(null);
+    setCatalog(null);
+    setMirrorStatus(null);
+
+    if (targetId) {
+      setSavedWorkspaces((current) => current.filter((entry) => entry.id !== targetId));
+      setRecentWorkspaces((current) => current.filter((entry) => entry !== targetId));
+      setSavedSessions((current) => current.filter((entry) => entry.workspaceId !== targetId));
     }
   }
 
@@ -443,16 +604,31 @@ export function App() {
   async function pingHealth() {
     try {
       setHealthStatus("checking");
-      const response = await fetch(buildUrl(connection.baseUrl, "/healthz"));
-      if (!response.ok) {
-        throw new Error(`${response.status} ${response.statusText}`);
+      const [healthResponse, readinessResponse] = await Promise.all([
+        fetch(buildUrl(connection.baseUrl, "/healthz")),
+        fetch(buildUrl(connection.baseUrl, "/readyz"))
+      ]);
+
+      if (!healthResponse.ok) {
+        throw new Error(`${healthResponse.status} ${healthResponse.statusText}`);
       }
 
-      setHealthStatus("ok");
-      setActivity("服务健康检查通过");
+      const healthPayload = (await readJsonResponse<HealthReportResponse>(healthResponse)) ?? null;
+      const readinessPayload = await readJsonResponse<ReadinessReportResponse>(readinessResponse).catch(() => null);
+
+      setHealthReport(healthPayload);
+      setReadinessReport(readinessPayload);
+      setHealthStatus(healthPayload?.status ?? (readinessResponse.ok ? "ok" : "degraded"));
+      setActivity(
+        healthPayload?.status === "degraded" || readinessPayload?.status === "not_ready"
+          ? "服务探针发现降级项"
+          : "服务健康检查通过"
+      );
       setErrorMessage("");
     } catch (error) {
       setHealthStatus("error");
+      setHealthReport(null);
+      setReadinessReport(null);
       setErrorMessage(toErrorMessage(error));
     }
   }
@@ -474,20 +650,39 @@ export function App() {
     }
   }
 
+  async function refreshModelProviders(quiet = false) {
+    try {
+      const response = await request<ModelProviderListResponse>("/api/v1/model-providers");
+      startTransition(() => {
+        setModelProviders(response.items);
+      });
+      if (!quiet) {
+        setActivity(`已加载 ${response.items.length} 个模型 provider`);
+        setErrorMessage("");
+      }
+    } catch (error) {
+      if (!quiet) {
+        setErrorMessage(toErrorMessage(error));
+      }
+    }
+  }
+
   async function refreshWorkspace(targetId = workspaceId, quiet = false) {
     if (!targetId.trim()) {
       return;
     }
 
     try {
-      const [workspaceResponse, catalogResponse] = await Promise.all([
+      const [workspaceResponse, catalogResponse, mirrorStatusResponse] = await Promise.all([
         request<Workspace>(`/api/v1/workspaces/${targetId}`),
-        request<WorkspaceCatalog>(`/api/v1/workspaces/${targetId}/catalog`)
+        request<WorkspaceCatalog>(`/api/v1/workspaces/${targetId}/catalog`),
+        request<WorkspaceHistoryMirrorStatus>(`/api/v1/workspaces/${targetId}/history-mirror`)
       ]);
 
       startTransition(() => {
         setWorkspace(workspaceResponse);
         setCatalog(catalogResponse);
+        setMirrorStatus(mirrorStatusResponse);
         setWorkspaceId(targetId);
         setRecentWorkspaces((current) => addRecentId(current, targetId));
       });
@@ -499,6 +694,10 @@ export function App() {
     } catch (error) {
       setWorkspace(null);
       setCatalog(null);
+      setMirrorStatus(null);
+      if (isNotFoundError(error)) {
+        clearWorkspaceSelection(targetId);
+      }
       if (!quiet) {
         setErrorMessage(toErrorMessage(error));
       }
@@ -546,6 +745,69 @@ export function App() {
     }
   }
 
+  async function updateWorkspaceHistoryMirrorEnabled(enabled: boolean) {
+    if (!workspaceId.trim() || !workspace) {
+      setErrorMessage("请先加载 workspace。");
+      return;
+    }
+
+    try {
+      setMirrorToggleBusy(true);
+      const updated = await request<Workspace>(`/api/v1/workspaces/${workspaceId}/settings`, {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          historyMirrorEnabled: enabled
+        })
+      });
+
+      startTransition(() => {
+        setWorkspace(updated);
+      });
+      const nextMirrorStatus = await request<WorkspaceHistoryMirrorStatus>(
+        `/api/v1/workspaces/${workspaceId}/history-mirror`
+      );
+      startTransition(() => {
+        setMirrorStatus(nextMirrorStatus);
+      });
+      rememberWorkspace(updated);
+      setActivity(`Mirror sync 已${enabled ? "开启" : "关闭"}`);
+      setErrorMessage("");
+    } catch (error) {
+      setErrorMessage(toErrorMessage(error));
+    } finally {
+      setMirrorToggleBusy(false);
+    }
+  }
+
+  async function rebuildWorkspaceHistoryMirror() {
+    if (!workspaceId.trim() || !workspace) {
+      setErrorMessage("请先加载 workspace。");
+      return;
+    }
+
+    try {
+      setMirrorRebuildBusy(true);
+      const nextMirrorStatus = await request<WorkspaceHistoryMirrorStatus>(
+        `/api/v1/workspaces/${workspaceId}/history-mirror/rebuild`,
+        {
+          method: "POST"
+        }
+      );
+      startTransition(() => {
+        setMirrorStatus(nextMirrorStatus);
+      });
+      setActivity("Mirror sync 已重建");
+      setErrorMessage("");
+    } catch (error) {
+      setErrorMessage(toErrorMessage(error));
+    } finally {
+      setMirrorRebuildBusy(false);
+    }
+  }
+
   async function refreshSession(targetId = sessionId, quiet = false) {
     if (!targetId.trim()) {
       return;
@@ -574,6 +836,9 @@ export function App() {
     } catch (error) {
       setSession(null);
       setMessages([]);
+      if (isNotFoundError(error)) {
+        clearSessionSelection(targetId);
+      }
       if (!quiet) {
         setErrorMessage(toErrorMessage(error));
       }
@@ -822,9 +1087,8 @@ export function App() {
       scheduleRunRefresh(event.runId);
     }
 
-    if (typeof event.runId === "string" && event.runId === selectedRunIdValue && isTerminalRunEvent(event.event)) {
-      streamAbortRef.current?.abort();
-      setStreamState("idle");
+    if (typeof event.runId === "string" && isTerminalRunEvent(event.event)) {
+      scheduleMessagesRefresh();
     }
 
     setActivity(`${event.event}${event.runId ? ` · ${event.runId}` : ""}`);
@@ -840,6 +1104,18 @@ export function App() {
 
   useEffect(() => {
     void refreshWorkspaceTemplates(true);
+    void refreshModelProviders(true);
+  }, [connection.baseUrl, connection.token]);
+
+  useEffect(() => {
+    if (sessionId.trim()) {
+      void refreshSession(sessionId, true);
+      return;
+    }
+
+    if (workspaceId.trim()) {
+      void refreshWorkspace(workspaceId, true);
+    }
   }, [connection.baseUrl, connection.token]);
 
   useEffect(() => {
@@ -853,6 +1129,11 @@ export function App() {
     streamAbortRef.current?.abort();
     streamAbortRef.current = controller;
     setStreamState("connecting");
+    const listeningTimer = window.setTimeout(() => {
+      if (!controller.signal.aborted) {
+        setStreamState((current) => (current === "connecting" ? "listening" : current));
+      }
+    }, 1200);
 
     const query = new URLSearchParams();
     if (streamRunId) {
@@ -885,6 +1166,10 @@ export function App() {
         }
       } catch (error) {
         if (!controller.signal.aborted) {
+          if (isNotFoundError(error)) {
+            clearSessionSelection(sessionId);
+            setActivity(`Session ${sessionId} 不存在，已清除本地选择`);
+          }
           setStreamState("error");
           setErrorMessage(toErrorMessage(error));
         }
@@ -892,6 +1177,7 @@ export function App() {
     })();
 
     return () => {
+      window.clearTimeout(listeningTimer);
       controller.abort();
     };
   }, [
@@ -899,7 +1185,6 @@ export function App() {
     connection.baseUrl,
     connection.token,
     filterSelectedRun,
-    handleSessionEvent,
     streamRunId,
     sessionId,
     streamRevision
@@ -922,8 +1207,8 @@ export function App() {
   const latestEvent = deferredEvents[0];
 
   return (
-    <main className="min-h-screen px-3 py-3 md:px-5 md:py-5">
-      <div className="mx-auto max-w-[1760px]">
+    <main className="overflow-x-hidden px-3 py-3 md:px-4 md:py-4 xl:h-screen xl:overflow-hidden xl:px-5 xl:py-5">
+      <div className="mx-auto max-w-[1680px] xl:flex xl:h-full xl:flex-col xl:min-h-0">
         <header className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-[22px] border border-[color:var(--border)] bg-white/95 px-4 py-3 shadow-[0_12px_30px_rgba(15,15,15,0.04)]">
           <div className="flex min-w-0 items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-[14px] bg-[color:var(--accent)] text-[color:var(--accent-foreground)]">
@@ -940,14 +1225,14 @@ export function App() {
               icon={Network}
               label="Health"
               value={healthStatus}
-              tone={healthStatus === "ok" ? "emerald" : healthStatus === "error" ? "rose" : "sky"}
+              tone={probeTone(healthStatus)}
               compact
             />
             <StatusTile
               icon={Orbit}
               label="Stream"
               value={streamState}
-              tone={streamState === "open" ? "emerald" : streamState === "error" ? "rose" : "sky"}
+              tone={streamState === "open" ? "emerald" : streamState === "error" ? "rose" : streamState === "listening" ? "emerald" : "sky"}
               compact
             />
           </div>
@@ -959,8 +1244,8 @@ export function App() {
           </div>
         ) : null}
 
-        <section className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)_320px]">
-          <aside className="xl:sticky xl:top-5 xl:h-[calc(100vh-2.5rem)]">
+        <section className="grid gap-4 xl:min-h-0 xl:flex-1 xl:grid-cols-[260px_minmax(0,1fr)] 2xl:grid-cols-[260px_minmax(0,1fr)_300px]">
+          <aside className="min-w-0 xl:min-h-0">
             <Card className="overflow-hidden xl:h-full">
               <div className="flex h-full flex-col">
                 <div className="border-b border-[color:var(--border)] bg-[#fbfbf9] px-4 py-4">
@@ -998,7 +1283,7 @@ export function App() {
                   </div>
                 </div>
 
-                <div className="flex-1 space-y-3 overflow-auto px-3 py-3">
+                <div className="flex-1 space-y-3 overflow-auto px-3 py-3 xl:min-h-0">
                   {sidebarMode === "workspaces" ? (
                     <>
                       <div className="px-1 text-[11px] font-medium uppercase tracking-[0.16em] text-[color:var(--muted-foreground)]">Workspace List</div>
@@ -1078,7 +1363,7 @@ export function App() {
                                 setWorkspaceId(entry.id);
                                 void refreshWorkspace(entry.id);
                               }}
-                              onRemove={() => removeSavedWorkspace(entry.id)}
+                              onRemove={() => void deleteWorkspace(entry.id)}
                             />
                           ))
                         )}
@@ -1194,6 +1479,91 @@ export function App() {
                           SSE
                         </Button>
                       </div>
+                      {healthReport || readinessReport ? (
+                        <div className="grid gap-2 pt-1">
+                          <StatusTile
+                            icon={Activity}
+                            label="Readiness"
+                            value={readinessReport?.status ?? "unknown"}
+                            tone={probeTone(readinessReport?.status ?? "idle")}
+                          />
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <StatusTile
+                              icon={Database}
+                              label="Postgres"
+                              value={`${healthReport?.storage.primary ?? "unknown"} · ${healthReport?.checks.postgres ?? "unknown"}`}
+                              tone={probeTone(healthReport?.checks.postgres ?? "idle")}
+                            />
+                            <StatusTile
+                              icon={Network}
+                              label="Events"
+                              value={`${healthReport?.storage.events ?? "unknown"} · ${healthReport?.checks.redisEvents ?? "unknown"}`}
+                              tone={probeTone(healthReport?.checks.redisEvents ?? "idle")}
+                            />
+                            <StatusTile
+                              icon={Orbit}
+                              label="Run Queue"
+                              value={`${healthReport?.storage.runQueue ?? "unknown"} · ${healthReport?.checks.redisRunQueue ?? "unknown"}`}
+                              tone={probeTone(healthReport?.checks.redisRunQueue ?? "idle")}
+                            />
+                            <StatusTile
+                              icon={Bot}
+                              label="Worker"
+                              value={healthReport?.worker.mode ?? "unknown"}
+                              tone={probeTone(healthReport?.worker.mode === "disabled" ? "degraded" : "ok")}
+                            />
+                            <StatusTile
+                              icon={Database}
+                              label="Mirror"
+                              value={
+                                healthReport
+                                  ? `${healthReport.checks.historyMirror} · ${healthReport.mirror.enabledWorkspaces} enabled / ${healthReport.mirror.errorWorkspaces} error / ${healthReport.mirror.missingWorkspaces} missing`
+                                  : "unknown"
+                              }
+                              tone={probeTone(healthReport?.checks.historyMirror ?? "idle")}
+                            />
+                          </div>
+                        </div>
+                      ) : null}
+                      <div className="pt-1">
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                          <p className="text-xs font-medium uppercase tracking-[0.16em] text-[color:var(--muted-foreground)]">
+                            Model Providers
+                          </p>
+                          <button
+                            className="text-xs text-[color:var(--muted-foreground)] transition hover:text-[color:var(--foreground)]"
+                            onClick={() => void refreshModelProviders()}
+                          >
+                            Refresh
+                          </button>
+                        </div>
+                        {modelProviders.length === 0 ? (
+                          <div className="rounded-[18px] border border-[color:var(--border)] bg-[#f7f6f2] px-3 py-3 text-xs leading-6 text-[color:var(--muted-foreground)]">
+                            暂无 provider 列表。
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {modelProviders.map((provider) => (
+                              <div
+                                key={provider.id}
+                                className="rounded-[18px] border border-[color:var(--border)] bg-[#f7f6f2] px-3 py-3"
+                              >
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <Badge>{provider.id}</Badge>
+                                  <span className="text-xs text-[color:var(--muted-foreground)]">{provider.packageName}</span>
+                                  <span className="text-xs text-[color:var(--muted-foreground)]">
+                                    {provider.requiresUrl ? "requires url" : "url optional"}
+                                  </span>
+                                </div>
+                                <p className="mt-2 text-sm leading-6 text-[color:var(--foreground)]">{provider.description}</p>
+                                <p className="mt-2 text-xs leading-6 text-[color:var(--muted-foreground)]">
+                                  {provider.useCases.join(" · ")}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   ) : null}
                 </div>
@@ -1201,7 +1571,7 @@ export function App() {
             </Card>
           </aside>
 
-          <section className="xl:h-[calc(100vh-2.5rem)]">
+          <section className="min-w-0 xl:min-h-0">
             <Card className="overflow-hidden xl:h-full">
               <div className="flex h-full flex-col">
                 <div className="border-b border-[color:var(--border)] bg-white/96 px-5 py-4">
@@ -1217,7 +1587,7 @@ export function App() {
                   </div>
                 </div>
 
-                <div className="flex-1 overflow-auto">
+                <div className="flex-1 overflow-auto xl:min-h-0">
                   {messageFeed.length === 0 ? (
                     <div className="flex h-full items-center justify-center px-6 py-16">
                       <div className="max-w-md text-center">
@@ -1309,7 +1679,7 @@ export function App() {
             </Card>
           </section>
 
-          <aside className="xl:sticky xl:top-5 xl:h-[calc(100vh-2.5rem)]">
+          <aside className="min-w-0 xl:col-span-2 xl:min-h-0 2xl:col-span-1">
             <Card className="overflow-hidden xl:h-full">
               <div className="flex h-full flex-col">
                 <div className="border-b border-[color:var(--border)] bg-[#fbfbf9] px-4 py-4">
@@ -1324,7 +1694,7 @@ export function App() {
                   </div>
                 </div>
 
-                <div className="flex-1 space-y-3 overflow-auto px-3 py-3">
+                <div className="flex-1 space-y-3 overflow-auto px-3 py-3 xl:min-h-0">
                   {inspectorTab === "run" ? (
                     <>
                       <div className="space-y-2 rounded-[20px] border border-[color:var(--border)] bg-[#f7f6f2] p-3">
@@ -1391,6 +1761,73 @@ export function App() {
                   {inspectorTab === "catalog" ? (
                     catalog ? (
                       <>
+                        {workspace ? (
+                          <div className="rounded-[20px] border border-[color:var(--border)] bg-[#f7f6f2] p-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="text-sm font-medium text-[color:var(--foreground)]">Mirror Sync</p>
+                                <p className="mt-1 text-xs leading-6 text-[color:var(--muted-foreground)]">
+                                  将中心历史异步同步到当前 workspace 的 <code>.openharness/data/history.db</code>。
+                                </p>
+                              </div>
+                              <Badge className={workspace.historyMirrorEnabled ? "bg-emerald-600 text-white" : ""}>
+                                {workspace.historyMirrorEnabled ? "Enabled" : "Disabled"}
+                              </Badge>
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <Button
+                                variant={workspace.historyMirrorEnabled ? "secondary" : "default"}
+                                size="sm"
+                                disabled={mirrorToggleBusy || workspace.kind !== "project" || workspace.historyMirrorEnabled}
+                                onClick={() => void updateWorkspaceHistoryMirrorEnabled(true)}
+                              >
+                                Enable
+                              </Button>
+                              <Button
+                                variant={!workspace.historyMirrorEnabled ? "secondary" : "default"}
+                                size="sm"
+                                disabled={mirrorToggleBusy || workspace.kind !== "project" || !workspace.historyMirrorEnabled}
+                                onClick={() => void updateWorkspaceHistoryMirrorEnabled(false)}
+                              >
+                                Disable
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                disabled={mirrorToggleBusy || mirrorRebuildBusy}
+                                onClick={() => void refreshWorkspace(workspace.id, true)}
+                              >
+                                Refresh
+                              </Button>
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                disabled={mirrorRebuildBusy || mirrorToggleBusy || workspace.kind !== "project" || !workspace.historyMirrorEnabled}
+                                onClick={() => void rebuildWorkspaceHistoryMirror()}
+                              >
+                                Rebuild
+                              </Button>
+                            </div>
+                            {mirrorStatus ? (
+                              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                <CatalogLine label="mirrorState" value={mirrorStatus.state} />
+                                <CatalogLine label="lastEventId" value={mirrorStatus.lastEventId ? String(mirrorStatus.lastEventId) : "n/a"} />
+                                <CatalogLine label="lastSyncedAt" value={mirrorStatus.lastSyncedAt ? formatTimestamp(mirrorStatus.lastSyncedAt) : "n/a"} />
+                                <CatalogLine label="dbPath" value={mirrorStatus.dbPath ?? "n/a"} />
+                              </div>
+                            ) : null}
+                            {mirrorStatus?.errorMessage ? (
+                              <div className="mt-3 rounded-[18px] border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-6 text-rose-700">
+                                {mirrorStatus.errorMessage}
+                              </div>
+                            ) : null}
+                            {workspace.kind !== "project" ? (
+                              <p className="mt-2 text-xs text-[color:var(--muted-foreground)]">
+                                `chat` workspace 不支持本地 history mirror。
+                              </p>
+                            ) : null}
+                          </div>
+                        ) : null}
                         <div className="grid gap-2">
                           <CatalogLine label="agents" value={catalog.agents.length} />
                           <CatalogLine label="models" value={catalog.models.length} />
@@ -1482,7 +1919,7 @@ function WorkspaceSidebarItem(props: {
       <button
         className="rounded-lg p-2 text-[color:var(--muted-foreground)] opacity-0 transition hover:bg-black/4 hover:text-[color:var(--foreground)] group-hover:opacity-100"
         onClick={props.onRemove}
-        title="从本地侧栏移除"
+        title="删除 workspace"
       >
         <Trash2 className="h-4 w-4" />
       </button>
@@ -1517,7 +1954,7 @@ function SessionSidebarItem(props: {
           <p className="truncate text-sm font-medium text-[color:var(--foreground)]">{props.entry.title || "Untitled session"}</p>
           <p className="truncate text-xs text-[color:var(--muted-foreground)]">
             {props.entry.agentName ? `${props.entry.agentName} · ` : ""}
-            {formatTimestamp(props.entry.lastOpenedAt)}
+            {formatTimestamp(props.entry.createdAt)}
           </p>
         </div>
       </button>
@@ -1602,7 +2039,7 @@ function EmptyState(props: { title: string; description: string }) {
   );
 }
 
-function CatalogLine(props: { label: string; value: number }) {
+function CatalogLine(props: { label: string; value: number | string }) {
   return (
     <div className="flex items-center justify-between rounded-[22px] border border-[color:var(--border)] bg-white/76 px-4 py-3 text-sm">
       <span className="text-[color:var(--muted-foreground)]">{props.label}</span>

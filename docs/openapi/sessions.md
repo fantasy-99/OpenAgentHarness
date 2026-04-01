@@ -27,6 +27,27 @@
 - `agentName` 可指向当前 workspace 可见 catalog 中的 platform agent 或 workspace agent
 - `kind=chat` workspace 下创建 session 时，行为与普通对话一致，但不会启用任何执行型工具
 
+### `GET /workspaces/{workspaceId}/sessions`
+
+用途：
+
+- 分页读取指定 workspace 下的 session 列表
+
+查询参数：
+
+- `pageSize`
+- `cursor`
+
+返回：
+
+- `items[]`
+- `nextCursor`
+
+说明：
+
+- 仅返回属于当前 `workspaceId` 的会话
+- 返回结果按创建顺序稳定分页
+
 ### `GET /sessions/{sessionId}`
 
 用途：

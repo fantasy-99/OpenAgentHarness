@@ -96,6 +96,40 @@ storage:
 
 - PostgreSQL 是唯一事实源
 - Redis 负责队列、锁、限流和短期事件缓存
+- 当前实现中，PostgreSQL 已用于中心持久化；Redis 已接入 session run queue、session lock 和 session 事件实时分发，便于多实例执行与 SSE 扇出
+
+## 本地开发启动
+
+如果你本地配置的是：
+
+- `postgres_url: postgres://...@127.0.0.1:5432/...`
+- `redis_url: redis://127.0.0.1:6379`
+
+那么就需要先在本地启动 PostgreSQL 和 Redis，或者改成你已有的远端实例连接串。
+
+仓库已提供：
+
+- `docker-compose.dev.yml`
+- `pnpm infra:up`
+- `pnpm infra:down`
+- `pnpm dev:server`
+- `pnpm dev:worker`
+
+对应本地默认连接串可写为：
+
+```yaml
+storage:
+  postgres_url: postgres://oah:oah@127.0.0.1:5432/open_agent_harness
+  redis_url: redis://127.0.0.1:6379
+```
+
+推荐本地联调方式：
+
+- 一个 API 进程：`pnpm dev:server -- --config ./server.example.yaml --api-only`
+- 一个 worker 进程：`pnpm dev:worker`
+- 一个前端进程：`pnpm dev:web`
+
+如果你只想偷懒跑一个后端进程，也可以直接执行 `pnpm dev:server`，它会在同进程内启动 inline worker。
 
 ## `paths`
 

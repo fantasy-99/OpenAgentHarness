@@ -40,6 +40,8 @@ Model YAML 用于声明 workspace 级模型入口。
 
 其中 `provider` 字段应对齐 [AI SDK Providers](https://ai-sdk.dev/docs/foundations/providers-and-models#ai-sdk-providers)。
 
+当前 Open Agent Harness 已支持的 provider 列表见 [./model-providers.md](./model-providers.md)。
+
 ## 示例
 
 ```yaml
@@ -61,6 +63,7 @@ openrouter-main:
   - 模型入口的自定义名称
 - `provider`
   - AI SDK provider 标识
+  - 当前支持值见 [./model-providers.md](./model-providers.md)
 - `key`
   - 密钥或密钥引用，建议使用变量引用
 - `url`

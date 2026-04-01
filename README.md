@@ -115,13 +115,19 @@ workspace/
 
 ```bash
 pnpm install
+pnpm infra:up
 pnpm build
 pnpm test
+pnpm dev:server
+pnpm dev:worker
 pnpm dev:web
 ```
 
 说明：
 
+- `pnpm infra:up` 会启动本地 PostgreSQL 16 和 Redis 7
 - `pnpm build` 会先构建后端 TypeScript 项目，再构建 `apps/web`
-- `pnpm dev:web` 默认把 `/api`、`/internal`、`/healthz` 代理到 `http://127.0.0.1:8787`
+- `pnpm dev:server` 默认启动 API 进程；如需只做 API 不消费 Redis 队列，可加 `-- --api-only`
+- `pnpm dev:worker` 会启动独立 worker 进程，消费 Redis session queue
+- `pnpm dev:web` 会优先读取 `OAH_WEB_PROXY_TARGET`，否则自动从 `OAH_CONFIG`、`test_server/server.yaml`、`server.yaml` 推断 `/api`、`/internal`、`/healthz`、`/readyz` 的代理目标
 - 如果后端不在默认端口，可设置环境变量 `OAH_WEB_PROXY_TARGET=http://127.0.0.1:PORT`

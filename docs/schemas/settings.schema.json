@@ -17,6 +17,9 @@
       },
       "uniqueItems": true
     },
+    "history_mirror_enabled": {
+      "type": "boolean"
+    },
     "system_prompt": {
       "$ref": "#/$defs/systemPrompt"
     }

@@ -35,8 +35,10 @@ import {
   type TriggerActionRunParams,
   type ModelDefinition,
   type RunStepListResult,
+  type SessionListResult,
   type RunStepStatus,
   type RunStepType,
+  type WorkspaceListResult,
   toPublicWorkspace,
   type WorkspaceRecord
 } from "./types.js";
@@ -79,6 +81,11 @@ interface HookEnvelope {
   model_ref?: string | undefined;
   model_request?: Record<string, unknown> | undefined;
   model_response?: Record<string, unknown> | undefined;
+  context?: Record<string, unknown> | undefined;
+  tool_name?: string | undefined;
+  tool_input?: unknown;
+  tool_output?: unknown;
+  tool_call_id?: string | undefined;
 }
 
 interface HookResult {
@@ -123,6 +130,8 @@ interface AwaitedRunSummary {
   assistantContent?: string | undefined;
 }
 
+type PromptMessage = { role: "system" | "user" | "assistant" | "tool"; content: string };
+
 function escapeXml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -141,6 +150,11 @@ export class RuntimeService {
   readonly #runRepository: RuntimeServiceOptions["runRepository"];
   readonly #runStepRepository: RuntimeServiceOptions["runStepRepository"];
   readonly #sessionEventStore: RuntimeServiceOptions["sessionEventStore"];
+  readonly #runQueue: RuntimeServiceOptions["runQueue"];
+  readonly #toolCallAuditRepository: RuntimeServiceOptions["toolCallAuditRepository"];
+  readonly #hookRunAuditRepository: RuntimeServiceOptions["hookRunAuditRepository"];
+  readonly #workspaceDeletionHandler: RuntimeServiceOptions["workspaceDeletionHandler"];
+  readonly #workspaceSettingsManager: RuntimeServiceOptions["workspaceSettingsManager"];
   readonly #workspaceInitializer: RuntimeServiceOptions["workspaceInitializer"];
   readonly #sessionChains = new Map<string, Promise<void>>();
   readonly #runAbortControllers = new Map<string, AbortController>();
@@ -155,6 +169,11 @@ export class RuntimeService {
     this.#runRepository = options.runRepository;
     this.#runStepRepository = options.runStepRepository;
     this.#sessionEventStore = options.sessionEventStore;
+    this.#runQueue = options.runQueue;
+    this.#toolCallAuditRepository = options.toolCallAuditRepository;
+    this.#hookRunAuditRepository = options.hookRunAuditRepository;
+    this.#workspaceDeletionHandler = options.workspaceDeletionHandler;
+    this.#workspaceSettingsManager = options.workspaceSettingsManager;
     this.#workspaceInitializer = options.workspaceInitializer;
   }
 
@@ -206,6 +225,15 @@ export class RuntimeService {
     return toPublicWorkspace(await this.getWorkspaceRecord(workspaceId));
   }
 
+  async listWorkspaces(pageSize = 50, cursor?: string): Promise<WorkspaceListResult> {
+    const startIndex = parseCursor(cursor);
+    const workspaces = await this.#workspaceRepository.list(pageSize, cursor);
+    const items = workspaces.map((workspace) => toPublicWorkspace(workspace));
+    const nextCursor = workspaces.length === pageSize ? String(startIndex + pageSize) : undefined;
+
+    return nextCursor === undefined ? { items } : { items, nextCursor };
+  }
+
   async getWorkspaceRecord(workspaceId: string): Promise<WorkspaceRecord> {
     const workspace = await this.#workspaceRepository.getById(workspaceId);
     if (!workspace) {
@@ -217,7 +245,45 @@ export class RuntimeService {
 
   async getWorkspaceCatalog(workspaceId: string): Promise<WorkspaceCatalog> {
     const workspace = await this.getWorkspaceRecord(workspaceId);
-    return workspace.catalog;
+    return this.#publicWorkspaceCatalog(workspace);
+  }
+
+  async deleteWorkspace(workspaceId: string): Promise<void> {
+    const workspace = await this.getWorkspaceRecord(workspaceId);
+    await this.#workspaceDeletionHandler?.deleteWorkspace(workspace);
+    await this.#workspaceRepository.delete(workspaceId);
+  }
+
+  async updateWorkspaceHistoryMirrorEnabled(
+    workspaceId: string,
+    enabled: boolean
+  ): Promise<import("@oah/api-contracts").Workspace> {
+    const workspace = await this.getWorkspaceRecord(workspaceId);
+    if (workspace.kind !== "project") {
+      if (enabled) {
+        throw new AppError(
+          400,
+          "history_mirror_not_supported",
+          `Workspace ${workspaceId} does not support local history mirror sync.`
+        );
+      }
+
+      return toPublicWorkspace(workspace);
+    }
+
+    const updated =
+      (await this.#workspaceSettingsManager?.updateHistoryMirrorEnabled(workspace, enabled)) ??
+      (await this.#workspaceRepository.upsert({
+        ...workspace,
+        historyMirrorEnabled: enabled,
+        settings: {
+          ...workspace.settings,
+          historyMirrorEnabled: enabled
+        },
+        updatedAt: nowIso()
+      }));
+
+    return toPublicWorkspace(updated);
   }
 
   async createSession({ workspaceId, caller, input }: CreateSessionParams): Promise<Session> {
@@ -258,6 +324,15 @@ export class RuntimeService {
     }
 
     return session;
+  }
+
+  async listWorkspaceSessions(workspaceId: string, pageSize: number, cursor?: string): Promise<SessionListResult> {
+    await this.getWorkspaceRecord(workspaceId);
+    const startIndex = parseCursor(cursor);
+    const items = await this.#sessionRepository.listByWorkspaceId(workspaceId, pageSize, cursor);
+    const nextCursor = items.length === pageSize ? String(startIndex + pageSize) : undefined;
+
+    return nextCursor === undefined ? { items } : { items, nextCursor };
   }
 
   async listSessionMessages(sessionId: string, pageSize: number, cursor?: string): Promise<MessageListResult> {
@@ -325,7 +400,7 @@ export class RuntimeService {
       }
     });
 
-    this.#enqueueRun(session.id, run.id);
+    await this.#enqueueRun(session.id, run.id);
 
     return {
       messageId: message.id,
@@ -405,7 +480,7 @@ export class RuntimeService {
       });
     }
 
-    this.#enqueueRun(session?.id ?? run.id, run.id);
+    await this.#enqueueRun(session?.id ?? run.id, run.id);
 
     return session
       ? {
@@ -457,11 +532,20 @@ export class RuntimeService {
     return this.#sessionEventStore.subscribe(sessionId, listener);
   }
 
+  async processQueuedRun(runId: string): Promise<void> {
+    await this.#processRun(runId);
+  }
+
   async #appendEvent(input: Omit<SessionEvent, "id" | "cursor" | "createdAt">): Promise<SessionEvent> {
     return this.#sessionEventStore.append(input);
   }
 
-  #enqueueRun(sessionId: string, runId: string): void {
+  async #enqueueRun(sessionId: string, runId: string): Promise<void> {
+    if (this.#runQueue) {
+      await this.#runQueue.enqueue(sessionId, runId);
+      return;
+    }
+
     const previous = this.#sessionChains.get(sessionId) ?? Promise.resolve();
     const next = previous
       .catch(() => undefined)
@@ -530,7 +614,13 @@ export class RuntimeService {
         injectSystemReminder: false,
         delegatedRunIds: this.#delegatedRunRecords(run).map((record) => record.childRunId)
       };
-      const modelInput = this.#buildModelInput(workspace, session, run, allMessages, executionContext.currentAgentName);
+      const modelInput = await this.#buildModelInput(
+        workspace,
+        session,
+        run,
+        allMessages,
+        executionContext.currentAgentName
+      );
       const hookedModelInput = await this.#applyBeforeModelHooks(workspace, session, run, modelInput);
       let latestHookedModelInput = hookedModelInput;
       const runtimeTools = this.#buildRuntimeTools(workspace, run, session, executionContext);
@@ -538,9 +628,11 @@ export class RuntimeService {
       const toolCallSteps = new Map<string, RunStep>();
       let completedModelStepCount = 0;
       const observableRuntimeTools = this.#wrapRuntimeToolsForEvents(
+        workspace,
         session,
         run,
         runtimeTools,
+        executionContext,
         toolCallStartedAt,
         toolCallSteps
       );
@@ -589,7 +681,7 @@ export class RuntimeService {
             }
 
             const latestRun = await this.getRun(run.id);
-            const nextInput = this.#buildModelInput(
+            const nextInput = await this.#buildModelInput(
               workspace,
               session,
               latestRun,
@@ -626,33 +718,6 @@ export class RuntimeService {
           },
           onToolCallStart: async (toolCall) => {
             toolCallStartedAt.set(toolCall.toolCallId, Date.now());
-            toolCallSteps.set(
-              toolCall.toolCallId,
-              await this.#startRunStep({
-                runId: run.id,
-                stepType: "tool_call",
-                name: toolCall.toolName,
-                agentName: executionContext.currentAgentName,
-                input: {
-                  toolCallId: toolCall.toolCallId,
-                  sourceType: this.#toolSourceType(toolCall.toolName),
-                  input: this.#normalizeJsonObject(toolCall.input)
-                }
-              })
-            );
-            await this.#appendEvent({
-              sessionId: session.id,
-              runId: run.id,
-              event: "tool.started",
-              data: {
-                runId: run.id,
-                sessionId: session.id,
-                toolCallId: toolCall.toolCallId,
-                toolName: toolCall.toolName,
-                sourceType: this.#toolSourceType(toolCall.toolName),
-                input: toolCall.input
-              }
-            });
             await this.#setRunStatusIfPossible(run.id, "waiting_tool");
           },
           onToolCallFinish: async (toolResult) => {
@@ -660,11 +725,12 @@ export class RuntimeService {
             toolCallStartedAt.delete(toolResult.toolCallId);
             const toolStep = toolCallSteps.get(toolResult.toolCallId);
             if (toolStep) {
-              await this.#completeRunStep(toolStep, "completed", {
+              const completedToolStep = await this.#completeRunStep(toolStep, "completed", {
                 sourceType: this.#toolSourceType(toolResult.toolName),
                 output: this.#normalizeJsonObject(toolResult.output),
                 ...(startedAt !== undefined ? { durationMs: Date.now() - startedAt } : {})
               });
+              await this.#recordToolCallAuditFromStep(completedToolStep, toolResult.toolName, "completed");
               toolCallSteps.delete(toolResult.toolCallId);
             }
             await this.#appendEvent({
@@ -955,18 +1021,55 @@ export class RuntimeService {
     };
   }
 
-  #buildModelInput(
+  #normalizePromptMessages(rawMessages: unknown): PromptMessage[] {
+    if (!Array.isArray(rawMessages)) {
+      return [];
+    }
+
+    return rawMessages.flatMap((message) => {
+      if (
+        typeof message === "object" &&
+        message !== null &&
+        typeof (message as { role?: unknown }).role === "string" &&
+        typeof (message as { content?: unknown }).content === "string"
+      ) {
+        const role = (message as { role: string }).role;
+        if (role === "system" || role === "user" || role === "assistant" || role === "tool") {
+          return [
+            {
+              role,
+              content: (message as { content: string }).content
+            }
+          ];
+        }
+      }
+
+      return [];
+    });
+  }
+
+  async #buildModelInput(
     workspace: WorkspaceRecord,
     session: Session,
     run: Run,
     messages: Message[],
     activeAgentName: string,
     forceSystemReminder = false
-  ): ModelExecutionInput {
+  ): Promise<ModelExecutionInput> {
     const activeAgent = workspace.agents[activeAgentName];
     const inheritedModelRef =
       typeof run.metadata?.inheritedModelRef === "string" ? run.metadata.inheritedModelRef : undefined;
     const resolvedModel = this.#resolveModelForRun(workspace, activeAgent?.modelRef ?? inheritedModelRef);
+    let contextMessages = await this.#applyContextHooks(
+      workspace,
+      session,
+      run,
+      "before_context_build",
+      messages.map((message) => ({
+        role: message.role,
+        content: message.content
+      }))
+    );
     const promptMessages: Array<{ role: "system"; content: string }> = this.#buildStaticPromptMessages(
       workspace,
       activeAgentName,
@@ -980,6 +1083,11 @@ export class RuntimeService {
       });
     }
 
+    contextMessages = await this.#applyContextHooks(workspace, session, run, "after_context_build", [
+      ...promptMessages,
+      ...contextMessages
+    ]);
+
     return {
       model: resolvedModel.model,
       canonicalModelRef: resolvedModel.canonicalModelRef,
@@ -987,13 +1095,7 @@ export class RuntimeService {
       ...(resolvedModel.modelDefinition ? { modelDefinition: resolvedModel.modelDefinition } : {}),
       ...(activeAgent?.temperature !== undefined ? { temperature: activeAgent.temperature } : {}),
       ...(activeAgent?.maxTokens !== undefined ? { maxTokens: activeAgent.maxTokens } : {}),
-      messages: [
-        ...promptMessages,
-        ...messages.map((message) => ({
-          role: message.role,
-          content: message.content
-        }))
-      ]
+      messages: contextMessages
     };
   }
 
@@ -1216,6 +1318,10 @@ export class RuntimeService {
     session: Session,
     executionContext: RunExecutionContext
   ): RuntimeToolSet {
+    if (workspace.kind === "chat") {
+      return {};
+    }
+
     return {
       ...createRunActionTool(() => this.#visibleLlmActions(workspace, executionContext.currentAgentName), async (action, input, context) =>
         this.#executeAction(workspace, action, run, context.abortSignal, input)
@@ -1302,9 +1408,11 @@ export class RuntimeService {
   }
 
   #wrapRuntimeToolsForEvents(
+    workspace: WorkspaceRecord,
     session: Session,
     run: Run,
     runtimeTools: RuntimeToolSet,
+    executionContext: RunExecutionContext,
     toolCallStartedAt: Map<string, number>,
     toolCallSteps: Map<string, RunStep>
   ): RuntimeToolSet {
@@ -1314,8 +1422,65 @@ export class RuntimeService {
         {
           ...definition,
           execute: async (input, context) => {
+            const currentAgentName = executionContext.currentAgentName;
+            const toolStartedAt = context.toolCallId ? (toolCallStartedAt.get(context.toolCallId) ?? Date.now()) : Date.now();
+            let executedInput = input;
+
             try {
-              return await definition.execute(input, context);
+              executedInput = await this.#applyBeforeToolDispatchHooks(
+                workspace,
+                session,
+                run,
+                currentAgentName,
+                toolName,
+                context.toolCallId,
+                input
+              );
+
+              if (context.toolCallId) {
+                toolCallStartedAt.set(context.toolCallId, toolStartedAt);
+                toolCallSteps.set(
+                  context.toolCallId,
+                  await this.#startRunStep({
+                    runId: run.id,
+                    stepType: "tool_call",
+                    name: toolName,
+                    agentName: currentAgentName,
+                    input: {
+                      toolCallId: context.toolCallId,
+                      sourceType: this.#toolSourceType(toolName),
+                      input: this.#normalizeJsonObject(executedInput)
+                    }
+                  })
+                );
+              }
+
+              await this.#appendEvent({
+                sessionId: session.id,
+                runId: run.id,
+                event: "tool.started",
+                data: {
+                  runId: run.id,
+                  sessionId: session.id,
+                  ...(context.toolCallId ? { toolCallId: context.toolCallId } : {}),
+                  toolName,
+                  sourceType: this.#toolSourceType(toolName),
+                  input: executedInput
+                }
+              });
+              await this.#setRunStatusIfPossible(run.id, "waiting_tool");
+
+              const output = await definition.execute(executedInput, context);
+              return this.#applyAfterToolDispatchHooks(
+                workspace,
+                session,
+                run,
+                currentAgentName,
+                toolName,
+                context.toolCallId,
+                executedInput,
+                output
+              );
             } catch (error) {
               const startedAt = context.toolCallId ? toolCallStartedAt.get(context.toolCallId) : undefined;
               const toolStep = context.toolCallId ? toolCallSteps.get(context.toolCallId) : undefined;
@@ -1324,12 +1489,13 @@ export class RuntimeService {
                 toolCallSteps.delete(context.toolCallId);
               }
               if (toolStep) {
-                await this.#completeRunStep(toolStep, "failed", {
+                const failedToolStep = await this.#completeRunStep(toolStep, "failed", {
                   sourceType: this.#toolSourceType(toolName),
                   errorCode: error instanceof AppError ? error.code : "tool_execution_failed",
                   errorMessage: error instanceof Error ? error.message : "Unknown tool execution error.",
                   ...(startedAt !== undefined ? { durationMs: Date.now() - startedAt } : {})
                 });
+                await this.#recordToolCallAuditFromStep(failedToolStep, toolName, "failed");
               }
               await this.#appendEvent({
                 sessionId: session.id,
@@ -1371,12 +1537,20 @@ export class RuntimeService {
   }
 
   #buildAgentSwitchMessage(workspace: WorkspaceRecord, activeAgentName: string): string | undefined {
+    if (workspace.kind === "chat") {
+      return undefined;
+    }
+
     const currentAgent = workspace.agents[activeAgentName];
     const message = buildAvailableAgentSwitchesMessage(activeAgentName, currentAgent, workspace.agents);
     return message.length > 0 ? message : undefined;
   }
 
   #buildAvailableSubagentsMessage(workspace: WorkspaceRecord, activeAgentName: string): string | undefined {
+    if (workspace.kind === "chat") {
+      return undefined;
+    }
+
     if (!this.#canDelegateFromAgent(workspace, activeAgentName)) {
       return undefined;
     }
@@ -1387,6 +1561,10 @@ export class RuntimeService {
   }
 
   #activeToolNamesForAgent(workspace: WorkspaceRecord, activeAgentName: string): string[] | undefined {
+    if (workspace.kind === "chat") {
+      return undefined;
+    }
+
     if (this.#enabledMcpServers(workspace).length > 0) {
       return undefined;
     }
@@ -1577,7 +1755,7 @@ export class RuntimeService {
       childRunId
     });
 
-    this.#enqueueRun(childSessionId, childRunId);
+    await this.#enqueueRun(childSessionId, childRunId);
     void this.#monitorDelegatedRun(parentSession.id, parentRun.id, currentAgentName, targetAgentName, childRunId);
 
     return {
@@ -1746,6 +1924,10 @@ export class RuntimeService {
   }
 
   #visibleSkills(workspace: WorkspaceRecord, activeAgentName: string): WorkspaceRecord["skills"][string][] {
+    if (workspace.kind === "chat") {
+      return [];
+    }
+
     const activeAgent = workspace.agents[activeAgentName];
     const configuredSkills = activeAgent?.tools?.skills ?? [];
     if (!activeAgent || configuredSkills.length === 0) {
@@ -1763,6 +1945,10 @@ export class RuntimeService {
   }
 
   #visibleActions(workspace: WorkspaceRecord, activeAgentName: string): WorkspaceRecord["actions"][string][] {
+    if (workspace.kind === "chat") {
+      return [];
+    }
+
     const activeAgent = workspace.agents[activeAgentName];
     const configuredActions = activeAgent?.tools?.actions ?? [];
     if (!activeAgent || configuredActions.length === 0) {
@@ -1780,6 +1966,10 @@ export class RuntimeService {
   }
 
   #visibleMcpServers(workspace: WorkspaceRecord, activeAgentName: string): WorkspaceRecord["mcpServers"][string][] {
+    if (workspace.kind === "chat") {
+      return [];
+    }
+
     const activeAgent = workspace.agents[activeAgentName];
     const configuredMcpServers = activeAgent?.tools?.mcp ?? [];
     if (!activeAgent || configuredMcpServers.length === 0) {
@@ -1801,6 +1991,10 @@ export class RuntimeService {
   }
 
   #enabledMcpServers(workspace: WorkspaceRecord): WorkspaceRecord["mcpServers"][string][] {
+    if (workspace.kind === "chat") {
+      return [];
+    }
+
     return Object.values(workspace.mcpServers).filter((server) => server.enabled);
   }
 
@@ -1899,6 +2093,185 @@ export class RuntimeService {
     return currentResponse;
   }
 
+  async #applyContextHooks(
+    workspace: WorkspaceRecord,
+    session: Session,
+    run: Run,
+    eventName: "before_context_build" | "after_context_build",
+    messages: PromptMessage[]
+  ): Promise<PromptMessage[]> {
+    let currentMessages = messages;
+
+    for (const hook of this.#selectHooks(workspace, eventName)) {
+      const result = await this.#executeHook(workspace, session, run, hook, {
+        workspace_id: workspace.id,
+        session_id: session.id,
+        run_id: run.id,
+        cwd: workspace.rootPath,
+        hook_event_name: eventName,
+        agent_name: run.agentName,
+        effective_agent_name: run.effectiveAgentName,
+        trigger_type: run.triggerType,
+        run_status: run.status,
+        context: {
+          messages: currentMessages
+        }
+      });
+
+      this.#ensureHookCanContinue(result, hook.name);
+      const patch = result?.hookSpecificOutput?.patch?.context;
+      if (patch && hook.capabilities.includes("rewrite_context") && typeof patch === "object") {
+        currentMessages = this.#applyContextPatch(currentMessages, patch as Record<string, unknown>);
+      }
+
+      const notes = [result?.systemMessage, result?.hookSpecificOutput?.additionalContext].filter(
+        (value): value is string => typeof value === "string" && value.length > 0
+      );
+      if (notes.length > 0) {
+        currentMessages = this.#insertSystemMessages(
+          currentMessages,
+          notes.map((content) => ({
+            role: "system",
+            content
+          }))
+        );
+      }
+    }
+
+    return currentMessages;
+  }
+
+  #applyContextPatch(currentMessages: PromptMessage[], patch: Record<string, unknown>): PromptMessage[] {
+    if (Array.isArray(patch.messages)) {
+      return this.#normalizePromptMessages(patch.messages);
+    }
+
+    return currentMessages;
+  }
+
+  async #applyBeforeToolDispatchHooks(
+    workspace: WorkspaceRecord,
+    session: Session,
+    run: Run,
+    activeAgentName: string,
+    toolName: string,
+    toolCallId: string | undefined,
+    input: unknown
+  ): Promise<unknown> {
+    let currentInput = input;
+
+    for (const hook of this.#selectHooks(workspace, "before_tool_dispatch", toolName)) {
+      const result = await this.#executeHook(workspace, session, run, hook, {
+        workspace_id: workspace.id,
+        session_id: session.id,
+        run_id: run.id,
+        cwd: workspace.rootPath,
+        hook_event_name: "before_tool_dispatch",
+        agent_name: run.agentName,
+        effective_agent_name: activeAgentName,
+        trigger_type: run.triggerType,
+        run_status: run.status,
+        tool_name: toolName,
+        tool_input: currentInput,
+        ...(toolCallId ? { tool_call_id: toolCallId } : {})
+      });
+
+      this.#ensureHookCanContinue(result, hook.name);
+      const patch = result?.hookSpecificOutput?.patch?.tool_input;
+      if (patch !== undefined && hook.capabilities.includes("rewrite_tool_request")) {
+        currentInput = this.#applyToolPatch(currentInput, patch);
+      }
+    }
+
+    return currentInput;
+  }
+
+  async #applyAfterToolDispatchHooks(
+    workspace: WorkspaceRecord,
+    session: Session,
+    run: Run,
+    activeAgentName: string,
+    toolName: string,
+    toolCallId: string | undefined,
+    input: unknown,
+    output: unknown
+  ): Promise<unknown> {
+    let currentOutput = output;
+
+    for (const hook of this.#selectHooks(workspace, "after_tool_dispatch", toolName)) {
+      const result = await this.#executeHook(workspace, session, run, hook, {
+        workspace_id: workspace.id,
+        session_id: session.id,
+        run_id: run.id,
+        cwd: workspace.rootPath,
+        hook_event_name: "after_tool_dispatch",
+        agent_name: run.agentName,
+        effective_agent_name: activeAgentName,
+        trigger_type: run.triggerType,
+        run_status: run.status,
+        tool_name: toolName,
+        tool_input: input,
+        tool_output: currentOutput,
+        ...(toolCallId ? { tool_call_id: toolCallId } : {})
+      });
+
+      this.#ensureHookCanContinue(result, hook.name);
+      const patch = result?.hookSpecificOutput?.patch?.tool_output;
+      if (patch !== undefined && hook.capabilities.includes("rewrite_tool_response")) {
+        currentOutput = this.#applyToolPatch(currentOutput, patch);
+      }
+      if (result?.suppressOutput && hook.capabilities.includes("suppress_output")) {
+        currentOutput = "";
+      }
+
+      const notes = [result?.systemMessage, result?.hookSpecificOutput?.additionalContext].filter(
+        (value): value is string => typeof value === "string" && value.length > 0
+      );
+      if (notes.length > 0) {
+        currentOutput = this.#appendToolOutputNotes(currentOutput, notes);
+      }
+    }
+
+    return currentOutput;
+  }
+
+  #applyToolPatch(currentValue: unknown, patch: unknown): unknown {
+    if (
+      currentValue &&
+      typeof currentValue === "object" &&
+      !Array.isArray(currentValue) &&
+      patch &&
+      typeof patch === "object" &&
+      !Array.isArray(patch)
+    ) {
+      return {
+        ...(currentValue as Record<string, unknown>),
+        ...(patch as Record<string, unknown>)
+      };
+    }
+
+    return patch;
+  }
+
+  #appendToolOutputNotes(currentValue: unknown, notes: string[]): unknown {
+    if (typeof currentValue === "string") {
+      return [currentValue, ...notes].filter((value) => value.length > 0).join("\n\n");
+    }
+
+    if (currentValue && typeof currentValue === "object" && !Array.isArray(currentValue)) {
+      const existingNotes = Array.isArray((currentValue as { hookNotes?: unknown }).hookNotes)
+        ? ((currentValue as { hookNotes: unknown[] }).hookNotes.filter((value): value is string => typeof value === "string") ??
+          [])
+        : [];
+      return {
+        ...(currentValue as Record<string, unknown>),
+        hookNotes: [...existingNotes, ...notes]
+      };
+    }
+
+    return notes.join("\n\n");
+  }
+
   async #runLifecycleHooks(
     workspace: WorkspaceRecord,
     session: Session | undefined,
@@ -1926,6 +2299,10 @@ export class RuntimeService {
   }
 
   #selectHooks(workspace: WorkspaceRecord, eventName: string, matcherValue?: string): WorkspaceRecord["hooks"][string][] {
+    if (workspace.kind === "chat") {
+      return [];
+    }
+
     return Object.values(workspace.hooks).filter((hook) => {
       if (!hook.events.includes(eventName)) {
         return false;
@@ -2149,12 +2526,14 @@ export class RuntimeService {
           break;
       }
 
-      await this.#completeRunStep(hookStep, "completed", this.#serializeHookResult(result));
+      const completedHookStep = await this.#completeRunStep(hookStep, "completed", this.#serializeHookResult(result));
+      await this.#recordHookRunAudit(hook, envelope, completedHookStep, "completed", result);
       return result;
     } catch (error) {
-      await this.#completeRunStep(hookStep, "failed", {
+      const failedHookStep = await this.#completeRunStep(hookStep, "failed", {
         errorMessage: error instanceof Error ? error.message : "Unknown hook execution error."
       });
+      await this.#recordHookRunAudit(hook, envelope, failedHookStep, "failed", undefined, error);
       throw error;
     }
   }
@@ -2400,22 +2779,25 @@ export class RuntimeService {
       result = await this.#executeAction(workspace, action, run, signal);
     } catch (error) {
       const latestRun = await this.getRun(run.id);
-      await this.#completeRunStep(actionStep, signal.aborted || latestRun.status === "cancelled" ? "cancelled" : "failed", {
+      const failedStatus = signal.aborted || latestRun.status === "cancelled" ? "cancelled" : "failed";
+      const completedActionStep = await this.#completeRunStep(actionStep, failedStatus, {
         sourceType: "action",
         actionName: action.name,
         ...(latestRun.errorCode ? { errorCode: latestRun.errorCode } : {}),
         ...(latestRun.errorMessage ? { errorMessage: latestRun.errorMessage } : {})
       });
+      await this.#recordToolCallAuditFromStep(completedActionStep, action.name, failedStatus);
       throw error;
     }
 
-    await this.#completeRunStep(actionStep, "completed", {
+    const completedActionStep = await this.#completeRunStep(actionStep, "completed", {
       sourceType: "action",
       actionName: action.name,
       exitCode: result.exitCode,
       stdout: result.stdout,
       stderr: result.stderr
     });
+    await this.#recordToolCallAuditFromStep(completedActionStep, action.name, "completed");
 
     if (session) {
       const toolMessage = await this.#messageRepository.create({
@@ -2483,6 +2865,10 @@ export class RuntimeService {
     signal: AbortSignal | undefined,
     explicitInput?: unknown
   ): Promise<{ stdout: string; stderr: string; exitCode: number; output: string }> {
+    if (workspace.kind === "chat") {
+      throw new AppError(400, "actions_not_supported", `Workspace ${workspace.id} does not allow action execution.`);
+    }
+
     const cwd = action.entry.cwd ? path.resolve(action.directory, action.entry.cwd) : action.directory;
     const env = {
       ...process.env,
@@ -2575,6 +2961,108 @@ export class RuntimeService {
       stderr,
       exitCode,
       output
+    };
+  }
+
+  async #recordToolCallAuditFromStep(
+    step: RunStep,
+    toolName: string,
+    status: "completed" | "failed" | "cancelled"
+  ): Promise<void> {
+    if (!this.#toolCallAuditRepository || !step.endedAt) {
+      return;
+    }
+
+    const inputPayload = this.#asJsonRecord(step.input);
+    const outputPayload = this.#asJsonRecord(step.output);
+    const rawDurationMs =
+      outputPayload && typeof outputPayload.durationMs === "number" ? outputPayload.durationMs : undefined;
+
+    await this.#toolCallAuditRepository.create({
+      id: createId("tool"),
+      runId: step.runId,
+      stepId: step.id,
+      sourceType: this.#toolCallAuditSourceType(inputPayload, toolName),
+      toolName,
+      ...(inputPayload ? { request: inputPayload } : {}),
+      ...(outputPayload ? { response: outputPayload } : {}),
+      status,
+      ...(rawDurationMs !== undefined ? { durationMs: rawDurationMs } : {}),
+      startedAt: step.startedAt ?? step.endedAt,
+      endedAt: step.endedAt
+    });
+  }
+
+  #asJsonRecord(value: unknown): Record<string, unknown> | undefined {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+
+    return undefined;
+  }
+
+  #toolCallAuditSourceType(inputPayload: Record<string, unknown> | undefined, toolName: string) {
+    const sourceType = inputPayload?.sourceType;
+    if (
+      sourceType === "action" ||
+      sourceType === "skill" ||
+      sourceType === "agent" ||
+      sourceType === "mcp" ||
+      sourceType === "native"
+    ) {
+      return sourceType;
+    }
+
+    return this.#toolSourceType(toolName);
+  }
+
+  async #recordHookRunAudit(
+    hook: WorkspaceRecord["hooks"][string],
+    envelope: HookEnvelope,
+    step: RunStep,
+    status: "completed" | "failed",
+    result?: HookResult | undefined,
+    error?: unknown
+  ): Promise<void> {
+    if (!this.#hookRunAuditRepository || !step.endedAt) {
+      return;
+    }
+
+    const patch =
+      result?.hookSpecificOutput?.patch && typeof result.hookSpecificOutput.patch === "object"
+        ? (result.hookSpecificOutput.patch as Record<string, unknown>)
+        : undefined;
+
+    await this.#hookRunAuditRepository.create({
+      id: createId("hookrun"),
+      runId: step.runId,
+      hookName: hook.name,
+      eventName: envelope.hook_event_name,
+      capabilities: hook.capabilities,
+      ...(patch ? { patch } : {}),
+      status,
+      startedAt: step.startedAt ?? step.endedAt,
+      endedAt: step.endedAt,
+      ...(status === "failed"
+        ? {
+            errorMessage: error instanceof Error ? error.message : "Unknown hook execution error."
+          }
+        : {})
+    });
+  }
+
+  #publicWorkspaceCatalog(workspace: WorkspaceRecord): WorkspaceCatalog {
+    if (workspace.kind !== "chat") {
+      return workspace.catalog;
+    }
+
+    return {
+      ...workspace.catalog,
+      actions: [],
+      skills: [],
+      mcp: [],
+      hooks: [],
+      nativeTools: []
     };
   }
 }

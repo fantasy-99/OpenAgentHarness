@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -7,9 +7,10 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { RuntimeService } from "../packages/runtime-core/dist/index.js";
 import { createMemoryRuntimePersistence } from "../packages/storage-memory/dist/index.js";
-import { discoverWorkspace } from "../packages/config/dist/index.js";
+import { discoverWorkspace, updateWorkspaceHistoryMirrorSetting } from "../packages/config/dist/index.js";
 
 import { createApp } from "../apps/server/dist/app.js";
+import { HistoryMirrorSyncer, historyMirrorDbPath } from "../apps/server/dist/history-mirror.js";
 import { FakeModelGateway } from "./helpers/fake-model-gateway";
 
 async function waitFor(check: () => Promise<boolean> | boolean, timeoutMs = 2_000): Promise<void> {
@@ -125,11 +126,22 @@ async function createStartedApp() {
     }
   });
 
+  return createStartedAppWithRuntimeService(runtimeService, gateway);
+}
+
+async function createStartedAppWithRuntimeService(
+  runtimeService: RuntimeService,
+  gateway: FakeModelGateway,
+  options?: {
+    rebuildWorkspaceHistoryMirror?: (workspace: any) => Promise<any>;
+  }
+) {
   const app = createApp({
     runtimeService,
     modelGateway: gateway,
     defaultModel: "openai-default",
-    listWorkspaceTemplates: async () => [{ name: "workspace" }]
+    listWorkspaceTemplates: async () => [{ name: "workspace" }],
+    rebuildWorkspaceHistoryMirror: options?.rebuildWorkspaceHistoryMirror
   });
 
   await app.listen({ host: "127.0.0.1", port: 0 });
@@ -156,18 +168,7 @@ async function createStartedAppWithWorkspaceAndGateway(
     ...persistence
   });
 
-  const app = createApp({
-    runtimeService,
-    modelGateway: gateway,
-    defaultModel: "openai-default",
-    listWorkspaceTemplates: async () => [{ name: "workspace" }]
-  });
-
-  await app.listen({ host: "127.0.0.1", port: 0 });
-  const address = app.server.address() as AddressInfo;
-  const baseUrl = `http://127.0.0.1:${address.port}`;
-
-  return { app, baseUrl };
+  return createStartedAppWithRuntimeService(runtimeService, gateway);
 }
 
 let activeApp: Awaited<ReturnType<typeof createStartedApp>> | undefined;
@@ -180,6 +181,28 @@ afterEach(async () => {
 });
 
 describe("http api", () => {
+  it("reports health status", async () => {
+    activeApp = await createStartedApp();
+
+    const response = await fetch(`${activeApp.baseUrl}/healthz`);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      status: "ok"
+    });
+  }, 30_000);
+
+  it("reports readiness status", async () => {
+    activeApp = await createStartedApp();
+
+    const response = await fetch(`${activeApp.baseUrl}/readyz`);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      status: "ready"
+    });
+  });
+
   it("lists workspace templates from template_dir", async () => {
     activeApp = await createStartedApp();
 
@@ -192,6 +215,651 @@ describe("http api", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       items: [{ name: "workspace" }]
+    });
+  });
+
+  it("lists workspaces and sessions over HTTP", async () => {
+    activeApp = await createStartedApp();
+    const authHeaders = {
+      authorization: "Bearer token-1",
+      "content-type": "application/json"
+    };
+
+    const firstWorkspaceResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces`, {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({
+        name: "demo-a",
+        template: "workspace",
+        rootPath: "/tmp/demo-a"
+      })
+    });
+    const firstWorkspace = (await firstWorkspaceResponse.json()) as { id: string };
+
+    const secondWorkspaceResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces`, {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({
+        name: "demo-b",
+        template: "workspace",
+        rootPath: "/tmp/demo-b"
+      })
+    });
+    const secondWorkspace = (await secondWorkspaceResponse.json()) as { id: string };
+
+    const firstSessionResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/${firstWorkspace.id}/sessions`, {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({
+        title: "session-a"
+      })
+    });
+    const firstSession = (await firstSessionResponse.json()) as { id: string };
+
+    const secondSessionResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/${firstWorkspace.id}/sessions`, {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({
+        title: "session-b"
+      })
+    });
+    const secondSession = (await secondSessionResponse.json()) as { id: string };
+
+    const workspaceListResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces?pageSize=10`, {
+      headers: {
+        authorization: "Bearer token-1"
+      }
+    });
+    expect(workspaceListResponse.status).toBe(200);
+    const workspacePage = (await workspaceListResponse.json()) as {
+      items: Array<{ id: string; kind: string; readOnly: boolean; historyMirrorEnabled: boolean }>;
+      nextCursor?: string;
+    };
+
+    expect(workspacePage.items.map((workspace) => workspace.id)).toEqual(
+      expect.arrayContaining([firstWorkspace.id, secondWorkspace.id])
+    );
+    expect(workspacePage.items.every((workspace) => workspace.kind === "project")).toBe(true);
+    expect(workspacePage.items.every((workspace) => workspace.readOnly === false)).toBe(true);
+    expect(workspacePage.items.every((workspace) => workspace.historyMirrorEnabled === false)).toBe(true);
+    expect(workspacePage.nextCursor).toBeUndefined();
+
+    const workspaceDetailResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/${firstWorkspace.id}`, {
+      headers: {
+        authorization: "Bearer token-1"
+      }
+    });
+    expect(workspaceDetailResponse.status).toBe(200);
+    await expect(workspaceDetailResponse.json()).resolves.toMatchObject({
+      id: firstWorkspace.id,
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false
+    });
+
+    const sessionListResponse = await fetch(
+      `${activeApp.baseUrl}/api/v1/workspaces/${firstWorkspace.id}/sessions?pageSize=10`,
+      {
+        headers: {
+          authorization: "Bearer token-1"
+        }
+      }
+    );
+    expect(sessionListResponse.status).toBe(200);
+    const sessionPage = (await sessionListResponse.json()) as {
+      items: Array<{ id: string; workspaceId: string }>;
+      nextCursor?: string;
+    };
+
+    expect(sessionPage.items.map((session) => session.id)).toEqual(expect.arrayContaining([firstSession.id, secondSession.id]));
+    expect(sessionPage.items.every((session) => session.workspaceId === firstWorkspace.id)).toBe(true);
+    expect(sessionPage.nextCursor).toBeUndefined();
+  });
+
+  it("deletes workspace records and managed workspace directories over HTTP", async () => {
+    const managedRoot = await mkdtemp(path.join(os.tmpdir(), "oah-http-delete-root-"));
+    const workspaceRoot = path.join(managedRoot, "workspace-a");
+    await mkdir(workspaceRoot, { recursive: true });
+    await writeFile(path.join(workspaceRoot, "README.md"), "temporary workspace", "utf8");
+
+    const gateway = new FakeModelGateway(20);
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence,
+      workspaceDeletionHandler: {
+        async deleteWorkspace(workspace) {
+          const relativePath = path.relative(managedRoot, workspace.rootPath);
+          if (!relativePath || relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+            return;
+          }
+
+          await rm(workspace.rootPath, {
+            recursive: true,
+            force: true
+          });
+        }
+      },
+      workspaceInitializer: {
+        async initialize(input) {
+          return {
+            rootPath: input.rootPath,
+            settings: {
+              defaultAgent: "default",
+              skillDirs: []
+            },
+            defaultAgent: "default",
+            workspaceModels: {},
+            agents: {},
+            actions: {},
+            skills: {},
+            mcpServers: {},
+            hooks: {},
+            catalog: {
+              workspaceId: "template",
+              agents: [],
+              models: [],
+              actions: [],
+              skills: [],
+              mcp: [],
+              hooks: [],
+              nativeTools: []
+            }
+          };
+        }
+      }
+    });
+
+    activeApp = await createStartedAppWithRuntimeService(runtimeService, gateway);
+
+    const authHeaders = {
+      authorization: "Bearer token-1",
+      "content-type": "application/json"
+    };
+
+    const workspaceResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces`, {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({
+        name: "managed-workspace",
+        template: "workspace",
+        rootPath: workspaceRoot
+      })
+    });
+    expect(workspaceResponse.status).toBe(201);
+    const workspace = (await workspaceResponse.json()) as { id: string };
+
+    const sessionResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}/sessions`, {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({})
+    });
+    expect(sessionResponse.status).toBe(201);
+    const session = (await sessionResponse.json()) as { id: string };
+
+    const deleteResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}`, {
+      method: "DELETE",
+      headers: {
+        authorization: "Bearer token-1"
+      }
+    });
+    expect(deleteResponse.status).toBe(204);
+
+    const missingWorkspaceResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}`, {
+      headers: {
+        authorization: "Bearer token-1"
+      }
+    });
+    expect(missingWorkspaceResponse.status).toBe(404);
+
+    const missingSessionResponse = await fetch(`${activeApp.baseUrl}/api/v1/sessions/${session.id}`, {
+      headers: {
+        authorization: "Bearer token-1"
+      }
+    });
+    expect(missingSessionResponse.status).toBe(404);
+
+    await expect(access(workspaceRoot)).rejects.toBeDefined();
+  });
+
+  it("updates history mirror setting over HTTP and persists it to workspace settings", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-http-history-toggle-"));
+    await mkdir(path.join(tempDir, ".openharness"), { recursive: true });
+    await writeFile(path.join(tempDir, ".openharness", "settings.yaml"), "default_agent: builder\n", "utf8");
+
+    const workspace = await discoverWorkspace(tempDir, "project", {
+      platformModels: {}
+    });
+
+    const gateway = new FakeModelGateway(20);
+    const persistence = createMemoryRuntimePersistence();
+    await persistence.workspaceRepository.upsert(workspace);
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence,
+      workspaceSettingsManager: {
+        async updateHistoryMirrorEnabled(currentWorkspace, enabled) {
+          await updateWorkspaceHistoryMirrorSetting(currentWorkspace.rootPath, enabled);
+          const refreshed = await discoverWorkspace(currentWorkspace.rootPath, currentWorkspace.kind, {
+            platformModels: {}
+          });
+          return persistence.workspaceRepository.upsert(refreshed);
+        }
+      }
+    });
+
+    activeApp = await createStartedAppWithRuntimeService(runtimeService, gateway);
+
+    const response = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}/settings`, {
+      method: "PATCH",
+      headers: {
+        authorization: "Bearer token-1",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        historyMirrorEnabled: true
+      })
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      id: workspace.id,
+      historyMirrorEnabled: true
+    });
+
+    const refreshed = await runtimeService.getWorkspace(workspace.id);
+    const settingsContent = await import("node:fs/promises").then(({ readFile }) =>
+      readFile(path.join(tempDir, ".openharness", "settings.yaml"), "utf8")
+    );
+    expect(refreshed.historyMirrorEnabled).toBe(true);
+    expect(settingsContent).toContain("history_mirror_enabled: true");
+  });
+
+  it("reads workspace history mirror status over HTTP", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-http-history-status-"));
+    await mkdir(path.join(tempDir, ".openharness", "settings"), { recursive: true }).catch(() => undefined);
+
+    const persistence = createMemoryRuntimePersistence();
+    await persistence.workspaceRepository.upsert({
+      id: "ws_http_history_status",
+      name: "history-status",
+      rootPath: tempDir,
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: true,
+      settings: {
+        historyMirrorEnabled: true,
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {},
+      actions: {},
+      skills: {},
+      mcpServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "ws_http_history_status",
+        agents: [],
+        models: [],
+        actions: [],
+        skills: [],
+        mcp: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    await mkdir(path.join(tempDir, ".openharness", "data"), { recursive: true });
+    const mirrorDb = new (await import("node:sqlite")).DatabaseSync(path.join(tempDir, ".openharness", "data", "history.db"));
+    mirrorDb.exec(`
+      create table if not exists mirror_state (
+        workspace_id text primary key,
+        last_event_id integer not null,
+        last_synced_at text not null,
+        status text not null,
+        error_message text
+      )
+    `);
+    mirrorDb
+      .prepare(
+        "insert into mirror_state (workspace_id, last_event_id, last_synced_at, status, error_message) values (?, ?, ?, ?, ?)"
+      )
+      .run("ws_http_history_status", 7, "2026-04-01T00:00:00.000Z", "idle", null);
+    mirrorDb.close();
+
+    const gateway = new FakeModelGateway(20);
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    activeApp = await createStartedAppWithRuntimeService(runtimeService, gateway);
+
+    const response = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/ws_http_history_status/history-mirror`, {
+      headers: {
+        authorization: "Bearer token-1"
+      }
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      workspaceId: "ws_http_history_status",
+      enabled: true,
+      state: "idle",
+      lastEventId: 7,
+      lastSyncedAt: "2026-04-01T00:00:00.000Z"
+    });
+  });
+
+  it("rebuilds workspace history mirror over HTTP", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-http-history-rebuild-"));
+
+    const persistence = createMemoryRuntimePersistence();
+    const workspace = await persistence.workspaceRepository.upsert({
+      id: "ws_http_history_rebuild",
+      name: "history-rebuild",
+      rootPath: tempDir,
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: true,
+      settings: {
+        historyMirrorEnabled: true,
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {},
+      actions: {},
+      skills: {},
+      mcpServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "ws_http_history_rebuild",
+        agents: [],
+        models: [],
+        actions: [],
+        skills: [],
+        mcp: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    await mkdir(path.dirname(historyMirrorDbPath(tempDir)), { recursive: true });
+    await writeFile(historyMirrorDbPath(tempDir), "corrupted", "utf8");
+
+    const gateway = new FakeModelGateway(20);
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+    const syncer = new HistoryMirrorSyncer({
+      workspaceRepository: persistence.workspaceRepository,
+      historyEventRepository: {
+        async append() {
+          throw new Error("append should not be called in http tests");
+        },
+        async listByWorkspaceId(workspaceId, limit, afterId) {
+          return [
+            {
+              id: 1,
+              workspaceId,
+              entityType: "session",
+              entityId: "ses_http_rebuilt",
+              op: "upsert",
+              payload: {
+                id: "ses_http_rebuilt",
+                workspaceId,
+                subjectRef: "dev:test",
+                activeAgentName: "builder",
+                status: "active",
+                createdAt: "2026-04-01T00:00:00.000Z",
+                updatedAt: "2026-04-01T00:00:00.000Z"
+              },
+              occurredAt: "2026-04-01T00:00:00.000Z"
+            }
+          ].filter((event) => afterId === undefined || event.id > afterId).slice(0, limit);
+        }
+      }
+    });
+
+    activeApp = await createStartedAppWithRuntimeService(runtimeService, gateway, {
+      rebuildWorkspaceHistoryMirror(currentWorkspace) {
+        return syncer.rebuildWorkspace(currentWorkspace);
+      }
+    });
+
+    const response = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}/history-mirror/rebuild`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer token-1"
+      }
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      workspaceId: "ws_http_history_rebuild",
+      enabled: true,
+      state: "idle",
+      lastEventId: 1
+    });
+
+    const mirrorDb = new (await import("node:sqlite")).DatabaseSync(historyMirrorDbPath(tempDir));
+    const row = mirrorDb
+      .prepare("select id, subject_ref as subjectRef from sessions where id = ?")
+      .get("ses_http_rebuilt") as { id: string; subjectRef: string } | undefined;
+    mirrorDb.close();
+    await syncer.close();
+
+    expect(row).toEqual({
+      id: "ses_http_rebuilt",
+      subjectRef: "dev:test"
+    });
+  }, 30_000);
+
+  it("returns run steps even when step output contains non-object JSON", async () => {
+    const gateway = new FakeModelGateway(20);
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "ws_http_run_steps_scalar",
+      name: "run-steps-scalar",
+      rootPath: "/tmp/run-steps-scalar",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      settings: {
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {},
+      actions: {},
+      skills: {},
+      mcpServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "ws_http_run_steps_scalar",
+        agents: [],
+        models: [],
+        actions: [],
+        skills: [],
+        mcp: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    await persistence.runRepository.create({
+      id: "run_http_scalar",
+      workspaceId: "ws_http_run_steps_scalar",
+      effectiveAgentName: "builder",
+      triggerType: "system",
+      status: "completed",
+      createdAt: "2026-04-01T00:00:00.000Z"
+    });
+    await persistence.runStepRepository.create({
+      id: "step_http_scalar",
+      runId: "run_http_scalar",
+      seq: 1,
+      stepType: "system",
+      status: "completed",
+      input: "plain-text-input",
+      output: ["scalar-like", 1, true],
+      startedAt: "2026-04-01T00:00:00.000Z",
+      endedAt: "2026-04-01T00:00:01.000Z"
+    });
+
+    activeApp = await createStartedAppWithRuntimeService(runtimeService, gateway);
+
+    const response = await fetch(`${activeApp.baseUrl}/api/v1/runs/run_http_scalar/steps?pageSize=200`, {
+      headers: {
+        authorization: "Bearer token-1"
+      }
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      items: [
+        {
+          id: "step_http_scalar",
+          runId: "run_http_scalar",
+          input: "plain-text-input",
+          output: ["scalar-like", 1, true]
+        }
+      ]
+    });
+  });
+
+  it("sanitizes chat workspace catalogs over HTTP", async () => {
+    const gateway = new FakeModelGateway(20);
+    const persistence = createMemoryRuntimePersistence();
+    await persistence.workspaceRepository.upsert({
+      id: "chat_http_catalog",
+      name: "chat-http-catalog",
+      rootPath: "/tmp/chat-http-catalog",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "chat",
+      readOnly: true,
+      historyMirrorEnabled: false,
+      defaultAgent: "assistant",
+      settings: {
+        defaultAgent: "assistant",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        assistant: {
+          name: "assistant",
+          mode: "primary",
+          prompt: "You are a chat-only assistant.",
+          tools: {
+            native: [],
+            actions: [],
+            skills: [],
+            mcp: []
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {
+        "dangerous.run": {
+          name: "dangerous.run",
+          callableByApi: true,
+          callableByUser: true,
+          exposeToLlm: true,
+          directory: "/tmp/chat-http-catalog/actions/dangerous.run",
+          entry: {
+            command: "printf unsafe"
+          }
+        }
+      },
+      skills: {
+        "repo-explorer": {
+          name: "repo-explorer",
+          exposeToLlm: true,
+          directory: "/tmp/chat-http-catalog/skills/repo-explorer",
+          sourceRoot: "/tmp/chat-http-catalog/skills/repo-explorer",
+          content: "# Repo Explorer"
+        }
+      },
+      mcpServers: {
+        docs: {
+          name: "docs",
+          enabled: true,
+          transportType: "http",
+          url: "http://127.0.0.1:9123"
+        }
+      },
+      hooks: {
+        "rewrite-request": {
+          name: "rewrite-request",
+          events: ["before_model_call"],
+          handlerType: "prompt",
+          capabilities: [],
+          definition: {
+            prompt: "should not run"
+          }
+        }
+      },
+      catalog: {
+        workspaceId: "chat_http_catalog",
+        agents: [{ name: "assistant", source: "workspace" }],
+        models: [],
+        actions: [{ name: "dangerous.run", callableByApi: true, callableByUser: true, exposeToLlm: true }],
+        skills: [{ name: "repo-explorer", exposeToLlm: true }],
+        mcp: [{ name: "docs", transportType: "http" }],
+        hooks: [{ name: "rewrite-request", handlerType: "prompt", events: ["before_model_call"] }],
+        nativeTools: ["shell"]
+      }
+    });
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    activeApp = await createStartedAppWithRuntimeService(runtimeService, gateway);
+
+    const response = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/chat_http_catalog/catalog`, {
+      headers: {
+        authorization: "Bearer token-1"
+      }
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      workspaceId: "chat_http_catalog",
+      agents: [{ name: "assistant", source: "workspace" }],
+      models: [],
+      actions: [],
+      skills: [],
+      mcp: [],
+      hooks: [],
+      nativeTools: []
     });
   });
 

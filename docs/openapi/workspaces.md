@@ -48,6 +48,27 @@
 - 创建顺序必须是：先从 `template_dir` 复制模板，再叠加用户传入的 `AGENTS.md`、MCP 和 skills
 - `chat` workspace 更适合由服务端按目录自动发现，不要求调用方逐个创建
 
+### `GET /workspaces`
+
+用途：
+
+- 分页读取当前可见的 workspace 列表
+
+查询参数：
+
+- `pageSize`
+- `cursor`
+
+返回：
+
+- `items[]`
+- `nextCursor`
+
+说明：
+
+- 返回结果按创建顺序稳定分页
+- `nextCursor` 为空时表示已经到末页
+
 ### `GET /workspaces/{workspaceId}`
 
 用途：
@@ -59,6 +80,49 @@
 - `kind`
 - `readOnly`
 - `historyMirrorEnabled`
+
+### `PATCH /workspaces/{workspaceId}/settings`
+
+用途：
+
+- 更新 workspace 级运行时设置
+
+当前支持：
+
+- `historyMirrorEnabled`
+
+说明：
+
+- 服务端会将开关回写到 `.openharness/settings.yaml`
+- `kind=chat` workspace 不支持开启本地 history mirror
+
+### `GET /workspaces/{workspaceId}/history-mirror`
+
+用途：
+
+- 读取当前 workspace 的本地 history mirror 状态
+
+返回建议包含：
+
+- `supported`
+- `enabled`
+- `state`
+- `lastEventId`
+- `lastSyncedAt`
+- `dbPath`
+- `errorMessage`
+
+### `POST /workspaces/{workspaceId}/history-mirror/rebuild`
+
+用途：
+
+- 删除并重建当前 workspace 的本地 `history.db` 镜像
+
+说明：
+
+- 仅 `kind=project` 且 `historyMirrorEnabled=true` 时可用
+- 该操作只影响本地镜像，不影响 PostgreSQL 中心事实源
+- 返回重建后的最新 mirror 状态
 
 ### `GET /workspaces/{workspaceId}/catalog`
 

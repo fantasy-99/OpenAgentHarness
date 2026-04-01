@@ -121,6 +121,7 @@ workspace/
 - [agents-definition.md](./agents-definition.md)
 - [agents-controls.md](./agents-controls.md)
 - [models.md](./models.md)
+- [model-providers.md](./model-providers.md)
 - [actions.md](./actions.md)
 - [skills.md](./skills.md)
 - [mcp.md](./mcp.md)

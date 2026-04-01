@@ -2,6 +2,9 @@ import { z } from "zod";
 
 export const timestampSchema = z.string().datetime({ offset: true });
 export const jsonObjectSchema = z.record(z.string(), z.unknown());
+export const jsonValueSchema: z.ZodType<unknown> = z.lazy(() =>
+  z.union([z.string(), z.number(), z.boolean(), z.null(), z.array(jsonValueSchema), z.record(z.string(), jsonValueSchema)])
+);
 
 export const workspaceSchema = z.object({
   id: z.string(),
@@ -10,8 +13,27 @@ export const workspaceSchema = z.object({
   rootPath: z.string(),
   executionPolicy: z.enum(["local", "container", "remote_runner"]),
   status: z.enum(["active", "archived", "disabled"]),
+  kind: z.enum(["project", "chat"]),
+  readOnly: z.boolean(),
+  historyMirrorEnabled: z.boolean(),
   createdAt: timestampSchema,
   updatedAt: timestampSchema
+});
+
+export const workspacePageSchema = z.object({
+  items: z.array(workspaceSchema),
+  nextCursor: z.string().optional()
+});
+
+export const workspaceHistoryMirrorStatusSchema = z.object({
+  workspaceId: z.string(),
+  supported: z.boolean(),
+  enabled: z.boolean(),
+  dbPath: z.string().optional(),
+  state: z.enum(["unsupported", "disabled", "missing", "idle", "error"]),
+  lastEventId: z.number().int().optional(),
+  lastSyncedAt: timestampSchema.optional(),
+  errorMessage: z.string().optional()
 });
 
 export const agentCatalogItemSchema = z.object({
@@ -80,6 +102,11 @@ export const sessionSchema = z.object({
   updatedAt: timestampSchema
 });
 
+export const sessionPageSchema = z.object({
+  items: z.array(sessionSchema),
+  nextCursor: z.string().optional()
+});
+
 export const messageSchema = z.object({
   id: z.string(),
   sessionId: z.string(),
@@ -125,8 +152,8 @@ export const runStepSchema = z.object({
   name: z.string().optional(),
   agentName: z.string().optional(),
   status: z.enum(["queued", "running", "completed", "failed", "cancelled"]),
-  input: jsonObjectSchema.optional(),
-  output: jsonObjectSchema.optional(),
+  input: jsonValueSchema.optional(),
+  output: jsonValueSchema.optional(),
   startedAt: timestampSchema.optional(),
   endedAt: timestampSchema.optional()
 });
@@ -149,6 +176,18 @@ export const workspaceTemplateListSchema = z.object({
   items: z.array(workspaceTemplateSchema)
 });
 
+export const modelProviderSchema = z.object({
+  id: z.enum(["openai", "openai-compatible"]),
+  packageName: z.string(),
+  description: z.string(),
+  requiresUrl: z.boolean(),
+  useCases: z.array(z.string())
+});
+
+export const modelProviderListSchema = z.object({
+  items: z.array(modelProviderSchema)
+});
+
 export const createWorkspaceRequestSchema = z.object({
   externalRef: z.string().optional(),
   name: z.string().min(1),
@@ -158,6 +197,10 @@ export const createWorkspaceRequestSchema = z.object({
   mcpServers: z.record(z.string(), jsonObjectSchema).optional(),
   skills: z.array(workspaceSkillInputSchema).optional(),
   executionPolicy: z.enum(["local", "container", "remote_runner"]).default("local")
+});
+
+export const updateWorkspaceSettingsRequestSchema = z.object({
+  historyMirrorEnabled: z.boolean()
 });
 
 export const createSessionRequestSchema = z.object({
@@ -278,6 +321,8 @@ export const sessionEventSchema = z.object({
 });
 
 export type Workspace = z.infer<typeof workspaceSchema>;
+export type WorkspacePage = z.infer<typeof workspacePageSchema>;
+export type WorkspaceHistoryMirrorStatus = z.infer<typeof workspaceHistoryMirrorStatusSchema>;
 export type WorkspaceCatalog = z.infer<typeof workspaceCatalogSchema>;
 export type AgentCatalogItem = z.infer<typeof agentCatalogItemSchema>;
 export type ModelCatalogItem = z.infer<typeof modelCatalogItemSchema>;
@@ -286,6 +331,7 @@ export type SkillCatalogItem = z.infer<typeof skillCatalogItemSchema>;
 export type McpCatalogItem = z.infer<typeof mcpCatalogItemSchema>;
 export type HookCatalogItem = z.infer<typeof hookCatalogItemSchema>;
 export type Session = z.infer<typeof sessionSchema>;
+export type SessionPage = z.infer<typeof sessionPageSchema>;
 export type Message = z.infer<typeof messageSchema>;
 export type MessagePage = z.infer<typeof messagePageSchema>;
 export type Run = z.infer<typeof runSchema>;
@@ -295,6 +341,7 @@ export type WorkspaceTemplate = z.infer<typeof workspaceTemplateSchema>;
 export type WorkspaceTemplateList = z.infer<typeof workspaceTemplateListSchema>;
 export type WorkspaceSkillInput = z.infer<typeof workspaceSkillInputSchema>;
 export type CreateWorkspaceRequest = z.infer<typeof createWorkspaceRequestSchema>;
+export type UpdateWorkspaceSettingsRequest = z.infer<typeof updateWorkspaceSettingsRequestSchema>;
 export type CreateSessionRequest = z.infer<typeof createSessionRequestSchema>;
 export type CreateMessageRequest = z.infer<typeof createMessageRequestSchema>;
 export type MessageAccepted = z.infer<typeof messageAcceptedSchema>;

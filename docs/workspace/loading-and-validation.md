@@ -20,6 +20,7 @@
 - 不参与 YAML / Markdown 能力定义加载
 - 可在首次同步时由 runtime 自动创建
 - 若 `history.db` 缺失或损坏，可由中心库重新构建
+- 服务端可提供显式 mirror rebuild 管理动作，用于删除损坏镜像后全量重放
 
 ### 失败策略
 

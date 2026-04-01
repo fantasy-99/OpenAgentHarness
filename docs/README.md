@@ -28,6 +28,8 @@
   - workspace 规范导航页
 - [workspace/README.md](./workspace/README.md)
   - `.openharness/` 目录规范与 YAML DSL 详细拆分文档
+- [workspace/model-providers.md](./workspace/model-providers.md)
+  - 当前运行时已支持的模型 provider 列表
 - [api-design.md](./api-design.md)
   - API 约束与 OpenAPI 文档导航
 - [runtime-design.md](./runtime-design.md)

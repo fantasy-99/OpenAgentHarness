@@ -33,8 +33,8 @@ export interface ServerConfig {
     port: number;
   };
   storage: {
-    postgres_url: string;
-    redis_url: string;
+    postgres_url?: string | undefined;
+    redis_url?: string | undefined;
   };
   paths: {
     workspace_dir: string;
@@ -93,6 +93,7 @@ export interface DiscoveredHook {
 export interface WorkspaceSettings {
   defaultAgent?: string | undefined;
   skillDirs?: string[] | undefined;
+  historyMirrorEnabled?: boolean | undefined;
   systemPrompt?: WorkspaceSystemPromptSettings | undefined;
 }
 
@@ -261,6 +262,9 @@ function resolveConfigPaths(config: ServerConfig, configPath: string): ServerCon
   const configDir = path.dirname(configPath);
   return {
     ...config,
+    storage: {
+      ...(config.storage ?? {})
+    },
     paths: {
       workspace_dir: path.resolve(configDir, config.paths.workspace_dir),
       chat_dir: path.resolve(configDir, config.paths.chat_dir),
@@ -520,7 +524,16 @@ export async function loadServerConfig(configPath: string): Promise<ServerConfig
     throw new Error(`Invalid server config: ${validationMessage(validate.errors)}`);
   }
 
-  return resolveConfigPaths(expanded, configPath);
+  return resolveConfigPaths(
+    {
+      ...expanded,
+      storage:
+        expanded.storage && typeof expanded.storage === "object" && !Array.isArray(expanded.storage)
+          ? (expanded.storage as ServerConfig["storage"])
+          : {}
+    } as ServerConfig,
+    configPath
+  );
 }
 
 export async function loadPlatformModels(modelsDir: string): Promise<PlatformModelRegistry> {
@@ -643,6 +656,7 @@ export async function loadWorkspaceSettings(workspaceRoot: string): Promise<Work
   const typedParsed = parsed as {
     default_agent?: string;
     skill_dirs?: string[];
+    history_mirror_enabled?: boolean;
     system_prompt?: {
       base?: PromptSource;
       llm_optimized?: {
@@ -659,12 +673,34 @@ export async function loadWorkspaceSettings(workspaceRoot: string): Promise<Work
   return {
     ...(typedParsed.default_agent ? { defaultAgent: typedParsed.default_agent } : {}),
     ...(typedParsed.skill_dirs ? { skillDirs: typedParsed.skill_dirs } : {}),
+    ...(typeof typedParsed.history_mirror_enabled === "boolean"
+      ? { historyMirrorEnabled: typedParsed.history_mirror_enabled }
+      : {}),
     ...(typedParsed.system_prompt
       ? {
           systemPrompt: await resolveWorkspaceSystemPrompt(typedParsed.system_prompt, workspaceRoot)
         }
       : {})
   };
+}
+
+export async function updateWorkspaceHistoryMirrorSetting(workspaceRoot: string, enabled: boolean): Promise<void> {
+  const settingsPath = path.join(workspaceRoot, ".openharness", "settings.yaml");
+  await mkdir(path.dirname(settingsPath), { recursive: true });
+
+  const currentRaw = (await pathExists(settingsPath)) ? YAML.parse(await readFile(settingsPath, "utf8")) : {};
+  if (currentRaw !== null && (typeof currentRaw !== "object" || Array.isArray(currentRaw))) {
+    throw new Error(`Invalid workspace settings in ${settingsPath}.`);
+  }
+
+  await writeFile(
+    settingsPath,
+    YAML.stringify({
+      ...(currentRaw as Record<string, unknown>),
+      history_mirror_enabled: enabled
+    }),
+    "utf8"
+  );
 }
 
 export async function loadWorkspaceModels(workspaceRoot: string): Promise<PlatformModelRegistry> {
@@ -1064,7 +1100,7 @@ export async function discoverWorkspace(
     updatedAt: timestamp,
     kind,
     readOnly: kind === "chat",
-    historyMirrorEnabled: false,
+    historyMirrorEnabled: kind === "project" ? settings.historyMirrorEnabled ?? false : false,
     defaultAgent: settings.defaultAgent,
     projectAgentsMd,
     settings,

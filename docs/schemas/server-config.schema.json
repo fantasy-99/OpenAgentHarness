@@ -25,10 +25,6 @@
     },
     "storage": {
       "type": "object",
-      "required": [
-        "postgres_url",
-        "redis_url"
-      ],
       "additionalProperties": false,
       "properties": {
         "postgres_url": {

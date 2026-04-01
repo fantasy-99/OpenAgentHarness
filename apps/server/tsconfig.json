@@ -11,6 +11,8 @@
     { "path": "../../packages/api-contracts" },
     { "path": "../../packages/runtime-core" },
     { "path": "../../packages/storage-memory" },
+    { "path": "../../packages/storage-postgres" },
+    { "path": "../../packages/storage-redis" },
     { "path": "../../packages/model-gateway" }
   ]
 }

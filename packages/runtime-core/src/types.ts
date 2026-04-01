@@ -215,6 +215,7 @@ export interface WorkspaceSystemPromptSettings {
 export interface WorkspaceSettingsDefinition {
   defaultAgent?: string | undefined;
   skillDirs?: string[] | undefined;
+  historyMirrorEnabled?: boolean | undefined;
   systemPrompt?: WorkspaceSystemPromptSettings | undefined;
 }
 
@@ -260,6 +261,92 @@ export interface WorkspaceInitializer {
   initialize(input: CreateWorkspaceRequest): Promise<WorkspaceInitializationResult>;
 }
 
+export interface WorkspaceDeletionHandler {
+  deleteWorkspace(workspace: WorkspaceRecord): Promise<void>;
+}
+
+export interface WorkspaceSettingsManager {
+  updateHistoryMirrorEnabled(workspace: WorkspaceRecord, enabled: boolean): Promise<WorkspaceRecord>;
+}
+
+export type ToolCallSourceType = "action" | "skill" | "agent" | "mcp" | "native";
+
+export interface ToolCallAuditRecord {
+  id: string;
+  runId: string;
+  stepId?: string | undefined;
+  sourceType: ToolCallSourceType;
+  toolName: string;
+  request?: Record<string, unknown> | undefined;
+  response?: Record<string, unknown> | undefined;
+  status: "completed" | "failed" | "cancelled";
+  durationMs?: number | undefined;
+  startedAt: string;
+  endedAt: string;
+}
+
+export interface HookRunAuditRecord {
+  id: string;
+  runId: string;
+  hookName: string;
+  eventName: string;
+  capabilities: string[];
+  patch?: Record<string, unknown> | undefined;
+  status: "completed" | "failed";
+  startedAt: string;
+  endedAt: string;
+  errorMessage?: string | undefined;
+}
+
+export interface ArtifactRecord {
+  id: string;
+  runId: string;
+  type: string;
+  path?: string | undefined;
+  contentRef?: string | undefined;
+  metadata?: Record<string, unknown> | undefined;
+  createdAt: string;
+}
+
+export type HistoryEventEntityType =
+  | "session"
+  | "message"
+  | "run"
+  | "run_step"
+  | "tool_call"
+  | "hook_run"
+  | "artifact";
+
+export type HistoryEventOperation = "upsert" | "delete" | "replace";
+
+export interface HistoryEventRecord {
+  id: number;
+  workspaceId: string;
+  entityType: HistoryEventEntityType;
+  entityId: string;
+  op: HistoryEventOperation;
+  payload: Record<string, unknown>;
+  occurredAt: string;
+}
+
+export interface ToolCallAuditRepository {
+  create(input: ToolCallAuditRecord): Promise<ToolCallAuditRecord>;
+}
+
+export interface HookRunAuditRepository {
+  create(input: HookRunAuditRecord): Promise<HookRunAuditRecord>;
+}
+
+export interface ArtifactRepository {
+  create(input: ArtifactRecord): Promise<ArtifactRecord>;
+  listByRunId(runId: string): Promise<ArtifactRecord[]>;
+}
+
+export interface HistoryEventRepository {
+  append(input: Omit<HistoryEventRecord, "id">): Promise<HistoryEventRecord>;
+  listByWorkspaceId(workspaceId: string, limit: number, afterId?: number): Promise<HistoryEventRecord[]>;
+}
+
 export interface RuntimeServiceOptions {
   defaultModel: string;
   modelGateway: ModelGateway;
@@ -270,19 +357,33 @@ export interface RuntimeServiceOptions {
   runRepository: RunRepository;
   runStepRepository: RunStepRepository;
   sessionEventStore: SessionEventStore;
+  runQueue?: RunQueue | undefined;
+  toolCallAuditRepository?: ToolCallAuditRepository | undefined;
+  hookRunAuditRepository?: HookRunAuditRepository | undefined;
+  artifactRepository?: ArtifactRepository | undefined;
+  historyEventRepository?: HistoryEventRepository | undefined;
+  workspaceDeletionHandler?: WorkspaceDeletionHandler | undefined;
+  workspaceSettingsManager?: WorkspaceSettingsManager | undefined;
   workspaceInitializer?: WorkspaceInitializer | undefined;
+}
+
+export interface RunQueue {
+  enqueue(sessionId: string, runId: string): Promise<void>;
 }
 
 export interface WorkspaceRepository {
   create(input: WorkspaceRecord): Promise<WorkspaceRecord>;
   upsert(input: WorkspaceRecord): Promise<WorkspaceRecord>;
   getById(id: string): Promise<WorkspaceRecord | null>;
+  list(pageSize: number, cursor?: string): Promise<WorkspaceRecord[]>;
+  delete(id: string): Promise<void>;
 }
 
 export interface SessionRepository {
   create(input: Session): Promise<Session>;
   getById(id: string): Promise<Session | null>;
   update(input: Session): Promise<Session>;
+  listByWorkspaceId(workspaceId: string, pageSize: number, cursor?: string): Promise<Session[]>;
 }
 
 export interface MessageRepository {
@@ -352,6 +453,16 @@ export interface MessageListResult {
   nextCursor?: string | undefined;
 }
 
+export interface WorkspaceListResult {
+  items: Workspace[];
+  nextCursor?: string | undefined;
+}
+
+export interface SessionListResult {
+  items: Session[];
+  nextCursor?: string | undefined;
+}
+
 export interface RunStepListResult {
   items: RunStep[];
   nextCursor?: string | undefined;
@@ -385,6 +496,9 @@ export function toPublicWorkspace(workspace: WorkspaceRecord): Workspace {
     rootPath: workspace.rootPath,
     executionPolicy: workspace.executionPolicy,
     status: workspace.status,
+    kind: workspace.kind,
+    readOnly: workspace.readOnly,
+    historyMirrorEnabled: workspace.historyMirrorEnabled,
     createdAt: workspace.createdAt,
     updatedAt: workspace.updatedAt
   };

@@ -13,7 +13,8 @@ import {
   loadPlatformModels,
   resolveWorkspaceCreationRoot,
   loadWorkspaceSettings,
-  loadServerConfig
+  loadServerConfig,
+  updateWorkspaceHistoryMirrorSetting
 } from "../packages/config/dist/index.js";
 
 const tempDirs: string[] = [];
@@ -65,6 +66,40 @@ llm:
     expect(config.storage.postgres_url).toBe("postgres://local/test");
     expect(config.paths.models_dir).toBe(path.join(tempDir, "models"));
     expect(config.llm.default_model).toBe("openai-default");
+  });
+
+  it("accepts server config without storage urls for local development", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-config-no-storage-"));
+    tempDirs.push(tempDir);
+
+    for (const dirName of ["workspaces", "chat", "templates", "models", "mcp", "skills"]) {
+      await mkdir(path.join(tempDir, dirName), { recursive: true });
+    }
+
+    const configPath = path.join(tempDir, "server.yaml");
+    await writeFile(
+      configPath,
+      `
+server:
+  host: 127.0.0.1
+  port: 8787
+storage: {}
+paths:
+  workspace_dir: ./workspaces
+  chat_dir: ./chat
+  template_dir: ./templates
+  models_dir: ./models
+  mcp_dir: ./mcp
+  skill_dir: ./skills
+llm:
+  default_model: openai-default
+`,
+      "utf8"
+    );
+
+    const config = await loadServerConfig(configPath);
+    expect(config.storage).toEqual({});
+    expect(config.paths.workspace_dir).toBe(path.join(tempDir, "workspaces"));
   });
 
   it("fails when an env placeholder cannot be resolved", async () => {
@@ -208,6 +243,22 @@ system_prompt:
 
     const settings = await loadWorkspaceSettings(tempDir);
     expect(settings.systemPrompt?.compose.includeEnvironment).toBe(false);
+  });
+
+  it("writes history mirror setting back into .openharness/settings.yaml", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-settings-history-mirror-"));
+    tempDirs.push(tempDir);
+
+    await mkdir(path.join(tempDir, ".openharness"), { recursive: true });
+    await writeFile(path.join(tempDir, ".openharness", "settings.yaml"), "default_agent: builder\n", "utf8");
+
+    await updateWorkspaceHistoryMirrorSetting(tempDir, true);
+
+    const settings = await loadWorkspaceSettings(tempDir);
+    const raw = await readFile(path.join(tempDir, ".openharness", "settings.yaml"), "utf8");
+    expect(settings.historyMirrorEnabled).toBe(true);
+    expect(raw).toContain("history_mirror_enabled: true");
+    expect(raw).toContain("default_agent: builder");
   });
 
   it("accepts actions in compose order", async () => {

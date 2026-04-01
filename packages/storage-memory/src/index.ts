@@ -12,10 +12,12 @@ import type {
   RunRepository,
   RunStepRepository
 } from "@oah/runtime-core";
-import { AppError, createId, nowIso } from "@oah/runtime-core";
+import { AppError, createId, nowIso, parseCursor } from "@oah/runtime-core";
 
 export class InMemoryWorkspaceRepository implements WorkspaceRepository {
   readonly #items = new Map<string, WorkspaceRecord>();
+
+  constructor(private readonly onDelete?: (workspaceId: string) => Promise<void>) {}
 
   async create(input: WorkspaceRecord): Promise<WorkspaceRecord> {
     this.#items.set(input.id, input);
@@ -29,6 +31,18 @@ export class InMemoryWorkspaceRepository implements WorkspaceRepository {
 
   async getById(id: string): Promise<WorkspaceRecord | null> {
     return this.#items.get(id) ?? null;
+  }
+
+  async list(pageSize: number, cursor?: string): Promise<WorkspaceRecord[]> {
+    const startIndex = parseCursor(cursor);
+    return [...this.#items.values()]
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.createdAt.localeCompare(left.createdAt))
+      .slice(startIndex, startIndex + pageSize);
+  }
+
+  async delete(id: string): Promise<void> {
+    await this.onDelete?.(id);
+    this.#items.delete(id);
   }
 }
 
@@ -51,6 +65,29 @@ export class InMemorySessionRepository implements SessionRepository {
 
     this.#items.set(input.id, input);
     return input;
+  }
+
+  async listByWorkspaceId(workspaceId: string, pageSize: number, cursor?: string): Promise<Session[]> {
+    const startIndex = parseCursor(cursor);
+    return [...this.#items.values()]
+      .filter((session) => session.workspaceId === workspaceId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.createdAt.localeCompare(left.createdAt))
+      .slice(startIndex, startIndex + pageSize);
+  }
+
+  deleteByWorkspaceId(workspaceId: string): string[] {
+    const deletedSessionIds: string[] = [];
+
+    for (const [sessionId, session] of this.#items.entries()) {
+      if (session.workspaceId !== workspaceId) {
+        continue;
+      }
+
+      deletedSessionIds.push(sessionId);
+      this.#items.delete(sessionId);
+    }
+
+    return deletedSessionIds;
   }
 }
 
@@ -85,6 +122,17 @@ export class InMemoryMessageRepository implements MessageRepository {
       .map((id) => this.#items.get(id))
       .filter((value): value is Message => value !== undefined);
   }
+
+  deleteBySessionIds(sessionIds: string[]): void {
+    for (const sessionId of sessionIds) {
+      const messageIds = this.#sessionMessageIds.get(sessionId) ?? [];
+      for (const messageId of messageIds) {
+        this.#items.delete(messageId);
+      }
+
+      this.#sessionMessageIds.delete(sessionId);
+    }
+  }
 }
 
 export class InMemoryRunRepository implements RunRepository {
@@ -106,6 +154,21 @@ export class InMemoryRunRepository implements RunRepository {
 
     this.#items.set(input.id, input);
     return input;
+  }
+
+  deleteByWorkspaceId(workspaceId: string): string[] {
+    const deletedRunIds: string[] = [];
+
+    for (const [runId, run] of this.#items.entries()) {
+      if (run.workspaceId !== workspaceId) {
+        continue;
+      }
+
+      deletedRunIds.push(runId);
+      this.#items.delete(runId);
+    }
+
+    return deletedRunIds;
   }
 }
 
@@ -136,6 +199,17 @@ export class InMemoryRunStepRepository implements RunStepRepository {
       .map((id) => this.#items.get(id))
       .filter((value): value is RunStep => value !== undefined);
   }
+
+  deleteByRunIds(runIds: string[]): void {
+    for (const runId of runIds) {
+      const stepIds = this.#runStepIds.get(runId) ?? [];
+      for (const stepId of stepIds) {
+        this.#items.delete(stepId);
+      }
+
+      this.#runStepIds.delete(runId);
+    }
+  }
 }
 
 export class InMemorySessionEventStore implements SessionEventStore {
@@ -162,8 +236,8 @@ export class InMemorySessionEventStore implements SessionEventStore {
   }
 
   async listSince(sessionId: string, cursor?: string, runId?: string): Promise<SessionEvent[]> {
-    const start = cursor ? Number.parseInt(cursor, 10) : 0;
-    const normalizedStart = Number.isFinite(start) && start >= 0 ? start + 1 : 0;
+    const start = cursor ? Number.parseInt(cursor, 10) : -1;
+    const normalizedStart = Number.isFinite(start) && start >= -1 ? start + 1 : 0;
     const events = this.#eventsBySession.get(sessionId) ?? [];
 
     return events.filter((event, index) => index >= normalizedStart && (!runId || event.runId === runId));
@@ -186,6 +260,13 @@ export class InMemorySessionEventStore implements SessionEventStore {
       }
     };
   }
+
+  deleteBySessionIds(sessionIds: string[]): void {
+    for (const sessionId of sessionIds) {
+      this.#eventsBySession.delete(sessionId);
+      this.#listeners.delete(sessionId);
+    }
+  }
 }
 
 export interface MemoryRuntimePersistence {
@@ -198,12 +279,26 @@ export interface MemoryRuntimePersistence {
 }
 
 export function createMemoryRuntimePersistence(): MemoryRuntimePersistence {
+  const sessionRepository = new InMemorySessionRepository();
+  const messageRepository = new InMemoryMessageRepository();
+  const runRepository = new InMemoryRunRepository();
+  const runStepRepository = new InMemoryRunStepRepository();
+  const sessionEventStore = new InMemorySessionEventStore();
+  const workspaceRepository = new InMemoryWorkspaceRepository(async (workspaceId) => {
+    const deletedSessionIds = sessionRepository.deleteByWorkspaceId(workspaceId);
+    const deletedRunIds = runRepository.deleteByWorkspaceId(workspaceId);
+
+    sessionEventStore.deleteBySessionIds(deletedSessionIds);
+    messageRepository.deleteBySessionIds(deletedSessionIds);
+    runStepRepository.deleteByRunIds(deletedRunIds);
+  });
+
   return {
-    workspaceRepository: new InMemoryWorkspaceRepository(),
-    sessionRepository: new InMemorySessionRepository(),
-    messageRepository: new InMemoryMessageRepository(),
-    runRepository: new InMemoryRunRepository(),
-    runStepRepository: new InMemoryRunStepRepository(),
-    sessionEventStore: new InMemorySessionEventStore()
+    workspaceRepository,
+    sessionRepository,
+    messageRepository,
+    runRepository,
+    runStepRepository,
+    sessionEventStore
   };
 }

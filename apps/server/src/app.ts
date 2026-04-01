@@ -9,13 +9,20 @@ import {
   messageAcceptedSchema,
   modelGenerateRequestSchema,
   modelGenerateResponseSchema,
+  modelProviderListSchema,
   pageQuerySchema,
   runEventsQuerySchema,
   runStepPageSchema,
+  sessionPageSchema,
+  updateWorkspaceSettingsRequestSchema,
+  workspaceHistoryMirrorStatusSchema,
+  workspacePageSchema,
   workspaceTemplateListSchema
 } from "@oah/api-contracts";
-import type { CallerContext, ModelGateway, RuntimeService, SessionEvent } from "@oah/runtime-core";
+import { SUPPORTED_MODEL_PROVIDERS } from "@oah/model-gateway";
+import type { CallerContext, ModelGateway, RuntimeService, SessionEvent, WorkspaceRecord } from "@oah/runtime-core";
 import { AppError, isAppError } from "@oah/runtime-core";
+import { inspectHistoryMirrorStatus, type HistoryMirrorStatus } from "./history-mirror.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -57,6 +64,9 @@ export interface AppDependencies {
   modelGateway: ModelGateway;
   defaultModel: string;
   listWorkspaceTemplates: () => Promise<import("@oah/config").WorkspaceTemplateDescriptor[]>;
+  healthCheck?: () => Promise<Record<string, unknown>> | Record<string, unknown>;
+  readinessCheck?: () => Promise<Record<string, unknown>> | Record<string, unknown>;
+  rebuildWorkspaceHistoryMirror?: (workspace: WorkspaceRecord) => Promise<HistoryMirrorStatus>;
 }
 
 export function createApp(dependencies: AppDependencies) {
@@ -75,7 +85,7 @@ export function createApp(dependencies: AppDependencies) {
   });
 
   app.addHook("onRequest", async (request, reply) => {
-    if (request.url === "/healthz" || request.url.startsWith("/internal/v1/models/")) {
+    if (request.url === "/healthz" || request.url === "/readyz" || request.url.startsWith("/internal/v1/models/")) {
       return;
     }
 
@@ -98,9 +108,27 @@ export function createApp(dependencies: AppDependencies) {
     };
   });
 
-  app.get("/healthz", async () => ({
-    status: "ok"
-  }));
+  app.get("/healthz", async () =>
+    dependencies.healthCheck
+      ? dependencies.healthCheck()
+      : {
+          status: "ok"
+        }
+  );
+
+  app.get("/readyz", async (_request, reply) => {
+    const payload = dependencies.readinessCheck
+      ? await dependencies.readinessCheck()
+      : {
+          status: "ready"
+        };
+
+    if (payload.status === "not_ready") {
+      return reply.status(503).send(payload);
+    }
+
+    return reply.send(payload);
+  });
 
   app.get("/api/v1/workspace-templates", async (_request, reply) => {
     const templates = await dependencies.listWorkspaceTemplates();
@@ -111,16 +139,80 @@ export function createApp(dependencies: AppDependencies) {
     );
   });
 
+  app.get("/api/v1/model-providers", async (_request, reply) =>
+    reply.send(
+      modelProviderListSchema.parse({
+        items: SUPPORTED_MODEL_PROVIDERS
+      })
+    )
+  );
+
   app.post("/api/v1/workspaces", async (request, reply) => {
     const input = createWorkspaceRequestSchema.parse(request.body);
     const workspace = await dependencies.runtimeService.createWorkspace({ input });
     return reply.status(201).send(workspace);
   });
 
+  app.get("/api/v1/workspaces", async (request, reply) => {
+    const query = pageQuerySchema.parse(request.query);
+    const page = await dependencies.runtimeService.listWorkspaces(query.pageSize, query.cursor);
+    return reply.send(workspacePageSchema.parse(page));
+  });
+
   app.get("/api/v1/workspaces/:workspaceId", async (request, reply) => {
     const params = createParamsSchema("workspaceId").parse(request.params);
     const workspace = await dependencies.runtimeService.getWorkspace(params.workspaceId);
     return reply.send(workspace);
+  });
+
+  app.get("/api/v1/workspaces/:workspaceId/history-mirror", async (request, reply) => {
+    const params = createParamsSchema("workspaceId").parse(request.params);
+    const workspace = await dependencies.runtimeService.getWorkspaceRecord(params.workspaceId);
+    return reply.send(workspaceHistoryMirrorStatusSchema.parse(await inspectHistoryMirrorStatus(workspace)));
+  });
+
+  app.post("/api/v1/workspaces/:workspaceId/history-mirror/rebuild", async (request, reply) => {
+    const params = createParamsSchema("workspaceId").parse(request.params);
+    const workspace = await dependencies.runtimeService.getWorkspaceRecord(params.workspaceId);
+
+    if (workspace.kind !== "project") {
+      throw new AppError(
+        400,
+        "history_mirror_not_supported",
+        `Workspace ${params.workspaceId} does not support local history mirror sync.`
+      );
+    }
+
+    if (!workspace.historyMirrorEnabled) {
+      throw new AppError(
+        409,
+        "history_mirror_disabled",
+        `Workspace ${params.workspaceId} has local history mirror sync disabled.`
+      );
+    }
+
+    if (!dependencies.rebuildWorkspaceHistoryMirror) {
+      throw new AppError(501, "history_mirror_rebuild_unavailable", "History mirror rebuild is not available on this server.");
+    }
+
+    const status = await dependencies.rebuildWorkspaceHistoryMirror(workspace);
+    return reply.send(workspaceHistoryMirrorStatusSchema.parse(status));
+  });
+
+  app.patch("/api/v1/workspaces/:workspaceId/settings", async (request, reply) => {
+    const params = createParamsSchema("workspaceId").parse(request.params);
+    const input = updateWorkspaceSettingsRequestSchema.parse(request.body);
+    const workspace = await dependencies.runtimeService.updateWorkspaceHistoryMirrorEnabled(
+      params.workspaceId,
+      input.historyMirrorEnabled
+    );
+    return reply.send(workspace);
+  });
+
+  app.delete("/api/v1/workspaces/:workspaceId", async (request, reply) => {
+    const params = createParamsSchema("workspaceId").parse(request.params);
+    await dependencies.runtimeService.deleteWorkspace(params.workspaceId);
+    return reply.status(204).send();
   });
 
   app.get("/api/v1/workspaces/:workspaceId/catalog", async (request, reply) => {
@@ -139,6 +231,13 @@ export function createApp(dependencies: AppDependencies) {
     });
 
     return reply.status(201).send(session);
+  });
+
+  app.get("/api/v1/workspaces/:workspaceId/sessions", async (request, reply) => {
+    const params = createParamsSchema("workspaceId").parse(request.params);
+    const query = pageQuerySchema.parse(request.query);
+    const page = await dependencies.runtimeService.listWorkspaceSessions(params.workspaceId, query.pageSize, query.cursor);
+    return reply.send(sessionPageSchema.parse(page));
   });
 
   app.post("/api/v1/workspaces/:workspaceId/actions/:actionName/runs", async (request, reply) => {
@@ -195,8 +294,10 @@ export function createApp(dependencies: AppDependencies) {
       reply.raw.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive"
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no"
       });
+      reply.raw.flushHeaders?.();
       reply.raw.write(": connected\n\n");
 
       const backlog = await dependencies.runtimeService.listSessionEvents(params.sessionId, query.cursor, query.runId);

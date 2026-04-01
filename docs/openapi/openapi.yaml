@@ -39,6 +39,22 @@ paths:
         default:
           $ref: '#/components/responses/ErrorResponse'
   /workspaces:
+    get:
+      tags: [Workspaces]
+      summary: List workspaces
+      operationId: listWorkspaces
+      parameters:
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Workspace page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspacePage'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
     post:
       tags: [Workspaces]
       summary: Create workspace
@@ -74,6 +90,60 @@ paths:
                 $ref: '#/components/schemas/Workspace'
         default:
           $ref: '#/components/responses/ErrorResponse'
+  /workspaces/{workspaceId}/settings:
+    patch:
+      tags: [Workspaces]
+      summary: Update workspace settings
+      operationId: updateWorkspaceSettings
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWorkspaceSettingsRequest'
+      responses:
+        '200':
+          description: Updated workspace metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workspace'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /workspaces/{workspaceId}/history-mirror:
+    get:
+      tags: [Workspaces]
+      summary: Get workspace history mirror status
+      operationId: getWorkspaceHistoryMirrorStatus
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      responses:
+        '200':
+          description: Workspace history mirror status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceHistoryMirrorStatus'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /workspaces/{workspaceId}/history-mirror/rebuild:
+    post:
+      tags: [Workspaces]
+      summary: Rebuild workspace history mirror
+      operationId: rebuildWorkspaceHistoryMirror
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      responses:
+        '200':
+          description: Rebuilt workspace history mirror status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceHistoryMirrorStatus'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
   /workspaces/{workspaceId}/catalog:
     get:
       tags: [Catalog]
@@ -91,6 +161,23 @@ paths:
         default:
           $ref: '#/components/responses/ErrorResponse'
   /workspaces/{workspaceId}/sessions:
+    get:
+      tags: [Sessions]
+      summary: List workspace sessions
+      operationId: listWorkspaceSessions
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Session page for a workspace
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionPage'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
     post:
       tags: [Sessions]
       summary: Create session
@@ -431,6 +518,9 @@ components:
         - rootPath
         - executionPolicy
         - status
+        - kind
+        - readOnly
+        - historyMirrorEnabled
         - createdAt
         - updatedAt
       properties:
@@ -448,10 +538,60 @@ components:
         status:
           type: string
           enum: [active, archived, disabled]
+        kind:
+          type: string
+          enum: [project, chat]
+        readOnly:
+          type: boolean
+        historyMirrorEnabled:
+          type: boolean
         createdAt:
           $ref: '#/components/schemas/Timestamp'
         updatedAt:
           $ref: '#/components/schemas/Timestamp'
+    WorkspacePage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Workspace'
+        nextCursor:
+          type: string
+    UpdateWorkspaceSettingsRequest:
+      type: object
+      required: [historyMirrorEnabled]
+      properties:
+        historyMirrorEnabled:
+          type: boolean
+      additionalProperties: false
+    WorkspaceHistoryMirrorStatus:
+      type: object
+      required:
+        - workspaceId
+        - supported
+        - enabled
+        - state
+      properties:
+        workspaceId:
+          type: string
+        supported:
+          type: boolean
+        enabled:
+          type: boolean
+        dbPath:
+          type: string
+        state:
+          type: string
+          enum: [unsupported, disabled, missing, idle, error]
+        lastEventId:
+          type: integer
+        lastSyncedAt:
+          $ref: '#/components/schemas/Timestamp'
+        errorMessage:
+          type: string
+      additionalProperties: false
     AgentCatalogItem:
       type: object
       required: [name, source]
@@ -627,6 +767,16 @@ components:
           $ref: '#/components/schemas/Timestamp'
         updatedAt:
           $ref: '#/components/schemas/Timestamp'
+    SessionPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Session'
+        nextCursor:
+          type: string
     Message:
       type: object
       required:

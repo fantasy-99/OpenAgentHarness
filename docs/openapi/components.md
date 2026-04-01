@@ -5,19 +5,23 @@
 OpenAPI 主规范中的 `components/schemas` 目前主要包括：
 
 - `Workspace`
+- `WorkspacePage`
 - `WorkspaceCatalog`
 - `ModelCatalogItem`
 - `ChatMessage`
 - `Usage`
 - `Session`
+- `SessionPage`
 - `Message`
 - `MessagePage`
 - `Run`
 - `RunStep`
 - `CreateWorkspaceRequest`
+- `UpdateWorkspaceSettingsRequest`
 - `CreateSessionRequest`
 - `CreateMessageRequest`
 - `CreateActionRunRequest`
+- `WorkspaceHistoryMirrorStatus`
 - `ModelGenerateRequest`
 - `ModelStreamRequest`
 - `ModelGenerateResponse`
@@ -26,6 +30,47 @@ OpenAPI 主规范中的 `components/schemas` 目前主要包括：
 - `CancelRunAccepted`
 - `Error`
 - `ErrorResponse`
+
+### `Workspace`
+
+用于 `POST /workspaces`、`GET /workspaces`、`GET /workspaces/{workspaceId}`。
+
+字段：
+
+- `id`
+- `externalRef`
+- `name`
+- `rootPath`
+- `executionPolicy`
+- `status`
+- `kind`
+- `readOnly`
+- `historyMirrorEnabled`
+- `createdAt`
+- `updatedAt`
+
+### `UpdateWorkspaceSettingsRequest`
+
+用于 `PATCH /workspaces/{workspaceId}/settings`。
+
+字段：
+
+- `historyMirrorEnabled`
+
+### `WorkspaceHistoryMirrorStatus`
+
+用于 `GET /workspaces/{workspaceId}/history-mirror` 和 `POST /workspaces/{workspaceId}/history-mirror/rebuild`。
+
+字段：
+
+- `workspaceId`
+- `supported`
+- `enabled`
+- `state`
+- `lastEventId`
+- `lastSyncedAt`
+- `dbPath`
+- `errorMessage`
 
 ## 模型网关对象
 

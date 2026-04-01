@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { RuntimeService } from "../packages/runtime-core/dist/index.js";
+import type { HookRunAuditRecord, ToolCallAuditRecord } from "../packages/runtime-core/dist/index.js";
 import { createMemoryRuntimePersistence } from "../packages/storage-memory/dist/index.js";
 
 import { FakeModelGateway } from "./helpers/fake-model-gateway";
@@ -138,6 +139,83 @@ describe("runtime service", () => {
     expect(stored.projectAgentsMd).toBe("Template rule: always add tests.");
     expect(stored.catalog.workspaceId).toBe(workspace.id);
     expect(stored.settings.defaultAgent).toBe("builder");
+    expect(workspace.kind).toBe("project");
+    expect(workspace.readOnly).toBe(false);
+    expect(workspace.historyMirrorEnabled).toBe(false);
+  });
+
+  it("deletes workspace records and cascades in-memory session data", async () => {
+    let deletedWorkspaceRoot = "";
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence,
+      workspaceDeletionHandler: {
+        async deleteWorkspace(workspace) {
+          deletedWorkspaceRoot = workspace.rootPath;
+        }
+      },
+      workspaceInitializer: {
+        async initialize(input) {
+          return {
+            rootPath: input.rootPath,
+            settings: {
+              defaultAgent: "default",
+              skillDirs: []
+            },
+            defaultAgent: "default",
+            workspaceModels: {},
+            agents: {},
+            actions: {},
+            skills: {},
+            mcpServers: {},
+            hooks: {},
+            catalog: {
+              workspaceId: "template",
+              agents: [],
+              models: [],
+              actions: [],
+              skills: [],
+              mcp: [],
+              hooks: [],
+              nativeTools: []
+            }
+          };
+        }
+      }
+    });
+
+    const workspace = await runtimeService.createWorkspace({
+      input: {
+        name: "demo",
+        template: "workspace",
+        rootPath: "/tmp/workspace-delete-demo",
+        executionPolicy: "local"
+      }
+    });
+
+    const session = await runtimeService.createSession({
+      workspaceId: workspace.id,
+      caller: {
+        subjectRef: "dev:test",
+        authSource: "test",
+        scopes: [],
+        workspaceAccess: []
+      },
+      input: {}
+    });
+
+    await runtimeService.deleteWorkspace(workspace.id);
+
+    expect(deletedWorkspaceRoot).toBe("/tmp/workspace-delete-demo");
+    await expect(runtimeService.getWorkspace(workspace.id)).rejects.toMatchObject({
+      code: "workspace_not_found"
+    });
+    await expect(runtimeService.getSession(session.id)).rejects.toMatchObject({
+      code: "session_not_found"
+    });
   });
 
   it("serializes runs inside a session", async () => {
@@ -177,6 +255,38 @@ describe("runtime service", () => {
 
     expect(runStarted).toEqual([first.runId, second.runId]);
     expect(runCompleted).toEqual([first.runId, second.runId]);
+  });
+
+  it("includes the first session event when listing without a cursor", async () => {
+    const { runtimeService, workspace } = await createRuntime();
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "bearer_stub",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: workspace.id,
+      caller,
+      input: {}
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "hello" }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const events = await runtimeService.listSessionEvents(session.id);
+
+    expect(events.at(0)?.event).toBe("run.queued");
+    expect(events.at(0)?.runId).toBe(accepted.runId);
   });
 
   it("allows different sessions to run concurrently", async () => {
@@ -1657,6 +1767,191 @@ describe("runtime service", () => {
     expect(page.items[2]?.content).toBe("I ran the debug.echo action.");
   });
 
+  it("writes hook and tool call audit records when hooks and actions run", async () => {
+    const gateway = new FakeModelGateway();
+    gateway.streamScenarioFactory = () => ({
+      text: "Audit finished.",
+      toolSteps: [
+        {
+          toolName: "run_action",
+          input: {
+            name: "debug.echo",
+            input: {
+              mode: "audit"
+            }
+          },
+          toolCallId: "call_audit_action"
+        }
+      ]
+    });
+
+    const persistence = createMemoryRuntimePersistence();
+    const recordedToolCalls: ToolCallAuditRecord[] = [];
+    const recordedHookRuns: HookRunAuditRecord[] = [];
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence,
+      toolCallAuditRepository: {
+        async create(input) {
+          recordedToolCalls.push(input);
+          return input;
+        }
+      },
+      hookRunAuditRepository: {
+        async create(input) {
+          recordedHookRuns.push(input);
+          return input;
+        }
+      }
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_audit_records",
+      name: "audit-records",
+      rootPath: "/tmp",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "builder",
+      settings: {
+        defaultAgent: "builder",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        builder: {
+          name: "builder",
+          mode: "primary",
+          prompt: "Use the available action.",
+          tools: {
+            native: [],
+            actions: ["debug.echo"],
+            skills: [],
+            mcp: []
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {
+        "debug.echo": {
+          name: "debug.echo",
+          description: "Echo the provided mode for auditing.",
+          callableByApi: true,
+          callableByUser: true,
+          exposeToLlm: true,
+          directory: "/tmp",
+          entry: {
+            command:
+              "node -e \"const input = JSON.parse(process.env.OPENHARNESS_ACTION_INPUT || 'null'); process.stdout.write('audit:' + (input?.mode ?? 'none'));\""
+          }
+        }
+      },
+      skills: {},
+      mcpServers: {},
+      hooks: {
+        "rewrite-request": {
+          name: "rewrite-request",
+          events: ["before_model_call"],
+          handlerType: "command",
+          capabilities: ["rewrite_model_request"],
+          definition: {
+            handler: {
+              type: "command",
+              command:
+                "cat >/dev/null; node -e 'process.stdout.write(JSON.stringify({hookSpecificOutput:{patch:{model_request:{temperature:0.4}}}}))'"
+            }
+          }
+        }
+      },
+      catalog: {
+        workspaceId: "project_audit_records",
+        agents: [{ name: "builder", source: "workspace" }],
+        models: [],
+        actions: [
+          {
+            name: "debug.echo",
+            description: "Echo the provided mode for auditing.",
+            callableByApi: true,
+            callableByUser: true,
+            exposeToLlm: true
+          }
+        ],
+        skills: [],
+        mcp: [],
+        hooks: [{ name: "rewrite-request", handlerType: "command", events: ["before_model_call"] }],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "bearer_stub",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: "project_audit_records",
+      caller,
+      input: {}
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Please run the audit action." }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    expect(recordedHookRuns.length).toBeGreaterThanOrEqual(1);
+    expect(
+      recordedHookRuns.find((record) => record.hookName === "rewrite-request" && record.eventName === "before_model_call")
+    ).toMatchObject({
+      hookName: "rewrite-request",
+      eventName: "before_model_call",
+      status: "completed",
+      capabilities: ["rewrite_model_request"],
+      patch: {
+        model_request: {
+          temperature: 0.4
+        }
+      }
+    });
+
+    expect(recordedToolCalls).toHaveLength(1);
+    expect(recordedToolCalls[0]).toMatchObject({
+      toolName: "run_action",
+      sourceType: "action",
+      status: "completed",
+      request: {
+        toolCallId: "call_audit_action",
+        sourceType: "action",
+        input: {
+          name: "debug.echo",
+          input: {
+            mode: "audit"
+          }
+        }
+      }
+    });
+    expect(recordedToolCalls[0]?.response).toMatchObject({
+      sourceType: "action",
+      output: {
+        value: expect.stringContaining("audit:audit")
+      }
+    });
+  });
+
   it("moves runs into waiting_tool while a model tool call is in flight", async () => {
     const skillRoot = await mkdtemp(path.join(tmpdir(), "oah-waiting-tool-"));
     const skillDirectory = path.join(skillRoot, "repo-explorer");
@@ -1860,6 +2155,167 @@ describe("runtime service", () => {
     expect(systemMessages.some((message) => message.content.includes("<environment>"))).toBe(false);
   });
 
+  it("disables execution-only capabilities for chat workspaces even when records are dirty", async () => {
+    const gateway = new FakeModelGateway();
+    let capturedToolNames: string[] = [];
+    let capturedMcpNames: string[] = [];
+    gateway.streamScenarioFactory = (_input, options) => {
+      capturedToolNames = Object.keys(options?.tools ?? {});
+      capturedMcpNames = (options?.mcpServers ?? []).map((server) => server.name);
+      return {
+        text: "chat-only reply"
+      };
+    };
+
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "chat_locked_down",
+      name: "chat-locked-down",
+      rootPath: "/tmp/chat-locked-down",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "chat",
+      readOnly: true,
+      historyMirrorEnabled: false,
+      defaultAgent: "assistant",
+      settings: {
+        defaultAgent: "assistant",
+        skillDirs: [],
+        systemPrompt: {
+          compose: {
+            order: ["agent", "actions", "skills"],
+            includeEnvironment: true
+          }
+        }
+      },
+      workspaceModels: {},
+      agents: {
+        assistant: {
+          name: "assistant",
+          mode: "primary",
+          prompt: "You are a chat-only assistant.",
+          tools: {
+            native: [],
+            actions: ["dangerous.run"],
+            skills: ["repo-explorer"],
+            mcp: ["docs"]
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {
+        "dangerous.run": {
+          name: "dangerous.run",
+          description: "Should never run inside chat workspaces.",
+          callableByApi: true,
+          callableByUser: true,
+          exposeToLlm: true,
+          directory: "/tmp/chat-locked-down/actions/dangerous.run",
+          entry: {
+            command: "printf unsafe"
+          }
+        }
+      },
+      skills: {
+        "repo-explorer": {
+          name: "repo-explorer",
+          description: "Should never be exposed inside chat workspaces.",
+          exposeToLlm: true,
+          directory: "/tmp/chat-locked-down/skills/repo-explorer",
+          sourceRoot: "/tmp/chat-locked-down/skills/repo-explorer",
+          content: "# Repo Explorer"
+        }
+      },
+      mcpServers: {
+        docs: {
+          name: "docs",
+          enabled: true,
+          transportType: "http",
+          url: "http://127.0.0.1:9123"
+        }
+      },
+      hooks: {
+        "rewrite-request": {
+          name: "rewrite-request",
+          events: ["before_model_call"],
+          handlerType: "command",
+          capabilities: ["rewrite_model_request"],
+          definition: {
+            handler: {
+              type: "command",
+              command:
+                "cat >/dev/null; node -e 'process.stdout.write(JSON.stringify({systemMessage:\"Hook warning.\",hookSpecificOutput:{patch:{model_request:{temperature:0.9}}}}))'"
+            }
+          }
+        }
+      },
+      catalog: {
+        workspaceId: "chat_locked_down",
+        agents: [{ name: "assistant", source: "workspace" }],
+        models: [],
+        actions: [{ name: "dangerous.run", callableByApi: true, callableByUser: true, exposeToLlm: true }],
+        skills: [{ name: "repo-explorer", exposeToLlm: true }],
+        mcp: [{ name: "docs", transportType: "http" }],
+        hooks: [{ name: "rewrite-request", handlerType: "command", events: ["before_model_call"] }],
+        nativeTools: ["shell"]
+      }
+    });
+
+    const catalog = await runtimeService.getWorkspaceCatalog("chat_locked_down");
+    expect(catalog.actions).toEqual([]);
+    expect(catalog.skills).toEqual([]);
+    expect(catalog.mcp).toEqual([]);
+    expect(catalog.hooks).toEqual([]);
+    expect(catalog.nativeTools).toEqual([]);
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "bearer_stub",
+      scopes: [],
+      workspaceAccess: []
+    };
+    const session = await runtimeService.createSession({
+      workspaceId: "chat_locked_down",
+      caller,
+      input: {}
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "hello" }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const systemMessages = gateway.invocations.at(0)?.input.messages?.filter((message) => message.role === "system") ?? [];
+    expect(systemMessages.map((message) => message.content)).toEqual(
+      expect.arrayContaining(["You are a chat-only assistant."])
+    );
+    expect(systemMessages.some((message) => message.content.includes("<available_actions>"))).toBe(false);
+    expect(systemMessages.some((message) => message.content.includes("<available_skills>"))).toBe(false);
+    expect(systemMessages.some((message) => message.content.includes("Hook warning."))).toBe(false);
+    expect(gateway.invocations.at(0)?.input.temperature).toBeUndefined();
+    expect(capturedToolNames).toEqual([]);
+    expect(capturedMcpNames).toEqual([]);
+
+    const runSteps = await runtimeService.listRunSteps(accepted.runId);
+    expect(runSteps.items.some((step) => step.stepType === "hook")).toBe(false);
+    expect(runSteps.items.some((step) => step.stepType === "tool_call")).toBe(false);
+  });
+
   it("applies before_model_call command hooks to patch request and inject context", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
@@ -1969,6 +2425,305 @@ describe("runtime service", () => {
     expect(
       gateway.invocations.at(0)?.input.messages?.some((message) => message.content === "Check secrets before answering.")
     ).toBe(true);
+  });
+
+  it("applies context build hooks before and after composing model messages", async () => {
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_context_hooks",
+      name: "context-hooks",
+      rootPath: "/tmp",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "builder",
+      settings: {
+        defaultAgent: "builder",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        builder: {
+          name: "builder",
+          mode: "primary",
+          prompt: "Context-aware builder.",
+          tools: {
+            native: [],
+            actions: [],
+            skills: [],
+            mcp: []
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      mcpServers: {},
+      hooks: {
+        "rewrite-context": {
+          name: "rewrite-context",
+          events: ["before_context_build"],
+          handlerType: "command",
+          capabilities: ["rewrite_context"],
+          definition: {
+            handler: {
+              type: "command",
+              command:
+                "cat >/dev/null; node -e 'process.stdout.write(JSON.stringify({hookSpecificOutput:{patch:{context:{messages:[{role:\"user\",content:\"rewritten hello\"}]}}}}))'"
+            }
+          }
+        },
+        "annotate-context": {
+          name: "annotate-context",
+          events: ["after_context_build"],
+          handlerType: "command",
+          capabilities: [],
+          definition: {
+            handler: {
+              type: "command",
+              command:
+                "cat >/dev/null; node -e 'process.stdout.write(JSON.stringify({systemMessage:\"Context assembled.\"}))'"
+            }
+          }
+        }
+      },
+      catalog: {
+        workspaceId: "project_context_hooks",
+        agents: [{ name: "builder", source: "workspace" }],
+        models: [],
+        actions: [],
+        skills: [],
+        mcp: [],
+        hooks: [
+          { name: "rewrite-context", handlerType: "command", events: ["before_context_build"] },
+          { name: "annotate-context", handlerType: "command", events: ["after_context_build"] }
+        ],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "bearer_stub",
+      scopes: [],
+      workspaceAccess: []
+    };
+    const session = await runtimeService.createSession({
+      workspaceId: "project_context_hooks",
+      caller,
+      input: {}
+    });
+
+    await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "hello" }
+    });
+
+    await waitFor(() => gateway.invocations.length > 0);
+    const messages = gateway.invocations.at(0)?.input.messages ?? [];
+    const events = await runtimeService.listSessionEvents(session.id);
+    const acceptedRunId = events.find((event) => event.event === "run.queued")?.runId;
+    const runSteps = acceptedRunId ? await runtimeService.listRunSteps(acceptedRunId) : { items: [] };
+
+    expect(messages.some((message) => message.role === "user" && message.content === "rewritten hello")).toBe(true);
+    expect(messages.some((message) => message.role === "user" && message.content === "hello")).toBe(false);
+    expect(messages.some((message) => message.role === "system" && message.content === "Context assembled.")).toBe(true);
+    expect(runSteps.items.some((step) => step.stepType === "hook" && step.name === "rewrite-context")).toBe(true);
+    expect(runSteps.items.some((step) => step.stepType === "hook" && step.name === "annotate-context")).toBe(true);
+  });
+
+  it("applies tool dispatch hooks to rewrite tool input and output", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "oah-tool-hooks-"));
+    const actionDir = path.join(tempDir, "actions", "echo");
+    await mkdir(actionDir, { recursive: true });
+    await writeFile(
+      path.join(actionDir, "echo-input.js"),
+      'process.stdout.write(process.env.OPENHARNESS_ACTION_INPUT || "");',
+      "utf8"
+    );
+
+    const gateway = new FakeModelGateway();
+    gateway.streamScenarioFactory = () => ({
+      text: "tool flow complete",
+      toolSteps: [
+        {
+          toolName: "run_action",
+          input: {
+            name: "debug.echo",
+            input: {
+              message: "original"
+            }
+          },
+          toolCallId: "call_tool"
+        }
+      ]
+    });
+
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_tool_hooks",
+      name: "tool-hooks",
+      rootPath: tempDir,
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "builder",
+      settings: {
+        defaultAgent: "builder",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        builder: {
+          name: "builder",
+          mode: "primary",
+          prompt: "Tool-aware builder.",
+          tools: {
+            native: [],
+            actions: ["debug.echo"],
+            skills: [],
+            mcp: []
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {
+        "debug.echo": {
+          name: "debug.echo",
+          description: "Echo action input",
+          callableByApi: true,
+          callableByUser: true,
+          exposeToLlm: true,
+          directory: actionDir,
+          entry: {
+            command: "node ./echo-input.js"
+          }
+        }
+      },
+      skills: {},
+      mcpServers: {},
+      hooks: {
+        "rewrite-tool-input": {
+          name: "rewrite-tool-input",
+          events: ["before_tool_dispatch"],
+          matcher: "run_action",
+          handlerType: "command",
+          capabilities: ["rewrite_tool_request"],
+          definition: {
+            handler: {
+              type: "command",
+              command:
+                "cat >/dev/null; node -e 'process.stdout.write(JSON.stringify({hookSpecificOutput:{patch:{tool_input:{input:{message:\"patched\"}}}}}))'"
+            }
+          }
+        },
+        "rewrite-tool-output": {
+          name: "rewrite-tool-output",
+          events: ["after_tool_dispatch"],
+          matcher: "run_action",
+          handlerType: "command",
+          capabilities: ["rewrite_tool_response"],
+          definition: {
+            handler: {
+              type: "command",
+              command:
+                "cat >/dev/null; node -e 'process.stdout.write(JSON.stringify({hookSpecificOutput:{patch:{tool_output:\"tool output patched\"}}}))'"
+            }
+          }
+        }
+      },
+      catalog: {
+        workspaceId: "project_tool_hooks",
+        agents: [{ name: "builder", source: "workspace" }],
+        models: [],
+        actions: [
+          {
+            name: "debug.echo",
+            description: "Echo action input",
+            exposeToLlm: true,
+            callableByUser: true,
+            callableByApi: true
+          }
+        ],
+        skills: [],
+        mcp: [],
+        hooks: [
+          {
+            name: "rewrite-tool-input",
+            matcher: "run_action",
+            handlerType: "command",
+            events: ["before_tool_dispatch"]
+          },
+          {
+            name: "rewrite-tool-output",
+            matcher: "run_action",
+            handlerType: "command",
+            events: ["after_tool_dispatch"]
+          }
+        ],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "bearer_stub",
+      scopes: [],
+      workspaceAccess: []
+    };
+    const session = await runtimeService.createSession({
+      workspaceId: "project_tool_hooks",
+      caller,
+      input: {}
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Run the debug action." }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const events = await runtimeService.listSessionEvents(session.id, undefined, accepted.runId);
+    const messages = await runtimeService.listSessionMessages(session.id, 50);
+    const runSteps = await runtimeService.listRunSteps(accepted.runId);
+    const toolStarted = events.find((event) => event.event === "tool.started");
+    const toolMessage = messages.items.find((message) => message.role === "tool");
+    const toolStep = runSteps.items.find((step) => step.stepType === "tool_call" && step.name === "run_action");
+
+    expect((toolStarted?.data.input as { input?: { message?: string } } | undefined)?.input?.message).toBe("patched");
+    expect((toolStep?.input?.input as { input?: { message?: string } } | undefined)?.input?.message).toBe("patched");
+    expect(toolMessage?.content).toBe("tool output patched");
+    expect(runSteps.items.some((step) => step.stepType === "hook" && step.name === "rewrite-tool-input")).toBe(true);
+    expect(runSteps.items.some((step) => step.stepType === "hook" && step.name === "rewrite-tool-output")).toBe(true);
   });
 
   it("applies after_model_call prompt hooks to rewrite model output", async () => {

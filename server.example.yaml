@@ -3,8 +3,8 @@ server:
   port: 8787
 
 storage:
-  postgres_url: ${env.DATABASE_URL}
-  redis_url: ${env.REDIS_URL}
+  # postgres_url: ${env.DATABASE_URL}
+  # redis_url: ${env.REDIS_URL}
 
 paths:
   workspace_dir: ./tmp/workspaces
