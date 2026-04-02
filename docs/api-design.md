@@ -23,7 +23,11 @@
 - 对外 HTTP API 位于 `/api/v1`
 - 内部脚本模型网关位于 `/internal/v1/models/*`
 - 对外 API 需要可验证的 caller context
-- Bearer Token 是默认接入方式，也可以由上游网关完成认证后向运行时透传身份上下文
+- 当前 `createApp()` 已支持宿主注入 caller context resolver
+- 若宿主显式提供 resolver，dev Bearer stub 默认不再介入
+- 独立 server 默认仍保留 Bearer stub，便于本地联调
+- 生产接入应由上游网关或外部服务完成认证鉴权，再向运行时透传 caller context
+- `workspaceAccess = []` 等授权决策不在 OAH 内部实现
 - `/internal/v1/models/*` 是本地通道接口，不面向外部客户端，也不要求 Bearer Token
 - 发送 message 和触发 action run 使用异步语义
 - 异步执行入口返回 `202`
@@ -33,7 +37,8 @@
 ## API 层职责
 
 - 对接外部认证与访问控制结果
-- 校验调用方对 workspace 的访问权限
+- 校验并消费上游传入的 caller context
+- 在宿主应用中校验调用方对 workspace 的访问权限
 - 参数校验
 - 创建 message / run
 - 查询状态

@@ -6,8 +6,11 @@ OpenAPI 主规范中的 `components/schemas` 目前主要包括：
 
 - `Workspace`
 - `WorkspacePage`
+- `WorkspaceImportRequest`
 - `WorkspaceCatalog`
 - `ModelCatalogItem`
+- `ModelProvider`
+- `ModelProviderList`
 - `ChatMessage`
 - `Usage`
 - `Session`
@@ -49,6 +52,37 @@ OpenAPI 主规范中的 `components/schemas` 目前主要包括：
 - `createdAt`
 - `updatedAt`
 
+### `WorkspaceImportRequest`
+
+用于 `POST /workspaces/import`。
+
+字段：
+
+- `rootPath`
+- `kind`
+- `name`
+- `externalRef`
+
+### `ModelProvider`
+
+用于描述当前服务端已支持的模型 provider。
+
+字段：
+
+- `id`
+- `packageName`
+- `description`
+- `requiresUrl`
+- `useCases`
+
+### `ModelProviderList`
+
+用于 `GET /model-providers`。
+
+字段：
+
+- `items[]`
+
 ### `UpdateWorkspaceSettingsRequest`
 
 用于 `PATCH /workspaces/{workspaceId}/settings`。
@@ -71,6 +105,37 @@ OpenAPI 主规范中的 `components/schemas` 目前主要包括：
 - `lastSyncedAt`
 - `dbPath`
 - `errorMessage`
+
+### `Run`
+
+用于 `GET /runs/{runId}`。
+
+字段：
+
+- `id`
+- `workspaceId`
+- `sessionId`
+- `parentRunId`
+- `initiatorRef`
+- `triggerType`
+- `triggerRef`
+- `agentName`
+- `effectiveAgentName`
+- `switchCount`
+- `status`
+- `cancelRequestedAt`
+- `startedAt`
+- `heartbeatAt`
+- `endedAt`
+- `createdAt`
+- `errorCode`
+- `errorMessage`
+- `metadata`
+
+说明：
+
+- `parentRunId` 当前已用于表达 subagent / background child run 与父 run 的关系
+- `heartbeatAt` 会在 run 活跃期间持续刷新，供 worker 启动恢复扫描使用
 
 ## 模型网关对象
 

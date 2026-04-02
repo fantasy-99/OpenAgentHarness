@@ -62,6 +62,7 @@ llm:
 server:
   host: 0.0.0.0
   port: 8787
+  allow_dev_bearer_stub: true
 ```
 
 字段说明：
@@ -70,6 +71,15 @@ server:
   - 服务监听地址
 - `port`
   - 服务监听端口
+- `allow_dev_bearer_stub`
+  - 是否允许独立 server 使用内置 Bearer stub 作为本地联调入口
+
+说明：
+
+- 默认值为 `true`
+- 仅建议用于本地开发或仓库自带 demo 联调
+- 如果你的宿主应用已经通过 `createApp({ resolveCallerContext })` 注入 caller context，建议显式关闭
+- 即使保持 `true`，workspace 访问授权决策仍应放在外部宿主服务
 
 ## `storage`
 
@@ -125,11 +135,38 @@ storage:
 
 推荐本地联调方式：
 
+- 最省事：`pnpm dev:server -- --config ./server.example.yaml`
+- 需要前端时再加：`pnpm dev:web`
+
+如果你想模拟生产拆分部署，则推荐：
+
 - 一个 API 进程：`pnpm dev:server -- --config ./server.example.yaml --api-only`
-- 一个 worker 进程：`pnpm dev:worker`
+- 一个 worker 进程：`pnpm dev:worker -- --config ./server.example.yaml`
 - 一个前端进程：`pnpm dev:web`
 
-如果你只想偷懒跑一个后端进程，也可以直接执行 `pnpm dev:server`，它会在同进程内启动 inline worker。
+## 运行模式
+
+当前服务端支持三种运行模式：
+
+- `API + embedded worker`
+  - `server` 默认模式
+  - 用于本地开发、PoC、单机部署和小规模自托管
+  - 如果配置了 Redis，embedded worker 会消费 Redis run queue
+  - 如果没有配置 Redis，run 会在 API 进程内直接执行
+- `API only`
+  - 使用 `--api-only` 或 `--no-worker`
+  - 适合将 API 与 worker 分离部署
+  - 如果配置了 Redis，需要单独启动 `standalone worker`
+  - 如果没有配置 Redis，当前仍会保留本地 in-process 执行语义
+- `standalone worker`
+  - 使用独立 worker 进程启动
+  - 适合生产环境横向扩展和资源隔离
+  - 当前主要负责消费 Redis run queue，并执行 history mirror sync
+
+推荐部署策略：
+
+- 开发 / 单机：默认 `server`
+- 生产 / 分布式：`server --api-only` + 独立 `worker`
 
 ## `paths`
 

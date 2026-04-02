@@ -2,6 +2,16 @@
 
 workspace 是能力发现的主边界。用户打开一个项目后，平台应尽可能从项目根目录自动发现完整能力，而不是要求用户先去平台后台做大量全局配置。
 
+## 这页适合什么时候看
+
+- 你准备新建一个 workspace
+- 你想知道 `.openharness/` 里应该放什么
+- 你在排查“为什么某个 agent / model / skill 没被加载”
+
+!!! tip
+
+    如果你只想先搭一个最小可用 workspace，优先看本页的“目录结构”“自动发现规则”和 [settings.md](./settings.md)。
+
 当前约束：
 
 - 只读取 workspace 根目录的 `AGENTS.md`
@@ -71,6 +81,19 @@ workspace/
       resources/
 ```
 
+如果你只想先跑一个最小版本，通常至少需要：
+
+```text
+workspace/
+  AGENTS.md
+  .openharness/
+    settings.yaml
+    agents/
+      builder.md
+    models/
+      openai.yaml
+```
+
 ## 自动发现规则
 
 系统在 run 启动时检查：
@@ -113,6 +136,19 @@ workspace/
 - `kind=chat` workspace 仅暴露 agents 与 models，`actions`、`skills`、`mcp`、`hooks`、`nativeTools` 均为空
 - 如果 workspace 未声明 `default_agent`，且调用方也未显式指定 agent，则应返回配置错误
 
+## 常见问题
+
+### `chat` workspace 和 `project` workspace 最核心的区别是什么？
+
+最核心的区别不是目录长什么样，而是运行策略不同：
+
+- `project` 可以装配并执行工具能力
+- `chat` 只提供静态对话能力，不进入执行 backend
+
+### 为什么 `.openharness/data/` 不参与配置解析？
+
+因为它是 runtime 托管目录，不是能力声明目录。尤其是 `history.db` 只是异步镜像，不是事实源。
+
 ## 文档导航
 
 - [settings.md](./settings.md)
@@ -130,3 +166,14 @@ workspace/
 - [hooks-handlers.md](./hooks-handlers.md)
 - [hooks-protocol.md](./hooks-protocol.md)
 - [loading-and-validation.md](./loading-and-validation.md)
+
+## 建议阅读顺序
+
+1. [settings.md](./settings.md)
+2. [agents.md](./agents.md)
+3. [models.md](./models.md)
+4. [actions.md](./actions.md)
+5. [skills.md](./skills.md)
+6. [mcp.md](./mcp.md)
+7. [hooks.md](./hooks.md)
+8. [loading-and-validation.md](./loading-and-validation.md)

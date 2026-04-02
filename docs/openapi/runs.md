@@ -19,11 +19,13 @@
 
 关键字段：
 
+- `parentRunId`
 - `triggerType`
 - `status`
 - `agentName`
 - `effectiveAgentName`
 - `switchCount`
+- `heartbeatAt`
 - `errorCode`
 - `errorMessage`
 
@@ -66,3 +68,5 @@
 - 最终取消是否成功，以后续 run 状态和 SSE 事件为准
 - run 内允许通过 `agent.switch` 切换 `effectiveAgentName`
 - run 内允许通过 `agent.delegate` 创建后台 subagent 执行
+- child run 当前会通过 `parentRunId` 与父 run 建立一等关联
+- 如果 worker 异常退出，后续 worker 启动时会基于 `heartbeatAt` 回收 stale active run，并将其标记为失败态

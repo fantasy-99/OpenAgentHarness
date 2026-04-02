@@ -4,6 +4,7 @@
 
 该模块包括：
 
+- 支持的 model provider 列表
 - 模型一次性生成
 - 模型流式生成
 
@@ -15,6 +16,21 @@
 - 其他需要直接调用平台预设模型的程序
 
 ## 接口
+
+### `GET /model-providers`
+
+用途：
+
+- 返回当前服务端已支持的 provider 类型清单
+- 供前端或调试工具构建模型配置表单
+
+返回核心字段：
+
+- `id`
+- `packageName`
+- `description`
+- `requiresUrl`
+- `useCases`
 
 ### `POST /internal/v1/models/generate`
 
@@ -111,12 +127,15 @@ data: {"model":"openai-default","finishReason":"stop"}
 - 该模块只面向服务端预设模型，不直接访问 workspace 私有模型
 - 请求参数直接使用服务端模型名，例如 `openai-default`
 - 这是内部本地调用接口，不要求 token 认证
-- 建议只通过 Unix Socket 或 `127.0.0.1` loopback 暴露，不挂到公网入口
+- 当前实现要求从 loopback 地址访问，不挂到公网入口
+- 后续仍可继续收敛为 Unix Socket
 
 ## 相关 Schema
 
 OpenAPI 单文件中对应的 schema 包括：
 
+- `ModelProvider`
+- `ModelProviderList`
 - `ModelGenerateRequest`
 - `ModelStreamRequest`
 - `ModelGenerateResponse`

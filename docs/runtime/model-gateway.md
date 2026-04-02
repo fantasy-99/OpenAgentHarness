@@ -70,18 +70,28 @@
 
 ## 内部暴露方式
 
-为了支持免鉴权调用，建议模型网关只通过本地通道暴露：
+为了支持免鉴权调用，模型网关只通过本地通道暴露。
 
-- 优先：Unix Domain Socket
-- 可选：`127.0.0.1` loopback HTTP
+当前实现：
 
-建议原则：
+- `done` `127.0.0.1` / `::1` loopback HTTP
+- `missing` Unix Domain Socket
+
+因此当前的真值边界是：
 
 - 不挂在公开 API Gateway 入口下
 - 不走外部 Bearer Token 鉴权
 - 仅供本机 action、脚本和 CLI 调用
+- 若请求不来自 loopback 地址，服务端直接拒绝
 
-推荐使用 Unix Socket 的原因：
+后续仍可继续收敛为 Unix Socket，但那不是当前默认实现。
+
+长期原则：
+
+- 不挂在公开 API Gateway 入口下
+- 不走外部 Bearer Token 鉴权
+- 仅供本机 action、脚本和 CLI 调用
+- 如果未来切到 Unix Socket，主要收益会是：
 
 - 不需要额外 token
 - 不会直接暴露给远程客户端
@@ -120,8 +130,7 @@ CLI 行为：
 
 ```bash
 curl -sS \
-  --unix-socket "$OPENHARNESS_MODEL_SOCKET" \
-  -X POST "http://localhost/internal/v1/models/generate" \
+  -X POST "http://127.0.0.1:8787/internal/v1/models/generate" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "'"$OPENHARNESS_DEFAULT_MODEL"'",
@@ -133,8 +142,7 @@ curl -sS \
 
 ```bash
 curl -N \
-  --unix-socket "$OPENHARNESS_MODEL_SOCKET" \
-  -X POST "http://localhost/internal/v1/models/stream" \
+  -X POST "http://127.0.0.1:8787/internal/v1/models/stream" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "'"$OPENHARNESS_DEFAULT_MODEL"'",
@@ -146,19 +154,23 @@ curl -N \
 
 ## 运行时环境变量注入
 
-为了让 action、shell、python、js 脚本都能方便调用，建议为执行环境注入以下变量：
+当前实现里，action 执行环境已经稳定注入的变量主要是：
 
-- `OPENHARNESS_MODEL_SOCKET`
 - `OPENHARNESS_DEFAULT_MODEL`
-- `OPENHARNESS_WORKSPACE_ID`
+- `OPENHARNESS_WORKSPACE_ROOT`
 - `OPENHARNESS_RUN_ID`
+- `OPENHARNESS_ACTION_NAME`
 
 说明：
 
-- `OPENHARNESS_MODEL_SOCKET`
-  - 模型网关 Unix Socket 路径
 - `OPENHARNESS_DEFAULT_MODEL`
   - 当前默认服务端模型名
+- `OPENHARNESS_WORKSPACE_ROOT`
+  - 当前 workspace 根目录
+- `OPENHARNESS_RUN_ID`
+  - 当前 action 所属 run id
+
+当前还没有自动注入模型网关地址变量；action / 脚本若要调用内部模型网关，仍需由宿主侧约定 loopback 地址，或后续再补专用环境变量。
 
 ## 模型选择规则
 

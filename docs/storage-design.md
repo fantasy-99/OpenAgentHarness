@@ -68,6 +68,17 @@ PostgreSQL 存放以下核心实体：
 
 其中前九类用于在线查询与审计，`history_event` 用于驱动 workspace 本地历史镜像同步。
 
+### 当前实现备注
+
+- `done` 当前主链路已经稳定落到 `workspace`、`session`、`message`、`run`、`run_step`、`tool_call`
+- `done` hook 审计已落地，但并不意味着已经引入独立的一等 `hook_run` 资源接口
+- `partial` `history_event` / 本地镜像链路已存在，worker 启动恢复也已有保守闭环，但自动续跑仍在后续范围
+- `done` `heartbeat_at` 已进入当前 run 持久化模型
+- `done` `parent_run_id` 已进入当前 run 持久化模型
+- `missing` `action_run` 尚未作为近期一等实体收口
+- `missing` `artifact` 尚未作为近期一等实体收口
+- `partial` 基于 `heartbeat_at` 的恢复流程已支持 stale run fail-closed 回收，但尚未支持自动重新入队
+
 ## 5. 建议表结构
 
 ### 5.1 workspace
@@ -168,7 +179,7 @@ PostgreSQL 存放以下核心实体：
 - `initiator_ref` 来自外部 caller context
 - `effective_agent_name` 用于记录 run 内当前生效的 agent
 - `switch_count` 用于审计和策略限制
-- `parent_run_id` 用于记录 subagent/background run 关系
+- `parent_run_id` 用于记录 subagent/background run 关系，当前已作为一等字段落库
 
 ### 5.5 run_step
 
@@ -217,6 +228,8 @@ PostgreSQL 存放以下核心实体：
 
 ### 5.7 action_run
 
+当前状态：`planned`
+
 字段：
 
 - `id`
@@ -245,6 +258,8 @@ PostgreSQL 存放以下核心实体：
 - `error_message`
 
 ### 5.9 artifact
+
+当前状态：`planned`
 
 字段：
 

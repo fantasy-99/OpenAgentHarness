@@ -1,5 +1,9 @@
 # Implementation Roadmap
 
+本文件保留的是“最初的分阶段实施草案”，方便理解为什么代码结构会这样拆分。
+
+如果你要判断“当前已经做到了什么、还缺什么”，请优先看站点内的 [当前进度](./project-roadmap.md)。后者对应仓库持续维护的现状台账；本文件更多用于解释原始实施顺序。
+
 ## 1. 当前目标
 
 在可信内网 / 自有环境前提下，交付一个可用的 Agent Runtime 服务，满足：
@@ -9,6 +13,11 @@
 - Agent 可在 workspace 中执行 shell、文件操作、Action、Skill、MCP
 - 提供 OpenAPI + SSE
 - 具备基础审计、队列、取消和超时能力
+
+补充：
+
+- 上述目标中的大量能力已经落地
+- 当前真正尚未补完的重点，主要集中在文档真值同步、heartbeat / worker 恢复、外部 caller context 接入收敛
 
 ## 2. 当前范围
 
@@ -59,6 +68,14 @@
 - 实现 Orchestrator worker
 - 实现取消、超时和 heartbeat
 
+当前状态：
+
+- `done` session queue / lock 主链路
+- `done` 取消
+- `done` run / tool timeout
+- `done` heartbeat
+- `partial` worker 启动恢复当前已支持 stale run fail-closed 回收，但尚未支持自动续跑
+
 ### Phase 4: Context Engine 与配置加载
 
 - 实现 workspace 根目录扫描
@@ -85,6 +102,13 @@
 - 实现 `agent.await` 与并发 subagent 调度
 - 将 `paths.chat_dir` 下子目录自动注册为 `kind=chat` workspace
 - 将 `paths.workspace_dir` 下子目录自动注册为 `kind=project` workspace
+
+当前状态补充：
+
+- `done` platform built-in agent 注册与同名覆盖规则
+- `done` native tools 最小集
+- `done` agent policy 中 `run_timeout_seconds`、`tool_timeout_seconds`、`parallel_tool_calls`
+- `partial` subagent 并发治理仍有后续空间，尤其是恢复与一等父子 run 字段
 
 ### Phase 5: 执行器与调用分发
 

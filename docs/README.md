@@ -2,6 +2,8 @@
 
 本文档集用于沉淀 Open Agent Harness 的当前架构设计。
 
+如果你是在浏览源码仓库，这页更像“设计文档总索引”；如果你是在文档站里阅读，建议优先从 [首页](./index.md) 或 [设计总览](./design-overview.md) 进入。
+
 ## 核心约束
 
 - 服务形态：TypeScript + Node.js 的 headless Agent Runtime
@@ -22,6 +24,8 @@
   - 领域对象、注册表和能力边界
 - [server-config.md](./server-config.md)
   - 服务端配置文件与 `chat` workspace 根目录发现规则
+- [deploy.md](./deploy.md)
+  - 本地启动、联调、embedded worker 与拆分部署方式
 - [debug-cli-tui.md](./debug-cli-tui.md)
   - 调试用 CLI / TUI 设计
 - [workspace-spec.md](./workspace-spec.md)
@@ -44,6 +48,14 @@
   - 实施顺序、风险与后续演进
 - [schemas/README.md](./schemas/README.md)
   - workspace 配置文件的 JSON Schema
+
+## 按目标快速跳转
+
+- 想先把系统跑起来：看 [deploy.md](./deploy.md)
+- 想理解系统边界：看 [architecture-overview.md](./architecture-overview.md)
+- 想配置 workspace：看 [workspace/README.md](./workspace/README.md)
+- 想理解执行链路：看 [runtime/README.md](./runtime/README.md)
+- 想对接 API / SSE：看 [openapi/README.md](./openapi/README.md)
 
 ## 推荐阅读顺序
 

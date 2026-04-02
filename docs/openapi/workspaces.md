@@ -5,7 +5,9 @@
 该模块包括：
 
 - workspace 创建
+- workspace 导入
 - workspace 查询
+- workspace 删除
 - workspace catalog 查询
 - 只读对话 workspace 批量发现结果
 
@@ -48,6 +50,29 @@
 - 创建顺序必须是：先从 `template_dir` 复制模板，再叠加用户传入的 `AGENTS.md`、MCP 和 skills
 - `chat` workspace 更适合由服务端按目录自动发现，不要求调用方逐个创建
 
+### `POST /workspaces/import`
+
+用途：
+
+- 将一个已经存在的目录注册为 workspace
+- 复用服务端的发现逻辑，而不是从模板创建
+
+请求体核心字段：
+
+- `rootPath`
+
+可选字段：
+
+- `kind`
+- `name`
+- `externalRef`
+
+说明：
+
+- `kind` 默认为 `project`
+- 该接口不会复制模板，只会读取现有目录内容并写入中心 workspace 记录
+- 适合把已有 repo 或只读 chat 目录纳入运行时管理
+
 ### `GET /workspaces`
 
 用途：
@@ -80,6 +105,18 @@
 - `kind`
 - `readOnly`
 - `historyMirrorEnabled`
+
+### `DELETE /workspaces/{workspaceId}`
+
+用途：
+
+- 删除 workspace 中心记录
+- 对受管 `project` workspace，可额外清理服务端管理目录中的实际文件夹
+
+说明：
+
+- `chat` workspace 主要删除中心记录
+- 是否同步删除目录，取决于该 workspace 是否位于服务端受管的 `paths.workspace_dir` 下
 
 ### `PATCH /workspaces/{workspaceId}/settings`
 

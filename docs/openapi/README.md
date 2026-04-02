@@ -2,6 +2,12 @@
 
 这里保存 Open Agent Harness 的 OpenAPI 3.1 草案和按模块拆分的接口说明。
 
+## 先看哪一个
+
+- 想先理解整体约束：看 [overview.md](./overview.md)
+- 想直接查接口定义：看 [openapi.yaml](./openapi.yaml)
+- 想接入消息与运行：先看 [sessions.md](./sessions.md)、[runs.md](./runs.md)、[streaming.md](./streaming.md)
+
 ## 文件结构
 
 - [openapi.yaml](./openapi.yaml)
@@ -27,3 +33,4 @@
 
 - 接口定义以 [openapi.yaml](./openapi.yaml) 为准
 - 模块文档用于解释资源边界和语义
+- 如果你既要发起请求又要消费流式结果，建议把 `sessions`、`runs` 和 `streaming` 三页配合看

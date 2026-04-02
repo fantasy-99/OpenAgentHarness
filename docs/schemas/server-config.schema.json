@@ -20,6 +20,9 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 65535
+        },
+        "allow_dev_bearer_stub": {
+          "type": "boolean"
         }
       }
     },

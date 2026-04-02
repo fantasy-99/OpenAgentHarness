@@ -1,0 +1,139 @@
+:root {
+  --md-primary-fg-color: #0f766e;
+  --md-primary-fg-color--light: #1aa69a;
+  --md-primary-fg-color--dark: #115e59;
+  --md-accent-fg-color: #0ea5b7;
+  --md-accent-fg-color--transparent: rgba(14, 165, 183, 0.14);
+  --md-default-bg-color: #f4fbfb;
+  --md-default-fg-color: #18363b;
+  --md-default-fg-color--light: #5b757a;
+  --md-typeset-a-color: #0f766e;
+  --aqua-mint: #8ee7de;
+  --aqua-sea: #41c7bb;
+  --aqua-deep: #0f766e;
+  --aqua-cyan: #9adff1;
+  --aqua-fog: #eaf8f8;
+  --aqua-night: #0d1d22;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #16a39b;
+  --md-primary-fg-color--light: #39c9bf;
+  --md-primary-fg-color--dark: #0d7871;
+  --md-accent-fg-color: #59cbe8;
+  --md-default-bg-color: #0d1d22;
+  --md-default-fg-color: #e6f7f6;
+  --md-default-fg-color--light: #acc6c8;
+  --md-typeset-a-color: #72ddd3;
+  --aqua-fog: #142930;
+}
+
+.md-header,
+.md-tabs {
+  backdrop-filter: saturate(180%) blur(14px);
+  background:
+    linear-gradient(90deg, rgba(15, 118, 110, 0.95), rgba(62, 176, 166, 0.92), rgba(89, 203, 232, 0.88));
+}
+
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg {
+  height: 2rem;
+  width: 2rem;
+  filter: drop-shadow(0 3px 10px rgba(15, 118, 110, 0.2));
+}
+
+[data-md-color-scheme="slate"] .md-header__button.md-logo img,
+[data-md-color-scheme="slate"] .md-header__button.md-logo svg {
+  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.24));
+}
+
+[data-md-color-scheme="slate"] .md-header,
+[data-md-color-scheme="slate"] .md-tabs {
+  background:
+    linear-gradient(90deg, rgba(13, 76, 82, 0.96), rgba(18, 112, 119, 0.94), rgba(37, 138, 147, 0.9));
+}
+
+.md-typeset {
+  color: var(--md-default-fg-color);
+}
+
+.md-typeset a {
+  font-weight: 500;
+}
+
+.md-typeset a:hover {
+  color: color-mix(in srgb, var(--md-typeset-a-color) 70%, white 30%);
+}
+
+.hero {
+  display: block;
+  margin: 0 0 2rem;
+  padding: 1.4rem;
+  border: 1px solid color-mix(in srgb, var(--aqua-deep) 18%, transparent);
+  border-radius: 1.25rem;
+  background:
+    radial-gradient(circle at top right, rgba(90, 203, 232, 0.14), transparent 32%),
+    linear-gradient(135deg, color-mix(in srgb, var(--aqua-fog) 88%, white 12%), color-mix(in srgb, var(--md-default-bg-color) 92%, var(--aqua-mint) 8%));
+  box-shadow: 0 18px 40px rgba(15, 118, 110, 0.08);
+}
+
+.hero h1,
+.hero h2,
+.hero h3 {
+  margin-top: 0;
+}
+
+.md-button--primary {
+  background-color: var(--aqua-deep);
+  border-color: var(--aqua-deep);
+}
+
+.md-button--primary:hover {
+  background-color: color-mix(in srgb, var(--aqua-deep) 88%, black 12%);
+  border-color: color-mix(in srgb, var(--aqua-deep) 88%, black 12%);
+}
+
+.grid.cards > ul > li,
+.md-typeset .grid.cards > ul > li {
+  border-radius: 1rem;
+  border: 1px solid color-mix(in srgb, var(--aqua-deep) 10%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, white 80%, var(--aqua-fog) 20%), color-mix(in srgb, var(--aqua-fog) 68%, white 32%));
+  box-shadow: 0 14px 32px rgba(15, 118, 110, 0.08);
+}
+
+[data-md-color-scheme="slate"] .grid.cards > ul > li,
+[data-md-color-scheme="slate"] .md-typeset .grid.cards > ul > li {
+  background:
+    linear-gradient(180deg, rgba(17, 31, 37, 0.96), rgba(20, 42, 49, 0.96));
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.22);
+}
+
+.md-typeset img[alt="Open Agent Harness Architecture"] {
+  display: block;
+  margin: 1.5rem auto 2rem;
+  padding: 1rem;
+  border-radius: 1.25rem;
+  background: color-mix(in srgb, white 84%, var(--aqua-fog) 16%);
+  border: 1px solid color-mix(in srgb, var(--aqua-deep) 10%, transparent);
+}
+
+.md-typeset table:not([class]) {
+  border-radius: 0.9rem;
+  overflow: hidden;
+  box-shadow: 0 10px 24px rgba(15, 118, 110, 0.08);
+}
+
+.md-typeset table:not([class]) th {
+  background: color-mix(in srgb, var(--aqua-fog) 78%, white 22%);
+}
+
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) th {
+  background: rgba(65, 199, 187, 0.16);
+}
+
+@media screen and (min-width: 76.25em) {
+  .hero {
+    padding: 1.75rem;
+  }
+}

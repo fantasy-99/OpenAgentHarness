@@ -25,6 +25,7 @@
 - `agent.delegate.started`
 - `agent.delegate.completed`
 - `agent.delegate.failed`
+- `hook.notice`
 - `tool.started`
 - `tool.completed`
 - `tool.failed`
@@ -51,6 +52,13 @@ subagent 事件示例：
 ```text
 event: agent.delegate.started
 data: {"runId":"run_123","agentName":"builder","targetAgent":"repo-explorer","childRunId":"run_456"}
+```
+
+hook 通知事件示例：
+
+```text
+event: hook.notice
+data: {"runId":"run_123","hookName":"rewrite-request","eventName":"before_model_call","errorCode":"hook_execution_failed","errorMessage":"Prompt hook timed out after 1000ms."}
 ```
 
 ## 客户端规则
