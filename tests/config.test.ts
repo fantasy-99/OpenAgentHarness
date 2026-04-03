@@ -526,7 +526,7 @@ default_agent: assistant
     const chat = discovered.find((workspace) => workspace.kind === "chat");
 
     expect(project).toMatchObject({
-      id: buildWorkspaceId("project", "demo-app"),
+      id: buildWorkspaceId("project", "demo-app", path.join(workspaceDir, "demo-app")),
       name: "demo-app",
       defaultAgent: "builder",
       readOnly: false,
@@ -622,7 +622,7 @@ default_agent: assistant
     });
 
     expect(chat).toMatchObject({
-      id: buildWorkspaceId("chat", "pair-mode"),
+      id: buildWorkspaceId("chat", "pair-mode", path.join(chatDir, "pair-mode")),
       name: "pair-mode",
       defaultAgent: "assistant",
       readOnly: true
@@ -686,6 +686,28 @@ Use the workspace model.
       provider: "openai",
       name: "gpt-4.1-mini"
     });
+  });
+
+  it("builds distinct discovered workspace ids for the same name under different roots", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-discovery-unique-id-"));
+    tempDirs.push(tempDir);
+
+    const firstRoot = path.join(tempDir, "workspaces-a", "demo-app");
+    const secondRoot = path.join(tempDir, "workspaces-b", "demo-app");
+
+    await Promise.all([
+      mkdir(path.join(firstRoot, ".openharness"), { recursive: true }),
+      mkdir(path.join(secondRoot, ".openharness"), { recursive: true })
+    ]);
+
+    const [first, second] = await Promise.all([
+      discoverWorkspace(firstRoot, "project", { platformModels: {} }),
+      discoverWorkspace(secondRoot, "project", { platformModels: {} })
+    ]);
+
+    expect(first.id).not.toBe(second.id);
+    expect(first.id).toBe(buildWorkspaceId("project", "demo-app", firstRoot));
+    expect(second.id).toBe(buildWorkspaceId("project", "demo-app", secondRoot));
   });
 
   it("lets a workspace default agent point at a platform agent and preserves workspace override precedence", async () => {

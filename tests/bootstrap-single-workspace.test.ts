@@ -4,6 +4,8 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { buildWorkspaceId } from "@oah/config";
+
 import { bootstrapRuntime } from "../apps/server/src/bootstrap.ts";
 
 const tempDirs: string[] = [];
@@ -46,9 +48,10 @@ openai-default:
     });
 
     try {
+      const expectedWorkspaceId = buildWorkspaceId("project", "repo", workspaceRoot);
       expect(runtime.workspaceMode).toEqual({
         kind: "single",
-        workspaceId: "project_repo",
+        workspaceId: expectedWorkspaceId,
         workspaceKind: "project",
         rootPath: workspaceRoot
       });
@@ -58,7 +61,7 @@ openai-default:
       const workspacePage = await runtime.runtimeService.listWorkspaces(10);
       expect(workspacePage.items).toHaveLength(1);
       expect(workspacePage.items[0]).toMatchObject({
-        id: "project_repo",
+        id: expectedWorkspaceId,
         rootPath: workspaceRoot,
         kind: "project"
       });

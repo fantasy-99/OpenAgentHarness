@@ -4,6 +4,8 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { buildWorkspaceId } from "@oah/config";
+
 import { bootstrapRuntime } from "../apps/server/src/bootstrap.ts";
 
 const tempDirs: string[] = [];
@@ -81,8 +83,8 @@ openai-default:
     });
 
     try {
-      const project = await runtime.runtimeService.getWorkspaceRecord("project_demo-project");
-      const chat = await runtime.runtimeService.getWorkspaceRecord("chat_pair-mode");
+      const project = await runtime.runtimeService.getWorkspaceRecord(buildWorkspaceId("project", "demo-project", projectRoot));
+      const chat = await runtime.runtimeService.getWorkspaceRecord(buildWorkspaceId("chat", "pair-mode", chatRoot));
 
       expect(project.defaultAgent).toBe("builder");
       expect(project.catalog.agents).toEqual(

@@ -12,7 +12,15 @@ import {
   updateWorkspaceHistoryMirrorSetting
 } from "@oah/config";
 import type { ServerConfig } from "@oah/config";
-import { RuntimeService } from "@oah/runtime-core";
+import { AppError, RuntimeService, parseCursor } from "@oah/runtime-core";
+import type {
+  Run,
+  RunRepository,
+  Session,
+  SessionRepository,
+  WorkspaceRecord,
+  WorkspaceRepository
+} from "@oah/runtime-core";
 import { AiSdkModelGateway } from "@oah/model-gateway";
 import { createMemoryRuntimePersistence } from "@oah/storage-memory";
 import { createPostgresRuntimePersistence } from "@oah/storage-postgres";
@@ -113,6 +121,128 @@ async function fileExists(targetPath: string): Promise<boolean> {
 function isManagedWorkspaceRoot(workspaceRoot: string, managedWorkspaceDir: string): boolean {
   const relativePath = path.relative(path.resolve(managedWorkspaceDir), path.resolve(workspaceRoot));
   return relativePath.length > 0 && !relativePath.startsWith("..") && !path.isAbsolute(relativePath);
+}
+
+async function listVisibleWorkspaces(
+  repository: WorkspaceRepository,
+  visibleWorkspaceIds: ReadonlySet<string>,
+  pageSize: number,
+  cursor?: string
+): Promise<WorkspaceRecord[]> {
+  const visibleItems: WorkspaceRecord[] = [];
+  let rawCursor: string | undefined;
+
+  do {
+    const page = await repository.list(Math.max(pageSize, 100), rawCursor);
+    visibleItems.push(...page.filter((workspace) => visibleWorkspaceIds.has(workspace.id)));
+    rawCursor = page.length === Math.max(pageSize, 100) ? String(parseCursor(rawCursor) + Math.max(pageSize, 100)) : undefined;
+  } while (rawCursor);
+
+  const startIndex = parseCursor(cursor);
+  return visibleItems.slice(startIndex, startIndex + pageSize);
+}
+
+class ScopedWorkspaceRepository implements WorkspaceRepository {
+  constructor(
+    private readonly inner: WorkspaceRepository,
+    private readonly visibleWorkspaceIds: Set<string>
+  ) {}
+
+  async create(input: WorkspaceRecord): Promise<WorkspaceRecord> {
+    this.visibleWorkspaceIds.add(input.id);
+    return this.inner.create(input);
+  }
+
+  async upsert(input: WorkspaceRecord): Promise<WorkspaceRecord> {
+    this.visibleWorkspaceIds.add(input.id);
+    return this.inner.upsert(input);
+  }
+
+  async getById(id: string): Promise<WorkspaceRecord | null> {
+    if (!this.visibleWorkspaceIds.has(id)) {
+      return null;
+    }
+
+    return this.inner.getById(id);
+  }
+
+  async list(pageSize: number, cursor?: string): Promise<WorkspaceRecord[]> {
+    return listVisibleWorkspaces(this.inner, this.visibleWorkspaceIds, pageSize, cursor);
+  }
+
+  async delete(id: string): Promise<void> {
+    this.visibleWorkspaceIds.delete(id);
+    await this.inner.delete(id);
+  }
+}
+
+class ScopedSessionRepository implements SessionRepository {
+  constructor(
+    private readonly inner: SessionRepository,
+    private readonly visibleWorkspaceIds: ReadonlySet<string>
+  ) {}
+
+  async create(input: Session): Promise<Session> {
+    return this.inner.create(input);
+  }
+
+  async getById(id: string): Promise<Session | null> {
+    const session = await this.inner.getById(id);
+    if (!session || !this.visibleWorkspaceIds.has(session.workspaceId)) {
+      return null;
+    }
+
+    return session;
+  }
+
+  async update(input: Session): Promise<Session> {
+    if (!this.visibleWorkspaceIds.has(input.workspaceId)) {
+      throw new AppError(404, "session_not_found", `Session ${input.id} was not found.`);
+    }
+
+    return this.inner.update(input);
+  }
+
+  async listByWorkspaceId(workspaceId: string, pageSize: number, cursor?: string): Promise<Session[]> {
+    if (!this.visibleWorkspaceIds.has(workspaceId)) {
+      return [];
+    }
+
+    return this.inner.listByWorkspaceId(workspaceId, pageSize, cursor);
+  }
+}
+
+class ScopedRunRepository implements RunRepository {
+  constructor(
+    private readonly inner: RunRepository,
+    private readonly visibleWorkspaceIds: ReadonlySet<string>
+  ) {}
+
+  async create(input: Run): Promise<Run> {
+    return this.inner.create(input);
+  }
+
+  async getById(id: string): Promise<Run | null> {
+    const run = await this.inner.getById(id);
+    if (!run || !this.visibleWorkspaceIds.has(run.workspaceId)) {
+      return null;
+    }
+
+    return run;
+  }
+
+  async update(input: Run): Promise<Run> {
+    if (!this.visibleWorkspaceIds.has(input.workspaceId)) {
+      throw new AppError(404, "run_not_found", `Run ${input.id} was not found.`);
+    }
+
+    return this.inner.update(input);
+  }
+
+  async listRecoverableActiveRuns(staleBefore: string, limit: number): Promise<Run[]> {
+    const runs = await this.inner.listRecoverableActiveRuns(staleBefore, limit * 4);
+    return runs.filter((run) => this.visibleWorkspaceIds.has(run.workspaceId)).slice(0, limit);
+  }
 }
 
 function readFlagValue(argv: string[], flag: string): string | undefined {
@@ -376,6 +506,10 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   const sessionEventStore = redisBus
     ? new FanoutSessionEventStore(persistence.sessionEventStore, redisBus)
     : persistence.sessionEventStore;
+  const visibleWorkspaceIds = new Set(discoveredWorkspaces.map((workspace) => workspace.id));
+  const workspaceRepository = new ScopedWorkspaceRepository(persistence.workspaceRepository, visibleWorkspaceIds);
+  const sessionRepository = new ScopedSessionRepository(persistence.sessionRepository, visibleWorkspaceIds);
+  const runRepository = new ScopedRunRepository(persistence.runRepository, visibleWorkspaceIds);
   const workspaceMode =
     singleWorkspace !== undefined
       ? {
@@ -388,12 +522,15 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
           kind: "multi" as const
         };
 
-  await Promise.all(discoveredWorkspaces.map((workspace) => persistence.workspaceRepository.upsert(workspace)));
+  await Promise.all(discoveredWorkspaces.map((workspace) => workspaceRepository.upsert(workspace)));
   const runtimeService = new RuntimeService({
     defaultModel: config.llm.default_model,
     modelGateway,
     platformModels: models,
     ...persistence,
+    workspaceRepository,
+    sessionRepository,
+    runRepository,
     sessionEventStore,
     runQueue: redisRunQueue,
     ...(singleWorkspace === undefined
@@ -425,7 +562,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
           platformSkillDir: config.paths.skill_dir,
           platformToolDir: toolDir
         } as Parameters<typeof discoverWorkspace>[2]);
-        return persistence.workspaceRepository.upsert({
+        return workspaceRepository.upsert({
           ...refreshed,
           name: workspace.name,
           executionPolicy: workspace.executionPolicy,
@@ -488,7 +625,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   const historyMirrorSyncer =
     startWorker && "historyEventRepository" in persistence && persistence.historyEventRepository
       ? new HistoryMirrorSyncer({
-          workspaceRepository: persistence.workspaceRepository,
+          workspaceRepository,
           historyEventRepository: persistence.historyEventRepository,
           logger: {
             warn(message, error) {
@@ -557,7 +694,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     const workspaces: import("@oah/runtime-core").WorkspaceRecord[] = [];
     let cursor: string | undefined;
     do {
-      const page = await persistence.workspaceRepository.list(100, cursor);
+      const page = await workspaceRepository.list(100, cursor);
       workspaces.push(...page);
       cursor = page.length === 100 ? String((cursor ? Number.parseInt(cursor, 10) : 0) + 100) : undefined;
     } while (cursor);
@@ -607,8 +744,8 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
               platformSkillDir: config.paths.skill_dir,
               platformToolDir: toolDir
             } as Parameters<typeof discoverWorkspace>[2]);
-            const existing = await persistence.workspaceRepository.getById(discovered.id);
-            const persisted = await persistence.workspaceRepository.upsert({
+            const existing = await workspaceRepository.getById(discovered.id);
+            const persisted = await workspaceRepository.upsert({
               ...discovered,
               name: input.name ?? existing?.name ?? discovered.name,
               createdAt: existing?.createdAt ?? discovered.createdAt,

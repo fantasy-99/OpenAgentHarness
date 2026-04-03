@@ -1,4 +1,5 @@
 import { access, cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 import type {
@@ -506,9 +507,17 @@ async function resolveWorkspaceSystemPrompt(
   };
 }
 
-export function buildWorkspaceId(kind: "project" | "chat", name: string): string {
+function workspaceIdSuffix(kind: "project" | "chat", rootPath: string): string {
+  return createHash("sha1")
+    .update(`${kind}\0${path.resolve(rootPath).replaceAll("\\", "/")}`)
+    .digest("hex")
+    .slice(0, 10);
+}
+
+export function buildWorkspaceId(kind: "project" | "chat", name: string, rootPath?: string): string {
   const normalized = normalizeWorkspaceName(name);
-  return `${kind}_${normalized || "workspace"}`;
+  const base = `${kind}_${normalized || "workspace"}`;
+  return rootPath ? `${base}_${workspaceIdSuffix(kind, rootPath)}` : base;
 }
 
 export function normalizeWorkspaceName(name: string): string {
@@ -1128,7 +1137,7 @@ export async function discoverWorkspace(
   const hooks = kind === "chat" ? {} : await loadWorkspaceHooks(rootPath);
   const projectAgentsMd = await loadProjectAgentsMd(rootPath);
   const name = path.basename(rootPath);
-  const id = buildWorkspaceId(kind, name);
+  const id = buildWorkspaceId(kind, name, rootPath);
   const models = [...toPlatformModelCatalogItems(input.platformModels), ...toWorkspaceModelCatalogItems(workspaceModels)];
   const timestamp = nowIso();
   const catalog = createWorkspaceCatalog(id, models);

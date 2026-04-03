@@ -234,8 +234,8 @@ pnpm dev:server -- \
 
 启动成功后，日志会带上当前 workspace 信息，例如：
 
-- `workspace=project_demo (project)`
-- `workspace=chat_support-mode (chat)`
+- `workspace=project_demo_4f2c8a1b6d (project)`
+- `workspace=chat_support-mode_91ad52f07c (chat)`
 
 ### Tab 3：前端
 
