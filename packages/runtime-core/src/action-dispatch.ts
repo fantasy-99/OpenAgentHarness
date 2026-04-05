@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { formatToolOutput } from "./tool-output.js";
 import type { ActionDefinition, RuntimeToolExecutionContext, RuntimeToolSet } from "./types.js";
 
 export interface ActionExecutionResult {
@@ -96,15 +97,29 @@ export function createRunActionTool(
         }
 
         const result = await executeAction(action, input, context);
-        return [
-          `<action_result name="${escapeXml(action.name)}" exit_code="${result.exitCode}">`,
-          "<output>",
-          result.output,
-          "</output>",
-          ...(result.stdout.length > 0 ? ["<stdout>", result.stdout, "</stdout>"] : []),
-          ...(result.stderr.length > 0 ? ["<stderr>", result.stderr, "</stderr>"] : []),
-          "</action_result>"
-        ].join("\n");
+        return formatToolOutput(
+          [
+            ["name", action.name],
+            ["exit_code", result.exitCode]
+          ],
+          [
+            {
+              title: "output",
+              lines: result.output.length > 0 ? result.output.split(/\r?\n/) : [],
+              emptyText: "(empty output)"
+            },
+            {
+              title: "stdout",
+              lines: result.stdout.length > 0 ? result.stdout.split(/\r?\n/) : [],
+              emptyText: "(empty stdout)"
+            },
+            {
+              title: "stderr",
+              lines: result.stderr.length > 0 ? result.stderr.split(/\r?\n/) : [],
+              emptyText: "(empty stderr)"
+            }
+          ]
+        );
       }
     }
   };

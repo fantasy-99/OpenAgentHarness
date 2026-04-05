@@ -93,7 +93,7 @@
 - 解析 `.openharness/skills/*/SKILL.md`
 - 解析 `settings.skill_dirs` 并扫描额外 skill 目录
 - 实现 skill 同层冲突报错、跨层冲突 warning + 覆盖
-- 实现 skill catalog 注入与 `activate_skill` 工具
+- 实现 skill catalog 注入与 `Skill` 工具
 - 解析 `.openharness/tools/settings.yaml`
 - 发现 `.openharness/tools/servers/*`
 - 解析 `.openharness/hooks/*.yaml`

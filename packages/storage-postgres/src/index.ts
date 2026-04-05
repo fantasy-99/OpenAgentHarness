@@ -108,9 +108,7 @@ const messages = pgTable("messages", {
     .references(() => sessions.id, { onDelete: "cascade" }),
   runId: text("run_id").references(() => runs.id, { onDelete: "cascade" }),
   role: text("role").notNull(),
-  content: text("content").notNull(),
-  toolName: text("tool_name"),
-  toolCallId: text("tool_call_id"),
+  content: jsonb("content").$type<Message["content"]>().notNull(),
   metadata: jsonb("metadata").$type<Message["metadata"]>(),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull()
 });
@@ -331,8 +329,6 @@ function buildMessageRow(input: Message) {
     runId: input.runId ?? null,
     role: input.role,
     content: input.content,
-    toolName: input.toolName ?? null,
-    toolCallId: input.toolCallId ?? null,
     metadata: input.metadata ?? null,
     createdAt: input.createdAt
   };
@@ -345,8 +341,6 @@ function toMessage(row: typeof messages.$inferSelect): Message {
     ...(row.runId ? { runId: row.runId } : {}),
     role: row.role as Message["role"],
     content: row.content,
-    ...(row.toolName ? { toolName: row.toolName } : {}),
-    ...(row.toolCallId ? { toolCallId: row.toolCallId } : {}),
     ...(row.metadata ? { metadata: row.metadata } : {}),
     createdAt: normalizeTimestamp(row.createdAt) ?? row.createdAt
   };
@@ -1113,12 +1107,13 @@ const schemaStatements = [
     session_id text not null references sessions(id) on delete cascade,
     run_id text references runs(id) on delete cascade,
     role text not null,
-    content text not null,
-    tool_name text,
-    tool_call_id text,
+    content jsonb not null,
     metadata jsonb,
     created_at timestamptz not null
   )`,
+  `alter table messages alter column content type jsonb using to_jsonb(content)`,
+  `alter table messages drop column if exists tool_name`,
+  `alter table messages drop column if exists tool_call_id`,
   `create index if not exists messages_session_created_idx on messages (session_id, created_at)`,
   `create index if not exists messages_run_created_idx on messages (run_id, created_at)`,
   `create table if not exists run_steps (

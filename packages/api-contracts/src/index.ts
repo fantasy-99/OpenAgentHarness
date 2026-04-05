@@ -111,14 +111,39 @@ export const sessionPageSchema = z.object({
   nextCursor: z.string().optional()
 });
 
+export const textMessagePartSchema = z.object({
+  type: z.literal("text"),
+  text: z.string()
+});
+
+export const toolCallMessagePartSchema = z.object({
+  type: z.literal("tool-call"),
+  toolCallId: z.string(),
+  toolName: z.string(),
+  input: jsonValueSchema.optional()
+});
+
+export const toolResultMessagePartSchema = z.object({
+  type: z.literal("tool-result"),
+  toolCallId: z.string(),
+  toolName: z.string(),
+  output: jsonValueSchema.optional()
+});
+
+export const messagePartSchema = z.union([
+  textMessagePartSchema,
+  toolCallMessagePartSchema,
+  toolResultMessagePartSchema
+]);
+
+export const messageContentSchema = z.union([z.string(), z.array(messagePartSchema)]);
+
 export const messageSchema = z.object({
   id: z.string(),
   sessionId: z.string(),
   runId: z.string().optional(),
   role: z.enum(["system", "user", "assistant", "tool"]),
-  content: z.string(),
-  toolName: z.string().optional(),
-  toolCallId: z.string().optional(),
+  content: messageContentSchema,
   metadata: jsonObjectSchema.optional(),
   createdAt: timestampSchema
 });
@@ -373,7 +398,7 @@ export const actionRunAcceptedSchema = z.object({
 
 export const chatMessageSchema = z.object({
   role: z.enum(["system", "user", "assistant", "tool"]),
-  content: z.string()
+  content: messageContentSchema
 });
 
 export const usageSchema = z.object({
@@ -490,6 +515,8 @@ export type Session = z.infer<typeof sessionSchema>;
 export type SessionPage = z.infer<typeof sessionPageSchema>;
 export type Message = z.infer<typeof messageSchema>;
 export type MessagePage = z.infer<typeof messagePageSchema>;
+export type MessagePart = z.infer<typeof messagePartSchema>;
+export type MessageContent = z.infer<typeof messageContentSchema>;
 export type Run = z.infer<typeof runSchema>;
 export type RunStep = z.infer<typeof runStepSchema>;
 export type RunStepPage = z.infer<typeof runStepPageSchema>;

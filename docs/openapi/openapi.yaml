@@ -696,8 +696,47 @@ components:
           type: string
           enum: [system, user, assistant, tool]
         content:
-          type: string
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                $ref: '#/components/schemas/MessagePart'
       additionalProperties: false
+    MessagePart:
+      oneOf:
+        - type: object
+          required: [type, text]
+          properties:
+            type:
+              type: string
+              enum: [text]
+            text:
+              type: string
+          additionalProperties: false
+        - type: object
+          required: [type, toolCallId, toolName]
+          properties:
+            type:
+              type: string
+              enum: [tool-call]
+            toolCallId:
+              type: string
+            toolName:
+              type: string
+            input: {}
+          additionalProperties: false
+        - type: object
+          required: [type, toolCallId, toolName]
+          properties:
+            type:
+              type: string
+              enum: [tool-result]
+            toolCallId:
+              type: string
+            toolName:
+              type: string
+            output: {}
+          additionalProperties: false
     Usage:
       type: object
       properties:
@@ -871,11 +910,11 @@ components:
           type: string
           enum: [system, user, assistant, tool]
         content:
-          type: string
-        toolName:
-          type: string
-        toolCallId:
-          type: string
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                $ref: '#/components/schemas/MessagePart'
         metadata:
           $ref: '#/components/schemas/JsonObject'
         createdAt:

@@ -13,6 +13,7 @@
 - 执行边界：workspace 是能力发现边界，session 是上下文边界，run 是执行边界
 - 运行时来源：平台内建 agent / model 与 workspace 当前文件声明；平台模板仅用于初始化生成文件
 - 模型接入：平台级与 workspace 级双层 model entries，底层 `provider` 字段对齐 AI SDK
+- 消息模型：session / model 调用统一采用 AI SDK 风格消息内容，`content` 可为文本或 message parts
 - 存储边界：PostgreSQL 是唯一事实源，workspace 下 `.openharness/data/history.db` 是异步历史镜像
 - 服务端配置：可通过独立配置文件声明 `chat` workspace 根目录等运行时级选项
 

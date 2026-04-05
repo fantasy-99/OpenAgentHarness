@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { RuntimeService } from "@oah/runtime-core";
 import type { HookRunAuditRecord, ToolCallAuditRecord } from "@oah/runtime-core";
 import { createMemoryRuntimePersistence } from "@oah/storage-memory";
+import type { Message } from "@oah/api-contracts";
 
 import { FakeModelGateway } from "./helpers/fake-model-gateway";
 
@@ -21,6 +22,58 @@ async function waitFor(check: () => Promise<boolean> | boolean, timeoutMs = 5_00
   }
 
   throw new Error("Timed out while waiting for condition.");
+}
+
+function messageParts(message: Pick<Message, "content">) {
+  return Array.isArray(message.content) ? message.content : [];
+}
+
+function messageText(message: Pick<Message, "content"> | undefined) {
+  if (!message) {
+    return undefined;
+  }
+
+  if (typeof message.content === "string") {
+    return message.content;
+  }
+
+  return message.content
+    .flatMap((part) => {
+      if (part.type === "text") {
+        return [part.text];
+      }
+
+      if (part.type === "tool-result" && typeof part.output === "string") {
+        return [part.output];
+      }
+
+      return [];
+    })
+    .join("\n\n");
+}
+
+function messageToolName(message: Pick<Message, "content"> | undefined) {
+  return messageParts(message ?? { content: "" })
+    .find((part) => part.type === "tool-call" || part.type === "tool-result")
+    ?.toolName;
+}
+
+function messageToolCallId(message: Pick<Message, "content"> | undefined) {
+  return messageParts(message ?? { content: "" })
+    .find((part) => part.type === "tool-call" || part.type === "tool-result")
+    ?.toolCallId;
+}
+
+function hasToolCallPart(message: Pick<Message, "content"> | undefined, toolName: string, toolCallId: string) {
+  return messageParts(message ?? { content: "" }).some(
+    (part) => part.type === "tool-call" && part.toolName === toolName && part.toolCallId === toolCallId
+  );
+}
+
+function hasToolResultPart(message: Pick<Message, "content"> | undefined, toolName: string, toolCallId: string) {
+  return messageParts(message ?? { content: "" }).some(
+    (part) => part.type === "tool-result" && part.toolName === toolName && part.toolCallId === toolCallId
+  );
 }
 
 async function createRuntime(delayMs = 0) {
@@ -255,6 +308,60 @@ describe("runtime service", () => {
 
     expect(runStarted).toEqual([first.runId, second.runId]);
     expect(runCompleted).toEqual([first.runId, second.runId]);
+  });
+
+  it("supports a third session message and lists persisted messages with the default page size", async () => {
+    const { runtimeService, workspace } = await createRuntime();
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: workspace.id,
+      caller,
+      input: {}
+    });
+
+    const first = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "first" }
+    });
+    const second = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "second" }
+    });
+    const third = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "third" }
+    });
+
+    await waitFor(async () => {
+      const events = await runtimeService.listSessionEvents(session.id);
+      return events.filter((event) => event.event === "run.completed").length === 3;
+    });
+
+    const messages = await runtimeService.listSessionMessages(session.id);
+    const userMessages = messages.items.filter((message) => message.role === "user");
+    const assistantMessages = messages.items.filter((message) => message.role === "assistant");
+
+    expect(userMessages).toHaveLength(3);
+    expect(assistantMessages).toHaveLength(3);
+    expect(messageText(userMessages[0])).toBe("first");
+    expect(messageText(userMessages[1])).toBe("second");
+    expect(messageText(userMessages[2])).toBe("third");
+
+    const events = await runtimeService.listSessionEvents(session.id);
+    const runStarted = events.filter((event) => event.event === "run.started").map((event) => event.runId);
+    const runCompleted = events.filter((event) => event.event === "run.completed").map((event) => event.runId);
+
+    expect(runStarted).toEqual([first.runId, second.runId, third.runId]);
+    expect(runCompleted).toEqual([first.runId, second.runId, third.runId]);
   });
 
   it("includes the first session event when listing without a cursor", async () => {
@@ -618,7 +725,7 @@ describe("runtime service", () => {
       toolSteps: [
         {
           toolName: "agent.switch",
-          input: { agentName: "build" },
+          input: { to: "build" },
           toolCallId: "call_switch"
         }
       ]
@@ -772,18 +879,13 @@ describe("runtime service", () => {
         text: "Parent integrated the subagent result.",
         toolSteps: [
           {
-            toolName: "agent.delegate",
+            toolName: "Agent",
             input: {
-              agentName: "researcher",
-              task: "Inspect the repository and summarize the key facts.",
-              handoffSummary: "The parent planner needs a compact fact summary."
+              description: "Gather repo facts",
+              prompt: "Inspect the repository and summarize the key facts.",
+              subagent_type: "researcher"
             },
-            toolCallId: "call_delegate"
-          },
-          {
-            toolName: "agent.await",
-            input: {},
-            toolCallId: "call_await"
+            toolCallId: "call_agent"
           }
         ]
       };
@@ -907,8 +1009,8 @@ describe("runtime service", () => {
     });
 
     const parentMessages = await runtimeService.listSessionMessages(session.id, 50);
-    const awaitToolMessage = parentMessages.items.find(
-      (message) => message.role === "tool" && message.toolName === "agent.await"
+    const agentToolMessage = parentMessages.items.find(
+      (message) => message.role === "tool" && messageToolName(message) === "Agent"
     );
     const events = await runtimeService.listSessionEvents(session.id);
     const childInvocation = gateway.invocations.find((invocation) =>
@@ -925,16 +1027,152 @@ describe("runtime service", () => {
       parentAgentName: "plan"
     });
     expect(childInvocation?.model).toBe("planner-model");
-    expect(awaitToolMessage?.content).toContain("<agent_await mode=\"all\">");
-    expect(awaitToolMessage?.content).toContain("Subagent result: repository facts are ready.");
+    expect(messageText(agentToolMessage)).toContain("completed: true");
+    expect(messageText(agentToolMessage)).toContain("subagent_type: researcher");
+    expect(messageText(agentToolMessage)).toContain("result:");
+    expect(messageText(agentToolMessage)).toContain("agent_id:");
+    expect(messageText(agentToolMessage)).toContain("Subagent result: repository facts are ready.");
     expect(events.map((event) => event.event)).toEqual(
       expect.arrayContaining(["agent.delegate.started", "agent.delegate.completed", "run.completed"])
     );
 
     const parentRunSteps = await runtimeService.listRunSteps(accepted.runId);
     expect(parentRunSteps.items.some((step) => step.stepType === "agent_delegate" && step.status === "completed")).toBe(true);
-    expect(parentRunSteps.items.some((step) => step.stepType === "tool_call" && step.name === "agent.delegate")).toBe(true);
-    expect(parentRunSteps.items.some((step) => step.stepType === "tool_call" && step.name === "agent.await")).toBe(true);
+    expect(parentRunSteps.items.some((step) => step.stepType === "tool_call" && step.name === "Agent")).toBe(true);
+  });
+
+  it("launches background agents through Agent", async () => {
+    const gateway = new FakeModelGateway();
+    gateway.streamScenarioFactory = (input) => {
+      const systemMessages = input.messages?.filter((message) => message.role === "system").map((message) => message.content) ?? [];
+
+      if (systemMessages.some((message) => message.includes("You are the researcher subagent."))) {
+        return {
+          text: "Background subagent finished its report."
+        };
+      }
+
+      return {
+        text: "Parent observed the background result.",
+        toolSteps: [
+          {
+            toolName: "Agent",
+            input: {
+              description: "Research in background",
+              prompt: "Collect the repository facts and report back.",
+              subagent_type: "researcher",
+              run_in_background: true
+            },
+            toolCallId: "call_agent_background"
+          }
+        ]
+      };
+    };
+
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_agent_background",
+      name: "agent-background",
+      rootPath: "/tmp/agent-background",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "plan",
+      settings: {
+        defaultAgent: "plan",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        plan: {
+          name: "plan",
+          mode: "primary",
+          prompt: "You are the planner agent.",
+          tools: {
+            native: [],
+            actions: [],
+            skills: [],
+            mcp: []
+          },
+          switch: [],
+          subagents: ["researcher"]
+        },
+        researcher: {
+          name: "researcher",
+          mode: "subagent",
+          prompt: "You are the researcher subagent.",
+          tools: {
+            native: [],
+            actions: [],
+            skills: [],
+            mcp: []
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_agent_background",
+        agents: [
+          { name: "plan", source: "workspace" },
+          { name: "researcher", source: "workspace" }
+        ],
+        models: [],
+        actions: [],
+        skills: [],
+        mcp: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: "project_agent_background",
+      caller,
+      input: {
+        agentName: "plan"
+      }
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Run a background agent, then wait for it." }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const messages = await runtimeService.listSessionMessages(session.id, 20);
+    const backgroundMessage = messages.items.find((message) => message.role === "tool" && messageToolName(message) === "Agent");
+
+    expect(messageText(backgroundMessage)).toContain("started: true");
+    expect(messageText(backgroundMessage)).toContain("subagent_type: researcher");
+    expect(messageText(backgroundMessage)).toContain("description: Research in background");
+    expect(messageText(backgroundMessage)).toContain("agent_id:");
   });
 
   it("runs an action command and stores the result on the run", async () => {
@@ -1326,7 +1564,7 @@ describe("runtime service", () => {
     gateway.streamScenarioFactory = () => ({
       toolSteps: [
         {
-          toolName: "shell.exec",
+          toolName: "Bash",
           input: {
             command: "sleep 1"
           },
@@ -1365,7 +1603,7 @@ describe("runtime service", () => {
           mode: "primary",
           prompt: "Use the shell tool when needed.",
           tools: {
-            native: ["shell.exec"],
+            native: ["Bash"],
             actions: [],
             skills: [],
             mcp: []
@@ -1389,7 +1627,7 @@ describe("runtime service", () => {
         skills: [],
         mcp: [],
         hooks: [],
-        nativeTools: ["shell.exec"]
+        nativeTools: ["Bash"]
       }
     });
 
@@ -1421,14 +1659,14 @@ describe("runtime service", () => {
     expect(events.map((event) => event.event)).toEqual(expect.arrayContaining(["tool.started", "tool.failed", "run.failed"]));
     expect(events.find((event) => event.event === "tool.failed")?.data).toMatchObject({
       toolCallId: "call_shell_timeout",
-      toolName: "shell.exec",
+      toolName: "Bash",
       sourceType: "native",
       errorCode: "tool_timed_out"
     });
 
     const runSteps = await runtimeService.listRunSteps(accepted.runId);
-    expect(runSteps.items.find((step) => step.name === "shell.exec")?.status).toBe("failed");
-    expect(runSteps.items.find((step) => step.name === "shell.exec")?.output).toMatchObject({
+    expect(runSteps.items.find((step) => step.name === "Bash")?.status).toBe("failed");
+    expect(runSteps.items.find((step) => step.name === "Bash")?.output).toMatchObject({
       errorCode: "tool_timed_out"
     });
   });
@@ -1657,17 +1895,17 @@ describe("runtime service", () => {
       toolBatches: [
         [
           {
-            toolName: "file.list",
+            toolName: "Glob",
             input: {
-              path: "."
+              pattern: "**/*"
             },
             toolCallId: "call_list_fast",
             delayMs: 150
           },
           {
-            toolName: "file.list",
+            toolName: "Glob",
             input: {
-              path: "."
+              pattern: "**/*"
             },
             toolCallId: "call_list_slow",
             delayMs: 450
@@ -1704,9 +1942,9 @@ describe("runtime service", () => {
         builder: {
           name: "builder",
           mode: "primary",
-          prompt: "Use file.list when needed.",
+          prompt: "Use Glob when needed.",
           tools: {
-            native: ["file.list"],
+            native: ["Glob"],
             actions: [],
             skills: [],
             mcp: []
@@ -1730,7 +1968,7 @@ describe("runtime service", () => {
         skills: [],
         mcp: [],
         hooks: [],
-        nativeTools: ["file.list"]
+        nativeTools: ["Glob"]
       }
     });
 
@@ -1776,17 +2014,17 @@ describe("runtime service", () => {
       toolBatches: [
         [
           {
-            toolName: "file.list",
+            toolName: "Glob",
             input: {
-              path: "."
+              pattern: "**/*"
             },
             toolCallId: "call_list_one",
             delayMs: 120
           },
           {
-            toolName: "file.list",
+            toolName: "Glob",
             input: {
-              path: "."
+              pattern: "**/*"
             },
             toolCallId: "call_list_two",
             delayMs: 120
@@ -1823,9 +2061,9 @@ describe("runtime service", () => {
         builder: {
           name: "builder",
           mode: "primary",
-          prompt: "Use file.list when needed.",
+          prompt: "Use Glob when needed.",
           tools: {
-            native: ["file.list"],
+            native: ["Glob"],
             actions: [],
             skills: [],
             mcp: []
@@ -1849,7 +2087,7 @@ describe("runtime service", () => {
         skills: [],
         mcp: [],
         hooks: [],
-        nativeTools: ["file.list"]
+        nativeTools: ["Glob"]
       }
     });
 
@@ -2018,7 +2256,7 @@ describe("runtime service", () => {
     expect(composedSystemPrompt).toContain("<available_actions>");
     expect(composedSystemPrompt).toContain("call `run_action`");
     expect(composedSystemPrompt).toContain("<available_skills>");
-    expect(composedSystemPrompt).toContain("call `activate_skill`");
+    expect(composedSystemPrompt).toContain("call `Skill`");
     expect(composedSystemPrompt).toContain("available_actions: debug.echo");
     expect(composedSystemPrompt).toContain("available_skills: repo-explorer");
     expect(composedSystemPrompt).toContain("available_tool_servers: docs-server");
@@ -2039,12 +2277,12 @@ describe("runtime service", () => {
       text: "I loaded the repo-explorer skill and its guide.",
       toolSteps: [
         {
-          toolName: "activate_skill",
+          toolName: "Skill",
           input: { name: "repo-explorer" },
           toolCallId: "call_activate"
         },
         {
-          toolName: "activate_skill",
+          toolName: "Skill",
           input: { name: "repo-explorer", resource_path: "references/guide.md" },
           toolCallId: "call_resource"
         }
@@ -2140,36 +2378,45 @@ describe("runtime service", () => {
     });
 
     const messages = await runtimeService.listSessionMessages(session.id, 20);
-    expect(messages.items.map((message) => message.role)).toEqual(["user", "tool", "tool", "assistant"]);
+    expect(messages.items.map((message) => message.role)).toEqual(["user", "assistant", "tool", "assistant", "tool", "assistant"]);
 
-    const activationMessage = messages.items[1];
-    expect(activationMessage.toolName).toBe("activate_skill");
-    expect(activationMessage.toolCallId).toBe("call_activate");
-    expect(activationMessage.content).toContain("<skill_content name=\"repo-explorer\">");
-    expect(activationMessage.content).toContain("<skill_resources>");
-    expect(activationMessage.content).toContain("references/guide.md");
+    const activationToolCallMessage = messages.items[1];
+    expect(hasToolCallPart(activationToolCallMessage, "Skill", "call_activate")).toBe(true);
 
-    const resourceMessage = messages.items[2];
-    expect(resourceMessage.toolName).toBe("activate_skill");
-    expect(resourceMessage.toolCallId).toBe("call_resource");
-    expect(resourceMessage.content).toContain("<skill_resource name=\"repo-explorer\" path=\"references/guide.md\">");
-    expect(resourceMessage.content).toContain("Use ripgrep first.");
+    const activationMessage = messages.items[2];
+    expect(messageToolName(activationMessage)).toBe("Skill");
+    expect(messageToolCallId(activationMessage)).toBe("call_activate");
+    expect(messageText(activationMessage)).toContain("skill: repo-explorer");
+    expect(messageText(activationMessage)).toContain("content:");
+    expect(messageText(activationMessage)).toContain("resources:");
+    expect(messageText(activationMessage)).toContain("references/guide.md");
 
-    const assistantMessage = messages.items[3];
-    expect(assistantMessage.content).toBe("I loaded the repo-explorer skill and its guide.");
+    const resourceToolCallMessage = messages.items[3];
+    expect(hasToolCallPart(resourceToolCallMessage, "Skill", "call_resource")).toBe(true);
+
+    const resourceMessage = messages.items[4];
+    expect(messageToolName(resourceMessage)).toBe("Skill");
+    expect(messageToolCallId(resourceMessage)).toBe("call_resource");
+    expect(messageText(resourceMessage)).toContain("skill: repo-explorer");
+    expect(messageText(resourceMessage)).toContain("resource_path: references/guide.md");
+    expect(messageText(resourceMessage)).toContain("content:");
+    expect(messageText(resourceMessage)).toContain("Use ripgrep first.");
+
+    const assistantMessage = messages.items[5];
+    expect(messageText(assistantMessage)).toBe("I loaded the repo-explorer skill and its guide.");
 
     const events = await runtimeService.listSessionEvents(session.id, undefined, accepted.runId);
     expect(events.filter((event) => event.event === "tool.started")).toHaveLength(2);
     expect(events.filter((event) => event.event === "tool.completed")).toHaveLength(2);
     expect(events.find((event) => event.event === "tool.started")?.data).toMatchObject({
-      toolName: "activate_skill",
+      toolName: "Skill",
       sourceType: "skill"
     });
     expect(events.find((event) => event.event === "tool.completed")?.data).toMatchObject({
-      toolName: "activate_skill",
+      toolName: "Skill",
       sourceType: "skill"
     });
-    expect(events.filter((event) => event.event === "message.completed")).toHaveLength(3);
+    expect(events.filter((event) => event.event === "message.completed")).toHaveLength(5);
 
     const runSteps = await runtimeService.listRunSteps(accepted.runId);
     const modelCallSteps = runSteps.items.filter((step) => step.stepType === "model_call");
@@ -2180,15 +2427,15 @@ describe("runtime service", () => {
       model: "openai-default",
       canonicalModelRef: "platform/openai-default",
       messageCount: 2,
-      runtimeToolNames: expect.arrayContaining(["activate_skill"]),
+      runtimeToolNames: expect.arrayContaining(["Skill"]),
       runtimeTools: expect.arrayContaining([
         expect.objectContaining({
-          name: "activate_skill",
+          name: "Skill",
           description: expect.any(String),
           inputSchema: expect.any(Object)
         })
       ]),
-      activeToolNames: expect.arrayContaining(["activate_skill"]),
+      activeToolNames: expect.arrayContaining(["Skill"]),
       messages: expect.arrayContaining([
         expect.objectContaining({
           role: "system",
@@ -2208,14 +2455,14 @@ describe("runtime service", () => {
       toolCalls: [
         {
           toolCallId: "call_activate",
-          toolName: "activate_skill",
+          toolName: "Skill",
           input: { name: "repo-explorer" }
         }
       ],
       toolResults: [
         expect.objectContaining({
           toolCallId: "call_activate",
-          toolName: "activate_skill"
+          toolName: "Skill"
         })
       ]
     });
@@ -2224,7 +2471,7 @@ describe("runtime service", () => {
         (step.output as { toolCalls?: Array<{ toolCallId?: string; toolName?: string; input?: unknown }> } | undefined)?.toolCalls?.some(
           (toolCall) =>
             toolCall.toolCallId === "call_resource" &&
-            toolCall.toolName === "activate_skill" &&
+            toolCall.toolName === "Skill" &&
             typeof toolCall.input === "object" &&
             toolCall.input !== null &&
             (toolCall.input as { name?: unknown }).name === "repo-explorer" &&
@@ -2235,128 +2482,12 @@ describe("runtime service", () => {
     expect(
       modelCallSteps.some((step) =>
         (step.output as { toolResults?: Array<{ toolCallId?: string; toolName?: string; output?: unknown }> } | undefined)?.toolResults?.some(
-          (toolResult) => toolResult.toolCallId === "call_resource" && toolResult.toolName === "activate_skill"
+          (toolResult) => toolResult.toolCallId === "call_resource" && toolResult.toolName === "Skill"
         ) ?? false
       )
     ).toBe(true);
     expect(modelCallSteps.some((step) => (step.output as { finishReason?: string } | undefined)?.finishReason === "stop")).toBe(true);
-  });
-
-  it("emits tool.failed when a tool execution throws and then fails the run", async () => {
-    const gateway = new FakeModelGateway();
-    gateway.streamScenarioFactory = () => ({
-      toolSteps: [
-        {
-          toolName: "agent.await",
-          input: {},
-          toolCallId: "call_await_missing"
-        }
-      ]
-    });
-
-    const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
-      defaultModel: "openai-default",
-      modelGateway: gateway,
-      ...persistence
-    });
-
-    await persistence.workspaceRepository.upsert({
-      id: "project_tool_failed",
-      name: "tool-failed",
-      rootPath: "/tmp/tool-failed",
-      executionPolicy: "local",
-      status: "active",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      kind: "project",
-      readOnly: false,
-      historyMirrorEnabled: false,
-      defaultAgent: "planner",
-      settings: {
-        defaultAgent: "planner",
-        skillDirs: []
-      },
-      workspaceModels: {},
-      agents: {
-        planner: {
-          name: "planner",
-          mode: "primary",
-          prompt: "You are the planner.",
-          tools: {
-            native: [],
-            actions: [],
-            skills: [],
-            mcp: []
-          },
-          switch: [],
-          subagents: ["researcher"]
-        },
-        researcher: {
-          name: "researcher",
-          mode: "subagent",
-          prompt: "You are the researcher.",
-          tools: {
-            native: [],
-            actions: [],
-            skills: [],
-            mcp: []
-          },
-          switch: [],
-          subagents: []
-        }
-      },
-      actions: {},
-      skills: {},
-      toolServers: {},
-      hooks: {},
-      catalog: {
-        workspaceId: "project_tool_failed",
-        agents: [
-          { name: "planner", source: "workspace" },
-          { name: "researcher", source: "workspace" }
-        ],
-        models: [],
-        actions: [],
-        skills: [],
-        mcp: [],
-        hooks: [],
-        nativeTools: []
-      }
-    });
-
-    const caller = {
-      subjectRef: "dev:test",
-      authSource: "standalone_server",
-      scopes: [],
-      workspaceAccess: []
-    };
-
-    const session = await runtimeService.createSession({
-      workspaceId: "project_tool_failed",
-      caller,
-      input: {}
-    });
-
-    const accepted = await runtimeService.createSessionMessage({
-      sessionId: session.id,
-      caller,
-      input: { content: "Wait for a child run that does not exist." }
-    });
-
-    await waitFor(async () => {
-      const run = await runtimeService.getRun(accepted.runId);
-      return run.status === "failed";
-    });
-
-    const events = await runtimeService.listSessionEvents(session.id, undefined, accepted.runId);
-    expect(events.map((event) => event.event)).toEqual(expect.arrayContaining(["tool.started", "tool.failed", "run.failed"]));
-    expect(events.find((event) => event.event === "tool.failed")?.data).toMatchObject({
-      toolCallId: "call_await_missing",
-      toolName: "agent.await",
-      sourceType: "agent",
-      errorCode: "agent_await_no_children"
-    });
+    expect(modelCallSteps.some((step) => (step.output as { text?: string } | undefined)?.text === "I loaded the repo-explorer skill and its guide.")).toBe(true);
   });
 
   it("runs actions through the built-in run_action tool and persists the tool result", async () => {
@@ -2480,12 +2611,15 @@ describe("runtime service", () => {
     });
 
     const page = await runtimeService.listSessionMessages(session.id, 20);
-    expect(page.items.map((message) => message.role)).toEqual(["user", "tool", "assistant"]);
-    expect(page.items[1]?.toolName).toBe("run_action");
-    expect(page.items[1]?.toolCallId).toBe("call_action");
-    expect(page.items[1]?.content).toContain('<action_result name="debug.echo" exit_code="0">');
-    expect(page.items[1]?.content).toContain("mode:quick");
-    expect(page.items[2]?.content).toBe("I ran the debug.echo action.");
+    expect(page.items.map((message) => message.role)).toEqual(["user", "assistant", "tool", "assistant"]);
+    expect(hasToolCallPart(page.items[1], "run_action", "call_action")).toBe(true);
+    expect(messageToolName(page.items[2])).toBe("run_action");
+    expect(messageToolCallId(page.items[2])).toBe("call_action");
+    expect(messageText(page.items[2])).toContain("name: debug.echo");
+    expect(messageText(page.items[2])).toContain("exit_code: 0");
+    expect(messageText(page.items[2])).toContain("output:");
+    expect(messageText(page.items[2])).toContain("mode:quick");
+    expect(messageText(page.items[3])).toBe("I ran the debug.echo action.");
 
     const events = await runtimeService.listSessionEvents(session.id, undefined, accepted.runId);
     expect(events.find((event) => event.event === "tool.started")?.data).toMatchObject({
@@ -2549,7 +2683,7 @@ describe("runtime service", () => {
           mode: "primary",
           prompt: "Use native tools when helpful.",
           tools: {
-            native: ["shell.exec", "file.read"],
+            native: ["Bash", "Read"],
             actions: [],
             skills: [],
             mcp: []
@@ -2575,7 +2709,17 @@ describe("runtime service", () => {
     });
 
     const catalog = await runtimeService.getWorkspaceCatalog("project_native_catalog");
-    expect(catalog.nativeTools).toEqual(["shell.exec", "file.read", "file.write", "file.list"]);
+    expect(catalog.nativeTools).toEqual([
+      "Bash",
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "WebFetch",
+      "WebSearch",
+      "TodoWrite"
+    ]);
 
     const caller = {
       subjectRef: "dev:test",
@@ -2600,9 +2744,9 @@ describe("runtime service", () => {
     const systemMessages = gateway.invocations.at(0)?.input.messages?.filter((message) => message.role === "system") ?? [];
     const environmentMessage = systemMessages.find((message) => message.content.includes("<environment>"))?.content ?? "";
 
-    expect(environmentMessage).toContain("available_native_tools: shell.exec, file.read");
-    expect(environmentMessage).not.toContain("file.write");
-    expect(environmentMessage).not.toContain("file.list");
+    expect(environmentMessage).toContain("available_native_tools: Bash, Read");
+    expect(environmentMessage).not.toContain("Write");
+    expect(environmentMessage).not.toContain("file.");
   });
 
   it("executes native tools and persists their tool results", async () => {
@@ -2612,33 +2756,33 @@ describe("runtime service", () => {
       text: "Native tools completed.",
       toolSteps: [
         {
-          toolName: "file.write",
+          toolName: "Write",
           input: {
-            path: "notes/summary.txt",
+            file_path: "notes/summary.txt",
             content: "hello native tools"
           },
-          toolCallId: "call_file_write"
+          toolCallId: "call_write"
         },
         {
-          toolName: "file.read",
+          toolName: "Read",
           input: {
-            path: "notes/summary.txt"
+            file_path: "notes/summary.txt"
           },
-          toolCallId: "call_file_read"
+          toolCallId: "call_read"
         },
         {
-          toolName: "file.list",
+          toolName: "Glob",
           input: {
-            path: "notes"
+            pattern: "notes/*.txt"
           },
-          toolCallId: "call_file_list"
+          toolCallId: "call_glob"
         },
         {
-          toolName: "shell.exec",
+          toolName: "Bash",
           input: {
             command: "printf shell-ok"
           },
-          toolCallId: "call_shell_exec"
+          toolCallId: "call_bash"
         }
       ]
     });
@@ -2673,7 +2817,7 @@ describe("runtime service", () => {
           mode: "primary",
           prompt: "Use native tools when useful.",
           tools: {
-            native: ["file.write", "file.read", "file.list", "shell.exec"],
+            native: ["Write", "Read", "Glob", "Bash"],
             actions: [],
             skills: [],
             mcp: []
@@ -2726,34 +2870,46 @@ describe("runtime service", () => {
     expect(writtenContent).toBe("hello native tools");
 
     const page = await runtimeService.listSessionMessages(session.id, 20);
-    expect(page.items.map((message) => message.toolName ?? message.role)).toEqual([
+    expect(page.items.map((message) => (message.role === "assistant" ? "assistant" : messageToolName(message) ?? message.role))).toEqual([
       "user",
-      "file.write",
-      "file.read",
-      "file.list",
-      "shell.exec",
+      "assistant",
+      "Write",
+      "assistant",
+      "Read",
+      "assistant",
+      "Glob",
+      "assistant",
+      "Bash",
       "assistant"
     ]);
-    expect(page.items[1]?.content).toContain('<file_write path="notes/summary.txt"');
-    expect(page.items[2]?.content).toContain("<file_read path=\"notes/summary.txt\">");
-    expect(page.items[2]?.content).toContain("hello native tools");
-    expect(page.items[3]?.content).toContain('<file_list path="notes" recursive="false">');
-    expect(page.items[3]?.content).toContain('<file path="notes/summary.txt" />');
-    expect(page.items[4]?.content).toContain("<shell_exec exit_code=\"0\">");
-    expect(page.items[4]?.content).toContain("shell-ok");
-    expect(page.items[5]?.content).toBe("Native tools completed.");
+    expect(hasToolCallPart(page.items[1], "Write", "call_write")).toBe(true);
+    expect(messageText(page.items[2])).toContain("file_path: notes/summary.txt");
+    expect(messageText(page.items[2])).toContain("bytes_written:");
+    expect(hasToolCallPart(page.items[3], "Read", "call_read")).toBe(true);
+    expect(messageText(page.items[4])).toContain("file_path: notes/summary.txt");
+    expect(messageText(page.items[4])).toContain("content:");
+    expect(messageText(page.items[4])).toContain("hello native tools");
+    expect(hasToolCallPart(page.items[5], "Glob", "call_glob")).toBe(true);
+    expect(messageText(page.items[6])).toContain("pattern: notes/*.txt");
+    expect(messageText(page.items[6])).toContain("files:");
+    expect(messageText(page.items[6])).toContain("notes/summary.txt");
+    expect(hasToolCallPart(page.items[7], "Bash", "call_bash")).toBe(true);
+    expect(messageText(page.items[8])).toContain("exit_code: 0");
+    expect(messageText(page.items[8])).toContain("stdout:");
+    expect(messageText(page.items[8])).toContain("shell-ok");
+    expect(messageText(page.items[9])).toBe("Native tools completed.");
 
     const runSteps = await runtimeService.listRunSteps(accepted.runId);
-    expect(runSteps.items.find((step) => step.name === "file.write")?.input).toMatchObject({
+    expect(runSteps.items.find((step) => step.name === "Write")?.input).toMatchObject({
       retryPolicy: "manual"
     });
-    expect(runSteps.items.find((step) => step.name === "file.read")?.input).toMatchObject({
+    expect(runSteps.items.find((step) => step.name === "Read")?.input).toMatchObject({
       retryPolicy: "safe"
     });
-    expect(runSteps.items.find((step) => step.name === "file.list")?.input).toMatchObject({
+    expect(runSteps.items.find((step) => step.name === "Glob")?.input).toMatchObject({
       retryPolicy: "safe"
     });
-    expect(runSteps.items.find((step) => step.name === "shell.exec")?.input).toMatchObject({
+    expect(runSteps.items.find((step) => step.name === "Bash")?.input).toMatchObject({
       retryPolicy: "manual"
     });
   });
@@ -2957,7 +3113,7 @@ describe("runtime service", () => {
       text: "Tool call finished.",
       toolSteps: [
         {
-          toolName: "activate_skill",
+          toolName: "Skill",
           input: { name: "repo-explorer" },
           toolCallId: "call_wait",
           delayMs: 150
@@ -3931,7 +4087,7 @@ describe("runtime service", () => {
 
     expect((toolStarted?.data.input as { input?: { message?: string } } | undefined)?.input?.message).toBe("patched");
     expect((toolStep?.input?.input as { input?: { message?: string } } | undefined)?.input?.message).toBe("patched");
-    expect(toolMessage?.content).toBe("tool output patched");
+    expect(messageText(toolMessage)).toBe("tool output patched");
     expect(runSteps.items.some((step) => step.stepType === "hook" && step.name === "rewrite-tool-input")).toBe(true);
     expect(runSteps.items.some((step) => step.stepType === "hook" && step.name === "rewrite-tool-output")).toBe(true);
   });

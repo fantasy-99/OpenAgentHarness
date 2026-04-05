@@ -61,8 +61,6 @@ const mirrorSchemaStatements = [
     run_id text,
     role text not null,
     content text not null,
-    tool_name text,
-    tool_call_id text,
     metadata text,
     created_at text not null
   )`,
@@ -505,9 +503,7 @@ export class HistoryMirrorSyncer {
           session_id: this.#requiredString(payload.sessionId, "sessionId", event),
           run_id: this.#string(payload.runId),
           role: this.#requiredString(payload.role, "role", event),
-          content: this.#requiredString(payload.content, "content", event),
-          tool_name: this.#string(payload.toolName),
-          tool_call_id: this.#string(payload.toolCallId),
+          content: this.#requiredJson(payload.content, "content", event),
           metadata: this.#json(payload.metadata),
           created_at: this.#requiredString(payload.createdAt, "createdAt", event)
         });

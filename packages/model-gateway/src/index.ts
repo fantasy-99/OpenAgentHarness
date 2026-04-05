@@ -123,11 +123,27 @@ function replaceLeadingSystemMessages(
 }
 
 function toStepResult(step: {
+  stepType?: string;
+  text?: string;
+  content?: unknown[];
+  usage?: Record<string, unknown>;
+  warnings?: unknown[];
+  request?: Record<string, unknown>;
+  response?: Record<string, unknown>;
+  providerMetadata?: Record<string, unknown>;
   finishReason: string;
   toolCalls: Array<{ toolCallId: string; toolName: string; input: unknown }>;
   toolResults: Array<{ toolCallId: string; toolName: string; output: unknown }>;
 }): ModelStepResult {
   return {
+    ...(typeof step.stepType === "string" ? { stepType: step.stepType } : {}),
+    ...(typeof step.text === "string" ? { text: step.text } : {}),
+    ...(Array.isArray(step.content) ? { content: step.content } : {}),
+    ...(step.usage ? { usage: step.usage } : {}),
+    ...(Array.isArray(step.warnings) ? { warnings: step.warnings } : {}),
+    ...(step.request ? { request: step.request } : {}),
+    ...(step.response ? { response: step.response } : {}),
+    ...(step.providerMetadata ? { providerMetadata: step.providerMetadata } : {}),
     finishReason: step.finishReason,
     toolCalls: step.toolCalls.map((toolCall) => ({
       toolCallId: toolCall.toolCallId,

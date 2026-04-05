@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { AppError } from "./errors.js";
+import { formatToolOutput } from "./tool-output.js";
 import type { AgentDefinition, RuntimeToolSet } from "./types.js";
 
 function escapeXml(value: string): string {
@@ -41,7 +42,7 @@ export function buildAvailableAgentSwitchesMessage(
     entries,
     "</available_agent_switches>",
     "",
-    "When the task should continue under a different specialist persona, call `agent.switch` with one of the allowed target agent names.",
+    "When the task should continue under a different specialist persona, call `agent.switch` with `to` set to one of the allowed target agent names.",
     "Only switch when the target agent is a better fit for the next step."
   ].join("\n");
 }
@@ -70,15 +71,127 @@ export function buildAvailableSubagentsMessage(
     .join("\n");
 
   return [
-    "## Available Subagents",
+    "## Available Agent Types",
     "",
-    `<available_subagents current_agent="${escapeXml(currentAgentName)}">`,
+    `<available_agents current_agent="${escapeXml(currentAgentName)}">`,
     entries,
-    "</available_subagents>",
+    "</available_agents>",
     "",
-    "When a bounded specialist task should run in the background, call `agent.delegate` with an allowed target agent and a concise task.",
-    "When you need the result later in the same run, call `agent.await` with the delegated child run id."
+    "Use `Agent` to launch one of the allowed agent types for complex or multi-step work.",
+    "Pass `subagent_type` to choose the agent, a short `description`, and a focused `prompt` with the task context.",
+    "Set `run_in_background` to true when you want the launched agent to continue in the background."
   ].join("\n");
+}
+
+export function createAgentTool(
+  getCurrentAgentName: () => string,
+  getCurrentAgent: () => AgentDefinition | undefined,
+  getAgents: () => Record<string, AgentDefinition>,
+  launchAgent: (
+    input: {
+      targetAgentName: string;
+      task: string;
+      handoffSummary?: string | undefined;
+    },
+    currentAgentName: string
+  ) => Promise<{
+    childSessionId: string;
+    childRunId: string;
+  }>,
+  awaitRuns: (input: { runIds: string[]; mode: "all" | "any" }) => Promise<string>
+): RuntimeToolSet {
+  const inputSchema = z.object({
+    description: z.string().min(1).describe("A short 3-5 word description of the task."),
+    prompt: z.string().min(1).describe("The task for the agent to perform, including needed context."),
+    subagent_type: z.string().min(1).optional().describe("The allowed agent type to use for this task."),
+    run_in_background: z.boolean().optional().describe("Set to true to run this agent in the background.")
+  });
+
+  return {
+    Agent: {
+      description: "Launch a new agent to handle complex, multi-step tasks autonomously.",
+      inputSchema,
+      async execute(rawInput) {
+        const { description, prompt, subagent_type: subagentType, run_in_background: runInBackground } = inputSchema.parse(rawInput);
+        const currentAgentName = getCurrentAgentName();
+        const currentAgent = getCurrentAgent();
+        const agents = getAgents();
+        const allowedTargets = currentAgent?.subagents ?? [];
+
+        const targetAgentName =
+          subagentType ?? (allowedTargets.length === 1 ? allowedTargets[0] : undefined);
+
+        if (!targetAgentName) {
+          throw new AppError(
+            400,
+            "agent_type_required",
+            allowedTargets.length === 0
+              ? `Agent ${currentAgentName} does not have any available subagents.`
+              : `Agent requires subagent_type. Available agent types: ${allowedTargets.join(", ")}`
+          );
+        }
+
+        if (!allowedTargets.includes(targetAgentName)) {
+          throw new AppError(
+            403,
+            "agent_delegate_not_allowed",
+            `Agent ${currentAgentName} is not allowed to delegate to ${targetAgentName}.`
+          );
+        }
+
+        const targetAgent = agents[targetAgentName];
+        if (!targetAgent) {
+          throw new AppError(404, "agent_not_found", `Agent ${targetAgentName} was not found.`);
+        }
+
+        if (targetAgent.mode === "primary") {
+          throw new AppError(
+            409,
+            "invalid_subagent_target",
+            `Agent ${targetAgentName} is a primary agent and cannot be used as a subagent target.`
+          );
+        }
+
+        const accepted = await launchAgent(
+          {
+            targetAgentName,
+            task: prompt,
+            handoffSummary: description
+          },
+          currentAgentName
+        );
+
+        if (runInBackground) {
+          return formatToolOutput([
+            ["started", true],
+            ["subagent_type", targetAgentName],
+            ["description", description],
+            ["agent_id", accepted.childRunId]
+          ]);
+        }
+
+        const awaited = await awaitRuns({
+          runIds: [accepted.childRunId],
+          mode: "all"
+        });
+
+        return formatToolOutput(
+          [
+            ["completed", true],
+            ["subagent_type", targetAgentName],
+            ["description", description]
+          ],
+          [
+            {
+              title: "result",
+              lines: awaited.split(/\r?\n/),
+              emptyText: "(empty result)"
+            }
+          ]
+        );
+      }
+    }
+  };
 }
 
 export function createAgentSwitchTool(
@@ -91,163 +204,51 @@ export function createAgentSwitchTool(
     "agent.switch": {
       description: "Switch the current run to another allowed agent persona within the same run.",
       inputSchema: z.object({
-        agentName: z.string().min(1).describe("Name of the target agent to switch to.")
+        to: z.string().min(1).describe("Name of the target agent to switch to.")
       }),
       async execute(rawInput) {
-        const { agentName } = z
+        const normalizedInput =
+          rawInput && typeof rawInput === "object" && rawInput !== null
+            ? {
+                ...(rawInput as Record<string, unknown>),
+                to:
+                  (rawInput as Record<string, unknown>).to ??
+                  (rawInput as Record<string, unknown>).agentName
+              }
+            : rawInput;
+        const { to } = z
           .object({
-            agentName: z.string().min(1)
+            to: z.string().min(1)
           })
-          .parse(rawInput);
+          .parse(normalizedInput);
         const currentAgentName = getCurrentAgentName();
         const currentAgent = getCurrentAgent();
         const agents = getAgents();
         const allowedTargets = currentAgent?.switch ?? [];
 
-        if (!allowedTargets.includes(agentName)) {
+        if (!allowedTargets.includes(to)) {
           throw new AppError(
             403,
             "agent_switch_not_allowed",
-            `Agent ${currentAgentName} is not allowed to switch to ${agentName}.`
+            `Agent ${currentAgentName} is not allowed to switch to ${to}.`
           );
         }
 
-        const targetAgent = agents[agentName];
+        const targetAgent = agents[to];
         if (!targetAgent) {
-          throw new AppError(404, "agent_not_found", `Agent ${agentName} was not found.`);
+          throw new AppError(404, "agent_not_found", `Agent ${to} was not found.`);
         }
 
         if (targetAgent.mode === "subagent") {
           throw new AppError(
             409,
             "invalid_agent_switch_target",
-            `Agent ${agentName} is a subagent and cannot be used as a switch target.`
+            `Agent ${to} is a subagent and cannot be used as a switch target.`
           );
         }
 
-        await switchAgent(agentName, currentAgentName);
-        return `<agent_switch from="${escapeXml(currentAgentName)}" to="${escapeXml(agentName)}" />`;
-      }
-    }
-  };
-}
-
-export function createAgentDelegateTool(
-  getCurrentAgentName: () => string,
-  getCurrentAgent: () => AgentDefinition | undefined,
-  getAgents: () => Record<string, AgentDefinition>,
-  delegateAgent: (
-    input: {
-      targetAgentName: string;
-      task: string;
-      handoffSummary?: string | undefined;
-    },
-    currentAgentName: string
-  ) => Promise<{
-    childSessionId: string;
-    childRunId: string;
-  }>
-): RuntimeToolSet {
-  const inputSchema = z.object({
-    agentName: z.string().min(1).describe("Name of the subagent to delegate to."),
-    task: z.string().min(1).describe("Bounded task for the subagent to execute."),
-    handoffSummary: z
-      .string()
-      .min(1)
-      .optional()
-      .describe("Optional compact handoff summary for the subagent.")
-  });
-
-  return {
-    "agent.delegate": {
-      description: "Delegate a bounded background task to an allowed subagent and return its child run id.",
-      inputSchema,
-      async execute(rawInput) {
-        const { agentName, task, handoffSummary } = inputSchema.parse(rawInput);
-        const currentAgentName = getCurrentAgentName();
-        const currentAgent = getCurrentAgent();
-        const agents = getAgents();
-        const allowedTargets = currentAgent?.subagents ?? [];
-
-        if (!allowedTargets.includes(agentName)) {
-          throw new AppError(
-            403,
-            "agent_delegate_not_allowed",
-            `Agent ${currentAgentName} is not allowed to delegate to ${agentName}.`
-          );
-        }
-
-        const targetAgent = agents[agentName];
-        if (!targetAgent) {
-          throw new AppError(404, "agent_not_found", `Agent ${agentName} was not found.`);
-        }
-
-        if (targetAgent.mode === "primary") {
-          throw new AppError(
-            409,
-            "invalid_subagent_target",
-            `Agent ${agentName} is a primary agent and cannot be used as a subagent target.`
-          );
-        }
-
-        const accepted = await delegateAgent(
-          {
-            targetAgentName: agentName,
-            task,
-            ...(handoffSummary ? { handoffSummary } : {})
-          },
-          currentAgentName
-        );
-
-        return [
-          `<agent_delegate from="${escapeXml(currentAgentName)}" to="${escapeXml(agentName)}">`,
-          `  <child_session_id>${escapeXml(accepted.childSessionId)}</child_session_id>`,
-          `  <child_run_id>${escapeXml(accepted.childRunId)}</child_run_id>`,
-          "</agent_delegate>"
-        ].join("\n");
-      }
-    }
-  };
-}
-
-export function createAgentAwaitTool(
-  getAllowedChildRunIds: () => string[],
-  awaitRuns: (input: { runIds: string[]; mode: "all" | "any" }) => Promise<string>
-): RuntimeToolSet {
-  const inputSchema = z
-    .object({
-      runId: z.string().min(1).optional().describe("Single delegated child run id to wait for."),
-      runIds: z.array(z.string().min(1)).min(1).optional().describe("Multiple delegated child run ids to wait for."),
-      mode: z.enum(["all", "any"]).default("all").describe("Whether to wait for all child runs or any one child run.")
-    });
-
-  return {
-    "agent.await": {
-      description:
-        "Wait for one or more delegated child runs and return a compact result summary. If no run ids are provided, wait for all delegated child runs from the current parent run.",
-      inputSchema,
-      async execute(rawInput) {
-        const { runId, runIds, mode } = inputSchema.parse(rawInput);
-        const fallbackRunIds = getAllowedChildRunIds();
-        const normalizedRunIds = Array.from(new Set([...(runId ? [runId] : []), ...(runIds ?? []), ...(runId || runIds ? [] : fallbackRunIds)]));
-        if (normalizedRunIds.length === 0) {
-          throw new AppError(409, "agent_await_no_children", "No delegated child runs are available to await.");
-        }
-        const allowedChildRunIds = new Set(getAllowedChildRunIds());
-        const unauthorizedRunId = normalizedRunIds.find((childRunId) => !allowedChildRunIds.has(childRunId));
-
-        if (unauthorizedRunId) {
-          throw new AppError(
-            403,
-            "agent_await_not_allowed",
-            `Child run ${unauthorizedRunId} is not attached to the current parent run.`
-          );
-        }
-
-        return awaitRuns({
-          runIds: normalizedRunIds,
-          mode
-        });
+        await switchAgent(to, currentAgentName);
+        return `switched_to: ${to}`;
       }
     }
   };

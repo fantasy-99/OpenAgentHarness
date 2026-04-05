@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { z } from "zod";
 
+import { formatToolOutput } from "./tool-output.js";
 import type { RuntimeToolSet, SkillDefinition } from "./types.js";
 
 const MAX_SKILL_RESOURCE_ENTRIES = 50;
@@ -165,33 +166,44 @@ async function readSkillResource(skill: SkillDefinition, resourcePath: string): 
 
   const buffer = await readFile(resolvedPath);
   if (isProbablyTextFile(relativePath, buffer)) {
-    return `<skill_resource name="${escapeXml(skill.name)}" path="${escapeXml(relativePath)}">
-${buffer.toString("utf8")}
-</skill_resource>`;
+    return formatToolOutput(
+      [
+        ["skill", skill.name],
+        ["resource_path", relativePath],
+        ["encoding", "utf8"]
+      ],
+      [
+        {
+          title: "content",
+          lines: buffer.toString("utf8").split(/\r?\n/),
+          emptyText: "(empty file)"
+        }
+      ]
+    );
   }
 
-  return `<skill_resource name="${escapeXml(skill.name)}" path="${escapeXml(relativePath)}" encoding="base64">
-${buffer.toString("base64")}
-</skill_resource>`;
+  return formatToolOutput(
+    [
+      ["skill", skill.name],
+      ["resource_path", relativePath],
+      ["encoding", "base64"]
+    ],
+    [
+      {
+        title: "content",
+        lines: [buffer.toString("base64")],
+        emptyText: "(empty file)"
+      }
+    ]
+  );
 }
 
-function renderSkillResourcesXml(resources: SkillResourceEntry[], truncated: boolean): string {
-  if (resources.length === 0) {
-    return "";
-  }
-
-  const lines = resources.map((resource) =>
+function renderSkillResources(resources: SkillResourceEntry[]): string[] {
+  return resources.map((resource) =>
     resource.type === "directory"
-      ? `  <directory path="${escapeXml(resource.relativePath)}" />`
-      : `  <file path="${escapeXml(resource.relativePath)}" size="${resource.size ?? 0}" />`
+      ? `directory: ${resource.relativePath}`
+      : `file: ${resource.relativePath} (${resource.size ?? 0} bytes)`
   );
-
-  return [
-    "<skill_resources>",
-    ...lines,
-    ...(truncated ? ["  <!-- listing truncated, more files may exist -->"] : []),
-    "</skill_resources>"
-  ].join("\n");
 }
 
 export function buildAvailableSkillsMessage(skills: SkillDefinition[]): string {
@@ -219,8 +231,8 @@ export function buildAvailableSkillsMessage(skills: SkillDefinition[]): string {
     "</available_skills>",
     "",
     "The skills listed above provide specialized instructions for specific tasks.",
-    "When a task matches a skill's description, call `activate_skill` with the skill name to load its full instructions before proceeding.",
-    "To read a bundled skill resource, call `activate_skill` again with both the skill name and `resource_path` from the listing.",
+    "When a task matches a skill's description, call `Skill` with the skill name to load its full instructions before proceeding.",
+    "To read a bundled skill resource, call `Skill` again with both the skill name and `resource_path` from the listing.",
     "Do not guess or fabricate skill instructions or resource contents."
   ].join("\n");
 }
@@ -231,7 +243,7 @@ export function createActivateSkillTool(skills: SkillDefinition[]): RuntimeToolS
 
 export function createDynamicActivateSkillTool(getSkills: () => SkillDefinition[]): RuntimeToolSet {
   const inputSchema = z.object({
-    name: z.string().min(1).describe("Name of the skill to activate."),
+    skill: z.string().min(1).describe("The skill name to load."),
     resource_path: z
       .string()
       .min(1)
@@ -239,42 +251,67 @@ export function createDynamicActivateSkillTool(getSkills: () => SkillDefinition[
       .describe("Relative path of a bundled skill resource to read.")
   });
 
-  return {
-    activate_skill: {
-      description:
-        "Activate a skill or read one of its bundled resource files. Call with only `name` to load the skill, or with both `name` and `resource_path` to read a specific file.",
-      inputSchema,
-      async execute(rawInput) {
-        const { name, resource_path: resourcePath } = inputSchema.parse(rawInput);
-        const enabledSkills = getSkills().filter((skill) => skill.exposeToLlm !== false);
-        const skillNames = enabledSkills.map((skill) => skill.name);
-        const skillsByName = new Map(enabledSkills.map((skill) => [skill.name, skill]));
-        const skill = skillsByName.get(name);
-        if (!skill) {
-          return `Error: Skill "${name}" not found. Available skills: ${skillNames.join(", ")}`;
-        }
-
-        if (resourcePath) {
-          const resourceContent = await readSkillResource(skill, resourcePath);
-          return (
-            resourceContent ??
-            `Error: Resource "${resourcePath}" not found in skill "${name}". Call activate_skill with just the name to inspect its available resources.`
-          );
-        }
-
-        const { resources, truncated } = await listSkillResources(skill);
-        const resourcesXml = renderSkillResourcesXml(resources, truncated);
-
-        return [
-          `<skill_content name="${escapeXml(skill.name)}">`,
-          skill.content,
-          "",
-          `Skill directory: ${skill.directory}`,
-          `To read a resource, call activate_skill with name="${skill.name}" and resource_path set to a file path from <skill_resources>.`,
-          ...(resourcesXml ? ["", resourcesXml] : []),
-          "</skill_content>"
-        ].join("\n");
+  const definition = {
+    description:
+      "Load a skill or read one of its bundled resource files. Call with only `skill` to load the skill, or with both `skill` and `resource_path` to read a specific file.",
+    inputSchema,
+    async execute(rawInput: unknown) {
+      const normalizedInput =
+        rawInput && typeof rawInput === "object" && rawInput !== null
+          ? {
+              ...(rawInput as Record<string, unknown>),
+              skill:
+                (rawInput as Record<string, unknown>).skill ??
+                (rawInput as Record<string, unknown>).name
+            }
+          : rawInput;
+      const { skill: skillName, resource_path: resourcePath } = inputSchema.parse(normalizedInput);
+      const enabledSkills = getSkills().filter((skill) => skill.exposeToLlm !== false);
+      const skillNames = enabledSkills.map((skill) => skill.name);
+      const skillsByName = new Map(enabledSkills.map((skill) => [skill.name, skill]));
+      const skill = skillsByName.get(skillName);
+      if (!skill) {
+        return `Error: Skill "${skillName}" not found. Available skills: ${skillNames.join(", ")}`;
       }
+
+      if (resourcePath) {
+        const resourceContent = await readSkillResource(skill, resourcePath);
+        return (
+          resourceContent ??
+          `Error: Resource "${resourcePath}" not found in skill "${skillName}". Call Skill with just the skill name to inspect its available resources.`
+        );
+      }
+
+      const { resources, truncated } = await listSkillResources(skill);
+      const skillPath = path.join(skill.directory, "SKILL.md");
+
+      return formatToolOutput(
+        [
+          ["skill", skill.name],
+          ["path", skillPath],
+          ["resources_truncated", truncated]
+        ],
+        [
+          {
+            title: "content",
+            lines: skill.content.split(/\r?\n/),
+            emptyText: "(empty skill)"
+          },
+          {
+            title: "resources",
+            lines: renderSkillResources(resources),
+            emptyText: "(none)"
+          },
+          {
+            title: "usage",
+            lines: [`Call Skill with skill="${skill.name}" and resource_path set to one of the listed files.`]
+          }
+        ]
+      );
     }
+  } satisfies RuntimeToolSet[string];
+
+  return {
+    Skill: definition
   };
 }

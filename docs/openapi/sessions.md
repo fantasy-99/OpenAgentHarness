@@ -60,6 +60,12 @@
 
 - 分页读取历史消息
 
+说明：
+
+- 返回的 `Message.content` 采用 AI SDK 风格
+  - 纯文本消息可直接返回字符串
+  - assistant tool call 与 tool result 会通过 message parts 返回
+
 查询参数：
 
 - `pageSize`
@@ -84,6 +90,7 @@
 - message 创建是异步语义，不同步返回最终结果
 - 客户端需结合 `GET /runs/{runId}` 和 SSE 获取执行进度
 - 同一 session 可连续写入多条 message，它们会形成串行 run 队列
+- runtime 持久化的消息链路会显式保留 assistant tool-call message 与 tool result message
 - session 会维护 `activeAgentName`，作为后续默认 primary agent
 - 若 run 内发生 `agent.switch`，session 的 `activeAgentName` 可在 run 完成后同步更新
 - `kind=chat` workspace 的 session / message / run 仍保存到中心数据库

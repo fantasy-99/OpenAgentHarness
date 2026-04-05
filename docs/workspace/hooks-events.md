@@ -62,7 +62,7 @@ capabilities:
 示例：
 
 ```yaml
-matcher: "shell.exec|mcp__docs__search"
+matcher: "Bash|mcp__docs__search"
 ```
 
 ```yaml

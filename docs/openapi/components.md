@@ -166,6 +166,41 @@ OpenAPI 主规范中的 `components/schemas` 目前主要包括：
 - `role`
   - `system | user | assistant | tool`
 - `content`
+  - 可以是字符串
+  - 也可以是 AI SDK 风格的 message parts 数组
+
+### `MessagePart`
+
+用于 message content 中的结构化片段。
+
+当前支持：
+
+- `text`
+  - `text`
+- `tool-call`
+  - `toolCallId`
+  - `toolName`
+  - `input`
+- `tool-result`
+  - `toolCallId`
+  - `toolName`
+  - `output`
+
+### `Message`
+
+用于 session message 查询返回。
+
+字段：
+
+- `id`
+- `sessionId`
+- `runId`
+- `role`
+- `content`
+  - 可以是字符串
+  - 也可以是 `MessagePart[]`
+- `metadata`
+- `createdAt`
 
 ### `Usage`
 

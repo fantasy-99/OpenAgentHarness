@@ -7,6 +7,25 @@ import type {
   StreamedModelResponse
 } from "@oah/runtime-core";
 
+function extractText(content: GenerateModelInput["messages"] extends Array<infer T>
+  ? T extends { content: infer C }
+    ? C
+    : never
+  : never): string {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
+  return content
+    .filter((part): part is Extract<(typeof content)[number], { type: "text" }> => part?.type === "text")
+    .map((part) => part.text)
+    .join("\n\n");
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -252,6 +271,7 @@ export class FakeModelGateway implements ModelGateway {
         }
 
         await options?.onStepFinish?.({
+          text: emitted,
           finishReason: "stop",
           toolCalls: [],
           toolResults: []
@@ -295,7 +315,8 @@ export class FakeModelGateway implements ModelGateway {
       return `generated:${input.prompt}`;
     }
 
-    const latestMessage = input.messages?.at(-1)?.content ?? "empty";
+    const latestMessageContent = input.messages?.at(-1)?.content;
+    const latestMessage = latestMessageContent ? extractText(latestMessageContent) : "empty";
     return `reply:${latestMessage}`;
   }
 }

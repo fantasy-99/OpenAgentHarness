@@ -112,7 +112,7 @@
     <g transform="translate(444 92)">
       <rect width="186" height="92" rx="20" fill="#EEF5FF"/>
       <text x="20" y="28" class="cardtitle">Skills</text>
-      <text x="20" y="50" class="small">`activate_skill` 按需注入 SKILL.md 原文</text>
+      <text x="20" y="50" class="small">`Skill` 按需注入 SKILL.md 原文</text>
       <text x="20" y="70" class="small">支持 workspace 与公共 skill 目录</text>
     </g>
     <g transform="translate(652 92)">

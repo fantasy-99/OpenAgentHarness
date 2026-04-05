@@ -97,19 +97,19 @@ Skill 采用按需加载：
 - 发现阶段优先读取 `SKILL.md` frontmatter 中的元数据
 - 若无 frontmatter，则从目录名和正文中推断基础元数据
 - system prompt 中只注入 skill catalog：名称、描述和可用性摘要
-- 激活阶段通过 `activate_skill` 工具加载完整 `SKILL.md` 正文
-- 读取 skill 资源文件时，继续通过 `activate_skill` 并附带 `resource_path`
+- 激活阶段通过 `Skill` 工具加载完整 `SKILL.md` 正文
+- 读取 skill 资源文件时，继续通过 `Skill` 并附带 `resource_path`
 - `scripts/`、`references/`、`assets/` 中的内容仅在需要时加载
 - 默认扫描 `.openharness/skills/*`
 - 服务端公共 skill 先从 `paths.skill_dir` 加载
 - 可从 `settings.skill_dirs` 追加额外 skill 根目录
 - 跨层同名冲突记录 warning 并按优先级覆盖，同层冲突直接报错
 
-`activate_skill` 建议语义：
+`Skill` 建议语义：
 
-- `activate_skill({ name })`
+- `Skill({ name })`
   - 返回 `<skill_content>`，包含 skill 正文和资源列表
-- `activate_skill({ name, resource_path })`
+- `Skill({ name, resource_path })`
   - 返回 `<skill_resource>`，读取 skill 目录下某个具体资源文件
 
 这样 skills 与 tools 保持分层：

@@ -309,7 +309,7 @@ sequenceDiagram
 - Action 采用 `actions/*/ACTION.yaml`
 - Skill 采用目录式定义，入口为 `skills/*/SKILL.md`
 - Skill 允许来自服务端 `paths.skill_dir`、`.openharness/skills` 和 `settings.skill_dirs`，同名冲突按分层优先级处理
-- Skill 默认以 catalog 形式暴露，完整内容通过 `activate_skill` 工具按需加载
+- Skill 默认以 catalog 形式暴露，完整内容通过 `Skill` 工具按需加载
 - External tool servers 采用 `tools/settings.yaml` + `tools/servers/*`
 - 模型入口分为平台级和 workspace 级，两者都可在 workspace 内使用
 - Hook 不暴露给 LLM

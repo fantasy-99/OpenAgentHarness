@@ -386,7 +386,7 @@ model:
   model_ref: platform/openai-default
 tools:
   native:
-    - shell.exec
+    - Bash
 policy:
   run_timeout_seconds: 120
   tool_timeout_seconds: 30
@@ -538,7 +538,7 @@ default_agent: assistant
       description: "Build things",
       modelRef: "platform/openai-default",
       tools: {
-        native: ["shell.exec"],
+        native: ["Bash"],
         actions: [],
         skills: [],
         external: []

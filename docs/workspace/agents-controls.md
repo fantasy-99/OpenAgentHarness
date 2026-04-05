@@ -26,8 +26,8 @@ model:
 ```yaml
 tools:
   native:
-    - shell.exec
-    - file.read
+    - Bash
+    - Read
   actions:
     - code.review
   skills:

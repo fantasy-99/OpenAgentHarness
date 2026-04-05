@@ -77,8 +77,8 @@ description: Explore repository structure and summarize key modules. Use when th
 - 发现阶段优先读取 `SKILL.md` frontmatter
 - 若无 frontmatter，则从目录名和正文推断基础元数据
 - 默认只将 skill catalog 注入到 system prompt
-- 激活 skill 后通过 `activate_skill` 再读取完整 `SKILL.md`
-- 若需要读取 skill 目录内的资源文件，继续调用 `activate_skill` 并传 `resource_path`
+- 激活 skill 后通过 `Skill` 再读取完整 `SKILL.md`
+- 若需要读取 skill 目录内的资源文件，继续调用 `Skill` 并传 `resource_path`
 - `scripts/`、`references/`、`assets/` 按需加载
 - skill 名称允许与目录名不同，但建议保持语义一致
 - 同名 skill 的冲突处理遵循 workspace settings 中定义的优先级规则
@@ -89,13 +89,13 @@ description: Explore repository structure and summarize key modules. Use when th
 2. `settings.skill_dirs`
 3. 服务端 `paths.skill_dir`
 
-## `activate_skill` 工具语义
+## `Skill` 工具语义
 
 建议结构：
 
 ```text
-activate_skill({ name })
-activate_skill({ name, resource_path })
+Skill({ name })
+Skill({ name, resource_path })
 ```
 
 规则：

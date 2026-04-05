@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import type {
+  ChatMessage,
   Message,
   ModelGenerateResponse,
   Run,
@@ -12,16 +13,31 @@ import type {
 } from "@oah/api-contracts";
 
 import { AppError } from "./errors.js";
+import { buildAvailableAgentSwitchesMessage, buildAvailableSubagentsMessage } from "./agent-control.js";
+import { NATIVE_TOOL_NAMES } from "./native-tools.js";
+import { buildAvailableActionsMessage } from "./action-dispatch.js";
+import { buildAvailableSkillsMessage } from "./skill-activation.js";
+import { formatToolOutput } from "./tool-output.js";
 import {
-  buildAvailableAgentSwitchesMessage,
-  buildAvailableSubagentsMessage,
-  createAgentAwaitTool,
-  createAgentDelegateTool,
-  createAgentSwitchTool
-} from "./agent-control.js";
-import { createNativeToolSet, getNativeToolRetryPolicy, NATIVE_TOOL_NAMES } from "./native-tools.js";
-import { buildAvailableActionsMessage, createRunActionTool } from "./action-dispatch.js";
-import { buildAvailableSkillsMessage, createDynamicActivateSkillTool } from "./skill-activation.js";
+  contentToPromptMessage,
+  extractTextFromContent,
+  isMessagePartList,
+  isMessageRole,
+  textContent,
+  toolCallContent,
+  toolResultContent
+} from "./runtime-message-content.js";
+import {
+  activeToolNamesForAgent as resolveActiveToolNamesForAgent,
+  buildEnvironmentMessage as composeEnvironmentMessage,
+  buildRuntimeTools as createWorkspaceRuntimeTools,
+  canDelegateFromAgent as canAgentDelegate,
+  enabledToolServers as listEnabledToolServers,
+  toolRetryPolicy as resolveToolRetryPolicy,
+  toolSourceType as resolveToolSourceType,
+  visibleLlmActions as listVisibleLlmActions,
+  visibleLlmSkills as listVisibleLlmSkills
+} from "./runtime-tooling.js";
 import {
   type ActionRunAcceptedResult,
   type ActionRetryPolicy,
@@ -115,7 +131,7 @@ interface ModelExecutionInput {
   modelDefinition?: ModelDefinition | undefined;
   temperature?: number | undefined;
   maxTokens?: number | undefined;
-  messages: Array<{ role: "system" | "user" | "assistant" | "tool"; content: string }>;
+  messages: ChatMessage[];
 }
 
 interface RunExecutionContext {
@@ -135,8 +151,6 @@ interface AwaitedRunSummary {
   run: Run;
   assistantContent?: string | undefined;
 }
-
-type PromptMessage = { role: "system" | "user" | "assistant" | "tool"; content: string };
 
 function escapeXml(value: string): string {
   return value
@@ -403,7 +417,7 @@ export class RuntimeService {
     return nextCursor === undefined ? { items } : { items, nextCursor };
   }
 
-  async listSessionMessages(sessionId: string, pageSize: number, cursor?: string): Promise<MessageListResult> {
+  async listSessionMessages(sessionId: string, pageSize = 100, cursor?: string): Promise<MessageListResult> {
     await this.getSession(sessionId);
     const messages = await this.#messageRepository.listBySessionId(sessionId);
     const startIndex = parseCursor(cursor);
@@ -435,7 +449,7 @@ export class RuntimeService {
       id: createId("msg"),
       sessionId,
       role: "user",
-      content: input.content,
+      content: textContent(input.content),
       metadata: input.metadata,
       createdAt: now
     };
@@ -740,7 +754,7 @@ export class RuntimeService {
         throw new AppError(500, "session_required", `Run ${run.id} requires a session for message execution.`);
       }
 
-      const allMessages = await this.#messageRepository.listBySessionId(session.id);
+      const allMessages = [...(await this.#messageRepository.listBySessionId(session.id))];
       const executionContext: RunExecutionContext = {
         currentAgentName: run.effectiveAgentName,
         injectSystemReminder: false,
@@ -772,7 +786,7 @@ export class RuntimeService {
         toolCallStartedAt,
         toolCallSteps
       );
-      const enabledToolServers = this.#enabledToolServers(workspace);
+      const activeToolServers = listEnabledToolServers(workspace);
       const runtimeToolNames = Object.keys(observableRuntimeTools);
       const persistedToolCalls = new Set<string>();
       let assistantMessage: Message | undefined;
@@ -791,15 +805,15 @@ export class RuntimeService {
                 tools: observableRuntimeTools
               }
             : {}),
-          ...(enabledToolServers.length > 0
+          ...(activeToolServers.length > 0
             ? {
-                toolServers: enabledToolServers
+                toolServers: activeToolServers
               }
             : {}),
           maxSteps: workspace.agents[executionContext.currentAgentName]?.policy?.maxSteps ?? 8,
           parallelToolCalls: workspace.agents[executionContext.currentAgentName]?.policy?.parallelToolCalls,
           prepareStep: async (stepNumber) => {
-            const activeToolNames = this.#activeToolNamesForAgent(workspace, executionContext.currentAgentName);
+            const activeToolNames = resolveActiveToolNamesForAgent(workspace, executionContext.currentAgentName);
             if (stepNumber === 0) {
               modelCallSteps.set(
                 stepNumber,
@@ -811,7 +825,7 @@ export class RuntimeService {
                   input: this.#serializeModelCallStepInput(
                     hookedModelInput,
                     activeToolNames,
-                    enabledToolServers,
+                    activeToolServers,
                     runtimeToolNames,
                     runtimeTools
                   )
@@ -842,7 +856,7 @@ export class RuntimeService {
                 input: this.#serializeModelCallStepInput(
                   hookedNextInput,
                   activeToolNames,
-                  enabledToolServers,
+                  activeToolServers,
                   runtimeToolNames,
                   runtimeTools
                 )
@@ -853,7 +867,8 @@ export class RuntimeService {
               model: hookedNextInput.model,
               ...(hookedNextInput.modelDefinition ? { modelDefinition: hookedNextInput.modelDefinition } : {}),
               systemMessages: hookedNextInput.messages.filter(
-                (message): message is { role: "system"; content: string } => message.role === "system"
+                (message): message is { role: "system"; content: string } =>
+                  message.role === "system" && typeof message.content === "string"
               ),
               ...(activeToolNames ? { activeToolNames } : {})
             };
@@ -871,7 +886,7 @@ export class RuntimeService {
             const retryPolicy = toolStep ? this.#runStepRetryPolicy(toolStep) : undefined;
             if (toolStep) {
               const completedToolStep = await this.#completeRunStep(toolStep, "completed", {
-                sourceType: this.#toolSourceType(toolResult.toolName),
+                sourceType: resolveToolSourceType(toolResult.toolName),
                 ...(retryPolicy ? { retryPolicy } : {}),
                 output: this.#normalizeJsonObject(toolResult.output),
                 ...(startedAt !== undefined ? { durationMs: Date.now() - startedAt } : {})
@@ -888,7 +903,7 @@ export class RuntimeService {
                 sessionId: session.id,
                 toolCallId: toolResult.toolCallId,
                 toolName: toolResult.toolName,
-                sourceType: this.#toolSourceType(toolResult.toolName),
+                sourceType: resolveToolSourceType(toolResult.toolName),
                 ...(retryPolicy ? { retryPolicy } : {}),
                 output: toolResult.output,
                 ...(startedAt !== undefined ? { durationMs: Date.now() - startedAt } : {})
@@ -903,18 +918,19 @@ export class RuntimeService {
               modelCallSteps.delete(completedModelStepCount);
             }
             completedModelStepCount += 1;
-            await this.#persistToolResults(session, run, step, persistedToolCalls);
+            await this.#persistAssistantToolCalls(session, run, step, allMessages);
+            await this.#persistToolResults(session, run, step, persistedToolCalls, allMessages);
           }
         }
       );
 
       let accumulatedText = "";
       for await (const chunk of response.chunks) {
-        assistantMessage = await this.#ensureAssistantMessage(session, run, assistantMessage);
+        assistantMessage = await this.#ensureAssistantMessage(session, run, assistantMessage, allMessages);
         accumulatedText += chunk;
         await this.#messageRepository.update({
           ...assistantMessage,
-          content: accumulatedText
+          content: textContent(accumulatedText)
         });
         await this.#appendEvent({
           sessionId: session.id,
@@ -1033,23 +1049,29 @@ export class RuntimeService {
     completed: ModelGenerateResponse
   ): Promise<void> {
     const latestRun = await this.getRun(run.id);
-    const persistedAssistantMessage = await this.#ensureAssistantMessage(session, latestRun, assistantMessage, completed.text);
+    const persistedAssistantMessage = await this.#ensureAssistantMessage(
+      session,
+      latestRun,
+      assistantMessage,
+      undefined,
+      completed.text
+    );
     const updatedMessage =
-      persistedAssistantMessage.content === completed.text
+      extractTextFromContent(persistedAssistantMessage.content) === completed.text
         ? persistedAssistantMessage
         : await this.#messageRepository.update({
             ...persistedAssistantMessage,
-            content: completed.text
+            content: textContent(completed.text)
           });
 
     await this.#appendEvent({
       sessionId: session.id,
       runId: run.id,
       event: "message.completed",
-      data: {
-        runId: run.id,
-        messageId: updatedMessage.id,
-        content: updatedMessage.content,
+        data: {
+          runId: run.id,
+          messageId: updatedMessage.id,
+          content: updatedMessage.content,
         finishReason: completed.finishReason ?? "stop"
       }
     });
@@ -1219,7 +1241,7 @@ export class RuntimeService {
     };
   }
 
-  #normalizePromptMessages(rawMessages: unknown): PromptMessage[] {
+  #normalizePromptMessages(rawMessages: unknown): ChatMessage[] {
     if (!Array.isArray(rawMessages)) {
       return [];
     }
@@ -1228,15 +1250,14 @@ export class RuntimeService {
       if (
         typeof message === "object" &&
         message !== null &&
-        typeof (message as { role?: unknown }).role === "string" &&
-        typeof (message as { content?: unknown }).content === "string"
+        isMessageRole((message as { role?: unknown }).role)
       ) {
-        const role = (message as { role: string }).role;
-        if (role === "system" || role === "user" || role === "assistant" || role === "tool") {
+        const content = (message as { content?: unknown }).content;
+        if (typeof content === "string" || isMessagePartList(content)) {
           return [
             {
-              role,
-              content: (message as { content: string }).content
+              role: (message as { role: Message["role"] }).role,
+              content
             }
           ];
         }
@@ -1263,10 +1284,7 @@ export class RuntimeService {
       session,
       run,
       "before_context_build",
-      messages.map((message) => ({
-        role: message.role,
-        content: message.content
-      }))
+      messages.map((message) => contentToPromptMessage(message.role, message.content))
     );
     const promptMessages: Array<{ role: "system"; content: string }> = this.#buildStaticPromptMessages(
       workspace,
@@ -1393,8 +1411,8 @@ export class RuntimeService {
       order: ["base", "llm_optimized", "agent", "actions", "project_agents_md", "skills"] as const,
       includeEnvironment: false
     };
-    const visibleActions = activeAgent ? this.#visibleLlmActions(workspace, activeAgentName) : [];
-    const visibleSkills = activeAgent ? this.#visibleLlmSkills(workspace, activeAgentName) : [];
+    const visibleActions = activeAgent ? listVisibleLlmActions(workspace, activeAgentName) : [];
+    const visibleSkills = activeAgent ? listVisibleLlmSkills(workspace, activeAgentName) : [];
     const orderedMessages: Array<{ role: "system"; content: string }> = [];
 
     for (const segment of compose.order) {
@@ -1491,25 +1509,7 @@ export class RuntimeService {
   }
 
   #buildEnvironmentMessage(workspace: WorkspaceRecord, activeAgentName: string): string {
-    const activeAgent = workspace.agents[activeAgentName];
-    const visibleNativeTools = activeAgent ? this.#visibleNativeToolNames(workspace, activeAgentName) : [];
-    const visibleActions = activeAgent ? this.#visibleLlmActions(workspace, activeAgentName).map((action) => action.name) : [];
-    const visibleSkills = activeAgent ? this.#visibleLlmSkills(workspace, activeAgentName).map((skill) => skill.name) : [];
-    const visibleToolServers = activeAgent ? this.#visibleToolServers(workspace, activeAgentName).map((server) => server.name) : [];
-
-    return [
-      "<environment>",
-      `workspace_id: ${workspace.id}`,
-      `workspace_root: ${workspace.rootPath}`,
-      `workspace_kind: ${workspace.kind}`,
-      `execution_policy: ${workspace.executionPolicy}`,
-      `active_agent: ${activeAgentName}`,
-      `available_native_tools: ${visibleNativeTools.length > 0 ? visibleNativeTools.join(", ") : "none"}`,
-      `available_actions: ${visibleActions.length > 0 ? visibleActions.join(", ") : "none"}`,
-      `available_skills: ${visibleSkills.length > 0 ? visibleSkills.join(", ") : "none"}`,
-      `available_tool_servers: ${visibleToolServers.length > 0 ? visibleToolServers.join(", ") : "none"}`,
-      "</environment>"
-    ].join("\n");
+    return composeEnvironmentMessage(workspace, activeAgentName);
   }
 
   #buildRuntimeTools(
@@ -1518,96 +1518,80 @@ export class RuntimeService {
     session: Session,
     executionContext: RunExecutionContext
   ): RuntimeToolSet {
-    if (workspace.kind === "chat") {
-      return {};
-    }
-
-    return {
-      ...createNativeToolSet(workspace.rootPath, () =>
-        this.#visibleNativeToolNames(workspace, executionContext.currentAgentName)
-      ),
-      ...createRunActionTool(() => this.#visibleLlmActions(workspace, executionContext.currentAgentName), async (action, input, context) =>
-        this.#executeAction(workspace, action, run, context.abortSignal, input)
-      ),
-      ...createDynamicActivateSkillTool(() => this.#visibleLlmSkills(workspace, executionContext.currentAgentName)),
-      ...createAgentDelegateTool(
-        () => executionContext.currentAgentName,
-        () => workspace.agents[executionContext.currentAgentName],
-        () => workspace.agents,
-        async ({ targetAgentName, task, handoffSummary }, currentAgentName) => {
-          const accepted = await this.#delegateAgentRun(
-            workspace,
-            session,
-            run,
-            currentAgentName,
-            targetAgentName,
-            task,
-            handoffSummary
-          );
-          executionContext.delegatedRunIds.push(accepted.childRunId);
-          return accepted;
-        }
-      ),
-      ...createAgentAwaitTool(
-        () => executionContext.delegatedRunIds,
-        async ({ runIds, mode }) => this.#awaitDelegatedRuns(run, runIds, mode)
-      ),
-      ...createAgentSwitchTool(
-        () => executionContext.currentAgentName,
-        () => workspace.agents[executionContext.currentAgentName],
-        () => workspace.agents,
-        async (targetAgentName, currentAgentName) => {
-          const switchStep = await this.#startRunStep({
+    return createWorkspaceRuntimeTools({
+      workspace,
+      run,
+      session,
+      getCurrentAgentName: () => executionContext.currentAgentName,
+      modelGateway: this.#modelGateway,
+      defaultModel: this.#defaultModel,
+      executeAction: async (action, input, context) =>
+        this.#executeAction(workspace, action, run, context.abortSignal, input),
+      delegateAgent: async ({ targetAgentName, task, handoffSummary }, currentAgentName) => {
+        const accepted = await this.#delegateAgentRun(
+          workspace,
+          session,
+          run,
+          currentAgentName,
+          targetAgentName,
+          task,
+          handoffSummary
+        );
+        executionContext.delegatedRunIds.push(accepted.childRunId);
+        return accepted;
+      },
+      awaitDelegatedRuns: async ({ runIds, mode }) => this.#awaitDelegatedRuns(run, runIds, mode),
+      switchAgent: async (targetAgentName, currentAgentName) => {
+        const switchStep = await this.#startRunStep({
+          runId: run.id,
+          stepType: "agent_switch",
+          name: `${currentAgentName}->${targetAgentName}`,
+          agentName: currentAgentName,
+          input: {
+            fromAgent: currentAgentName,
+            toAgent: targetAgentName
+          }
+        });
+        await this.#appendEvent({
+          sessionId: session.id,
+          runId: run.id,
+          event: "agent.switch.requested",
+          data: {
             runId: run.id,
-            stepType: "agent_switch",
-            name: `${currentAgentName}->${targetAgentName}`,
-            agentName: currentAgentName,
-            input: {
-              fromAgent: currentAgentName,
-              toAgent: targetAgentName
-            }
-          });
-          await this.#appendEvent({
             sessionId: session.id,
-            runId: run.id,
-            event: "agent.switch.requested",
-            data: {
-              runId: run.id,
-              sessionId: session.id,
-              fromAgent: currentAgentName,
-              toAgent: targetAgentName
-            }
-          });
+            fromAgent: currentAgentName,
+            toAgent: targetAgentName
+          }
+        });
 
-          const latestRun = await this.getRun(run.id);
-          const nextSwitchCount = (latestRun.switchCount ?? 0) + 1;
-          await this.#updateRun(latestRun, {
-            effectiveAgentName: targetAgentName,
-            switchCount: nextSwitchCount
-          });
-          executionContext.currentAgentName = targetAgentName;
-          executionContext.injectSystemReminder = true;
-          await this.#completeRunStep(switchStep, "completed", {
+        const latestRun = await this.getRun(run.id);
+        const nextSwitchCount = (latestRun.switchCount ?? 0) + 1;
+        await this.#updateRun(latestRun, {
+          effectiveAgentName: targetAgentName,
+          switchCount: nextSwitchCount
+        });
+        executionContext.currentAgentName = targetAgentName;
+        executionContext.injectSystemReminder = true;
+        await this.#completeRunStep(switchStep, "completed", {
+          fromAgent: currentAgentName,
+          toAgent: targetAgentName,
+          switchCount: nextSwitchCount
+        });
+
+        await this.#appendEvent({
+          sessionId: session.id,
+          runId: run.id,
+          event: "agent.switched",
+          data: {
+            runId: run.id,
+            sessionId: session.id,
             fromAgent: currentAgentName,
             toAgent: targetAgentName,
             switchCount: nextSwitchCount
-          });
-
-          await this.#appendEvent({
-            sessionId: session.id,
-            runId: run.id,
-            event: "agent.switched",
-            data: {
-              runId: run.id,
-              sessionId: session.id,
-              fromAgent: currentAgentName,
-              toAgent: targetAgentName,
-              switchCount: nextSwitchCount
-            }
-          });
-        }
-      )
-    };
+          }
+        });
+      }
+    });
   }
 
   #wrapRuntimeToolsForEvents(
@@ -1628,7 +1612,7 @@ export class RuntimeService {
             const currentAgentName = executionContext.currentAgentName;
             const toolStartedAt = context.toolCallId ? (toolCallStartedAt.get(context.toolCallId) ?? Date.now()) : Date.now();
             let executedInput = input;
-            let retryPolicy = this.#toolRetryPolicy(workspace, currentAgentName, toolName, input, definition);
+            let retryPolicy = resolveToolRetryPolicy(workspace, toolName, input, definition);
 
             try {
               executedInput = await this.#applyBeforeToolDispatchHooks(
@@ -1640,7 +1624,7 @@ export class RuntimeService {
                 context.toolCallId,
                 input
               );
-              retryPolicy = this.#toolRetryPolicy(workspace, currentAgentName, toolName, executedInput, definition);
+              retryPolicy = resolveToolRetryPolicy(workspace, toolName, executedInput, definition);
 
               if (context.toolCallId) {
                 toolCallStartedAt.set(context.toolCallId, toolStartedAt);
@@ -1653,7 +1637,7 @@ export class RuntimeService {
                     agentName: currentAgentName,
                     input: {
                       toolCallId: context.toolCallId,
-                      sourceType: this.#toolSourceType(toolName),
+                      sourceType: resolveToolSourceType(toolName),
                       retryPolicy,
                       input: this.#normalizeJsonObject(executedInput)
                     }
@@ -1670,7 +1654,7 @@ export class RuntimeService {
                   sessionId: session.id,
                   ...(context.toolCallId ? { toolCallId: context.toolCallId } : {}),
                   toolName,
-                  sourceType: this.#toolSourceType(toolName),
+                  sourceType: resolveToolSourceType(toolName),
                   retryPolicy,
                   input: executedInput
                 }
@@ -1706,7 +1690,7 @@ export class RuntimeService {
               }
               if (toolStep) {
                 const failedToolStep = await this.#completeRunStep(toolStep, "failed", {
-                  sourceType: this.#toolSourceType(toolName),
+                  sourceType: resolveToolSourceType(toolName),
                   retryPolicy,
                   errorCode: error instanceof AppError ? error.code : "tool_execution_failed",
                   errorMessage: error instanceof Error ? error.message : "Unknown tool execution error.",
@@ -1723,7 +1707,7 @@ export class RuntimeService {
                   sessionId: session.id,
                   ...(context.toolCallId ? { toolCallId: context.toolCallId } : {}),
                   toolName,
-                  sourceType: this.#toolSourceType(toolName),
+                  sourceType: resolveToolSourceType(toolName),
                   retryPolicy,
                   errorCode: error instanceof AppError ? error.code : "tool_execution_failed",
                   errorMessage: error instanceof Error ? error.message : "Unknown tool execution error.",
@@ -1802,48 +1786,6 @@ export class RuntimeService {
     }
   }
 
-  #toolSourceType(toolName: string): "action" | "skill" | "agent" | "tool" | "native" {
-    if (toolName === "run_action") {
-      return "action";
-    }
-
-    if (toolName === "activate_skill") {
-      return "skill";
-    }
-
-    if (toolName.startsWith("agent.")) {
-      return "agent";
-    }
-
-    if ((NATIVE_TOOL_NAMES as readonly string[]).includes(toolName)) {
-      return "native";
-    }
-
-    return "tool";
-  }
-
-  #toolRetryPolicy(
-    workspace: WorkspaceRecord,
-    _activeAgentName: string,
-    toolName: string,
-    input: unknown,
-    definition?: RuntimeToolSet[string] | undefined
-  ): ActionRetryPolicy {
-    if ((NATIVE_TOOL_NAMES as readonly string[]).includes(toolName)) {
-      return getNativeToolRetryPolicy(toolName as (typeof NATIVE_TOOL_NAMES)[number]);
-    }
-
-    if (toolName === "run_action") {
-      const actionInput =
-        input && typeof input === "object" && !Array.isArray(input) ? (input as { name?: unknown }) : undefined;
-      const actionName = typeof actionInput?.name === "string" ? actionInput.name : undefined;
-      return actionName ? workspace.actions[actionName]?.retryPolicy ?? "manual" : "manual";
-    }
-
-    const definitionRetryPolicy = definition?.retryPolicy;
-    return isActionRetryPolicy(definitionRetryPolicy) ? definitionRetryPolicy : "manual";
-  }
-
   #runStepRetryPolicy(step: RunStep): ActionRetryPolicy | undefined {
     const inputPayload = this.#asJsonRecord(step.input);
     const inputRetryPolicy = inputPayload?.retryPolicy;
@@ -1875,47 +1817,13 @@ export class RuntimeService {
       return undefined;
     }
 
-    if (!this.#canDelegateFromAgent(workspace, activeAgentName)) {
+    if (!canAgentDelegate(workspace, activeAgentName)) {
       return undefined;
     }
 
     const currentAgent = workspace.agents[activeAgentName];
     const message = buildAvailableSubagentsMessage(activeAgentName, currentAgent, workspace.agents);
     return message.length > 0 ? message : undefined;
-  }
-
-  #activeToolNamesForAgent(workspace: WorkspaceRecord, activeAgentName: string): string[] | undefined {
-    if (workspace.kind === "chat") {
-      return undefined;
-    }
-
-    if (this.#enabledToolServers(workspace).length > 0) {
-      return undefined;
-    }
-
-    const names: string[] = [];
-    names.push(...this.#visibleNativeToolNames(workspace, activeAgentName));
-    if (this.#visibleLlmActions(workspace, activeAgentName).length > 0) {
-      names.push("run_action");
-    }
-    if (this.#visibleLlmSkills(workspace, activeAgentName).length > 0) {
-      names.push("activate_skill");
-    }
-    if ((workspace.agents[activeAgentName]?.switch ?? []).length > 0) {
-      names.push("agent.switch");
-    }
-    if (this.#canDelegateFromAgent(workspace, activeAgentName)) {
-      names.push("agent.delegate");
-    }
-    if ((workspace.agents[activeAgentName]?.subagents ?? []).length > 0) {
-      names.push("agent.await");
-    }
-    return names.length > 0 ? names : undefined;
-  }
-
-  #canDelegateFromAgent(workspace: WorkspaceRecord, activeAgentName: string): boolean {
-    const agent = workspace.agents[activeAgentName];
-    return !!agent && agent.mode !== "subagent" && (agent.subagents?.length ?? 0) > 0;
   }
 
   #delegatedRunRecords(run: Run): DelegatedRunRecord[] {
@@ -1956,7 +1864,7 @@ export class RuntimeService {
     task: string,
     handoffSummary?: string | undefined
   ): Promise<{ childSessionId: string; childRunId: string }> {
-    if (!this.#canDelegateFromAgent(workspace, currentAgentName)) {
+    if (!canAgentDelegate(workspace, currentAgentName)) {
       throw new AppError(
         403,
         "agent_delegate_not_allowed",
@@ -2001,7 +1909,7 @@ export class RuntimeService {
       subjectRef: parentSession.subjectRef,
       agentName: targetAgentName,
       activeAgentName: targetAgentName,
-      title: `Subagent ${targetAgentName}`,
+      title: `Agent ${targetAgentName}`,
       status: "active",
       createdAt: now,
       updatedAt: now
@@ -2010,7 +1918,7 @@ export class RuntimeService {
       id: createId("msg"),
       sessionId: childSessionId,
       role: "user",
-      content: this.#buildDelegatedTaskMessage(currentAgentName, targetAgentName, task, handoffSummary),
+      content: textContent(this.#buildDelegatedTaskMessage(currentAgentName, targetAgentName, task, handoffSummary)),
       metadata: {
         parentRunId: parentRun.id,
         parentSessionId: parentSession.id,
@@ -2180,11 +2088,17 @@ export class RuntimeService {
   async #awaitDelegatedRuns(_parentRun: Run, runIds: string[], mode: "all" | "any"): Promise<string> {
     const awaitedRuns = mode === "any" ? [await this.#waitForAnyRunTerminalState(runIds)] : await Promise.all(runIds.map(async (runId) => this.#waitForRunTerminalState(runId)));
     const summaries = await Promise.all(awaitedRuns.map(async (run) => this.#collectAwaitedRunSummary(run.id)));
+    const rendered = summaries.map((summary) => this.#renderAwaitedRunSummary(summary));
+
+    if (rendered.length === 1) {
+      return rendered[0] ?? "";
+    }
 
     return [
-      `<agent_await mode="${mode}">`,
-      ...summaries.map((summary) => this.#renderAwaitedRunSummary(summary)),
-      "</agent_await>"
+      `mode: ${mode}`,
+      `results: ${rendered.length}`,
+      "",
+      rendered.join("\n\n")
     ].join("\n");
   }
 
@@ -2228,126 +2142,38 @@ export class RuntimeService {
 
     return {
       run,
-      ...(assistantMessage ? { assistantContent: assistantMessage.content } : {})
+      ...(assistantMessage ? { assistantContent: extractTextFromContent(assistantMessage.content) } : {})
     };
   }
 
   #renderAwaitedRunSummary(summary: AwaitedRunSummary): string {
-    return [
-      `  <child_run id="${escapeXml(summary.run.id)}" status="${escapeXml(summary.run.status)}" agent="${escapeXml(summary.run.effectiveAgentName)}">`,
-      ...(summary.assistantContent ? ["    <output>", escapeXml(summary.assistantContent), "    </output>"] : []),
-      ...(summary.run.errorMessage ? ["    <error_message>", escapeXml(summary.run.errorMessage), "    </error_message>"] : []),
-      "  </child_run>"
-    ].join("\n");
-  }
-
-  #visibleLlmSkills(workspace: WorkspaceRecord, activeAgentName: string): WorkspaceRecord["skills"][string][] {
-    return this.#visibleSkills(workspace, activeAgentName).filter((skill) => skill.exposeToLlm !== false);
-  }
-
-  #visibleNativeToolNames(workspace: WorkspaceRecord, activeAgentName: string): string[] {
-    if (workspace.kind === "chat") {
-      return [];
-    }
-
-    const activeAgent = workspace.agents[activeAgentName];
-    const configuredNativeTools = activeAgent?.tools?.native ?? [];
-    const availableNativeTools = [...NATIVE_TOOL_NAMES];
-
-    if (!activeAgent || configuredNativeTools.length === 0) {
-      return availableNativeTools;
-    }
-
-    return configuredNativeTools.map((toolName) => {
-      if (!(NATIVE_TOOL_NAMES as readonly string[]).includes(toolName)) {
-        throw new AppError(
-          404,
-          "native_tool_not_found",
-          `Native tool ${toolName} was not found in workspace ${workspace.id}.`
-        );
-      }
-
-      return toolName;
-    });
-  }
-
-  #visibleLlmActions(workspace: WorkspaceRecord, activeAgentName: string): WorkspaceRecord["actions"][string][] {
-    return this.#visibleActions(workspace, activeAgentName).filter((action) => action.exposeToLlm);
-  }
-
-  #visibleSkills(workspace: WorkspaceRecord, activeAgentName: string): WorkspaceRecord["skills"][string][] {
-    if (workspace.kind === "chat") {
-      return [];
-    }
-
-    const activeAgent = workspace.agents[activeAgentName];
-    const configuredSkills = activeAgent?.tools?.skills ?? [];
-    if (!activeAgent || configuredSkills.length === 0) {
-      return Object.values(workspace.skills);
-    }
-
-    return configuredSkills.map((skillName) => {
-      const skill = workspace.skills[skillName];
-      if (!skill) {
-        throw new AppError(404, "skill_not_found", `Skill ${skillName} was not found in workspace ${workspace.id}.`);
-      }
-
-      return skill;
-    });
-  }
-
-  #visibleActions(workspace: WorkspaceRecord, activeAgentName: string): WorkspaceRecord["actions"][string][] {
-    if (workspace.kind === "chat") {
-      return [];
-    }
-
-    const activeAgent = workspace.agents[activeAgentName];
-    const configuredActions = activeAgent?.tools?.actions ?? [];
-    if (!activeAgent || configuredActions.length === 0) {
-      return Object.values(workspace.actions);
-    }
-
-    return configuredActions.map((actionName) => {
-      const action = workspace.actions[actionName];
-      if (!action) {
-        throw new AppError(404, "action_not_found", `Action ${actionName} was not found in workspace ${workspace.id}.`);
-      }
-
-      return action;
-    });
-  }
-
-  #visibleToolServers(workspace: WorkspaceRecord, activeAgentName: string): WorkspaceRecord["toolServers"][string][] {
-    if (workspace.kind === "chat") {
-      return [];
-    }
-
-    const activeAgent = workspace.agents[activeAgentName];
-    const configuredToolServers = activeAgent?.tools?.external ?? activeAgent?.tools?.mcp ?? [];
-    if (!activeAgent || configuredToolServers.length === 0) {
-      return Object.values(workspace.toolServers);
-    }
-
-    return configuredToolServers.map((serverName) => {
-      const server = workspace.toolServers[serverName];
-      if (!server) {
-        throw new AppError(404, "tool_server_not_found", `Tool server ${serverName} was not found in workspace ${workspace.id}.`);
-      }
-
-      return server;
-    });
-  }
-
-  #visibleEnabledToolServers(workspace: WorkspaceRecord, activeAgentName: string): WorkspaceRecord["toolServers"][string][] {
-    return this.#visibleToolServers(workspace, activeAgentName).filter((server) => server.enabled);
-  }
-
-  #enabledToolServers(workspace: WorkspaceRecord): WorkspaceRecord["toolServers"][string][] {
-    if (workspace.kind === "chat") {
-      return [];
-    }
-
-    return Object.values(workspace.toolServers).filter((server) => server.enabled);
+    return formatToolOutput(
+      [
+        ["agent_id", summary.run.id],
+        ["status", summary.run.status],
+        ["subagent_type", summary.run.effectiveAgentName]
+      ],
+      [
+        ...(summary.assistantContent
+          ? [
+              {
+                title: "output",
+                lines: summary.assistantContent.split(/\r?\n/),
+                emptyText: "(empty output)"
+              }
+            ]
+          : []),
+        ...(summary.run.errorMessage
+          ? [
+              {
+                title: "error_message",
+                lines: summary.run.errorMessage.split(/\r?\n/),
+                emptyText: "(empty error)"
+              }
+            ]
+          : [])
+      ]
+    );
   }
 
   async #applyBeforeModelHooks(
@@ -2450,8 +2276,8 @@ export class RuntimeService {
     session: Session,
     run: Run,
     eventName: "before_context_build" | "after_context_build",
-    messages: PromptMessage[]
-  ): Promise<PromptMessage[]> {
+    messages: ChatMessage[]
+  ): Promise<ChatMessage[]> {
     let currentMessages = messages;
 
     for (const hook of this.#selectHooks(workspace, eventName)) {
@@ -2493,7 +2319,7 @@ export class RuntimeService {
     return currentMessages;
   }
 
-  #applyContextPatch(currentMessages: PromptMessage[], patch: Record<string, unknown>): PromptMessage[] {
+  #applyContextPatch(currentMessages: ChatMessage[], patch: Record<string, unknown>): ChatMessage[] {
     if (Array.isArray(patch.messages)) {
       return this.#normalizePromptMessages(patch.messages);
     }
@@ -2683,9 +2509,9 @@ export class RuntimeService {
   }
 
   #insertSystemMessages(
-    messages: Array<{ role: "system" | "user" | "assistant" | "tool"; content: string }>,
+    messages: ChatMessage[],
     extraSystemMessages: Array<{ role: "system"; content: string }>
-  ): Array<{ role: "system" | "user" | "assistant" | "tool"; content: string }> {
+  ): ChatMessage[] {
     const firstNonSystemIndex = messages.findIndex((message) => message.role !== "system");
     if (firstNonSystemIndex === -1) {
       return this.#collapseLeadingSystemMessages([...messages, ...extraSystemMessages]);
@@ -2699,13 +2525,13 @@ export class RuntimeService {
   }
 
   #collapseLeadingSystemMessages(
-    messages: Array<{ role: "system" | "user" | "assistant" | "tool"; content: string }>
-  ): Array<{ role: "system" | "user" | "assistant" | "tool"; content: string }> {
+    messages: ChatMessage[]
+  ): ChatMessage[] {
     const leadingSystemMessages: string[] = [];
     let firstNonSystemIndex = 0;
 
     while (firstNonSystemIndex < messages.length && messages[firstNonSystemIndex]?.role === "system") {
-      leadingSystemMessages.push(messages[firstNonSystemIndex]!.content);
+      leadingSystemMessages.push(extractTextFromContent(messages[firstNonSystemIndex]!.content));
       firstNonSystemIndex += 1;
     }
 
@@ -2772,6 +2598,14 @@ export class RuntimeService {
 
   #serializeModelCallStepOutput(step: ModelStepResult): Record<string, unknown> {
     return {
+      ...(typeof step.stepType === "string" ? { stepType: step.stepType } : {}),
+      ...(typeof step.text === "string" ? { text: step.text } : {}),
+      ...(Array.isArray(step.content) ? { content: step.content } : {}),
+      ...(step.usage ? { usage: step.usage } : {}),
+      ...(Array.isArray(step.warnings) && step.warnings.length > 0 ? { warnings: step.warnings } : {}),
+      ...(step.request ? { request: step.request } : {}),
+      ...(step.response ? { response: step.response } : {}),
+      ...(step.providerMetadata ? { providerMetadata: step.providerMetadata } : {}),
       finishReason: step.finishReason ?? "unknown",
       toolCallsCount: step.toolCalls.length,
       toolResultsCount: step.toolResults.length,
@@ -2818,11 +2652,12 @@ export class RuntimeService {
       next.messages = this.#collapseLeadingSystemMessages(
         patch.messages
         .filter(
-          (message): message is { role: "system" | "user" | "assistant" | "tool"; content: string } =>
+          (message): message is ChatMessage =>
             typeof message === "object" &&
             message !== null &&
-            typeof (message as { role?: unknown }).role === "string" &&
-            typeof (message as { content?: unknown }).content === "string"
+            isMessageRole((message as { role?: unknown }).role) &&
+            (typeof (message as { content?: unknown }).content === "string" ||
+              isMessagePartList((message as { content?: unknown }).content))
         )
         .map((message) => ({
           role: message.role,
@@ -2846,19 +2681,55 @@ export class RuntimeService {
     session: Session,
     run: Run,
     currentMessage: Message | undefined,
+    allMessages?: Message[],
     content = ""
   ): Promise<Message> {
     if (currentMessage) {
       return currentMessage;
     }
 
-    return this.#messageRepository.create({
+    const message = await this.#messageRepository.create({
       id: createId("msg"),
       sessionId: session.id,
       runId: run.id,
       role: "assistant",
-      content,
+      content: textContent(content),
       createdAt: nowIso()
+    });
+
+    allMessages?.push(message);
+    return message;
+  }
+
+  async #persistAssistantToolCalls(
+    session: Session,
+    run: Run,
+    step: ModelStepResult,
+    allMessages: Message[]
+  ): Promise<void> {
+    if (step.toolCalls.length === 0) {
+      return;
+    }
+
+    const assistantToolCallMessage = await this.#messageRepository.create({
+      id: createId("msg"),
+      sessionId: session.id,
+      runId: run.id,
+      role: "assistant",
+      content: toolCallContent(step.toolCalls),
+      createdAt: nowIso()
+    });
+
+    allMessages.push(assistantToolCallMessage);
+    await this.#appendEvent({
+      sessionId: session.id,
+      runId: run.id,
+      event: "message.completed",
+      data: {
+        runId: run.id,
+        messageId: assistantToolCallMessage.id,
+        content: assistantToolCallMessage.content
+      }
     });
   }
 
@@ -2866,7 +2737,8 @@ export class RuntimeService {
     session: Session,
     run: Run,
     step: ModelStepResult,
-    persistedToolCalls: Set<string>
+    persistedToolCalls: Set<string>,
+    allMessages: Message[]
   ): Promise<void> {
     for (const toolResult of step.toolResults) {
       if (persistedToolCalls.has(toolResult.toolCallId)) {
@@ -2879,11 +2751,10 @@ export class RuntimeService {
         sessionId: session.id,
         runId: run.id,
         role: "tool",
-        toolName: toolResult.toolName,
-        toolCallId: toolResult.toolCallId,
-        content: this.#serializeToolOutput(toolResult.output),
+        content: toolResultContent(toolResult),
         createdAt: nowIso()
       });
+      allMessages.push(toolMessage);
 
       await this.#appendEvent({
         sessionId: session.id,
@@ -2893,26 +2764,10 @@ export class RuntimeService {
           runId: run.id,
           messageId: toolMessage.id,
           content: toolMessage.content,
-          toolName: toolMessage.toolName,
-          toolCallId: toolMessage.toolCallId
+          toolName: toolResult.toolName,
+          toolCallId: toolResult.toolCallId
         }
       });
-    }
-  }
-
-  #serializeToolOutput(output: unknown): string {
-    if (typeof output === "string") {
-      return output;
-    }
-
-    if (output === undefined) {
-      return "";
-    }
-
-    try {
-      return JSON.stringify(output, null, 2);
-    } catch {
-      return String(output);
     }
   }
 
@@ -3330,13 +3185,17 @@ export class RuntimeService {
     await this.#recordToolCallAuditFromStep(completedActionStep, action.name, "completed");
 
     if (session) {
+      const actionToolCallId = `action-run:${run.id}:${action.name}`;
       const toolMessage = await this.#messageRepository.create({
         id: createId("msg"),
         sessionId: session.id,
         runId: run.id,
         role: "tool",
-        toolName: action.name,
-        content: result.output,
+        content: toolResultContent({
+          toolCallId: actionToolCallId,
+          toolName: action.name,
+          output: result.output
+        }),
         createdAt: nowIso()
       });
 
@@ -3348,7 +3207,9 @@ export class RuntimeService {
           runId: run.id,
           messageId: toolMessage.id,
           content: toolMessage.content,
-          actionName: action.name
+          actionName: action.name,
+          toolCallId: actionToolCallId,
+          toolName: action.name
         }
       });
     }
@@ -3544,7 +3405,7 @@ export class RuntimeService {
       return sourceType === "mcp" ? "tool" : sourceType;
     }
 
-    return this.#toolSourceType(toolName);
+    return resolveToolSourceType(toolName);
   }
 
   async #recordHookRunAudit(

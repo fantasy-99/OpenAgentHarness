@@ -28,10 +28,15 @@ system_reminder: |
   Focus on making concrete code changes in the current workspace.
 tools:
   native:
-    - shell.exec
-    - file.read
-    - file.write
-    - file.list
+    - Bash
+    - Read
+    - Write
+    - Edit
+    - Glob
+    - Grep
+    - WebFetch
+    - WebSearch
+    - TodoWrite
   actions:
     - code.review
     - test.run
@@ -75,6 +80,7 @@ Prefer making concrete progress in the current workspace.
 - frontmatter 与正文都应支持中文和其他 Unicode 字符
 - Markdown 正文即该 agent 的主 system prompt
 - `name` 不建议重复出现在 frontmatter 中，文件名就是单一事实来源
+- native tool 使用 Title Case 命名，如 `Bash`、`Read`、`TodoWrite`
 
 ## frontmatter 字段
 

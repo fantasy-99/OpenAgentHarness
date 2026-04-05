@@ -131,9 +131,7 @@ PostgreSQL 存放以下核心实体：
 - `session_id`
 - `run_id`
 - `role`
-- `content`
-- `tool_name`
-- `tool_call_id`
+- `content jsonb`
 - `metadata jsonb`
 - `created_at`
 
@@ -141,6 +139,14 @@ PostgreSQL 存放以下核心实体：
 
 - `(session_id, created_at)`
 - `(run_id, created_at)`
+
+说明：
+
+- `content` 采用 AI SDK 风格消息内容
+  - 可为纯文本字符串
+  - 也可为 message parts 数组，例如 `text`、`tool-call`、`tool-result`
+- 不再单独维护 `tool_name`、`tool_call_id` 列
+- assistant 的 tool call 与 tool 的 result 都通过消息内容中的 parts 持久化
 
 ### 5.4 run
 

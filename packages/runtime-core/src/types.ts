@@ -98,6 +98,14 @@ export interface ModelToolResult {
 }
 
 export interface ModelStepResult {
+  stepType?: string | undefined;
+  text?: string | undefined;
+  content?: unknown[] | undefined;
+  usage?: Record<string, unknown> | undefined;
+  warnings?: unknown[] | undefined;
+  request?: Record<string, unknown> | undefined;
+  response?: Record<string, unknown> | undefined;
+  providerMetadata?: Record<string, unknown> | undefined;
   finishReason?: string | undefined;
   toolCalls: ModelToolCall[];
   toolResults: ModelToolResult[];

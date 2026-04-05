@@ -1512,6 +1512,7 @@ describe("http api", () => {
         messages: expect.arrayContaining([{ role: "user", content: "hello there" }])
       },
       output: {
+        text: "reply:hello there",
         finishReason: "stop",
         toolCalls: [],
         toolResults: []
@@ -1647,7 +1648,7 @@ Use ripgrep first.
       text: "I loaded the repo-explorer skill.",
       toolSteps: [
         {
-          toolName: "activate_skill",
+          toolName: "Skill",
           input: { name: "repo-explorer" },
           toolCallId: "call_activate_http"
         }
@@ -1692,13 +1693,13 @@ Use ripgrep first.
     expect(events.find((event) => event.event === "tool.started")?.data).toMatchObject({
       runId: accepted.runId,
       toolCallId: "call_activate_http",
-      toolName: "activate_skill",
+      toolName: "Skill",
       sourceType: "skill"
     });
     expect(events.find((event) => event.event === "tool.completed")?.data).toMatchObject({
       runId: accepted.runId,
       toolCallId: "call_activate_http",
-      toolName: "activate_skill",
+      toolName: "Skill",
       sourceType: "skill"
     });
   });

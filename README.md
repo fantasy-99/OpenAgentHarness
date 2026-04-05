@@ -24,6 +24,7 @@ Build your own agent product on top of a reusable runtime, instead of rebuilding
 - Headless and embeddable behind your own web app, desktop app, CLI, automation system, or API gateway
 - Workspace-first customization instead of one fixed global agent setup
 - Supports both executable `project` workspaces and read-only `chat` workspaces
+- Conversation state persists as AI SDK-style message content, including text, tool-call, and tool-result parts
 - Flexible capability model with separate `agent`, `skill`, `action`, `tool`, `hook`, and context layers
 - One runtime that works for single-workspace setups and multi-workspace platform deployments
 
@@ -110,6 +111,11 @@ Common local addresses:
 
 - Debug web console: `http://localhost:5174`
 - Default backend address: `http://127.0.0.1:8787`
+
+The debug web console includes:
+
+- a session Inspector that shows model-facing messages, tools, run steps, and runtime traces
+- a global Storage workbench for PostgreSQL and Redis, including structured `messages.content` inspection
 
 Useful commands:
 

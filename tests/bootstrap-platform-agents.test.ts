@@ -93,7 +93,17 @@ openai-default:
           { name: "builder", source: "platform", description: expect.any(String) }
         ])
       );
-      expect(project.agents.builder.tools.native).toEqual(["shell.exec", "file.read", "file.write", "file.list"]);
+      expect(project.agents.builder.tools.native).toEqual([
+        "Bash",
+        "Read",
+        "Write",
+        "Edit",
+        "Glob",
+        "Grep",
+        "WebFetch",
+        "WebSearch",
+        "TodoWrite"
+      ]);
 
       expect(chat.defaultAgent).toBe("assistant");
       expect(chat.catalog.agents).toEqual(

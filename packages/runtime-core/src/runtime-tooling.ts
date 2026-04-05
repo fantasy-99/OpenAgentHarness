@@ -1,0 +1,312 @@
+import { createRunActionTool } from "./action-dispatch.js";
+import { createAgentSwitchTool, createAgentTool } from "./agent-control.js";
+import { AppError } from "./errors.js";
+import {
+  createNativeToolSet,
+  getNativeToolRetryPolicy,
+  isNativeToolName,
+  NATIVE_TOOL_NAMES
+} from "./native-tools.js";
+import { createDynamicActivateSkillTool } from "./skill-activation.js";
+import type {
+  ActionDefinition,
+  ActionRetryPolicy,
+  ModelGateway,
+  Run,
+  RuntimeToolExecutionContext,
+  RuntimeToolSet,
+  Session,
+  SkillDefinition,
+  ToolServerDefinition,
+  WorkspaceRecord
+} from "./types.js";
+
+export type RuntimeToolSourceType = "action" | "skill" | "agent" | "tool" | "native";
+
+export function visibleSkills(
+  workspace: WorkspaceRecord,
+  activeAgentName: string
+): WorkspaceRecord["skills"][string][] {
+  if (workspace.kind === "chat") {
+    return [];
+  }
+
+  const activeAgent = workspace.agents[activeAgentName];
+  const configuredSkills = activeAgent?.tools?.skills ?? [];
+  if (!activeAgent || configuredSkills.length === 0) {
+    return Object.values(workspace.skills);
+  }
+
+  return configuredSkills.map((skillName) => {
+    const skill = workspace.skills[skillName];
+    if (!skill) {
+      throw new AppError(404, "skill_not_found", `Skill ${skillName} was not found in workspace ${workspace.id}.`);
+    }
+
+    return skill;
+  });
+}
+
+export function visibleLlmSkills(
+  workspace: WorkspaceRecord,
+  activeAgentName: string
+): WorkspaceRecord["skills"][string][] {
+  return visibleSkills(workspace, activeAgentName).filter((skill) => skill.exposeToLlm !== false);
+}
+
+export function visibleActions(
+  workspace: WorkspaceRecord,
+  activeAgentName: string
+): WorkspaceRecord["actions"][string][] {
+  if (workspace.kind === "chat") {
+    return [];
+  }
+
+  const activeAgent = workspace.agents[activeAgentName];
+  const configuredActions = activeAgent?.tools?.actions ?? [];
+  if (!activeAgent || configuredActions.length === 0) {
+    return Object.values(workspace.actions);
+  }
+
+  return configuredActions.map((actionName) => {
+    const action = workspace.actions[actionName];
+    if (!action) {
+      throw new AppError(404, "action_not_found", `Action ${actionName} was not found in workspace ${workspace.id}.`);
+    }
+
+    return action;
+  });
+}
+
+export function visibleLlmActions(
+  workspace: WorkspaceRecord,
+  activeAgentName: string
+): WorkspaceRecord["actions"][string][] {
+  return visibleActions(workspace, activeAgentName).filter((action) => action.exposeToLlm);
+}
+
+export function visibleToolServers(
+  workspace: WorkspaceRecord,
+  activeAgentName: string
+): WorkspaceRecord["toolServers"][string][] {
+  if (workspace.kind === "chat") {
+    return [];
+  }
+
+  const activeAgent = workspace.agents[activeAgentName];
+  const configuredToolServers = activeAgent?.tools?.external ?? activeAgent?.tools?.mcp ?? [];
+  if (!activeAgent || configuredToolServers.length === 0) {
+    return Object.values(workspace.toolServers);
+  }
+
+  return configuredToolServers.map((serverName) => {
+    const server = workspace.toolServers[serverName];
+    if (!server) {
+      throw new AppError(404, "tool_server_not_found", `Tool server ${serverName} was not found in workspace ${workspace.id}.`);
+    }
+
+    return server;
+  });
+}
+
+export function visibleEnabledToolServers(
+  workspace: WorkspaceRecord,
+  activeAgentName: string
+): WorkspaceRecord["toolServers"][string][] {
+  return visibleToolServers(workspace, activeAgentName).filter((server) => server.enabled);
+}
+
+export function enabledToolServers(
+  workspace: WorkspaceRecord
+): WorkspaceRecord["toolServers"][string][] {
+  if (workspace.kind === "chat") {
+    return [];
+  }
+
+  return Object.values(workspace.toolServers).filter((server) => server.enabled);
+}
+
+export function visibleNativeToolNames(workspace: WorkspaceRecord, activeAgentName: string): string[] {
+  if (workspace.kind === "chat") {
+    return [];
+  }
+
+  const activeAgent = workspace.agents[activeAgentName];
+  const configuredNativeTools = activeAgent?.tools?.native ?? [];
+  const availableNativeTools = [...NATIVE_TOOL_NAMES];
+
+  if (!activeAgent || configuredNativeTools.length === 0) {
+    return availableNativeTools;
+  }
+
+  return configuredNativeTools.map((toolName) => {
+    if (!isNativeToolName(toolName)) {
+      throw new AppError(
+        404,
+        "native_tool_not_found",
+        `Native tool ${toolName} was not found in workspace ${workspace.id}.`
+      );
+    }
+
+    return toolName;
+  });
+}
+
+export function canDelegateFromAgent(workspace: WorkspaceRecord, activeAgentName: string): boolean {
+  const agent = workspace.agents[activeAgentName];
+  return !!agent && agent.mode !== "subagent" && (agent.subagents?.length ?? 0) > 0;
+}
+
+export function activeToolNamesForAgent(
+  workspace: WorkspaceRecord,
+  activeAgentName: string
+): string[] | undefined {
+  if (workspace.kind === "chat") {
+    return undefined;
+  }
+
+  if (enabledToolServers(workspace).length > 0) {
+    return undefined;
+  }
+
+  const names: string[] = [];
+  names.push(...visibleNativeToolNames(workspace, activeAgentName));
+  if (visibleLlmActions(workspace, activeAgentName).length > 0) {
+    names.push("run_action");
+  }
+  if (visibleLlmSkills(workspace, activeAgentName).length > 0) {
+    names.push("Skill");
+  }
+  if ((workspace.agents[activeAgentName]?.switch ?? []).length > 0) {
+    names.push("agent.switch");
+  }
+  if (canDelegateFromAgent(workspace, activeAgentName)) {
+    names.push("Agent");
+  }
+  return names.length > 0 ? names : undefined;
+}
+
+export function buildEnvironmentMessage(workspace: WorkspaceRecord, activeAgentName: string): string {
+  const activeAgent = workspace.agents[activeAgentName];
+  const nativeTools = activeAgent ? visibleNativeToolNames(workspace, activeAgentName) : [];
+  const actions = activeAgent ? visibleLlmActions(workspace, activeAgentName).map((action) => action.name) : [];
+  const skills = activeAgent ? visibleLlmSkills(workspace, activeAgentName).map((skill) => skill.name) : [];
+  const toolServers = activeAgent ? visibleToolServers(workspace, activeAgentName).map((server) => server.name) : [];
+
+  return [
+    "<environment>",
+    `workspace_id: ${workspace.id}`,
+    `workspace_root: ${workspace.rootPath}`,
+    `workspace_kind: ${workspace.kind}`,
+    `execution_policy: ${workspace.executionPolicy}`,
+    `active_agent: ${activeAgentName}`,
+    `available_native_tools: ${nativeTools.length > 0 ? nativeTools.join(", ") : "none"}`,
+    `available_actions: ${actions.length > 0 ? actions.join(", ") : "none"}`,
+    `available_skills: ${skills.length > 0 ? skills.join(", ") : "none"}`,
+    `available_tool_servers: ${toolServers.length > 0 ? toolServers.join(", ") : "none"}`,
+    "</environment>"
+  ].join("\n");
+}
+
+export function toolSourceType(toolName: string): RuntimeToolSourceType {
+  if (toolName === "run_action") {
+    return "action";
+  }
+
+  if (toolName === "Skill") {
+    return "skill";
+  }
+
+  if (toolName === "Agent" || toolName.startsWith("agent.")) {
+    return "agent";
+  }
+
+  if (isNativeToolName(toolName)) {
+    return "native";
+  }
+
+  return "tool";
+}
+
+export function toolRetryPolicy(
+  workspace: WorkspaceRecord,
+  toolName: string,
+  input: unknown,
+  definition?: RuntimeToolSet[string] | undefined
+): ActionRetryPolicy {
+  if (isNativeToolName(toolName)) {
+    return getNativeToolRetryPolicy(toolName);
+  }
+
+  if (toolName === "run_action") {
+    const actionInput =
+      input && typeof input === "object" && !Array.isArray(input) ? (input as { name?: unknown }) : undefined;
+    const actionName = typeof actionInput?.name === "string" ? actionInput.name : undefined;
+    return actionName ? workspace.actions[actionName]?.retryPolicy ?? "manual" : "manual";
+  }
+
+  const definitionRetryPolicy = definition?.retryPolicy;
+  return definitionRetryPolicy === "safe" || definitionRetryPolicy === "manual" ? definitionRetryPolicy : "manual";
+}
+
+export interface BuildRuntimeToolsInput {
+  workspace: WorkspaceRecord;
+  run: Run;
+  session: Session;
+  getCurrentAgentName: () => string;
+  modelGateway: ModelGateway;
+  defaultModel: string;
+  executeAction: (
+    action: ActionDefinition,
+    input: unknown,
+    context: RuntimeToolExecutionContext
+  ) => Promise<{
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+    output: string;
+  }>;
+  delegateAgent: (
+    input: { targetAgentName: string; task: string; handoffSummary?: string | undefined },
+    currentAgentName: string
+  ) => Promise<{ childSessionId: string; childRunId: string }>;
+  awaitDelegatedRuns: (input: { runIds: string[]; mode: "all" | "any" }) => Promise<string>;
+  switchAgent: (targetAgentName: string, currentAgentName: string) => Promise<void>;
+}
+
+export function buildRuntimeTools(input: BuildRuntimeToolsInput): RuntimeToolSet {
+  const { workspace, run, session, getCurrentAgentName, modelGateway, defaultModel } = input;
+  if (workspace.kind === "chat") {
+    return {};
+  }
+
+  return {
+    ...createNativeToolSet(
+      workspace.rootPath,
+      () => visibleNativeToolNames(workspace, getCurrentAgentName()),
+      {
+        sessionId: session.id,
+        modelGateway,
+        webFetchModel: defaultModel
+      }
+    ),
+    ...createRunActionTool(
+      () => visibleLlmActions(workspace, getCurrentAgentName()),
+      async (action, actionInput, context) => input.executeAction(action, actionInput, context)
+    ),
+    ...createDynamicActivateSkillTool(() => visibleLlmSkills(workspace, getCurrentAgentName())),
+    ...createAgentTool(
+      getCurrentAgentName,
+      () => workspace.agents[getCurrentAgentName()],
+      () => workspace.agents,
+      async (agentInput, currentAgentName) => input.delegateAgent(agentInput, currentAgentName),
+      async (awaitInput) => input.awaitDelegatedRuns(awaitInput)
+    ),
+    ...createAgentSwitchTool(
+      getCurrentAgentName,
+      () => workspace.agents[getCurrentAgentName()],
+      () => workspace.agents,
+      async (targetAgentName, currentAgentName) => input.switchAgent(targetAgentName, currentAgentName)
+    )
+  };
+}

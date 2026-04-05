@@ -1,15 +1,22 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f5f5f2;
-  --foreground: #171717;
-  --card: rgba(255, 255, 255, 0.94);
-  --muted-foreground: #76736d;
-  --accent: #1c1c1c;
-  --accent-strong: #050505;
-  --accent-foreground: #fbfbf8;
-  --ring: #a6a097;
-  --border: rgba(28, 28, 28, 0.07);
+  --background: #e9eef4;
+  --foreground: #102034;
+  --card: rgba(255, 255, 255, 0.86);
+  --muted-foreground: #61758d;
+  --accent: #112640;
+  --accent-strong: #0a1930;
+  --accent-soft: rgba(17, 38, 64, 0.08);
+  --accent-foreground: #f8fbff;
+  --ring: #8da1c0;
+  --border: rgba(16, 32, 52, 0.08);
+  --surface-strong: rgba(255, 255, 255, 0.95);
+  --surface-muted: rgba(243, 246, 250, 0.92);
+  --surface-soft: rgba(248, 250, 253, 0.82);
+  --shadow-soft: 0 24px 60px rgba(15, 27, 43, 0.09);
+  --shadow-panel: 0 14px 34px rgba(16, 31, 50, 0.07);
+  --shadow-glow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
 * {
@@ -31,7 +38,11 @@ body {
     "IBM Plex Sans",
     "Helvetica Neue",
     sans-serif;
-  background: linear-gradient(180deg, #f8f8f5 0%, #f3f3ef 100%);
+  background:
+    radial-gradient(circle at top left, rgba(104, 143, 233, 0.18), transparent 28%),
+    radial-gradient(circle at 85% 10%, rgba(79, 192, 169, 0.12), transparent 24%),
+    radial-gradient(circle at 50% 100%, rgba(255, 255, 255, 0.65), transparent 40%),
+    linear-gradient(180deg, #f3f6fb 0%, #e9eef4 100%);
 }
 
 body::before {
@@ -39,17 +50,277 @@ body::before {
   position: fixed;
   inset: 0;
   pointer-events: none;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.52), rgba(255, 255, 255, 0));
-  opacity: 0.9;
-}
-
-body::after {
-  display: none;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0)),
+    linear-gradient(90deg, rgba(20, 32, 50, 0.04) 1px, transparent 1px),
+    linear-gradient(rgba(20, 32, 50, 0.04) 1px, transparent 1px);
+  background-size: auto, 32px 32px, 32px 32px;
+  background-position: 0 0, 0 0, 0 0;
+  opacity: 0.52;
 }
 
 #root {
   position: relative;
   min-height: 100%;
+}
+
+.app-shell {
+  position: relative;
+}
+
+.shell-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(247, 250, 253, 0.88));
+  border-color: rgba(16, 32, 52, 0.08);
+  box-shadow: var(--shadow-soft);
+  backdrop-filter: blur(18px);
+}
+
+.panel-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(245, 248, 252, 0.92));
+  border-color: rgba(16, 32, 52, 0.08);
+  box-shadow: var(--shadow-panel), var(--shadow-glow);
+}
+
+.subtle-panel {
+  background: linear-gradient(180deg, rgba(248, 250, 253, 0.98), rgba(242, 246, 250, 0.94));
+  box-shadow: var(--shadow-glow);
+}
+
+.workbench-panel {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(244, 248, 252, 0.93));
+  border: 1px solid rgba(16, 32, 52, 0.08);
+  box-shadow: var(--shadow-panel);
+  backdrop-filter: blur(14px);
+}
+
+.segmented-shell {
+  display: inline-flex;
+  gap: 8px;
+  padding: 5px;
+  border: 1px solid rgba(17, 34, 62, 0.08);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(244, 247, 251, 0.95), rgba(239, 244, 249, 0.92));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.brand-kicker {
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.section-kicker {
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+.surface-title {
+  letter-spacing: -0.045em;
+  text-wrap: balance;
+}
+
+.info-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border: 1px solid rgba(17, 34, 62, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--foreground);
+  font-size: 12px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.operator-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(19, 35, 63, 0.22);
+}
+
+.surface-header {
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top right, rgba(86, 133, 226, 0.14), transparent 28%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(246, 249, 253, 0.93));
+}
+
+.surface-header::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(16, 32, 52, 0.12), transparent);
+}
+
+.surface-brow {
+  display: grid;
+  gap: 16px;
+}
+
+.surface-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.surface-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.conversation-stage {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  background: linear-gradient(180deg, rgba(251, 252, 254, 0.74), rgba(245, 248, 252, 0.5));
+}
+
+.conversation-stat-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.conversation-stat {
+  border: 1px solid rgba(16, 32, 52, 0.07);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 14px 16px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+}
+
+.conversation-thread {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 16px 20px;
+}
+
+.conversation-thread-inner {
+  margin: 0 auto;
+  max-width: 880px;
+}
+
+.conversation-row {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 16px;
+  padding: 16px 0;
+}
+
+.conversation-row + .conversation-row {
+  border-top: 1px solid rgba(16, 32, 52, 0.06);
+}
+
+.conversation-avatar {
+  display: flex;
+  height: 44px;
+  width: 44px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16px;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: 0 12px 24px rgba(18, 33, 53, 0.1);
+}
+
+.conversation-bubble {
+  border-radius: 26px;
+  border: 1px solid rgba(16, 32, 52, 0.08);
+  padding: 18px 20px;
+  box-shadow: 0 14px 28px rgba(18, 33, 53, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  transition:
+    transform 180ms ease,
+    box-shadow 180ms ease,
+    border-color 180ms ease;
+}
+
+.conversation-bubble:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 18px 36px rgba(18, 33, 53, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.conversation-bubble-user {
+  background: linear-gradient(180deg, rgba(248, 250, 254, 0.98), rgba(242, 246, 251, 0.95));
+}
+
+.conversation-bubble-assistant {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(246, 249, 253, 0.95));
+}
+
+.conversation-composer-wrap {
+  border-top: 1px solid rgba(16, 32, 52, 0.08);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.93), rgba(247, 250, 253, 0.97));
+  padding: 16px;
+}
+
+.conversation-composer-shell {
+  margin: 0 auto;
+  max-width: 880px;
+  border-radius: 28px;
+  border: 1px solid rgba(16, 32, 52, 0.08);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(245, 248, 252, 0.95));
+  box-shadow: 0 22px 40px rgba(17, 31, 50, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.inspector-stage {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+  background: linear-gradient(180deg, rgba(251, 252, 254, 0.7), rgba(245, 248, 252, 0.52));
+}
+
+.inspector-summary {
+  border: 1px solid rgba(16, 32, 52, 0.08);
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at top right, rgba(86, 133, 226, 0.12), transparent 26%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(245, 248, 252, 0.94));
+  box-shadow: var(--shadow-panel), var(--shadow-glow);
+}
+
+.inspector-summary-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.inspector-tabbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.data-grid-shell thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  backdrop-filter: blur(12px);
+}
+
+.animate-rise {
+  animation: rise-in 320ms ease-out;
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 button,
@@ -76,4 +347,25 @@ code {
   border: 2px solid transparent;
   background: rgba(109, 104, 95, 0.24);
   background-clip: padding-box;
+}
+
+@media (max-width: 768px) {
+  .surface-toolbar {
+    align-items: stretch;
+  }
+
+  .conversation-row {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .conversation-avatar {
+    height: 36px;
+    width: 36px;
+    border-radius: 12px;
+  }
+
+  .conversation-composer-shell {
+    border-radius: 24px;
+  }
 }
