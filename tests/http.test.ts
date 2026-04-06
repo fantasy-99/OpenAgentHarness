@@ -119,7 +119,7 @@ async function createStartedApp() {
             models: [],
             actions: [],
             skills: [],
-            mcp: [],
+            tools: [],
             hooks: [],
             nativeTools: []
           }
@@ -719,7 +719,7 @@ describe("http api", () => {
               models: [],
               actions: [],
               skills: [],
-              mcp: [],
+              tools: [],
               hooks: [],
               nativeTools: []
             }
@@ -866,7 +866,7 @@ describe("http api", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -946,7 +946,7 @@ describe("http api", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -1060,7 +1060,7 @@ describe("http api", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -1136,7 +1136,7 @@ describe("http api", () => {
             native: [],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -1188,7 +1188,7 @@ describe("http api", () => {
         models: [],
         actions: [{ name: "dangerous.run", callableByApi: true, callableByUser: true, exposeToLlm: true }],
         skills: [{ name: "repo-explorer", exposeToLlm: true }],
-        mcp: [{ name: "docs", transportType: "http" }],
+        tools: [{ name: "docs", transportType: "http" }],
         hooks: [{ name: "rewrite-request", handlerType: "prompt", events: ["before_model_call"] }],
         nativeTools: ["shell"]
       }
@@ -1214,7 +1214,7 @@ describe("http api", () => {
       models: [],
       actions: [],
       skills: [],
-      mcp: [],
+      tools: [],
       hooks: [],
       nativeTools: []
     });
@@ -1281,7 +1281,7 @@ describe("http api", () => {
               models: [],
               actions: [],
               skills: [],
-              mcp: [],
+              tools: [],
               hooks: [],
               nativeTools: []
             }
@@ -1363,7 +1363,7 @@ describe("http api", () => {
                 models: [],
                 actions: [],
                 skills: [],
-                mcp: [],
+                tools: [],
                 hooks: [],
                 nativeTools: []
               }
@@ -1491,14 +1491,21 @@ describe("http api", () => {
         stepType: string;
         status: string;
         input?: {
-          model?: string;
-          messages?: Array<{ role: string; content: string }>;
-          runtimeToolNames?: string[];
+          request?: {
+            model?: string;
+            messages?: Array<{ role: string; content: string }>;
+          };
+          runtime?: {
+            runtimeToolNames?: string[];
+          };
         };
         output?: {
-          finishReason?: string;
-          toolCalls?: Array<{ toolName?: string }>;
-          toolResults?: Array<{ toolName?: string }>;
+          response?: {
+            finishReason?: string;
+            toolCalls?: Array<{ toolName?: string }>;
+            toolResults?: Array<{ toolName?: string }>;
+            text?: string;
+          };
         };
       }>;
       nextCursor?: string;
@@ -1508,14 +1515,18 @@ describe("http api", () => {
     expect(runStepsPage.items.every((step) => typeof step.status === "string")).toBe(true);
     expect(runStepsPage.items.find((step) => step.stepType === "model_call")).toMatchObject({
       input: {
-        model: "openai-default",
-        messages: expect.arrayContaining([{ role: "user", content: "hello there" }])
+        request: {
+          model: "openai-default",
+          messages: expect.arrayContaining([{ role: "user", content: "hello there" }])
+        }
       },
       output: {
-        text: "reply:hello there",
-        finishReason: "stop",
-        toolCalls: [],
-        toolResults: []
+        response: {
+          text: "reply:hello there",
+          finishReason: "stop",
+          toolCalls: [],
+          toolResults: []
+        }
       }
     });
     expect(runStepsPage.nextCursor).toBeUndefined();
@@ -1635,7 +1646,7 @@ Use ripgrep first.
           native: [],
           actions: [],
           skills: ["repo-explorer"],
-          mcp: []
+          external: []
         },
         switch: [],
         subagents: []

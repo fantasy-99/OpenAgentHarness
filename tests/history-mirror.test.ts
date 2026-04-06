@@ -58,7 +58,7 @@ describe("history mirror syncer", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -264,7 +264,7 @@ describe("history mirror syncer", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -347,7 +347,7 @@ describe("history mirror syncer", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -403,7 +403,7 @@ describe("history mirror syncer", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }

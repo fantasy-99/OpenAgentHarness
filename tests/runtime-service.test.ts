@@ -43,8 +43,14 @@ function messageText(message: Pick<Message, "content"> | undefined) {
         return [part.text];
       }
 
-      if (part.type === "tool-result" && typeof part.output === "string") {
-        return [part.output];
+      if (
+        part.type === "tool-result" &&
+        typeof part.output === "object" &&
+        part.output !== null &&
+        (part.output as { type?: unknown }).type === "text" &&
+        typeof (part.output as { value?: unknown }).value === "string"
+      ) {
+        return [(part.output as { value: string }).value];
       }
 
       return [];
@@ -104,7 +110,7 @@ async function createRuntime(delayMs = 0) {
             models: [],
             actions: [],
             skills: [],
-            mcp: [],
+            tools: [],
             hooks: [],
             nativeTools: []
           }
@@ -153,7 +159,7 @@ describe("runtime service", () => {
                   native: [],
                   actions: [],
                   skills: [],
-                  mcp: []
+                  external: []
                 },
                 switch: [],
                 subagents: []
@@ -169,7 +175,7 @@ describe("runtime service", () => {
               models: [],
               actions: [],
               skills: [],
-              mcp: [],
+              tools: [],
               hooks: [],
               nativeTools: []
             }
@@ -195,6 +201,57 @@ describe("runtime service", () => {
     expect(workspace.kind).toBe("project");
     expect(workspace.readOnly).toBe(false);
     expect(workspace.historyMirrorEnabled).toBe(false);
+  });
+
+  it("preserves the initializer workspace id when creating a workspace", async () => {
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence,
+      workspaceInitializer: {
+        async initialize(input) {
+          return {
+            id: "ws_stable_demo",
+            rootPath: input.rootPath,
+            settings: {
+              defaultAgent: "default",
+              skillDirs: []
+            },
+            defaultAgent: "default",
+            workspaceModels: {},
+            agents: {},
+            actions: {},
+            skills: {},
+            toolServers: {},
+            hooks: {},
+            catalog: {
+              workspaceId: "template",
+              agents: [],
+              models: [],
+              actions: [],
+              skills: [],
+              tools: [],
+              hooks: [],
+              nativeTools: []
+            }
+          };
+        }
+      }
+    });
+
+    const workspace = await runtimeService.createWorkspace({
+      input: {
+        name: "demo",
+        template: "workspace",
+        rootPath: "/tmp/demo",
+        executionPolicy: "local"
+      }
+    });
+
+    expect(workspace.id).toBe("ws_stable_demo");
+    expect((await runtimeService.getWorkspaceRecord("ws_stable_demo")).catalog.workspaceId).toBe("ws_stable_demo");
   });
 
   it("deletes workspace records and cascades in-memory session data", async () => {
@@ -231,7 +288,7 @@ describe("runtime service", () => {
               models: [],
               actions: [],
               skills: [],
-              mcp: [],
+              tools: [],
               hooks: [],
               nativeTools: []
             }
@@ -504,7 +561,7 @@ describe("runtime service", () => {
             native: [],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -520,7 +577,7 @@ describe("runtime service", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -577,7 +634,7 @@ describe("runtime service", () => {
             native: [],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -593,7 +650,7 @@ describe("runtime service", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -668,7 +725,7 @@ describe("runtime service", () => {
             native: [],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -684,7 +741,7 @@ describe("runtime service", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -764,7 +821,7 @@ describe("runtime service", () => {
             native: [],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: ["build"],
           subagents: []
@@ -779,7 +836,7 @@ describe("runtime service", () => {
             native: [],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -798,7 +855,7 @@ describe("runtime service", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -931,7 +988,7 @@ describe("runtime service", () => {
             native: [],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: ["researcher"]
@@ -944,7 +1001,7 @@ describe("runtime service", () => {
             native: [],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -963,7 +1020,7 @@ describe("runtime service", () => {
         models: [{ ref: "platform/planner-model", name: "planner-model", source: "platform", provider: "openai" }],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -1102,7 +1159,7 @@ describe("runtime service", () => {
             native: [],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: ["researcher"]
@@ -1115,7 +1172,7 @@ describe("runtime service", () => {
             native: [],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -1134,7 +1191,7 @@ describe("runtime service", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -1232,7 +1289,7 @@ describe("runtime service", () => {
           }
         ],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -1306,7 +1363,7 @@ describe("runtime service", () => {
             native: [],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -1330,7 +1387,7 @@ describe("runtime service", () => {
         ],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -1422,7 +1479,7 @@ describe("runtime service", () => {
           }
         ],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -1490,7 +1547,7 @@ describe("runtime service", () => {
             native: [],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: [],
@@ -1509,7 +1566,7 @@ describe("runtime service", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -1606,7 +1663,7 @@ describe("runtime service", () => {
             native: ["Bash"],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: [],
@@ -1625,7 +1682,7 @@ describe("runtime service", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: ["Bash"]
       }
@@ -1707,7 +1764,7 @@ describe("runtime service", () => {
             native: [],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -1723,7 +1780,7 @@ describe("runtime service", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -1799,7 +1856,7 @@ describe("runtime service", () => {
             native: [],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -1815,7 +1872,7 @@ describe("runtime service", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -1947,7 +2004,7 @@ describe("runtime service", () => {
             native: ["Glob"],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: [],
@@ -1966,7 +2023,7 @@ describe("runtime service", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: ["Glob"]
       }
@@ -2066,7 +2123,7 @@ describe("runtime service", () => {
             native: ["Glob"],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: [],
@@ -2085,7 +2142,7 @@ describe("runtime service", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: ["Glob"]
       }
@@ -2176,7 +2233,7 @@ describe("runtime service", () => {
             native: [],
             actions: [],
             skills: ["repo-explorer"],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -2219,7 +2276,7 @@ describe("runtime service", () => {
         models: [{ ref: "platform/openai-default", name: "openai-default", source: "platform", provider: "openai" }],
         actions: [{ name: "debug.echo", description: "Echo", callableByApi: true, callableByUser: true, exposeToLlm: true }],
         skills: [{ name: "repo-explorer", description: "Explore the repository.", exposeToLlm: true }],
-        mcp: [{ name: "docs-server", transportType: "stdio" }],
+        tools: [{ name: "docs-server", transportType: "stdio" }],
         hooks: [],
         nativeTools: []
       }
@@ -2322,7 +2379,7 @@ describe("runtime service", () => {
             native: [],
             actions: [],
             skills: ["repo-explorer"],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -2347,7 +2404,7 @@ describe("runtime service", () => {
         models: [],
         actions: [],
         skills: [{ name: "repo-explorer", description: "Explore repository structure and helper docs.", exposeToLlm: true }],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -2424,51 +2481,62 @@ describe("runtime service", () => {
     expect(modelCallSteps.every((step) => step.status === "completed")).toBe(true);
     expect(modelCallSteps.map((step) => step.name)).toEqual(["openai-default", "openai-default", "openai-default"]);
     expect(modelCallSteps[0]?.input).toMatchObject({
-      model: "openai-default",
-      canonicalModelRef: "platform/openai-default",
-      messageCount: 2,
-      runtimeToolNames: expect.arrayContaining(["Skill"]),
-      runtimeTools: expect.arrayContaining([
-        expect.objectContaining({
-          name: "Skill",
-          description: expect.any(String),
-          inputSchema: expect.any(Object)
-        })
-      ]),
-      activeToolNames: expect.arrayContaining(["Skill"]),
-      messages: expect.arrayContaining([
-        expect.objectContaining({
-          role: "system",
-          content: expect.stringContaining("Use repo skills when needed.")
-        }),
-        expect.objectContaining({
-          role: "system",
-          content: expect.stringContaining("<available_skills>")
-        }),
-        { role: "user", content: "Figure out how to explore the repo safely." }
-      ])
+      request: {
+        model: "openai-default",
+        canonicalModelRef: "platform/openai-default",
+        messages: expect.arrayContaining([
+          expect.objectContaining({
+            role: "system",
+            content: expect.stringContaining("Use repo skills when needed.")
+          }),
+          expect.objectContaining({
+            role: "system",
+            content: expect.stringContaining("<available_skills>")
+          }),
+          { role: "user", content: "Figure out how to explore the repo safely." }
+        ])
+      },
+      runtime: {
+        messageCount: 2,
+        runtimeToolNames: expect.arrayContaining(["Skill"]),
+        runtimeTools: expect.arrayContaining([
+          expect.objectContaining({
+            name: "Skill",
+            description: expect.any(String),
+            inputSchema: expect.any(Object)
+          })
+        ]),
+        activeToolNames: expect.arrayContaining(["Skill"])
+      }
     });
     expect(modelCallSteps[0]?.output).toMatchObject({
-      finishReason: "tool-calls",
-      toolCallsCount: 1,
-      toolResultsCount: 1,
-      toolCalls: [
-        {
-          toolCallId: "call_activate",
-          toolName: "Skill",
-          input: { name: "repo-explorer" }
-        }
-      ],
-      toolResults: [
-        expect.objectContaining({
-          toolCallId: "call_activate",
-          toolName: "Skill"
-        })
-      ]
+      response: {
+        finishReason: "tool-calls",
+        toolCalls: [
+          {
+            toolCallId: "call_activate",
+            toolName: "Skill",
+            input: { name: "repo-explorer" }
+          }
+        ],
+        toolResults: [
+          expect.objectContaining({
+            toolCallId: "call_activate",
+            toolName: "Skill"
+          })
+        ]
+      },
+      runtime: {
+        toolCallsCount: 1,
+        toolResultsCount: 1
+      }
     });
     expect(
       modelCallSteps.some((step) =>
-        (step.output as { toolCalls?: Array<{ toolCallId?: string; toolName?: string; input?: unknown }> } | undefined)?.toolCalls?.some(
+        (
+          (step.output as { response?: { toolCalls?: Array<{ toolCallId?: string; toolName?: string; input?: unknown }> } } | undefined)
+            ?.response?.toolCalls
+        )?.some(
           (toolCall) =>
             toolCall.toolCallId === "call_resource" &&
             toolCall.toolName === "Skill" &&
@@ -2481,13 +2549,22 @@ describe("runtime service", () => {
     ).toBe(true);
     expect(
       modelCallSteps.some((step) =>
-        (step.output as { toolResults?: Array<{ toolCallId?: string; toolName?: string; output?: unknown }> } | undefined)?.toolResults?.some(
+        (
+          (step.output as { response?: { toolResults?: Array<{ toolCallId?: string; toolName?: string; output?: unknown }> } } | undefined)
+            ?.response?.toolResults
+        )?.some(
           (toolResult) => toolResult.toolCallId === "call_resource" && toolResult.toolName === "Skill"
         ) ?? false
       )
     ).toBe(true);
-    expect(modelCallSteps.some((step) => (step.output as { finishReason?: string } | undefined)?.finishReason === "stop")).toBe(true);
-    expect(modelCallSteps.some((step) => (step.output as { text?: string } | undefined)?.text === "I loaded the repo-explorer skill and its guide.")).toBe(true);
+    expect(
+      modelCallSteps.some((step) => (step.output as { response?: { finishReason?: string } } | undefined)?.response?.finishReason === "stop")
+    ).toBe(true);
+    expect(
+      modelCallSteps.some(
+        (step) => (step.output as { response?: { text?: string } } | undefined)?.response?.text === "I loaded the repo-explorer skill and its guide."
+      )
+    ).toBe(true);
   });
 
   it("runs actions through the built-in run_action tool and persists the tool result", async () => {
@@ -2541,7 +2618,7 @@ describe("runtime service", () => {
             native: [],
             actions: ["debug.echo"],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -2580,7 +2657,7 @@ describe("runtime service", () => {
           }
         ],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -2686,7 +2763,7 @@ describe("runtime service", () => {
             native: ["Bash", "Read"],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -2702,7 +2779,7 @@ describe("runtime service", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -2820,7 +2897,7 @@ describe("runtime service", () => {
             native: ["Write", "Read", "Glob", "Bash"],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -2836,7 +2913,7 @@ describe("runtime service", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -2979,7 +3056,7 @@ describe("runtime service", () => {
             native: [],
             actions: ["debug.echo"],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -3032,7 +3109,7 @@ describe("runtime service", () => {
           }
         ],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [{ name: "rewrite-request", handlerType: "command", events: ["before_model_call"] }],
         nativeTools: []
       }
@@ -3154,7 +3231,7 @@ describe("runtime service", () => {
             native: [],
             actions: [],
             skills: ["repo-explorer"],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -3179,7 +3256,7 @@ describe("runtime service", () => {
         models: [],
         actions: [],
         skills: [{ name: "repo-explorer", description: "Repository explorer", exposeToLlm: true }],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -3256,7 +3333,7 @@ describe("runtime service", () => {
             native: [],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -3272,7 +3349,7 @@ describe("runtime service", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [],
         nativeTools: []
       }
@@ -3356,7 +3433,7 @@ describe("runtime service", () => {
             native: [],
             actions: ["dangerous.run"],
             skills: ["repo-explorer"],
-            mcp: ["docs"]
+            external: ["docs"]
           },
           switch: [],
           subagents: []
@@ -3414,7 +3491,7 @@ describe("runtime service", () => {
         models: [],
         actions: [{ name: "dangerous.run", callableByApi: true, callableByUser: true, exposeToLlm: true }],
         skills: [{ name: "repo-explorer", exposeToLlm: true }],
-        mcp: [{ name: "docs", transportType: "http" }],
+        tools: [{ name: "docs", transportType: "http" }],
         hooks: [{ name: "rewrite-request", handlerType: "command", events: ["before_model_call"] }],
         nativeTools: ["shell"]
       }
@@ -3500,7 +3577,7 @@ describe("runtime service", () => {
             native: [],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -3530,7 +3607,7 @@ describe("runtime service", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [{ name: "rewrite-request", handlerType: "command", events: ["before_model_call"] }],
         nativeTools: []
       }
@@ -3611,7 +3688,7 @@ describe("runtime service", () => {
             native: [],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -3642,7 +3719,7 @@ describe("runtime service", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [{ name: "slow-before-hook", handlerType: "command", events: ["before_model_call"] }],
         nativeTools: []
       }
@@ -3719,7 +3796,7 @@ describe("runtime service", () => {
             native: [],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -3751,7 +3828,7 @@ describe("runtime service", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [{ name: "slow-prompt-hook", handlerType: "prompt", events: ["after_model_call"] }],
         nativeTools: []
       }
@@ -3828,7 +3905,7 @@ describe("runtime service", () => {
             native: [],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -3871,7 +3948,7 @@ describe("runtime service", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [
           { name: "rewrite-context", handlerType: "command", events: ["before_context_build"] },
           { name: "annotate-context", handlerType: "command", events: ["after_context_build"] }
@@ -3971,7 +4048,7 @@ describe("runtime service", () => {
             native: [],
             actions: ["debug.echo"],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -4036,7 +4113,7 @@ describe("runtime service", () => {
           }
         ],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [
           {
             name: "rewrite-tool-input",
@@ -4148,7 +4225,7 @@ describe("runtime service", () => {
             native: [],
             actions: [],
             skills: [],
-            mcp: []
+            external: []
           },
           switch: [],
           subagents: []
@@ -4179,7 +4256,7 @@ describe("runtime service", () => {
         models: [],
         actions: [],
         skills: [],
-        mcp: [],
+        tools: [],
         hooks: [{ name: "rewrite-output", handlerType: "prompt", events: ["after_model_call"] }],
         nativeTools: []
       }

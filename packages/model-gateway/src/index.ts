@@ -1,17 +1,17 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { generateText, stepCountIs, streamText, tool, type LanguageModel, type ModelMessage, type ToolSet } from "ai";
+import { generateText, modelMessageSchema, stepCountIs, streamText, tool, type LanguageModel, type ModelMessage, type ToolSet } from "ai";
 
 import type { PlatformModelDefinition, PlatformModelRegistry } from "@oah/config";
 import type { ModelGenerateResponse, Usage } from "@oah/api-contracts";
 import type {
   GenerateModelInput,
   ModelGateway,
-  McpServerDefinition,
   ModelStepPreparation,
   ModelStepResult,
   ModelStreamOptions,
   RuntimeToolSet,
+  ToolServerDefinition,
   StreamedModelResponse
 } from "@oah/runtime-core";
 import { AppError } from "@oah/runtime-core";
@@ -28,11 +28,57 @@ export {
   type SupportedModelProviderId
 } from "./providers.js";
 
+function maybeToUrl(value: string): string | URL {
+  if (!/^[a-z][a-z0-9+.-]*:\/\//iu.test(value)) {
+    return value;
+  }
+
+  try {
+    return new URL(value);
+  } catch {
+    return value;
+  }
+}
+
 function normalizeMessages(messages: GenerateModelInput["messages"]): ModelMessage[] | undefined {
-  return messages?.map((message) => ({
+  const normalized = (messages?.map((message) => ({
     role: message.role,
-    content: message.content
-  })) as ModelMessage[] | undefined;
+    content:
+      typeof message.content === "string"
+        ? message.content
+        : message.content.map((part) => {
+            if (part.type === "image") {
+              return {
+                ...part,
+                image: maybeToUrl(part.image)
+              };
+            }
+
+            if (part.type === "file") {
+              return {
+                ...part,
+                data: maybeToUrl(part.data)
+              };
+            }
+
+            return part;
+          })
+  })) ?? []) as ModelMessage[] | undefined;
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  const parsed = modelMessageSchema.array().safeParse(normalized);
+  if (!parsed.success) {
+    throw new AppError(
+      400,
+      "invalid_model_messages",
+      `Invalid AI SDK model messages: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`
+    );
+  }
+
+  return parsed.data;
 }
 
 function toUsage(usage: Usage | undefined): Usage | undefined {
@@ -126,6 +172,7 @@ function toStepResult(step: {
   stepType?: string;
   text?: string;
   content?: unknown[];
+  reasoning?: unknown[];
   usage?: Record<string, unknown>;
   warnings?: unknown[];
   request?: Record<string, unknown>;
@@ -139,6 +186,7 @@ function toStepResult(step: {
     ...(typeof step.stepType === "string" ? { stepType: step.stepType } : {}),
     ...(typeof step.text === "string" ? { text: step.text } : {}),
     ...(Array.isArray(step.content) ? { content: step.content } : {}),
+    ...(Array.isArray(step.reasoning) ? { reasoning: step.reasoning } : {}),
     ...(step.usage ? { usage: step.usage } : {}),
     ...(Array.isArray(step.warnings) ? { warnings: step.warnings } : {}),
     ...(step.request ? { request: step.request } : {}),
@@ -226,8 +274,7 @@ export class AiSdkModelGateway implements ModelGateway {
     const model = this.#resolveModel(modelName, input.modelDefinition);
     const runtimeTools = toAiTools(options?.tools, options?.signal, options?.parallelToolCalls);
     const preparedToolServers = await prepareToolServers(
-      (((options as ModelStreamOptions & { toolServers?: McpServerDefinition[] | undefined })?.toolServers ??
-        options?.mcpServers) as McpServerDefinition[] | undefined)
+      (options as ModelStreamOptions & { toolServers?: ToolServerDefinition[] | undefined })?.toolServers
     );
     const aiTools = mergeToolSets(runtimeTools, preparedToolServers.tools);
     let cleanedUp = false;

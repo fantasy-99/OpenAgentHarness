@@ -166,25 +166,76 @@ OpenAPI 主规范中的 `components/schemas` 目前主要包括：
 - `role`
   - `system | user | assistant | tool`
 - `content`
-  - 可以是字符串
-  - 也可以是 AI SDK 风格的 message parts 数组
+  - `system`
+    - 必须是字符串
+  - `user`
+    - 可以是字符串
+    - 也可以是 `text | image | file` parts 数组
+  - `assistant`
+    - 可以是字符串
+    - 也可以是 `text | file | reasoning | tool-call | tool-result | tool-approval-request` parts 数组
+  - `tool`
+    - 必须是 `tool-result | tool-approval-response` parts 数组
+
+说明：
+
+- 这里对齐的是 AI SDK `ModelMessage` 的 JSON-safe 表示
+- 某些 AI SDK 运行时对象，例如 `URL`、二进制 data，不直接以运行时对象写入数据库
+- 持久化时会转换为 JSON-safe 形式；真正发给 AI SDK 前，再恢复为可接受的运行时值
 
 ### `MessagePart`
 
 用于 message content 中的结构化片段。
 
-当前支持：
+当前支持的主要 part：
 
 - `text`
+  - `text`
+- `image`
+  - `image`
+  - `mediaType`
+- `file`
+  - `data`
+  - `mediaType`
+  - `filename`
+- `reasoning`
   - `text`
 - `tool-call`
   - `toolCallId`
   - `toolName`
   - `input`
+  - `providerExecuted`
 - `tool-result`
   - `toolCallId`
   - `toolName`
   - `output`
+- `tool-approval-request`
+  - `approvalId`
+  - `toolCallId`
+- `tool-approval-response`
+  - `approvalId`
+  - `approved`
+  - `reason`
+
+### `ToolResultOutput`
+
+用于 `tool-result.output`。
+
+当前支持：
+
+- `text`
+  - `value: string`
+- `json`
+  - `value: JSONValue`
+- `execution-denied`
+  - `reason?: string`
+- `error-text`
+  - `value: string`
+- `error-json`
+  - `value: JSONValue`
+- `content`
+  - `value: [...]`
+  - 用于承载 AI SDK content-style tool output，例如 `text`、`file-data`、`image-url`
 
 ### `Message`
 
@@ -197,8 +248,7 @@ OpenAPI 主规范中的 `components/schemas` 目前主要包括：
 - `runId`
 - `role`
 - `content`
-  - 可以是字符串
-  - 也可以是 `MessagePart[]`
+  - 与 `ChatMessage.content` 使用同一套 role-aware 规则
 - `metadata`
 - `createdAt`
 

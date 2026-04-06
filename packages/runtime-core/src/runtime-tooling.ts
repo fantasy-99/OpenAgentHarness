@@ -94,7 +94,7 @@ export function visibleToolServers(
   }
 
   const activeAgent = workspace.agents[activeAgentName];
-  const configuredToolServers = activeAgent?.tools?.external ?? activeAgent?.tools?.mcp ?? [];
+  const configuredToolServers = activeAgent?.tools?.external ?? [];
   if (!activeAgent || configuredToolServers.length === 0) {
     return Object.values(workspace.toolServers);
   }

@@ -191,11 +191,6 @@ paths:
   skill_dir: /srv/openharness/skills
 ```
 
-兼容性说明：
-
-- 当前推荐统一使用 `model_dir` 与 `tool_dir`
-- `models_dir` 与 `mcp_dir` 仅作为历史兼容别名保留，不建议在新配置中继续使用
-
 ### `paths.workspace_dir`
 
 用途：

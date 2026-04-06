@@ -2,10 +2,8 @@ import { createMCPClient, type MCPClient } from "@ai-sdk/mcp";
 import { Experimental_StdioMCPTransport } from "@ai-sdk/mcp/mcp-stdio";
 import type { ToolSet } from "ai";
 
-import type { McpServerDefinition } from "@oah/runtime-core";
+import type { ToolServerDefinition } from "@oah/runtime-core";
 import { AppError } from "@oah/runtime-core";
-
-type ToolServerDefinition = McpServerDefinition;
 
 export interface PreparedToolServers {
   tools: ToolSet;

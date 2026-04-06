@@ -21,6 +21,7 @@ import { formatToolOutput } from "./tool-output.js";
 import {
   contentToPromptMessage,
   extractTextFromContent,
+  isMessageContentForRole,
   isMessagePartList,
   isMessageRole,
   textContent,
@@ -269,7 +270,7 @@ export class RuntimeService {
 
     const initialized = await this.#workspaceInitializer.initialize(input);
     const now = nowIso();
-    const workspaceId = createId("ws");
+    const workspaceId = initialized.id ?? createId("ws");
 
     const workspace: WorkspaceRecord = {
       id: workspaceId,
@@ -283,8 +284,7 @@ export class RuntimeService {
       agents: initialized.agents,
       actions: initialized.actions,
       skills: initialized.skills,
-      toolServers: initialized.toolServers ?? initialized.mcpServers ?? {},
-      ...(initialized.mcpServers ? { mcpServers: initialized.mcpServers } : {}),
+      toolServers: initialized.toolServers,
       hooks: initialized.hooks,
       catalog: {
         ...initialized.catalog,
@@ -1252,11 +1252,12 @@ export class RuntimeService {
         message !== null &&
         isMessageRole((message as { role?: unknown }).role)
       ) {
+        const role = (message as { role: Message["role"] }).role;
         const content = (message as { content?: unknown }).content;
-        if (typeof content === "string" || isMessagePartList(content)) {
+        if (isMessageContentForRole(role, content)) {
           return [
             {
-              role: (message as { role: Message["role"] }).role,
+              role,
               content
             }
           ];
@@ -2215,7 +2216,10 @@ export class RuntimeService {
     }
 
     return additionalMessages.length === 0
-      ? current
+      ? {
+          ...current,
+          messages: current.messages
+        }
       : {
           ...current,
           messages: this.#insertSystemMessages(current.messages, additionalMessages)
@@ -2558,7 +2562,14 @@ export class RuntimeService {
     };
   }
 
-  #serializeModelCallStepInput(
+  #serializeModelCallRequestSnapshot(modelInput: ModelExecutionInput): Record<string, unknown> {
+    return {
+      ...this.#serializeModelRequest(modelInput),
+      ...(modelInput.provider ? { provider: modelInput.provider } : {})
+    };
+  }
+
+  #serializeModelCallRuntimeSnapshot(
     modelInput: ModelExecutionInput,
     activeToolNames: string[] | undefined,
     toolServers: WorkspaceRecord["toolServers"][string][],
@@ -2566,8 +2577,6 @@ export class RuntimeService {
     runtimeTools?: RuntimeToolSet | undefined
   ): Record<string, unknown> {
     return {
-      ...this.#serializeModelRequest(modelInput),
-      ...(modelInput.provider ? { provider: modelInput.provider } : {}),
       messageCount: modelInput.messages.length,
       runtimeToolNames,
       ...(runtimeTools ? { runtimeTools: this.#serializeRuntimeTools(runtimeTools) } : {}),
@@ -2587,6 +2596,25 @@ export class RuntimeService {
     };
   }
 
+  #serializeModelCallStepInput(
+    modelInput: ModelExecutionInput,
+    activeToolNames: string[] | undefined,
+    toolServers: WorkspaceRecord["toolServers"][string][],
+    runtimeToolNames: string[],
+    runtimeTools?: RuntimeToolSet | undefined
+  ): Record<string, unknown> {
+    return {
+      request: this.#serializeModelCallRequestSnapshot(modelInput),
+      runtime: this.#serializeModelCallRuntimeSnapshot(
+        modelInput,
+        activeToolNames,
+        toolServers,
+        runtimeToolNames,
+        runtimeTools
+      )
+    };
+  }
+
   #serializeRuntimeTools(runtimeTools: RuntimeToolSet): Array<Record<string, unknown>> {
     return Object.entries(runtimeTools).map(([name, definition]) => ({
       name,
@@ -2598,27 +2626,32 @@ export class RuntimeService {
 
   #serializeModelCallStepOutput(step: ModelStepResult): Record<string, unknown> {
     return {
-      ...(typeof step.stepType === "string" ? { stepType: step.stepType } : {}),
-      ...(typeof step.text === "string" ? { text: step.text } : {}),
-      ...(Array.isArray(step.content) ? { content: step.content } : {}),
-      ...(step.usage ? { usage: step.usage } : {}),
-      ...(Array.isArray(step.warnings) && step.warnings.length > 0 ? { warnings: step.warnings } : {}),
-      ...(step.request ? { request: step.request } : {}),
-      ...(step.response ? { response: step.response } : {}),
-      ...(step.providerMetadata ? { providerMetadata: step.providerMetadata } : {}),
-      finishReason: step.finishReason ?? "unknown",
-      toolCallsCount: step.toolCalls.length,
-      toolResultsCount: step.toolResults.length,
-      toolCalls: step.toolCalls.map((toolCall) => ({
-        toolCallId: toolCall.toolCallId,
-        toolName: toolCall.toolName,
-        input: toolCall.input
-      })),
-      toolResults: step.toolResults.map((toolResult) => ({
-        toolCallId: toolResult.toolCallId,
-        toolName: toolResult.toolName,
-        output: toolResult.output
-      }))
+      response: {
+        ...(typeof step.stepType === "string" ? { stepType: step.stepType } : {}),
+        ...(typeof step.text === "string" ? { text: step.text } : {}),
+        ...(Array.isArray(step.content) ? { content: step.content } : {}),
+        ...(Array.isArray(step.reasoning) && step.reasoning.length > 0 ? { reasoning: step.reasoning } : {}),
+        ...(step.usage ? { usage: step.usage } : {}),
+        ...(Array.isArray(step.warnings) && step.warnings.length > 0 ? { warnings: step.warnings } : {}),
+        ...(step.request ? { request: step.request } : {}),
+        ...(step.response ? { response: step.response } : {}),
+        ...(step.providerMetadata ? { providerMetadata: step.providerMetadata } : {}),
+        finishReason: step.finishReason ?? "unknown",
+        toolCalls: step.toolCalls.map((toolCall) => ({
+          toolCallId: toolCall.toolCallId,
+          toolName: toolCall.toolName,
+          input: toolCall.input
+        })),
+        toolResults: step.toolResults.map((toolResult) => ({
+          toolCallId: toolResult.toolCallId,
+          toolName: toolResult.toolName,
+          output: toolResult.output
+        }))
+      },
+      runtime: {
+        toolCallsCount: step.toolCalls.length,
+        toolResultsCount: step.toolResults.length
+      }
     };
   }
 
@@ -3444,12 +3477,11 @@ export class RuntimeService {
   }
 
   #publicWorkspaceCatalog(workspace: WorkspaceRecord): RuntimeWorkspaceCatalog {
-    const tools = workspace.catalog.tools ?? workspace.catalog.mcp ?? [];
+    const tools = workspace.catalog.tools ?? [];
     if (workspace.kind !== "chat") {
       return {
         ...workspace.catalog,
         tools,
-        mcp: [...tools],
         nativeTools: [...NATIVE_TOOL_NAMES]
       };
     }
@@ -3459,7 +3491,6 @@ export class RuntimeService {
       actions: [],
       skills: [],
       tools: [],
-      mcp: [],
       hooks: [],
       nativeTools: []
     };

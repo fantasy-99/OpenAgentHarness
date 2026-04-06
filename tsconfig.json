@@ -5,6 +5,7 @@
     { "path": "./packages/runtime-core" },
     { "path": "./packages/config" },
     { "path": "./packages/storage-memory" },
+    { "path": "./packages/storage-sqlite" },
     { "path": "./packages/storage-postgres" },
     { "path": "./packages/storage-redis" },
     { "path": "./packages/model-gateway" },

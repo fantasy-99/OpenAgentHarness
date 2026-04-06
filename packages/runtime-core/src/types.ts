@@ -4,7 +4,6 @@ import type {
   CreateMessageRequest,
   CreateSessionRequest,
   CreateWorkspaceRequest,
-  McpCatalogItem,
   Message,
   ModelCatalogItem,
   ModelGenerateRequest,
@@ -23,7 +22,7 @@ export type AgentMode = "primary" | "subagent" | "all";
 export type RunStepType = RunStep["stepType"];
 export type RunStepStatus = RunStep["status"];
 export type ActionRetryPolicy = "manual" | "safe";
-export type RuntimeWorkspaceCatalog = WorkspaceCatalog & { tools?: McpCatalogItem[] | undefined; mcp?: McpCatalogItem[] | undefined };
+export type RuntimeWorkspaceCatalog = WorkspaceCatalog;
 export type SessionEventName =
   | "run.queued"
   | "run.started"
@@ -101,6 +100,7 @@ export interface ModelStepResult {
   stepType?: string | undefined;
   text?: string | undefined;
   content?: unknown[] | undefined;
+  reasoning?: unknown[] | undefined;
   usage?: Record<string, unknown> | undefined;
   warnings?: unknown[] | undefined;
   request?: Record<string, unknown> | undefined;
@@ -115,7 +115,6 @@ export interface ModelStreamOptions {
   signal?: AbortSignal | undefined;
   tools?: RuntimeToolSet | undefined;
   toolServers?: ToolServerDefinition[] | undefined;
-  mcpServers?: ToolServerDefinition[] | undefined;
   maxSteps?: number | undefined;
   parallelToolCalls?: boolean | undefined;
   prepareStep?:
@@ -152,7 +151,6 @@ export interface AgentDefinition {
     actions: string[];
     skills: string[];
     external: string[];
-    mcp?: string[] | undefined;
   };
   switch: string[];
   subagents: string[];
@@ -206,8 +204,6 @@ export interface ToolServerDefinition {
   exclude?: string[] | undefined;
 }
 
-export type McpServerDefinition = ToolServerDefinition;
-
 export interface HookDefinition {
   name: string;
   events: string[];
@@ -255,12 +251,12 @@ export interface WorkspaceRecord extends Workspace {
   actions: Record<string, ActionDefinition>;
   skills: Record<string, SkillDefinition>;
   toolServers: Record<string, ToolServerDefinition>;
-  mcpServers?: Record<string, ToolServerDefinition> | undefined;
   hooks: Record<string, HookDefinition>;
   catalog: RuntimeWorkspaceCatalog;
 }
 
 export interface WorkspaceInitializationResult {
+  id?: string | undefined;
   rootPath: string;
   kind?: WorkspaceKind | undefined;
   readOnly?: boolean | undefined;
@@ -273,7 +269,6 @@ export interface WorkspaceInitializationResult {
   actions: Record<string, ActionDefinition>;
   skills: Record<string, SkillDefinition>;
   toolServers: Record<string, ToolServerDefinition>;
-  mcpServers?: Record<string, ToolServerDefinition> | undefined;
   hooks: Record<string, HookDefinition>;
   catalog: RuntimeWorkspaceCatalog;
 }
@@ -500,8 +495,7 @@ export function createEmptyCatalog(workspaceId: string, models: ModelCatalogItem
     skills: [],
     tools: [],
     hooks: [],
-    nativeTools: [],
-    mcp: []
+    nativeTools: []
   };
 }
 

@@ -99,8 +99,42 @@
 ```json
 {
   "model": "openai-default",
+  "messages": [{ "role": "user", "content": "Summarize the repository" }]
+}
+```
+
+带工具结果的消息示例：
+
+```json
+{
+  "model": "openai-default",
   "messages": [
-    { "role": "user", "content": "Summarize the repository" }
+    { "role": "user", "content": "Run the tool" },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool-call",
+          "toolCallId": "call_1",
+          "toolName": "Bash",
+          "input": { "command": "pwd" }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "content": [
+        {
+          "type": "tool-result",
+          "toolCallId": "call_1",
+          "toolName": "Bash",
+          "output": {
+            "type": "text",
+            "value": "/tmp/demo"
+          }
+        }
+      ]
+    }
   ]
 }
 ```
@@ -124,6 +158,7 @@ data: {"model":"openai-default","finishReason":"stop"}
 - 它不创建 session，也不维护对话历史
 - 适合 action、脚本、CLI 临时调用模型
 - 服务端内部仍统一通过 AI SDK 调模型
+- `messages` 字段会先按 AI SDK `ModelMessage[]` 语义校验，再转成 provider 请求
 - 该模块只面向服务端预设模型，不直接访问 workspace 私有模型
 - 请求参数直接使用服务端模型名，例如 `openai-default`
 - 这是内部本地调用接口，不要求 token 认证

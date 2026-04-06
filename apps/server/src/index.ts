@@ -15,6 +15,7 @@ async function main() {
     workspaceMode: runtime.workspaceMode.kind,
     healthCheck: () => runtime.healthReport(),
     readinessCheck: () => runtime.readinessReport(),
+    getWorkspaceHistoryMirrorStatus: runtime.getWorkspaceHistoryMirrorStatus,
     rebuildWorkspaceHistoryMirror: runtime.rebuildWorkspaceHistoryMirror,
     storageAdmin: runtime.storageAdmin,
     ...(runtime.listWorkspaceTemplates ? { listWorkspaceTemplates: runtime.listWorkspaceTemplates } : {}),

@@ -1,0 +1,53 @@
+import { StorageWorkbench } from "../storage-panels";
+import type { useAppController } from "../use-app-controller";
+
+type StorageProps = ReturnType<typeof useAppController>["storageSurfaceProps"];
+
+export function StorageWorkspace(props: StorageProps) {
+  return (
+    <section className="workspace-pane flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="min-h-0 flex-1 overflow-auto px-5 py-5">
+        <StorageWorkbench
+          browserTab={props.storageBrowserTab}
+          onBrowserTabChange={props.onStorageBrowserTabChange}
+          overview={props.storageOverview}
+          tablePage={props.storageTablePage}
+          selectedTable={props.selectedStorageTable}
+          selectedRow={props.selectedStorageRow}
+          onSelectRow={props.onSelectedStorageRowChange}
+          storageTableSearch={props.storageTableSearch}
+          onStorageTableSearchChange={props.onStorageTableSearchChange}
+          storageTableWorkspaceId={props.storageTableWorkspaceId}
+          onStorageTableWorkspaceIdChange={props.onStorageTableWorkspaceIdChange}
+          storageTableSessionId={props.storageTableSessionId}
+          onStorageTableSessionIdChange={props.onStorageTableSessionIdChange}
+          storageTableRunId={props.storageTableRunId}
+          onStorageTableRunIdChange={props.onStorageTableRunIdChange}
+          onSelectTable={props.onSelectStorageTable}
+          redisKeyPattern={props.redisKeyPattern}
+          onRedisKeyPatternChange={props.onRedisKeyPatternChange}
+          redisKeyPage={props.redisKeyPage}
+          selectedRedisKey={props.selectedRedisKey}
+          selectedRedisKeys={props.selectedRedisKeys}
+          onSelectedRedisKeysChange={props.onSelectedRedisKeysChange}
+          onSelectRedisKey={props.onSelectRedisKey}
+          redisKeyDetail={props.redisKeyDetail}
+          onRefreshOverview={props.onRefreshStorageOverview}
+          onRefreshTable={props.onRefreshStorageTable}
+          onPreviousTablePage={props.onPreviousStorageTablePage}
+          onNextTablePage={props.onNextStorageTablePage}
+          onClearTableFilters={props.onClearStorageTableFilters}
+          onDownloadTableCsv={props.onDownloadStorageTableCsv}
+          onRefreshRedisKeys={props.onRefreshRedisKeys}
+          onLoadMoreRedisKeys={props.onLoadMoreRedisKeys}
+          onRefreshRedisKey={props.onRefreshRedisKeyDetail}
+          onDeleteRedisKey={props.onDeleteRedisKey}
+          onDeleteSelectedRedisKeys={props.onDeleteSelectedRedisKeys}
+          onClearRedisSessionQueue={props.onClearRedisSessionQueue}
+          onReleaseRedisSessionLock={props.onReleaseRedisSessionLock}
+          busy={props.storageBusy}
+        />
+      </div>
+    </section>
+  );
+}

@@ -17,6 +17,7 @@
     "@oah/runtime-core": "workspace:*",
     "@oah/model-gateway": "workspace:*",
     "@oah/storage-memory": "workspace:*",
+    "@oah/storage-sqlite": "workspace:*",
     "@oah/storage-postgres": "workspace:*",
     "@oah/storage-redis": "workspace:*",
     "fastify": "5.8.4",

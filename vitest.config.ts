@@ -14,6 +14,7 @@ export default defineConfig({
       "@oah/model-gateway": workspacePath("./packages/model-gateway/src/index.ts"),
       "@oah/runtime-core": workspacePath("./packages/runtime-core/src/index.ts"),
       "@oah/storage-memory": workspacePath("./packages/storage-memory/src/index.ts"),
+      "@oah/storage-sqlite": workspacePath("./packages/storage-sqlite/src/index.ts"),
       "@oah/storage-postgres": workspacePath("./packages/storage-postgres/src/index.ts"),
       "@oah/storage-redis": workspacePath("./packages/storage-redis/src/index.ts")
     }

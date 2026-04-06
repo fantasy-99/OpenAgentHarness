@@ -315,5 +315,7 @@ sequenceDiagram
 - Hook 不暴露给 LLM
 - Action 和 Skill 虽最终以 tool calling 接入模型，但在领域模型和注册表中保持分离
 - 当前默认可信内网环境，不做强隔离容器执行
-- 中心 PostgreSQL 是唯一事实源，workspace 下的 `.openharness/data/history.db` 是异步单向镜像
-- `kind=chat` workspace 只提供普通对话，不暴露任何执行型工具，也不在 workspace 内落本地历史数据库
+- 当前存储有两种主模式：
+  - 配置了 PostgreSQL 时，PostgreSQL 是主事实源，workspace 下的 `.openharness/data/history.db` 仅作为异步镜像
+  - 未配置 PostgreSQL 时，运行时数据直接落到每个 workspace 自己的 `history.db`
+- `kind=chat` workspace 只提供普通对话，不暴露任何执行型工具；在 SQLite 主存储模式下，它的 `history.db` 会写到服务端托管的 shadow 目录，而不是 `chat_dir` 内部

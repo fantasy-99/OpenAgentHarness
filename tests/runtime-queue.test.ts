@@ -53,7 +53,7 @@ describe("runtime queue integration", () => {
               models: [],
               actions: [],
               skills: [],
-              mcp: [],
+              tools: [],
               hooks: [],
               nativeTools: []
             }

@@ -17,8 +17,7 @@ export function createBuiltInPlatformAgents(): PlatformAgentRegistry {
         native: [],
         actions: [],
         skills: [],
-        external: [],
-        mcp: []
+        external: []
       },
       switch: [],
       subagents: []
@@ -38,8 +37,7 @@ export function createBuiltInPlatformAgents(): PlatformAgentRegistry {
         native: ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "WebSearch", "TodoWrite"],
         actions: [],
         skills: [],
-        external: [],
-        mcp: []
+        external: []
       },
       switch: [],
       subagents: []

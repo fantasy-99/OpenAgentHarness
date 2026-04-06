@@ -41,39 +41,11 @@
         "workspace_dir",
         "chat_dir",
         "template_dir",
+        "model_dir",
+        "tool_dir",
         "skill_dir"
       ],
       "additionalProperties": false,
-      "allOf": [
-        {
-          "anyOf": [
-            {
-              "required": [
-                "model_dir"
-              ]
-            },
-            {
-              "required": [
-                "models_dir"
-              ]
-            }
-          ]
-        },
-        {
-          "anyOf": [
-            {
-              "required": [
-                "tool_dir"
-              ]
-            },
-            {
-              "required": [
-                "mcp_dir"
-              ]
-            }
-          ]
-        }
-      ],
       "properties": {
         "workspace_dir": {
           "type": "string"
@@ -88,19 +60,9 @@
           "type": "string",
           "description": "Preferred path for platform models."
         },
-        "models_dir": {
-          "type": "string",
-          "description": "Deprecated legacy alias for model_dir.",
-          "deprecated": true
-        },
         "tool_dir": {
           "type": "string",
           "description": "Preferred path for platform external tools."
-        },
-        "mcp_dir": {
-          "type": "string",
-          "description": "Deprecated legacy alias for tool_dir.",
-          "deprecated": true
         },
         "skill_dir": {
           "type": "string"

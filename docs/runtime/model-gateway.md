@@ -152,6 +152,42 @@ curl -N \
   }'
 ```
 
+带工具结果的消息体示例：
+
+```json
+{
+  "model": "openai-default",
+  "messages": [
+    { "role": "user", "content": "Run the tool" },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool-call",
+          "toolCallId": "call_1",
+          "toolName": "Bash",
+          "input": { "command": "pwd" }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "content": [
+        {
+          "type": "tool-result",
+          "toolCallId": "call_1",
+          "toolName": "Bash",
+          "output": {
+            "type": "text",
+            "value": "/tmp/demo"
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
 ## 运行时环境变量注入
 
 当前实现里，action 执行环境已经稳定注入的变量主要是：
@@ -188,6 +224,11 @@ curl -N \
 AI SDK 主要放在服务端使用。
 
 服务端内部流程建议为：
+
+- 接收 JSON-safe 的 AI SDK message 表示
+- 恢复必要的运行时值，例如 URL
+- 使用 AI SDK `ModelMessage[]` schema 做校验
+- 再交给 provider adapter 转换为具体供应商请求体
 
 1. 根据 `model` 从 `paths.model_dir` 中解析服务端模型入口
 2. 将模型入口转换成 AI SDK 的 language model

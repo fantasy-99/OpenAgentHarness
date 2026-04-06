@@ -251,4 +251,108 @@ describe("AiSdkModelGateway openai-compatible provider", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it("accepts AI SDK tool-result outputs and converts them to provider request format", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+
+    globalThis.fetch = (async (input, init) => {
+      const url = typeof input === "string" ? input : input.url;
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      requests.push({ url, body });
+
+      return new Response(
+        [
+          'data: {"id":"chatcmpl_2","object":"chat.completion.chunk","created":1,"model":"mock-model","choices":[{"index":0,"delta":{"role":"assistant","content":"done"},"finish_reason":null}]}',
+          'data: {"id":"chatcmpl_2","object":"chat.completion.chunk","created":1,"model":"mock-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":1,"total_tokens":9}}',
+          "data: [DONE]",
+          ""
+        ].join("\n\n"),
+        {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream"
+          }
+        }
+      );
+    }) as typeof fetch;
+
+    try {
+      const gateway = new AiSdkModelGateway({
+        defaultModelName: "mock-entry",
+        models: {
+          "mock-entry": {
+            provider: "openai-compatible",
+            key: "test-key",
+            url: "http://mock.local/v1",
+            name: "mock-model"
+          }
+        }
+      });
+
+      const response = await gateway.stream({
+        model: "mock-entry",
+        messages: [
+          { role: "user", content: "run the tool" },
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "tool-call",
+                toolCallId: "call_1",
+                toolName: "Bash",
+                input: { command: "pwd" }
+              }
+            ]
+          },
+          {
+            role: "tool",
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: "call_1",
+                toolName: "Bash",
+                output: {
+                  type: "text",
+                  value: "/tmp/demo"
+                }
+              }
+            ]
+          }
+        ]
+      });
+
+      for await (const _chunk of response.chunks) {
+        void _chunk;
+      }
+
+      await response.completed;
+
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.body.messages).toEqual([
+        { role: "user", content: "run the tool" },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              id: "call_1",
+              type: "function",
+              function: {
+                name: "Bash",
+                arguments: '{"command":"pwd"}'
+              }
+            }
+          ]
+        },
+        {
+          role: "tool",
+          tool_call_id: "call_1",
+          content: "/tmp/demo"
+        }
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

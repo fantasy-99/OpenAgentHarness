@@ -106,6 +106,7 @@ export interface AppDependencies {
   }) => Promise<import("@oah/api-contracts").Workspace>;
   healthCheck?: () => Promise<Record<string, unknown>> | Record<string, unknown>;
   readinessCheck?: () => Promise<Record<string, unknown>> | Record<string, unknown>;
+  getWorkspaceHistoryMirrorStatus?: (workspace: WorkspaceRecord) => Promise<HistoryMirrorStatus>;
   rebuildWorkspaceHistoryMirror?: (workspace: WorkspaceRecord) => Promise<HistoryMirrorStatus>;
   storageAdmin?: StorageAdmin;
 }
@@ -342,7 +343,10 @@ export function createApp(dependencies: AppDependencies) {
   app.get("/api/v1/workspaces/:workspaceId/history-mirror", async (request, reply) => {
     const params = createParamsSchema("workspaceId").parse(request.params);
     const workspace = await dependencies.runtimeService.getWorkspaceRecord(params.workspaceId);
-    return reply.send(workspaceHistoryMirrorStatusSchema.parse(await inspectHistoryMirrorStatus(workspace)));
+    const status = dependencies.getWorkspaceHistoryMirrorStatus
+      ? await dependencies.getWorkspaceHistoryMirrorStatus(workspace)
+      : await inspectHistoryMirrorStatus(workspace);
+    return reply.send(workspaceHistoryMirrorStatusSchema.parse(status));
   });
 
   app.post("/api/v1/workspaces/:workspaceId/history-mirror/rebuild", async (request, reply) => {

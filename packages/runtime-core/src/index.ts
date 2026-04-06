@@ -2,6 +2,8 @@ export * from "./action-dispatch.js";
 export * from "./agent-control.js";
 export * from "./errors.js";
 export * from "./native-tools.js";
+export * from "./persisted-history-normalization.js";
+export * from "./runtime-message-content.js";
 export * from "./runtime-service.js";
 export * from "./skill-activation.js";
 export * from "./types.js";

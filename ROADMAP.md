@@ -25,6 +25,10 @@
 - `done` `parentRunId`、`heartbeatAt` 与 stale run fail-closed recovery 已落地
 - `done` host-injected caller context 接入点已存在；standalone server 默认注入最小 caller context，本地调试不再依赖额外 token 鉴别
 - `done` internal model gateway 已按 loopback-only 收敛
+- `done` 存储主模式已收敛为双模
+  - 配置 PostgreSQL 时，连接失败直接报错，不再静默退回内存
+  - 未配置 PostgreSQL 时，运行时数据改为落到每个 workspace 的 SQLite `history.db`
+- `done` workspace 同步已改为启动期 + 后台 watcher，不再在请求链路里临时同步
 - `partial` 文档整体已大幅对齐，但仍需要保持“实现变更即同步文档”的纪律
 
 ## 状态分层
@@ -65,6 +69,9 @@
 - `deferred` `action_run` 升格为一等实体
 - `deferred` `artifact` 升格为一等实体
 - `deferred` internal model gateway 改为 Unix socket
+- `deferred` `RuntimeService` 继续按方案 B 拆分为 `WorkspaceService` / `SessionRunService` / `RuntimeExecutionEngine`
+  - 当前先保持现有行为稳定
+  - 后续再评估是否进一步进入更激进的方案 C
 - `deferred` Sandbox backend、workflow DSL、workspace secrets 等长期项继续保留为未来方向，不进入近期承诺
 
 ## 边界固定项

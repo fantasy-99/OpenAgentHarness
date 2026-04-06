@@ -689,54 +689,262 @@ components:
         url:
           type: string
     ChatMessage:
+      oneOf:
+        - $ref: '#/components/schemas/SystemChatMessage'
+        - $ref: '#/components/schemas/UserChatMessage'
+        - $ref: '#/components/schemas/AssistantChatMessage'
+        - $ref: '#/components/schemas/ToolChatMessage'
+    SystemChatMessage:
       type: object
       required: [role, content]
       properties:
         role:
           type: string
-          enum: [system, user, assistant, tool]
+          enum: [system]
+        content:
+          type: string
+      additionalProperties: false
+    UserChatMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [user]
         content:
           oneOf:
             - type: string
             - type: array
               items:
-                $ref: '#/components/schemas/MessagePart'
+                oneOf:
+                  - $ref: '#/components/schemas/TextMessagePart'
+                  - $ref: '#/components/schemas/ImageMessagePart'
+                  - $ref: '#/components/schemas/FileMessagePart'
+      additionalProperties: false
+    AssistantChatMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [assistant]
+        content:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                oneOf:
+                  - $ref: '#/components/schemas/TextMessagePart'
+                  - $ref: '#/components/schemas/FileMessagePart'
+                  - $ref: '#/components/schemas/ReasoningMessagePart'
+                  - $ref: '#/components/schemas/ToolCallMessagePart'
+                  - $ref: '#/components/schemas/ToolResultMessagePart'
+                  - $ref: '#/components/schemas/ToolApprovalRequestMessagePart'
+      additionalProperties: false
+    ToolChatMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [tool]
+        content:
+          type: array
+          items:
+            oneOf:
+              - $ref: '#/components/schemas/ToolResultMessagePart'
+              - $ref: '#/components/schemas/ToolApprovalResponseMessagePart'
       additionalProperties: false
     MessagePart:
       oneOf:
+        - $ref: '#/components/schemas/TextMessagePart'
+        - $ref: '#/components/schemas/ImageMessagePart'
+        - $ref: '#/components/schemas/FileMessagePart'
+        - $ref: '#/components/schemas/ReasoningMessagePart'
+        - $ref: '#/components/schemas/ToolCallMessagePart'
+        - $ref: '#/components/schemas/ToolResultMessagePart'
+        - $ref: '#/components/schemas/ToolApprovalRequestMessagePart'
+        - $ref: '#/components/schemas/ToolApprovalResponseMessagePart'
+    TextMessagePart:
+      type: object
+      required: [type, text]
+      properties:
+        type:
+          type: string
+          enum: [text]
+        text:
+          type: string
+        providerOptions:
+          $ref: '#/components/schemas/JsonObject'
+      additionalProperties: false
+    ImageMessagePart:
+      type: object
+      required: [type, image]
+      properties:
+        type:
+          type: string
+          enum: [image]
+        image:
+          type: string
+        mediaType:
+          type: string
+        providerOptions:
+          $ref: '#/components/schemas/JsonObject'
+      additionalProperties: false
+    FileMessagePart:
+      type: object
+      required: [type, data, mediaType]
+      properties:
+        type:
+          type: string
+          enum: [file]
+        data:
+          type: string
+        filename:
+          type: string
+        mediaType:
+          type: string
+        providerOptions:
+          $ref: '#/components/schemas/JsonObject'
+      additionalProperties: false
+    ReasoningMessagePart:
+      type: object
+      required: [type, text]
+      properties:
+        type:
+          type: string
+          enum: [reasoning]
+        text:
+          type: string
+        providerOptions:
+          $ref: '#/components/schemas/JsonObject'
+      additionalProperties: false
+    ToolCallMessagePart:
+      type: object
+      required: [type, toolCallId, toolName, input]
+      properties:
+        type:
+          type: string
+          enum: [tool-call]
+        toolCallId:
+          type: string
+        toolName:
+          type: string
+        input: {}
+        providerExecuted:
+          type: boolean
+        providerOptions:
+          $ref: '#/components/schemas/JsonObject'
+      additionalProperties: false
+    ToolResultOutput:
+      oneOf:
         - type: object
-          required: [type, text]
+          required: [type, value]
           properties:
             type:
               type: string
               enum: [text]
-            text:
+            value:
               type: string
+            providerOptions:
+              $ref: '#/components/schemas/JsonObject'
           additionalProperties: false
         - type: object
-          required: [type, toolCallId, toolName]
+          required: [type, value]
           properties:
             type:
               type: string
-              enum: [tool-call]
-            toolCallId:
-              type: string
-            toolName:
-              type: string
-            input: {}
+              enum: [json]
+            value: {}
+            providerOptions:
+              $ref: '#/components/schemas/JsonObject'
           additionalProperties: false
         - type: object
-          required: [type, toolCallId, toolName]
+          required: [type]
           properties:
             type:
               type: string
-              enum: [tool-result]
-            toolCallId:
+              enum: [execution-denied]
+            reason:
               type: string
-            toolName:
-              type: string
-            output: {}
+            providerOptions:
+              $ref: '#/components/schemas/JsonObject'
           additionalProperties: false
+        - type: object
+          required: [type, value]
+          properties:
+            type:
+              type: string
+              enum: [error-text]
+            value:
+              type: string
+            providerOptions:
+              $ref: '#/components/schemas/JsonObject'
+          additionalProperties: false
+        - type: object
+          required: [type, value]
+          properties:
+            type:
+              type: string
+              enum: [error-json]
+            value: {}
+            providerOptions:
+              $ref: '#/components/schemas/JsonObject'
+          additionalProperties: false
+        - type: object
+          required: [type, value]
+          properties:
+            type:
+              type: string
+              enum: [content]
+            value:
+              type: array
+              items: {}
+          additionalProperties: false
+    ToolResultMessagePart:
+      type: object
+      required: [type, toolCallId, toolName, output]
+      properties:
+        type:
+          type: string
+          enum: [tool-result]
+        toolCallId:
+          type: string
+        toolName:
+          type: string
+        output:
+          $ref: '#/components/schemas/ToolResultOutput'
+        providerOptions:
+          $ref: '#/components/schemas/JsonObject'
+      additionalProperties: false
+    ToolApprovalRequestMessagePart:
+      type: object
+      required: [type, approvalId, toolCallId]
+      properties:
+        type:
+          type: string
+          enum: [tool-approval-request]
+        approvalId:
+          type: string
+        toolCallId:
+          type: string
+      additionalProperties: false
+    ToolApprovalResponseMessagePart:
+      type: object
+      required: [type, approvalId, approved]
+      properties:
+        type:
+          type: string
+          enum: [tool-approval-response]
+        approvalId:
+          type: string
+        approved:
+          type: boolean
+        reason:
+          type: string
+        providerExecuted:
+          type: boolean
+      additionalProperties: false
     Usage:
       type: object
       properties:
@@ -836,11 +1044,6 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ToolCatalogItem'
-        mcp:
-          description: Legacy compatibility alias for `tools`.
-          type: array
-          items:
-            $ref: '#/components/schemas/ToolCatalogItem'
         hooks:
           type: array
           items:
@@ -892,33 +1095,28 @@ components:
         nextCursor:
           type: string
     Message:
-      type: object
-      required:
-        - id
-        - sessionId
-        - role
-        - content
-        - createdAt
-      properties:
-        id:
-          type: string
-        sessionId:
-          type: string
-        runId:
-          type: string
-        role:
-          type: string
-          enum: [system, user, assistant, tool]
-        content:
-          oneOf:
-            - type: string
-            - type: array
-              items:
-                $ref: '#/components/schemas/MessagePart'
-        metadata:
-          $ref: '#/components/schemas/JsonObject'
-        createdAt:
-          $ref: '#/components/schemas/Timestamp'
+      allOf:
+        - oneOf:
+            - $ref: '#/components/schemas/SystemChatMessage'
+            - $ref: '#/components/schemas/UserChatMessage'
+            - $ref: '#/components/schemas/AssistantChatMessage'
+            - $ref: '#/components/schemas/ToolChatMessage'
+        - type: object
+          required:
+            - id
+            - sessionId
+            - createdAt
+          properties:
+            id:
+              type: string
+            sessionId:
+              type: string
+            runId:
+              type: string
+            metadata:
+              $ref: '#/components/schemas/JsonObject'
+            createdAt:
+              $ref: '#/components/schemas/Timestamp'
     MessagePage:
       type: object
       required: [items]

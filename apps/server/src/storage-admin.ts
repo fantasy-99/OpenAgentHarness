@@ -31,15 +31,15 @@ const POSTGRES_TABLE_CONFIG = {
   },
   messages: {
     orderBy: "created_at desc, id asc",
-    description: "Persisted session messages."
+    description: "Persisted session messages, with content stored in AI SDK-compatible message format."
   },
   run_steps: {
     orderBy: "coalesce(started_at, ended_at) desc nulls last, seq desc, id asc",
-    description: "Per-run step audit trail, including model/tool/hook steps."
+    description: "Per-run step audit trail. model_call steps snapshot AI SDK-facing request/response data plus OAH audit fields."
   },
   session_events: {
     orderBy: "cursor desc",
-    description: "SSE/session event log."
+    description: "SSE/session event log. Transport/event stream only, not the canonical conversation store."
   },
   tool_calls: {
     orderBy: "started_at desc, id asc",

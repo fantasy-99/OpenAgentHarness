@@ -62,9 +62,14 @@
 
 说明：
 
-- 返回的 `Message.content` 采用 AI SDK 风格
-  - 纯文本消息可直接返回字符串
-  - assistant tool call 与 tool result 会通过 message parts 返回
+- 返回的 `Message.content` 采用 AI SDK 风格的 role-aware 结构
+  - `system.content` 必须是字符串
+  - `user.content` 可以是字符串，或 `text / image / file` parts
+  - `assistant.content` 可以是字符串，或 `text / reasoning / tool-call / tool-result` 等 parts
+  - `tool.content` 为 `tool-result` / `tool-approval-response` parts 数组
+- `tool-result.output` 不是任意 JSON，而是 AI SDK `ToolResultOutput` 风格结构
+  - 例如 `{ "type": "text", "value": "..." }`
+  - 或 `{ "type": "json", "value": { ... } }`
 
 查询参数：
 
@@ -91,6 +96,7 @@
 - 客户端需结合 `GET /runs/{runId}` 和 SSE 获取执行进度
 - 同一 session 可连续写入多条 message，它们会形成串行 run 队列
 - runtime 持久化的消息链路会显式保留 assistant tool-call message 与 tool result message
+- runtime 会直接按 AI SDK 兼容结构持久化消息；旧历史如果存在脏数据，应在存储迁移阶段清理
 - session 会维护 `activeAgentName`，作为后续默认 primary agent
 - 若 run 内发生 `agent.switch`，session 的 `activeAgentName` 可在 run 完成后同步更新
 - `kind=chat` workspace 的 session / message / run 仍保存到中心数据库

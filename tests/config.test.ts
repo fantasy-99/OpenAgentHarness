@@ -68,8 +68,8 @@ llm:
     expect(config.llm.default_model).toBe("openai-default");
   });
 
-  it("accepts legacy models_dir while normalizing to model_dir", async () => {
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-config-legacy-model-dir-"));
+  it("requires model_dir and tool_dir in server config", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-config-missing-required-paths-"));
     tempDirs.push(tempDir);
 
     for (const dirName of ["workspaces", "chat", "templates", "models", "tools", "skills"]) {
@@ -88,8 +88,6 @@ paths:
   workspace_dir: ./workspaces
   chat_dir: ./chat
   template_dir: ./templates
-  models_dir: ./models
-  tool_dir: ./tools
   skill_dir: ./skills
 llm:
   default_model: openai-default
@@ -97,8 +95,7 @@ llm:
       "utf8"
     );
 
-    const config = await loadServerConfig(configPath);
-    expect(config.paths.model_dir).toBe(path.join(tempDir, "models"));
+    await expect(loadServerConfig(configPath)).rejects.toThrow(/required property/);
   });
 
   it("accepts server config without storage urls for local development", async () => {

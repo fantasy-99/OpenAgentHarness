@@ -6,9 +6,9 @@ import type {
   ActionCatalogItem,
   AgentCatalogItem,
   HookCatalogItem,
-  McpCatalogItem,
   ModelCatalogItem,
   SkillCatalogItem,
+  ToolCatalogItem,
   WorkspaceCatalog
 } from "@oah/api-contracts";
 import type { ErrorObject } from "ajv";
@@ -29,7 +29,7 @@ function createAjv() {
 }
 
 type ActionRetryPolicy = "manual" | "safe";
-type DiscoveredWorkspaceCatalog = WorkspaceCatalog & { tools?: McpCatalogItem[] | undefined; mcp?: McpCatalogItem[] | undefined };
+type DiscoveredWorkspaceCatalog = WorkspaceCatalog;
 
 export interface ServerConfig {
   server: {
@@ -45,9 +45,7 @@ export interface ServerConfig {
     chat_dir: string;
     template_dir: string;
     model_dir: string;
-    models_dir?: string | undefined;
     tool_dir: string;
-    mcp_dir?: string | undefined;
     skill_dir: string;
   };
   llm: {
@@ -140,7 +138,6 @@ export interface DiscoveredAgent {
     actions: string[];
     skills: string[];
     external: string[];
-    mcp?: string[] | undefined;
   };
   switch: string[];
   subagents: string[];
@@ -212,7 +209,6 @@ export interface InitializeWorkspaceFromTemplateInput {
   rootPath: string;
   agentsMd?: string | undefined;
   toolServers?: Record<string, Record<string, unknown>> | undefined;
-  mcpServers?: Record<string, Record<string, unknown>> | undefined;
   skills?: WorkspaceTemplateSkill[] | undefined;
 }
 
@@ -270,15 +266,6 @@ function resolvePathInsideRoot(rootPath: string, relativePath: string, label: st
 
 function resolveConfigPaths(config: ServerConfig, configPath: string): ServerConfig {
   const configDir = path.dirname(configPath);
-  const modelDir = config.paths.model_dir ?? config.paths.models_dir;
-  const toolDir = config.paths.tool_dir ?? config.paths.mcp_dir;
-  if (!modelDir) {
-    throw new Error("Invalid server config: paths.model_dir is required.");
-  }
-  if (!toolDir) {
-    throw new Error("Invalid server config: paths.tool_dir is required.");
-  }
-
   return {
     ...config,
     storage: {
@@ -288,8 +275,8 @@ function resolveConfigPaths(config: ServerConfig, configPath: string): ServerCon
       workspace_dir: path.resolve(configDir, config.paths.workspace_dir),
       chat_dir: path.resolve(configDir, config.paths.chat_dir),
       template_dir: path.resolve(configDir, config.paths.template_dir),
-      model_dir: path.resolve(configDir, modelDir),
-      tool_dir: path.resolve(configDir, toolDir),
+      model_dir: path.resolve(configDir, config.paths.model_dir),
+      tool_dir: path.resolve(configDir, config.paths.tool_dir),
       skill_dir: path.resolve(configDir, config.paths.skill_dir)
     }
   };
@@ -344,7 +331,6 @@ function createWorkspaceCatalog(workspaceId: string, models: ModelCatalogItem[])
     actions: [],
     skills: [],
     tools: [],
-    mcp: [],
     hooks: [],
     nativeTools: []
   };
@@ -380,7 +366,7 @@ function toSkillCatalogItems(skills: Record<string, DiscoveredSkill>): SkillCata
   }));
 }
 
-function toToolCatalogItems(toolServers: Record<string, DiscoveredToolServer>): McpCatalogItem[] {
+function toToolCatalogItems(toolServers: Record<string, DiscoveredToolServer>): ToolCatalogItem[] {
   return Object.values(toolServers).map((server) => ({
     name: server.name,
     transportType: server.transportType,
@@ -650,8 +636,8 @@ export async function initializeWorkspaceFromTemplate(input: InitializeWorkspace
     await appendAgentsMd(input.rootPath, input.agentsMd);
   }
 
-  if (input.toolServers || input.mcpServers) {
-    await mergeWorkspaceToolSettings(input.rootPath, input.toolServers ?? input.mcpServers ?? {});
+  if (input.toolServers) {
+    await mergeWorkspaceToolSettings(input.rootPath, input.toolServers);
   }
 
   if (input.skills) {
@@ -819,26 +805,19 @@ export async function loadProjectAgentsMd(workspaceRoot: string): Promise<string
 
 export async function loadWorkspaceToolServers(toolRoot: string): Promise<Record<string, DiscoveredToolServer>> {
   const settingsPath = path.join(toolRoot, "settings.yaml");
-  const legacySettingsPath = path.join(path.dirname(toolRoot), "mcp", "settings.yaml");
-  const effectiveSettingsPath = (await pathExists(settingsPath))
-    ? settingsPath
-    : (await pathExists(legacySettingsPath))
-      ? legacySettingsPath
-      : undefined;
-
-  if (!effectiveSettingsPath) {
+  if (!(await pathExists(settingsPath))) {
     return {};
   }
 
   const [schema, fileContent] = await Promise.all([
     loadSchema<object>("../../../docs/schemas/mcp-settings.schema.json"),
-    readFile(effectiveSettingsPath, "utf8")
+    readFile(settingsPath, "utf8")
   ]);
 
   const parsed = expandEnv(YAML.parse(fileContent) ?? {});
   const validate = createAjv().compile<Record<string, unknown>>(schema);
   if (!validate(parsed)) {
-    throw new Error(`Invalid tool settings in ${effectiveSettingsPath}: ${validationMessage(validate.errors)}`);
+    throw new Error(`Invalid tool settings in ${settingsPath}: ${validationMessage(validate.errors)}`);
   }
 
   return Object.fromEntries(
@@ -911,9 +890,7 @@ export async function loadWorkspaceAgents(workspaceRoot: string): Promise<Record
 
     const externalTools = Array.isArray(tools?.external)
       ? tools.external.filter((item): item is string => typeof item === "string")
-      : Array.isArray(tools?.mcp)
-        ? tools.mcp.filter((item): item is string => typeof item === "string")
-        : [];
+      : [];
 
     agents[name] = {
       name,
@@ -928,8 +905,7 @@ export async function loadWorkspaceAgents(workspaceRoot: string): Promise<Record
         native: Array.isArray(tools?.native) ? tools.native.filter((item): item is string => typeof item === "string") : [],
         actions: Array.isArray(tools?.actions) ? tools.actions.filter((item): item is string => typeof item === "string") : [],
         skills: Array.isArray(tools?.skills) ? tools.skills.filter((item): item is string => typeof item === "string") : [],
-        external: externalTools,
-        ...(externalTools.length > 0 ? { mcp: externalTools } : {})
+        external: externalTools
       },
       switch: Array.isArray(data.switch) ? data.switch.filter((item): item is string => typeof item === "string") : [],
       subagents: Array.isArray(data.subagents)
@@ -1145,7 +1121,6 @@ export async function discoverWorkspace(
   catalog.actions = toActionCatalogItems(actions);
   catalog.skills = toSkillCatalogItems(skills);
   catalog.tools = toToolCatalogItems(toolServers);
-  catalog.mcp = [...catalog.tools];
   catalog.hooks = toHookCatalogItems(hooks);
 
   return {

@@ -1,7 +1,9 @@
 import path from "node:path";
-import { access, rm } from "node:fs/promises";
+import { watch, type FSWatcher } from "node:fs";
+import { access, readdir, rm } from "node:fs/promises";
 
 import {
+  type DiscoveredWorkspace,
   discoverWorkspace,
   discoverWorkspaces,
   initializeWorkspaceFromTemplate,
@@ -22,8 +24,8 @@ import type {
   WorkspaceRepository
 } from "@oah/runtime-core";
 import { AiSdkModelGateway } from "@oah/model-gateway";
-import { createMemoryRuntimePersistence } from "@oah/storage-memory";
 import { createPostgresRuntimePersistence } from "@oah/storage-postgres";
+import { createSQLiteRuntimePersistence } from "@oah/storage-sqlite";
 import {
   FanoutSessionEventStore,
   RedisRunWorker,
@@ -71,6 +73,9 @@ export interface BootstrappedRuntime {
     name?: string;
     externalRef?: string;
   }) => Promise<import("@oah/api-contracts").Workspace>;
+  getWorkspaceHistoryMirrorStatus(workspace: import("@oah/runtime-core").WorkspaceRecord): Promise<
+    import("./history-mirror.js").HistoryMirrorStatus
+  >;
   rebuildWorkspaceHistoryMirror(workspace: import("@oah/runtime-core").WorkspaceRecord): Promise<
     import("./history-mirror.js").HistoryMirrorStatus
   >;
@@ -78,7 +83,7 @@ export interface BootstrappedRuntime {
   healthReport(): Promise<{
     status: "ok" | "degraded";
     storage: {
-      primary: "postgres" | "memory";
+      primary: "postgres" | "sqlite";
       events: "redis" | "memory";
       runQueue: "redis" | "in_process";
     };
@@ -120,9 +125,147 @@ async function fileExists(targetPath: string): Promise<boolean> {
   }
 }
 
+function workspaceDiscoveryKey(workspace: Pick<WorkspaceRecord, "kind" | "rootPath">): string {
+  return `${workspace.kind}:${path.resolve(workspace.rootPath)}`;
+}
+
+function managedWorkspaceDirForKind(
+  paths: Pick<ServerConfig["paths"], "workspace_dir" | "chat_dir">,
+  kind: WorkspaceRecord["kind"]
+): string {
+  return kind === "chat" ? paths.chat_dir : paths.workspace_dir;
+}
+
+function isManagedWorkspace(
+  workspace: Pick<WorkspaceRecord, "kind" | "rootPath">,
+  paths: Pick<ServerConfig["paths"], "workspace_dir" | "chat_dir">
+): boolean {
+  return isManagedWorkspaceRoot(workspace.rootPath, managedWorkspaceDirForKind(paths, workspace.kind));
+}
+
+async function listAllWorkspaces(repository: WorkspaceRepository): Promise<WorkspaceRecord[]> {
+  const workspaces: WorkspaceRecord[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const page = await repository.list(100, cursor);
+    workspaces.push(...page);
+    cursor = page.length === 100 ? String((cursor ? Number.parseInt(cursor, 10) : 0) + 100) : undefined;
+  } while (cursor);
+
+  return workspaces;
+}
+
+export function reconcileDiscoveredWorkspaces(
+  discoveredWorkspaces: WorkspaceRecord[],
+  persistedWorkspaces: WorkspaceRecord[]
+): WorkspaceRecord[] {
+  const persistedByKey = new Map<string, WorkspaceRecord[]>();
+  for (const workspace of persistedWorkspaces) {
+    const key = workspaceDiscoveryKey(workspace);
+    const existing = persistedByKey.get(key) ?? [];
+    existing.push(workspace);
+    persistedByKey.set(key, existing);
+  }
+
+  return discoveredWorkspaces.map((workspace) => {
+    const persistedGroup = persistedByKey.get(workspaceDiscoveryKey(workspace)) ?? [];
+    const persisted = persistedGroup.find((candidate) => candidate.id === workspace.id) ?? persistedGroup[0];
+    if (!persisted) {
+      return workspace;
+    }
+
+    return {
+      ...workspace,
+      id: persisted.id,
+      name: persisted.name,
+      executionPolicy: persisted.executionPolicy,
+      status: persisted.status,
+      createdAt: persisted.createdAt,
+      updatedAt: persisted.updatedAt,
+      ...(persisted.externalRef ? { externalRef: persisted.externalRef } : {})
+    };
+  });
+}
+
+export function findManagedWorkspaceIdsToDelete(
+  discoveredWorkspaces: WorkspaceRecord[],
+  persistedWorkspaces: WorkspaceRecord[],
+  paths: Pick<ServerConfig["paths"], "workspace_dir" | "chat_dir">
+): string[] {
+  const discoveredKeys = new Set(discoveredWorkspaces.map((workspace) => workspaceDiscoveryKey(workspace)));
+  const canonicalWorkspaceIds = new Set(
+    reconcileDiscoveredWorkspaces(discoveredWorkspaces, persistedWorkspaces).map((workspace) => workspace.id)
+  );
+
+  return persistedWorkspaces
+    .filter((workspace) => isManagedWorkspace(workspace, paths))
+    .filter((workspace) => {
+      const key = workspaceDiscoveryKey(workspace);
+      return !discoveredKeys.has(key) || !canonicalWorkspaceIds.has(workspace.id);
+    })
+    .map((workspace) => workspace.id);
+}
+
 function isManagedWorkspaceRoot(workspaceRoot: string, managedWorkspaceDir: string): boolean {
   const relativePath = path.relative(path.resolve(managedWorkspaceDir), path.resolve(workspaceRoot));
   return relativePath.length > 0 && !relativePath.startsWith("..") && !path.isAbsolute(relativePath);
+}
+
+async function discoverProjectWorkspaces(input: {
+  workspaceDir: string;
+  models: Awaited<ReturnType<typeof loadPlatformModels>>;
+  platformAgents: PlatformAgentRegistry;
+  platformSkillDir: string;
+  platformToolDir: string;
+}): Promise<DiscoveredWorkspace[]> {
+  const entries = await readdir(input.workspaceDir, {
+    withFileTypes: true
+  }).catch(() => []);
+
+  const discovered = await Promise.all(
+    entries
+      .filter((entry) => entry.isDirectory())
+      .map(async (entry) =>
+        discoverWorkspace(path.join(input.workspaceDir, entry.name), "project", {
+          platformModels: input.models,
+          platformAgents: input.platformAgents,
+          platformSkillDir: input.platformSkillDir,
+          platformToolDir: input.platformToolDir
+        } as Parameters<typeof discoverWorkspace>[2])
+      )
+  );
+
+  return discovered.sort((left, right) => left.rootPath.localeCompare(right.rootPath));
+}
+
+function openFsWatcher(targetPath: string, onChange: () => void, recursive = false): FSWatcher | undefined {
+  try {
+    return watch(
+      targetPath,
+      {
+        persistent: false,
+        ...(recursive ? { recursive: true } : {})
+      },
+      () => onChange()
+    );
+  } catch {
+    if (!recursive) {
+      return undefined;
+    }
+
+    try {
+      return watch(
+        targetPath,
+        {
+          persistent: false
+        },
+        () => onChange()
+      );
+    } catch {
+      return undefined;
+    }
+  }
 }
 
 async function listVisibleWorkspaces(
@@ -457,25 +600,23 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
           platformModels: models,
           platformAgents
         } as Parameters<typeof discoverWorkspaces>[0]);
-
   const modelGateway = new AiSdkModelGateway({
     defaultModelName: config.llm.default_model,
     models
   });
-
-  const persistence =
-    config.storage.postgres_url && config.storage.postgres_url.trim().length > 0
-      ? await createPostgresRuntimePersistence({
-          connectionString: config.storage.postgres_url
-        }).catch((error) => {
-          console.warn(
-            `PostgreSQL persistence unavailable (${error instanceof Error ? error.message : "unknown error"}); falling back to in-memory persistence.`
-          );
-          return createMemoryRuntimePersistence();
-        })
-      : createMemoryRuntimePersistence();
   const postgresConfigured = Boolean(config.storage.postgres_url && config.storage.postgres_url.trim().length > 0);
-  const primaryStorageMode = "pool" in persistence && "db" in persistence ? "postgres" : "memory";
+  const persistence = postgresConfigured
+    ? await createPostgresRuntimePersistence({
+        connectionString: config.storage.postgres_url
+      }).catch((error) => {
+        throw new Error(
+          `Configured PostgreSQL persistence is unavailable: ${error instanceof Error ? error.message : "unknown error"}`
+        );
+      })
+    : await createSQLiteRuntimePersistence({
+        shadowRoot: path.join(config.paths.workspace_dir, ".openharness", "data", "workspace-state")
+      });
+  const primaryStorageMode = "driver" in persistence && persistence.driver === "sqlite" ? "sqlite" : "postgres";
   const redisBus =
     config.storage.redis_url && config.storage.redis_url.trim().length > 0
       ? await createRedisSessionEventBus({
@@ -515,23 +656,152 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   const sessionEventStore = redisBus
     ? new FanoutSessionEventStore(persistence.sessionEventStore, redisBus)
     : persistence.sessionEventStore;
-  const visibleWorkspaceIds = new Set(discoveredWorkspaces.map((workspace) => workspace.id));
+  const persistedWorkspaceSnapshots =
+    "listWorkspaceSnapshots" in persistence
+      ? await persistence.listWorkspaceSnapshots(discoveredWorkspaces as WorkspaceRecord[])
+      : await listAllWorkspaces(persistence.workspaceRepository);
+  const reconciledWorkspaces = reconcileDiscoveredWorkspaces(
+    discoveredWorkspaces,
+    persistedWorkspaceSnapshots
+  );
+  const visibleWorkspaceIds = new Set<string>();
   const workspaceRepository = new ScopedWorkspaceRepository(persistence.workspaceRepository, visibleWorkspaceIds);
   const sessionRepository = new ScopedSessionRepository(persistence.sessionRepository, visibleWorkspaceIds);
   const runRepository = new ScopedRunRepository(persistence.runRepository, visibleWorkspaceIds);
+  let workspaceRegistrySyncPromise: Promise<void> | undefined;
+  let lastWorkspaceRegistrySyncAt = 0;
+  let workspaceRegistryPollTimer: NodeJS.Timeout | undefined;
+  let watchedProjectRoots = new Map<string, FSWatcher>();
+  const rootWorkspaceWatcher =
+    singleWorkspace === undefined ? openFsWatcher(config.paths.workspace_dir, scheduleWorkspaceRegistrySync) : undefined;
+  let workspaceSyncTimer: NodeJS.Timeout | undefined;
+
+  reconciledWorkspaces.forEach((workspace) => {
+    visibleWorkspaceIds.add(workspace.id);
+  });
+  await Promise.all(reconciledWorkspaces.map((workspace) => workspaceRepository.upsert(workspace)));
+
+  const syncWorkspaceRegistry =
+    singleWorkspace === undefined
+      ? async () => {
+          const now = Date.now();
+          if (workspaceRegistrySyncPromise) {
+            return workspaceRegistrySyncPromise;
+          }
+          if (now - lastWorkspaceRegistrySyncAt < 200) {
+            return;
+          }
+
+          workspaceRegistrySyncPromise = (async () => {
+            const latestProjectWorkspaces = await discoverProjectWorkspaces({
+              workspaceDir: config.paths.workspace_dir,
+              models,
+              platformAgents,
+              platformSkillDir: config.paths.skill_dir,
+              platformToolDir: toolDir
+            });
+            const persistedWorkspaces = await listAllWorkspaces(persistence.workspaceRepository);
+            const staticWorkspaces = persistedWorkspaces.filter(
+              (workspace) => workspace.kind === "chat" || !isManagedWorkspace(workspace, config.paths)
+            );
+            const latestDiscoveredWorkspaces = [...latestProjectWorkspaces, ...staticWorkspaces];
+            const staleWorkspaceIds = findManagedWorkspaceIdsToDelete(latestDiscoveredWorkspaces, persistedWorkspaces, config.paths);
+
+            await Promise.all(staleWorkspaceIds.map(async (workspaceId) => persistence.workspaceRepository.delete(workspaceId)));
+
+            const latestPersistedWorkspaces =
+              staleWorkspaceIds.length > 0 ? await listAllWorkspaces(persistence.workspaceRepository) : persistedWorkspaces;
+            const latestReconciledWorkspaces = reconcileDiscoveredWorkspaces(
+              latestDiscoveredWorkspaces,
+              latestPersistedWorkspaces
+            );
+
+            await Promise.all(latestReconciledWorkspaces.map(async (workspace) => persistence.workspaceRepository.upsert(workspace)));
+
+            visibleWorkspaceIds.clear();
+            latestReconciledWorkspaces.forEach((workspace) => {
+              visibleWorkspaceIds.add(workspace.id);
+            });
+            updateWatchedProjectRoots(latestReconciledWorkspaces);
+            lastWorkspaceRegistrySyncAt = Date.now();
+          })().finally(() => {
+            workspaceRegistrySyncPromise = undefined;
+          });
+
+          return workspaceRegistrySyncPromise;
+        }
+      : undefined;
+
+  function updateWatchedProjectRoots(workspaces: WorkspaceRecord[]): void {
+    if (singleWorkspace !== undefined) {
+      return;
+    }
+
+    const nextRoots = new Set(
+      workspaces
+        .filter((workspace) => workspace.kind === "project" && isManagedWorkspaceRoot(workspace.rootPath, config.paths.workspace_dir))
+        .map((workspace) => workspace.rootPath)
+    );
+
+    for (const [rootPath, watcher] of watchedProjectRoots.entries()) {
+      if (nextRoots.has(rootPath)) {
+        continue;
+      }
+
+      watcher.close();
+      watchedProjectRoots.delete(rootPath);
+    }
+
+    for (const rootPath of nextRoots) {
+      if (watchedProjectRoots.has(rootPath)) {
+        continue;
+      }
+
+      const watcher = openFsWatcher(rootPath, scheduleWorkspaceRegistrySync, true);
+      if (watcher) {
+        watchedProjectRoots.set(rootPath, watcher);
+      }
+    }
+  }
+
+  function scheduleWorkspaceRegistrySync(): void {
+    if (!syncWorkspaceRegistry) {
+      return;
+    }
+
+    if (workspaceSyncTimer) {
+      clearTimeout(workspaceSyncTimer);
+    }
+
+    workspaceSyncTimer = setTimeout(() => {
+      workspaceSyncTimer = undefined;
+      void syncWorkspaceRegistry().catch((error) => {
+        console.warn("Workspace registry sync failed.", error);
+      });
+    }, 150);
+    workspaceSyncTimer.unref?.();
+  }
   const workspaceMode =
     singleWorkspace !== undefined
       ? {
-          kind: "single" as const,
-          workspaceId: discoveredWorkspaces[0]!.id,
-          workspaceKind: discoveredWorkspaces[0]!.kind,
-          rootPath: discoveredWorkspaces[0]!.rootPath
+        kind: "single" as const,
+          workspaceId: reconciledWorkspaces[0]!.id,
+          workspaceKind: reconciledWorkspaces[0]!.kind,
+          rootPath: reconciledWorkspaces[0]!.rootPath
         }
-      : {
+        : {
           kind: "multi" as const
         };
-
-  await Promise.all(discoveredWorkspaces.map((workspace) => workspaceRepository.upsert(workspace)));
+  updateWatchedProjectRoots(reconciledWorkspaces);
+  if (syncWorkspaceRegistry) {
+    await syncWorkspaceRegistry();
+    workspaceRegistryPollTimer = setInterval(() => {
+      void syncWorkspaceRegistry().catch((error) => {
+        console.warn("Workspace registry poll sync failed.", error);
+      });
+    }, 2_000);
+    workspaceRegistryPollTimer.unref?.();
+  }
   const runtimeService = new RuntimeService({
     defaultModel: config.llm.default_model,
     modelGateway,
@@ -597,9 +867,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
                   templateName: input.template,
                   rootPath: workspaceRoot,
                   agentsMd: input.agentsMd,
-                  toolServers:
-                    ((input as typeof input & { toolServers?: Record<string, Record<string, unknown>> | undefined }).toolServers ??
-                      input.mcpServers),
+                  toolServers: (input as typeof input & { toolServers?: Record<string, Record<string, unknown>> | undefined }).toolServers,
                   skills: input.skills
                 } as Parameters<typeof initializeWorkspaceFromTemplate>[0]
               );
@@ -632,7 +900,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       : undefined;
   redisRunWorker?.start();
   const historyMirrorSyncer =
-    startWorker && "historyEventRepository" in persistence && persistence.historyEventRepository
+    primaryStorageMode === "postgres" && startWorker && "historyEventRepository" in persistence && persistence.historyEventRepository
       ? new HistoryMirrorSyncer({
           workspaceRepository,
           historyEventRepository: persistence.historyEventRepository,
@@ -700,6 +968,17 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     missingWorkspaces: number;
     errorWorkspaces: number;
   }> {
+    if (primaryStorageMode !== "postgres") {
+      return {
+        check: "not_configured",
+        worker: "disabled",
+        enabledWorkspaces: 0,
+        idleWorkspaces: 0,
+        missingWorkspaces: 0,
+        errorWorkspaces: 0
+      };
+    }
+
     const workspaces: import("@oah/runtime-core").WorkspaceRecord[] = [];
     let cursor: string | undefined;
     do {
@@ -764,6 +1043,18 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
           }
         }
       : {}),
+    async getWorkspaceHistoryMirrorStatus(workspace) {
+      if (primaryStorageMode !== "postgres") {
+        return {
+          workspaceId: workspace.id,
+          supported: false,
+          enabled: false,
+          state: "unsupported"
+        };
+      }
+
+      return inspectHistoryMirrorStatus(workspace);
+    },
     rebuildWorkspaceHistoryMirror(workspace) {
       if (!historyMirrorSyncer) {
         throw new Error("History mirror rebuild is unavailable because the mirror sync worker is not running.");
@@ -817,6 +1108,17 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         redisBus?.close() ?? Promise.resolve(),
         redisRunQueue?.close() ?? Promise.resolve()
       ]);
+      if (workspaceSyncTimer) {
+        clearTimeout(workspaceSyncTimer);
+      }
+      if (workspaceRegistryPollTimer) {
+        clearInterval(workspaceRegistryPollTimer);
+      }
+      rootWorkspaceWatcher?.close();
+      for (const watcher of watchedProjectRoots.values()) {
+        watcher.close();
+      }
+      watchedProjectRoots.clear();
     }
   };
 }

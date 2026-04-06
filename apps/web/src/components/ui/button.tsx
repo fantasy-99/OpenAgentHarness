@@ -1,40 +1,47 @@
-import type { ButtonHTMLAttributes } from "react";
+import * as React from "react";
+import { cva, type VariantProps } from "class-variance-authority";
+import { Slot } from "radix-ui";
 
-import { cn } from "../../lib/utils";
+import { cn } from "@/lib/utils";
 
-type ButtonVariant = "default" | "secondary" | "ghost" | "destructive";
-type ButtonSize = "default" | "sm";
+const buttonVariants = cva(
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
+  {
+    variants: {
+      variant: {
+        default: "bg-primary text-primary-foreground shadow-[0_1px_0_rgba(255,255,255,0.18),0_8px_20px_rgba(17,19,24,0.12)] hover:bg-primary/94",
+        destructive: "bg-destructive text-destructive-foreground shadow-[0_8px_20px_rgba(17,19,24,0.08)] hover:bg-destructive/90",
+        outline: "border border-input bg-background/85 text-foreground shadow-[0_1px_0_rgba(255,255,255,0.7)] hover:bg-accent hover:text-accent-foreground",
+        secondary: "border border-border/70 bg-secondary/90 text-secondary-foreground shadow-[0_1px_0_rgba(255,255,255,0.7)] hover:bg-secondary",
+        ghost: "text-muted-foreground hover:bg-accent hover:text-foreground",
+        link: "text-primary underline-offset-4 hover:underline"
+      },
+      size: {
+        default: "h-9 px-4 py-2",
+        sm: "h-8 rounded-md px-3 text-xs",
+        lg: "h-10 rounded-md px-8",
+        icon: "h-9 w-9"
+      }
+    },
+    defaultVariants: {
+      variant: "default",
+      size: "default"
+    }
+  }
+);
 
-export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: ButtonVariant;
-  size?: ButtonSize;
+function Button({
+  className,
+  variant,
+  size,
+  asChild = false,
+  ...props
+}: React.ComponentProps<"button"> &
+  VariantProps<typeof buttonVariants> & {
+    asChild?: boolean;
+  }) {
+  const Comp = asChild ? Slot.Root : "button";
+  return <Comp className={cn(buttonVariants({ variant, size, className }))} {...props} />;
 }
 
-const variantClasses: Record<ButtonVariant, string> = {
-  default:
-    "bg-[color:var(--accent)] text-[color:var(--accent-foreground)] hover:bg-[color:var(--accent-strong)]",
-  secondary:
-    "border border-[color:var(--border)] bg-white text-[color:var(--foreground)] hover:bg-[#f7f7f4]",
-  ghost: "text-[color:var(--muted-foreground)] hover:bg-black/4 hover:text-[color:var(--foreground)]",
-  destructive: "bg-rose-50 text-rose-700 hover:bg-rose-100"
-};
-
-const sizeClasses: Record<ButtonSize, string> = {
-  default: "h-11 px-4 text-sm",
-  sm: "h-8 px-3 text-xs"
-};
-
-export function Button({ className, variant = "default", size = "default", type = "button", ...props }: ButtonProps) {
-  return (
-    <button
-      type={type}
-      className={cn(
-        "inline-flex items-center justify-center gap-2 rounded-2xl font-medium transition duration-200 disabled:cursor-not-allowed disabled:opacity-50",
-        variantClasses[variant],
-        sizeClasses[size],
-        className
-      )}
-      {...props}
-    />
-  );
-}
+export { Button, buttonVariants };

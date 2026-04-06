@@ -28,14 +28,22 @@ import type {
   RunRepository,
   RunStepRepository
 } from "@oah/runtime-core";
-import { AppError, createId, nowIso, parseCursor } from "@oah/runtime-core";
+import {
+  AppError,
+  createId,
+  normalizePersistedMessageRecord,
+  normalizePersistedMessages,
+  normalizePersistedRunStep,
+  nowIso,
+  parseCursor
+} from "@oah/runtime-core";
 
-type CompatibleWorkspaceRecord = WorkspaceRecord & {
-  toolServers?: WorkspaceRecord["mcpServers"] | undefined;
-};
+interface SqlQueryable {
+  query(text: string, values?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }>;
+}
 
-function readToolServers(input: WorkspaceRecord): WorkspaceRecord["mcpServers"] {
-  return (input as CompatibleWorkspaceRecord).toolServers ?? input.mcpServers;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 const workspaces = pgTable("workspaces", {
@@ -55,7 +63,7 @@ const workspaces = pgTable("workspaces", {
   agents: jsonb("agents").$type<WorkspaceRecord["agents"]>().notNull(),
   actions: jsonb("actions").$type<WorkspaceRecord["actions"]>().notNull(),
   skills: jsonb("skills").$type<WorkspaceRecord["skills"]>().notNull(),
-  toolServers: jsonb("mcp_servers").$type<WorkspaceRecord["mcpServers"]>().notNull(),
+  toolServers: jsonb("mcp_servers").$type<WorkspaceRecord["toolServers"]>().notNull(),
   hooks: jsonb("hooks").$type<WorkspaceRecord["hooks"]>().notNull(),
   catalog: jsonb("catalog").$type<WorkspaceRecord["catalog"]>().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
@@ -255,7 +263,7 @@ function buildWorkspaceRow(input: WorkspaceRecord) {
     agents: input.agents,
     actions: input.actions,
     skills: input.skills,
-    toolServers: readToolServers(input),
+    toolServers: input.toolServers,
     hooks: input.hooks,
     catalog: input.catalog,
     createdAt: input.createdAt,
@@ -286,7 +294,6 @@ function toWorkspaceRecord(row: typeof workspaces.$inferSelect): WorkspaceRecord
     actions: row.actions,
     skills: row.skills,
     toolServers,
-    mcpServers: toolServers,
     hooks: row.hooks,
     catalog: row.catalog
   };
@@ -1193,6 +1200,141 @@ const schemaStatements = [
   `create index if not exists session_events_session_run_cursor_idx on session_events (session_id, run_id, cursor)`
 ];
 
+async function normalizePostgresPersistedData(queryable: SqlQueryable): Promise<void> {
+  const messageResult = await queryable.query(
+    "select id, session_id, run_id, role, content, metadata, created_at from messages order by session_id asc, created_at asc, id asc"
+  );
+  const messagesBySession = new Map<string, Message[]>();
+
+  for (const row of messageResult.rows) {
+    if (typeof row.id !== "string" || typeof row.session_id !== "string" || typeof row.role !== "string" || typeof row.created_at !== "string") {
+      continue;
+    }
+
+    const message: Message = {
+      id: row.id,
+      sessionId: row.session_id,
+      ...(typeof row.run_id === "string" ? { runId: row.run_id } : {}),
+      role: row.role as Message["role"],
+      content: row.content as Message["content"],
+      ...(isRecord(row.metadata) ? { metadata: row.metadata } : {}),
+      createdAt: row.created_at
+    };
+
+    const existing = messagesBySession.get(message.sessionId);
+    if (existing) {
+      existing.push(message);
+    } else {
+      messagesBySession.set(message.sessionId, [message]);
+    }
+  }
+
+  for (const [sessionId, messages] of messagesBySession.entries()) {
+    const normalized = normalizePersistedMessages(messages);
+    if (!normalized.changed) {
+      continue;
+    }
+
+    await queryable.query("delete from messages where session_id = $1", [sessionId]);
+    for (const message of normalized.messages) {
+      await queryable.query(
+        "insert into messages (id, session_id, run_id, role, content, metadata, created_at) values ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7)",
+        [
+          message.id,
+          message.sessionId,
+          message.runId ?? null,
+          message.role,
+          message.content,
+          message.metadata ?? null,
+          message.createdAt
+        ]
+      );
+    }
+  }
+
+  const runStepResult = await queryable.query(
+    "select id, run_id, seq, step_type, name, agent_name, status, input, output, started_at, ended_at from run_steps"
+  );
+  for (const row of runStepResult.rows) {
+    if (
+      typeof row.id !== "string" ||
+      typeof row.run_id !== "string" ||
+      typeof row.seq !== "number" ||
+      typeof row.step_type !== "string" ||
+      typeof row.status !== "string"
+    ) {
+      continue;
+    }
+
+    const step: RunStep = {
+      id: row.id,
+      runId: row.run_id,
+      seq: row.seq,
+      stepType: row.step_type as RunStep["stepType"],
+      status: row.status as RunStep["status"],
+      ...(typeof row.name === "string" ? { name: row.name } : {}),
+      ...(typeof row.agent_name === "string" ? { agentName: row.agent_name } : {}),
+      ...(row.input !== undefined && row.input !== null ? { input: row.input } : {}),
+      ...(row.output !== undefined && row.output !== null ? { output: row.output } : {}),
+      ...(typeof row.started_at === "string" ? { startedAt: row.started_at } : {}),
+      ...(typeof row.ended_at === "string" ? { endedAt: row.ended_at } : {})
+    };
+
+    const normalized = normalizePersistedRunStep(step);
+    if (!normalized.changed) {
+      continue;
+    }
+
+    await queryable.query("update run_steps set input = $2::jsonb, output = $3::jsonb where id = $1", [
+      normalized.step.id,
+      normalized.step.input ?? null,
+      normalized.step.output ?? null
+    ]);
+  }
+
+  const historyResult = await queryable.query("select id, entity_type, payload from history_events");
+  for (const row of historyResult.rows) {
+    if (typeof row.id !== "number" || typeof row.entity_type !== "string") {
+      continue;
+    }
+
+    if (row.entity_type === "message" && isRecord(row.payload)) {
+      const normalized = normalizePersistedMessageRecord({
+        id: String(row.payload.id ?? ""),
+        sessionId: String(row.payload.sessionId ?? ""),
+        ...(typeof row.payload.runId === "string" ? { runId: row.payload.runId } : {}),
+        role: row.payload.role as Message["role"],
+        content: row.payload.content as Message["content"],
+        ...(isRecord(row.payload.metadata) ? { metadata: row.payload.metadata } : {}),
+        createdAt: String(row.payload.createdAt ?? "")
+      });
+      if (normalized.changed) {
+        await queryable.query("update history_events set payload = $2::jsonb where id = $1", [row.id, normalized.message]);
+      }
+      continue;
+    }
+
+    if (row.entity_type === "run_step" && isRecord(row.payload)) {
+      const normalized = normalizePersistedRunStep({
+        id: String(row.payload.id ?? ""),
+        runId: String(row.payload.runId ?? ""),
+        seq: typeof row.payload.seq === "number" ? row.payload.seq : 0,
+        stepType: row.payload.stepType as RunStep["stepType"],
+        status: row.payload.status as RunStep["status"],
+        ...(typeof row.payload.name === "string" ? { name: row.payload.name } : {}),
+        ...(typeof row.payload.agentName === "string" ? { agentName: row.payload.agentName } : {}),
+        ...(row.payload.input !== undefined ? { input: row.payload.input } : {}),
+        ...(row.payload.output !== undefined ? { output: row.payload.output } : {}),
+        ...(typeof row.payload.startedAt === "string" ? { startedAt: row.payload.startedAt } : {}),
+        ...(typeof row.payload.endedAt === "string" ? { endedAt: row.payload.endedAt } : {})
+      });
+      if (normalized.changed) {
+        await queryable.query("update history_events set payload = $2::jsonb where id = $1", [row.id, normalized.step]);
+      }
+    }
+  }
+}
+
 export async function ensurePostgresSchema(pool: Pool): Promise<void> {
   if (typeof pool.connect === "function") {
     const client = await pool.connect();
@@ -1201,6 +1343,7 @@ export async function ensurePostgresSchema(pool: Pool): Promise<void> {
       for (const statement of schemaStatements) {
         await client.query(statement);
       }
+      await normalizePostgresPersistedData(client as SqlQueryable);
     } finally {
       try {
         await client.query("select pg_advisory_unlock($1)", [schemaLockKey]);
@@ -1215,6 +1358,8 @@ export async function ensurePostgresSchema(pool: Pool): Promise<void> {
   for (const statement of schemaStatements) {
     await pool.query(statement);
   }
+
+  await normalizePostgresPersistedData(pool as SqlQueryable);
 }
 
 export async function createPostgresRuntimePersistence(

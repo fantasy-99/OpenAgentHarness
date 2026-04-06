@@ -72,4 +72,190 @@ describe("storage postgres", () => {
     expect(query.mock.calls.at(-1)?.[0]).toContain("pg_advisory_unlock");
     expect(release).toHaveBeenCalledTimes(1);
   });
+
+  it("normalizes persisted legacy payloads while ensuring schema", async () => {
+    const query = vi.fn(async (statement: unknown) => {
+      const sql = String(statement);
+
+      if (sql.startsWith("select id, session_id, run_id, role, content, metadata, created_at from messages")) {
+        return {
+          rows: [
+            {
+              id: "msg_user_1",
+              session_id: "ses_dirty",
+              run_id: "run_dirty",
+              role: "user",
+              content: "run the tools",
+              metadata: null,
+              created_at: "2026-01-01T00:00:02.000Z"
+            },
+            {
+              id: "msg_assistant_1",
+              session_id: "ses_dirty",
+              run_id: "run_dirty",
+              role: "assistant",
+              content: [
+                {
+                  type: "tool-call",
+                  toolCallId: "call_missing",
+                  toolName: "Read",
+                  input: { file_path: "README.md" }
+                },
+                {
+                  type: "tool-call",
+                  toolCallId: "call_done",
+                  toolName: "Bash",
+                  input: { command: "pwd" }
+                }
+              ],
+              metadata: null,
+              created_at: "2026-01-01T00:00:03.000Z"
+            },
+            {
+              id: "msg_tool_1",
+              session_id: "ses_dirty",
+              run_id: "run_dirty",
+              role: "tool",
+              content: [
+                {
+                  type: "tool-result",
+                  toolCallId: "call_done",
+                  toolName: "Bash",
+                  output: "/tmp/demo"
+                }
+              ],
+              metadata: null,
+              created_at: "2026-01-01T00:00:04.000Z"
+            },
+            {
+              id: "msg_user_2",
+              session_id: "ses_dirty",
+              run_id: "run_dirty",
+              role: "user",
+              content: "thanks",
+              metadata: null,
+              created_at: "2026-01-01T00:00:05.000Z"
+            }
+          ]
+        };
+      }
+
+      if (sql.startsWith("select id, run_id, seq, step_type, name, agent_name, status, input, output, started_at, ended_at from run_steps")) {
+        return {
+          rows: [
+            {
+              id: "step_dirty",
+              run_id: "run_dirty",
+              seq: 1,
+              step_type: "model_call",
+              name: null,
+              agent_name: null,
+              status: "completed",
+              input: {
+                model: "openai-default",
+                canonicalModelRef: "platform/openai-default",
+                messages: [
+                  {
+                    role: "tool",
+                    content: [
+                      {
+                        type: "tool-result",
+                        toolCallId: "call_done",
+                        toolName: "Bash",
+                        output: "/tmp/demo"
+                      }
+                    ]
+                  }
+                ],
+                messageCount: 1
+              },
+              output: {
+                finishReason: "tool-calls",
+                toolResults: [
+                  {
+                    toolCallId: "call_done",
+                    toolName: "Bash",
+                    output: "/tmp/demo"
+                  }
+                ],
+                toolCallsCount: 1,
+                toolResultsCount: 1
+              },
+              started_at: "2026-01-01T00:00:03.000Z",
+              ended_at: "2026-01-01T00:00:04.000Z"
+            }
+          ]
+        };
+      }
+
+      if (sql.startsWith("select id, entity_type, payload from history_events")) {
+        return {
+          rows: [
+            {
+              id: 1,
+              entity_type: "message",
+              payload: {
+                id: "msg_tool_1",
+                sessionId: "ses_dirty",
+                runId: "run_dirty",
+                role: "tool",
+                content: [
+                  {
+                    type: "tool-result",
+                    toolCallId: "call_done",
+                    toolName: "Bash",
+                    output: "/tmp/demo"
+                  }
+                ],
+                createdAt: "2026-01-01T00:00:04.000Z"
+              }
+            }
+          ]
+        };
+      }
+
+      return { rows: [] };
+    });
+
+    await ensurePostgresSchema({
+      query
+    } as unknown as import("pg").Pool);
+
+    expect(
+      query.mock.calls.some(
+        ([statement, values]) =>
+          String(statement) === "delete from messages where session_id = $1" && Array.isArray(values) && values[0] === "ses_dirty"
+      )
+    ).toBe(true);
+    expect(
+      query.mock.calls.some(
+        ([statement, values]) =>
+          String(statement).startsWith("insert into messages") &&
+          Array.isArray(values) &&
+          values[0] === "msg_assistant_1~missing-tool-result"
+      )
+    ).toBe(true);
+    expect(
+      query.mock.calls.some(
+        ([statement, values]) =>
+          String(statement) === "update run_steps set input = $2::jsonb, output = $3::jsonb where id = $1" &&
+          Array.isArray(values) &&
+          values[0] === "step_dirty" &&
+          typeof values[1] === "object" &&
+          values[1] !== null &&
+          "request" in (values[1] as Record<string, unknown>) &&
+          typeof values[2] === "object" &&
+          values[2] !== null &&
+          "response" in (values[2] as Record<string, unknown>)
+      )
+    ).toBe(true);
+    expect(
+      query.mock.calls.some(
+        ([statement, values]) =>
+          String(statement) === "update history_events set payload = $2::jsonb where id = $1" &&
+          Array.isArray(values) &&
+          values[0] === 1
+      )
+    ).toBe(true);
+  });
 });
