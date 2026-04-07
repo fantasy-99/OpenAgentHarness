@@ -692,6 +692,11 @@ class PostgresSessionRepository implements SessionRepository {
 
     return rows.map(toSession);
   }
+
+  async delete(id: string): Promise<void> {
+    await this.db.delete(messages).where(eq(messages.sessionId, id));
+    await this.db.delete(sessions).where(eq(sessions.id, id));
+  }
 }
 
 class PostgresMessageRepository implements MessageRepository {

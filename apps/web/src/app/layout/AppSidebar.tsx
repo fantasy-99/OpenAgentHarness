@@ -1,4 +1,4 @@
-import { Bot, FolderPlus, Network, RefreshCw, Server } from "lucide-react";
+import { Bot, FolderPlus, Network, RefreshCw, RotateCcw, Server } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,6 @@ import {
   DialogTitle
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
 
 import { probeTone } from "../support";
@@ -23,13 +22,13 @@ type SidebarProps = ReturnType<typeof useAppController>["sidebarSurfaceProps"];
 function statusClass(tone: "sky" | "emerald" | "rose" | "amber") {
   switch (tone) {
     case "emerald":
-      return "border-emerald-200/80 bg-emerald-50/70 text-emerald-700";
+      return "border-emerald-200/80 bg-emerald-50/70 text-emerald-700 dark:border-emerald-800/80 dark:bg-emerald-950/40 dark:text-emerald-400";
     case "rose":
-      return "border-rose-200/80 bg-rose-50/70 text-rose-700";
+      return "border-rose-200/80 bg-rose-50/70 text-rose-700 dark:border-rose-800/80 dark:bg-rose-950/40 dark:text-rose-400";
     case "amber":
-      return "border-amber-200/80 bg-amber-50/70 text-amber-700";
+      return "border-amber-200/80 bg-amber-50/70 text-amber-700 dark:border-amber-800/80 dark:bg-amber-950/40 dark:text-amber-400";
     default:
-      return "border-slate-200 bg-slate-50 text-slate-700";
+      return "border-border bg-muted text-muted-foreground";
   }
 }
 
@@ -54,17 +53,20 @@ function ToggleRow(props: { label: string; checked: boolean; onCheckedChange: (c
 export function AppSidebar(props: SidebarProps) {
   return (
     <>
-      <aside className="app-sidebar-surface flex min-h-0 w-[288px] shrink-0 flex-col border-r border-border/80">
-        <ScrollArea className="min-h-0 flex-1">
+      <aside className="bg-background flex min-h-0 w-[288px] shrink-0 flex-col border-r border-border">
+        <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden w-full">
           <div className="space-y-3 px-2 py-3">
             <div className="flex items-center justify-between gap-2 px-2">
               <div>
-                <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Workspaces</p>
+                <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Workspaces</p>
                 <p className="mt-1 text-[11px] text-muted-foreground">
                   {props.orderedSavedWorkspaces.length} workspaces · {props.savedSessionsCount} sessions
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-1">
+                <Button size="icon" variant="ghost" className="h-8 w-8" onClick={props.refreshWorkspaceIndex} title="Refresh workspace list">
+                  <RotateCcw className="h-4 w-4" />
+                </Button>
                 {props.workspaceManagementEnabled ? (
                   <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => props.setShowWorkspaceCreator(true)} title="New Workspace">
                     <FolderPlus className="h-4 w-4" />
@@ -135,7 +137,7 @@ export function AppSidebar(props: SidebarProps) {
               })
             )}
           </div>
-        </ScrollArea>
+        </div>
 
         <div className="space-y-3 border-t border-border/80 px-3 py-3">
           <div className="grid gap-2">

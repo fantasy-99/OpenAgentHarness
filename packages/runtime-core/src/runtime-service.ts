@@ -408,6 +408,11 @@ export class RuntimeService {
     return session;
   }
 
+  async deleteSession(sessionId: string): Promise<void> {
+    await this.getSession(sessionId);
+    await this.#sessionRepository.delete(sessionId);
+  }
+
   async listWorkspaceSessions(workspaceId: string, pageSize: number, cursor?: string): Promise<SessionListResult> {
     await this.getWorkspaceRecord(workspaceId);
     const startIndex = parseCursor(cursor);

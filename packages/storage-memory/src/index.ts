@@ -75,6 +75,10 @@ export class InMemorySessionRepository implements SessionRepository {
       .slice(startIndex, startIndex + pageSize);
   }
 
+  async delete(id: string): Promise<void> {
+    this.#items.delete(id);
+  }
+
   deleteByWorkspaceId(workspaceId: string): string[] {
     const deletedSessionIds: string[] = [];
 

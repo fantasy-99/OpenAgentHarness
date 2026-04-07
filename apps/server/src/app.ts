@@ -442,6 +442,12 @@ export function createApp(dependencies: AppDependencies) {
     return reply.send(session);
   });
 
+  app.delete("/api/v1/sessions/:sessionId", async (request, reply) => {
+    const params = createParamsSchema("sessionId").parse(request.params);
+    await dependencies.runtimeService.deleteSession(params.sessionId);
+    return reply.status(204).send();
+  });
+
   app.get("/api/v1/sessions/:sessionId/messages", async (request, reply) => {
     const params = createParamsSchema("sessionId").parse(request.params);
     const query = pageQuerySchema.parse(request.query);

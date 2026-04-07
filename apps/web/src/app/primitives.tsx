@@ -43,7 +43,7 @@ function WorkspaceSidebarItem(props: {
       )}
     >
       <button
-        className="rounded-lg p-1.5 text-[color:var(--muted-foreground)] transition hover:bg-black/4 hover:text-[color:var(--foreground)]"
+        className="rounded-lg p-1.5 text-muted-foreground transition hover:bg-muted/50 hover:text-foreground"
         onClick={props.onToggleExpanded}
         title={props.expanded ? "折叠 sessions" : "展开 sessions"}
       >
@@ -53,19 +53,19 @@ function WorkspaceSidebarItem(props: {
         <div
           className={cn(
             "flex h-9 w-9 items-center justify-center rounded-[12px] transition",
-            props.active ? "bg-black/[0.08] text-[color:var(--foreground)]" : "bg-black/[0.035] text-[color:var(--muted-foreground)]"
+            props.active ? "bg-foreground/[0.08] text-foreground" : "bg-foreground/[0.035] text-muted-foreground"
           )}
         >
           <Folder className="h-4 w-4" />
         </div>
         <div className="min-w-0">
-          <p className="truncate text-sm font-medium text-[color:var(--foreground)]">{props.entry.name}</p>
-          <p className="truncate text-xs text-[color:var(--muted-foreground)]">{subtitleParts.join(" · ")}</p>
+          <p className="truncate text-sm font-medium text-foreground">{props.entry.name}</p>
+          <p className="truncate text-xs text-muted-foreground">{subtitleParts.join(" · ")}</p>
         </div>
       </button>
       {props.canRemove ? (
         <button
-          className="rounded-lg p-1.5 text-[color:var(--muted-foreground)] opacity-0 transition hover:bg-black/4 hover:text-[color:var(--foreground)] group-hover:opacity-100"
+          className="rounded-lg p-1.5 text-muted-foreground opacity-0 transition hover:bg-muted/50 hover:text-foreground group-hover:opacity-100"
           onClick={props.onRemove}
           title="删除 workspace"
         >
@@ -102,18 +102,18 @@ function SessionSidebarItem(props: {
         <div
           className={cn(
             "flex h-9 w-9 items-center justify-center rounded-[12px] transition",
-            props.active ? "bg-black/[0.08] text-[color:var(--foreground)]" : "bg-black/[0.035] text-[color:var(--muted-foreground)]"
+            props.active ? "bg-foreground/[0.08] text-foreground" : "bg-foreground/[0.035] text-muted-foreground"
           )}
         >
           <Bot className="h-4 w-4" />
         </div>
         <div className="min-w-0">
-          <p className="truncate text-sm font-medium text-[color:var(--foreground)]">{props.entry.title || "Untitled session"}</p>
-          <p className="truncate text-xs text-[color:var(--muted-foreground)]">{subtitleParts.join(" · ")}</p>
+          <p className="truncate text-sm font-medium text-foreground">{props.entry.title || "Untitled session"}</p>
+          <p className="truncate text-xs text-muted-foreground">{subtitleParts.join(" · ")}</p>
         </div>
       </button>
       <button
-        className="rounded-lg p-1.5 text-[color:var(--muted-foreground)] opacity-0 transition hover:bg-black/4 hover:text-[color:var(--foreground)] group-hover:opacity-100"
+        className="rounded-lg p-1.5 text-muted-foreground opacity-0 transition hover:bg-muted/50 hover:text-foreground group-hover:opacity-100"
         onClick={props.onRemove}
         title="从本地侧栏移除"
       >
@@ -129,8 +129,8 @@ function ToggleChip(props: { active: boolean; label: string; onClick: () => void
       className={cn(
         "rounded-md border px-3 py-1.5 text-xs font-medium transition",
         props.active
-          ? "border-black/8 bg-foreground text-background"
-          : "border-[color:var(--border)] bg-background text-[color:var(--muted-foreground)] hover:bg-muted/40 hover:text-[color:var(--foreground)]"
+          ? "border-border/20 bg-foreground text-background"
+          : "border-border bg-background text-muted-foreground hover:bg-muted/40 hover:text-foreground"
       )}
       onClick={props.onClick}
     >
@@ -145,8 +145,8 @@ function InspectorTabButton(props: { label: string; active: boolean; onClick: ()
       className={cn(
         "rounded-md px-3 py-2 text-xs font-medium transition",
         props.active
-          ? "bg-background text-[color:var(--foreground)]"
-          : "text-[color:var(--muted-foreground)] hover:bg-background hover:text-[color:var(--foreground)]"
+          ? "bg-background text-foreground"
+          : "text-muted-foreground hover:bg-background hover:text-foreground"
       )}
       onClick={props.onClick}
     >
@@ -158,8 +158,8 @@ function InspectorTabButton(props: { label: string; active: boolean; onClick: ()
 function InsightRow(props: { label: string; value: string }) {
   return (
     <div className="ob-subsection px-4 py-3">
-      <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-[color:var(--muted-foreground)]">{props.label}</p>
-      <p className="mt-2 truncate text-[15px] font-semibold text-[color:var(--foreground)]">{props.value}</p>
+      <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">{props.label}</p>
+      <p className="mt-2 truncate text-[15px] font-semibold text-foreground">{props.value}</p>
     </div>
   );
 }
@@ -167,7 +167,7 @@ function InsightRow(props: { label: string; value: string }) {
 function EntityPreview(props: { title: string; data: unknown }) {
   return (
     <div className="ob-subsection overflow-hidden">
-      <div className="px-4 py-2 text-xs text-[color:var(--muted-foreground)]">
+      <div className="px-4 py-2 text-xs text-muted-foreground">
         {props.title}
       </div>
       <pre className="max-h-72 overflow-auto border-t border-border/70 p-4 text-xs leading-6 text-foreground/80">{prettyJson(props.data)}</pre>
@@ -178,7 +178,7 @@ function EntityPreview(props: { title: string; data: unknown }) {
 function JsonBlock(props: { title: string; value: unknown }) {
   return (
     <div className="ob-subsection overflow-hidden">
-      <div className="px-3 py-2 text-xs text-[color:var(--muted-foreground)]">
+      <div className="px-3 py-2 text-xs text-muted-foreground">
         {props.title}
       </div>
       <pre className="max-h-64 overflow-auto border-t border-border/70 p-3 text-xs leading-6 text-foreground/80">{prettyJson(props.value)}</pre>
@@ -189,13 +189,13 @@ function JsonBlock(props: { title: string; value: unknown }) {
 function modelMessageTone(role: Message["role"]) {
   switch (role) {
     case "system":
-      return "bg-slate-900 text-white";
+      return "bg-foreground text-background";
     case "user":
-      return "bg-sky-100 text-sky-700";
+      return "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300";
     case "assistant":
-      return "bg-emerald-100 text-emerald-700";
+      return "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300";
     case "tool":
-      return "bg-amber-100 text-amber-700";
+      return "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300";
     default:
       return "";
   }
@@ -230,7 +230,7 @@ function PayloadValueView(props: {
           <Badge>{`${lineCount} lines`}</Badge>
           <Badge>{`${props.value.length} chars`}</Badge>
         </div>
-        <div className="rounded-[16px] border border-[color:var(--border)] bg-[rgba(248,250,252,0.9)] p-3">
+        <div className="rounded-[16px] border border-border bg-muted/30 p-3">
           <pre
             className={cn(
               "overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-foreground/80",
@@ -251,7 +251,7 @@ function PayloadValueView(props: {
         <Badge>{kindLabel}</Badge>
         {sizeLabel ? <Badge>{sizeLabel}</Badge> : null}
       </div>
-      <div className="rounded-[16px] border border-[color:var(--border)] bg-[rgba(248,250,252,0.9)] p-3">
+      <div className="rounded-[16px] border border-border bg-muted/30 p-3">
         <pre className={cn("overflow-auto text-xs leading-6 text-foreground/80", props.maxHeightClassName)}>{prettyJson(props.value)}</pre>
       </div>
     </div>
@@ -314,18 +314,18 @@ function buildAiSdkLikeStoredMessages(messages: Message[]) {
 
 function EmptyState(props: { title: string; description: string }) {
   return (
-    <div className="rounded-xl border border-dashed border-[color:var(--border)] bg-muted/20 px-4 py-7 text-center">
-      <p className="text-sm font-medium text-[color:var(--foreground)]">{props.title}</p>
-      <p className="mt-1.5 text-sm leading-6 text-[color:var(--muted-foreground)]">{props.description}</p>
+    <div className="rounded-xl border border-dashed border-border bg-muted/20 px-4 py-7 text-center">
+      <p className="text-sm font-medium text-foreground">{props.title}</p>
+      <p className="mt-1.5 text-sm leading-6 text-muted-foreground">{props.description}</p>
     </div>
   );
 }
 
 function CatalogLine(props: { label: string; value: number | string }) {
   return (
-    <div className="flex items-center justify-between rounded-xl border border-[color:var(--border)] bg-background px-4 py-3 text-sm">
-      <span className="text-[color:var(--muted-foreground)]">{props.label}</span>
-      <span className="font-semibold text-[color:var(--foreground)]">{props.value}</span>
+    <div className="flex items-center justify-between rounded-xl border border-border bg-background px-4 py-3 text-sm">
+      <span className="text-muted-foreground">{props.label}</span>
+      <span className="font-semibold text-foreground">{props.value}</span>
     </div>
   );
 }
@@ -339,12 +339,12 @@ function StatusTile(props: {
 }) {
   const colorClass =
     props.tone === "emerald"
-      ? "border-emerald-200/80 bg-emerald-50/70 text-emerald-700"
+      ? "border-emerald-200/80 bg-emerald-50/70 text-emerald-700 dark:border-emerald-800/80 dark:bg-emerald-950/40 dark:text-emerald-400"
       : props.tone === "rose"
-        ? "border-rose-200/80 bg-rose-50/70 text-rose-700"
+        ? "border-rose-200/80 bg-rose-50/70 text-rose-700 dark:border-rose-800/80 dark:bg-rose-950/40 dark:text-rose-400"
         : props.tone === "amber"
-          ? "border-amber-200/80 bg-amber-50/70 text-amber-700"
-          : "border-slate-200 bg-slate-50 text-slate-700";
+          ? "border-amber-200/80 bg-amber-50/70 text-amber-700 dark:border-amber-800/80 dark:bg-amber-950/40 dark:text-amber-400"
+          : "border-border bg-muted text-muted-foreground";
 
   const Icon = props.icon;
 

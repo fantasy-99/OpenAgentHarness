@@ -11,8 +11,8 @@ type RuntimeProps = ReturnType<typeof useAppController>["runtimeDetailSurfacePro
 
 export function RuntimeWorkspace(props: RuntimeProps) {
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center justify-between gap-3 px-1 pb-4">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 md:px-5">
         <Tabs value={props.mainViewMode} onValueChange={(value) => props.setMainViewMode(value as RuntimeProps["mainViewMode"])}>
           <TabsList className="h-8">
             <TabsTrigger value="conversation" className="text-xs">
@@ -42,9 +42,15 @@ export function RuntimeWorkspace(props: RuntimeProps) {
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden">
-        {props.mainViewMode === "conversation" ? <ConversationWorkspace {...props} /> : <InspectorWorkspace {...props} />}
-      </div>
+      {props.mainViewMode === "conversation" ? (
+        <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
+          <ConversationWorkspace {...props} />
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-hidden px-4 py-4 md:px-5 md:py-5">
+          <InspectorWorkspace {...props} />
+        </div>
+      )}
     </section>
   );
 }

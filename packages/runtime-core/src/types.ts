@@ -401,6 +401,7 @@ export interface SessionRepository {
   getById(id: string): Promise<Session | null>;
   update(input: Session): Promise<Session>;
   listByWorkspaceId(workspaceId: string, pageSize: number, cursor?: string): Promise<Session[]>;
+  delete(id: string): Promise<void>;
 }
 
 export interface MessageRepository {

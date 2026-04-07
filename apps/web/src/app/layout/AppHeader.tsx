@@ -1,4 +1,4 @@
-import { Bot, Network, Orbit, Sparkles } from "lucide-react";
+import { Bot, Loader2, Network, Orbit, Sparkles } from "lucide-react";
 
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
@@ -10,13 +10,13 @@ type HeaderProps = ReturnType<typeof useAppController>["headerProps"];
 function statusClass(tone: "sky" | "emerald" | "rose" | "amber") {
   switch (tone) {
     case "emerald":
-      return "border-emerald-200/80 bg-emerald-50/70 text-emerald-700";
+      return "border-emerald-200/80 bg-emerald-50/70 text-emerald-700 dark:border-emerald-800/80 dark:bg-emerald-950/40 dark:text-emerald-400";
     case "rose":
-      return "border-rose-200/80 bg-rose-50/70 text-rose-700";
+      return "border-rose-200/80 bg-rose-50/70 text-rose-700 dark:border-rose-800/80 dark:bg-rose-950/40 dark:text-rose-400";
     case "amber":
-      return "border-amber-200/80 bg-amber-50/70 text-amber-700";
+      return "border-amber-200/80 bg-amber-50/70 text-amber-700 dark:border-amber-800/80 dark:bg-amber-950/40 dark:text-amber-400";
     default:
-      return "border-slate-200 bg-slate-50 text-slate-700";
+      return "border-border bg-muted text-muted-foreground";
   }
 }
 
@@ -33,11 +33,11 @@ function StatusPill(props: { label: string; value: string; tone: "sky" | "emeral
 
 export function AppHeader(props: HeaderProps) {
   return (
-    <header className="app-topbar flex min-h-[52px] items-center justify-between gap-4 border-b border-border/80 px-6 py-2.5">
+    <header className="h-14 bg-background border-b border-border flex items-center justify-between gap-4 px-4 sm:px-6 shadow-none overflow-hidden min-w-0">
       <div className="flex min-w-0 items-center gap-3">
-        <div className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border/70 bg-gradient-to-br from-background via-card to-muted/70 shadow-[0_10px_24px_rgba(17,19,24,0.08)]">
+        <div className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border/70 bg-gradient-to-br from-background via-card to-muted/70 shadow-sm">
           <Bot className="h-4 w-4 text-foreground" />
-          <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-foreground text-background shadow-[0_4px_10px_rgba(17,19,24,0.18)]">
+          <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-foreground text-background shadow-md">
             <Sparkles className="h-2.5 w-2.5" />
           </span>
         </div>
@@ -49,7 +49,11 @@ export function AppHeader(props: HeaderProps) {
             </span>
           </div>
           <p className="truncate text-[11px] text-muted-foreground">
-            {props.surfaceMode === "storage" ? "Storage Workbench" : "Runtime Workbench"}
+            {props.hasActiveSession
+              ? `${props.currentWorkspaceName} / ${props.currentSessionName}`
+              : props.surfaceMode === "storage"
+              ? "Storage Workbench"
+              : "Runtime Workbench"}
           </p>
         </div>
       </div>
@@ -64,6 +68,22 @@ export function AppHeader(props: HeaderProps) {
             </TabsTrigger>
           </TabsList>
         </Tabs>
+        {/* Compact stream dot — visible on md+, hidden on xl where full pills show */}
+        {props.streamState !== "idle" && (
+          <div className="flex items-center gap-1.5 xl:hidden">
+            {props.streamState === "connecting" || props.streamState === "listening" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-500" />
+            ) : (
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  props.streamState === "open" ? "bg-emerald-500 animate-pulse" :
+                  props.streamState === "error" ? "bg-rose-500" : "bg-muted-foreground/50"
+                }`}
+              />
+            )}
+            <span className="hidden text-[11px] text-muted-foreground md:inline">{props.streamState}</span>
+          </div>
+        )}
         <div className="hidden items-center gap-2 xl:flex">
           <StatusPill icon={Network} label="Health" value={props.healthStatus} tone={probeTone(props.healthStatus)} />
           <StatusPill

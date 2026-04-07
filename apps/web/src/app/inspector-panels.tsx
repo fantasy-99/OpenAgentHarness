@@ -37,8 +37,8 @@ function InspectorPanelHeader(props: { title: string; description: string; actio
   return (
     <div className="flex items-start justify-between gap-3">
       <div className="min-w-0">
-        <p className="text-sm font-semibold text-[color:var(--foreground)]">{props.title}</p>
-        <p className="mt-1 max-w-2xl text-xs leading-5 text-[color:var(--muted-foreground)]">{props.description}</p>
+        <p className="text-sm font-semibold text-foreground">{props.title}</p>
+        <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">{props.description}</p>
       </div>
       {props.action ? <div className="shrink-0">{props.action}</div> : null}
     </div>
@@ -70,7 +70,7 @@ function MessageContentDetail(props: { content: Message["content"]; maxHeightCla
   }
 
   if (props.content.length === 0) {
-    return <p className="text-sm text-[color:var(--muted-foreground)]">Empty message parts.</p>;
+    return <p className="text-sm text-muted-foreground">Empty message parts.</p>;
   }
 
   return (
@@ -111,24 +111,24 @@ function InspectorDisclosure(props: {
   children: ReactNode;
 }) {
   return (
-    <details className="overflow-hidden rounded-xl border border-[color:var(--border)] bg-background">
+    <details className="overflow-hidden rounded-xl border border-border bg-background">
       <summary className="list-none cursor-pointer px-4 py-3 transition hover:bg-muted/30">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-sm font-medium text-[color:var(--foreground)]">{props.title}</p>
-            {props.description ? <p className="mt-1 text-xs leading-6 text-[color:var(--muted-foreground)]">{props.description}</p> : null}
+            <p className="text-sm font-medium text-foreground">{props.title}</p>
+            {props.description ? <p className="mt-1 text-xs leading-6 text-muted-foreground">{props.description}</p> : null}
           </div>
           {props.badge !== undefined ? <Badge>{String(props.badge)}</Badge> : null}
         </div>
       </summary>
-      <div className="border-t border-[color:var(--border)] p-3">{props.children}</div>
+      <div className="border-t border-border p-3">{props.children}</div>
     </details>
   );
 }
 
 function ToolNameChips(props: { names: string[]; emptyLabel: string }) {
   if (props.names.length === 0) {
-    return <p className="text-sm text-[color:var(--muted-foreground)]">{props.emptyLabel}</p>;
+    return <p className="text-sm text-muted-foreground">{props.emptyLabel}</p>;
   }
 
   return (
@@ -142,7 +142,7 @@ function ToolNameChips(props: { names: string[]; emptyLabel: string }) {
 
 function RuntimeToolList(props: { tools: ModelCallTraceRuntimeTool[] }) {
   if (props.tools.length === 0) {
-    return <p className="text-sm text-[color:var(--muted-foreground)]">No runtime tool definitions recorded.</p>;
+    return <p className="text-sm text-muted-foreground">No runtime tool definitions recorded.</p>;
   }
 
   return (
@@ -167,7 +167,7 @@ function RuntimeToolList(props: { tools: ModelCallTraceRuntimeTool[] }) {
 
 function ToolServerList(props: { servers: ModelCallTraceToolServer[] }) {
   if (props.servers.length === 0) {
-    return <p className="text-sm text-[color:var(--muted-foreground)]">No external tool server metadata recorded.</p>;
+    return <p className="text-sm text-muted-foreground">No external tool server metadata recorded.</p>;
   }
 
   return (
@@ -190,7 +190,7 @@ function ToolServerList(props: { servers: ModelCallTraceToolServer[] }) {
 
 function ModelMessageList(props: { traceId: string; messages: ModelCallTraceMessage[] }) {
   if (props.messages.length === 0) {
-    return <p className="text-sm text-[color:var(--muted-foreground)]">No recorded model-facing messages.</p>;
+    return <p className="text-sm text-muted-foreground">No recorded model-facing messages.</p>;
   }
 
   return (
@@ -236,7 +236,7 @@ function ContextWorkbench(props: {
           <EmptyState title="No system prompt" description="Load a run with model calls to inspect the composed system prompt." />
         ) : (
           <div className="ob-subsection rounded-[14px] p-4">
-            <pre className="max-h-[24rem] overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-slate-700">{combinedSystemPrompt}</pre>
+            <pre className="max-h-[24rem] overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-foreground/80">{combinedSystemPrompt}</pre>
           </div>
         )}
       </section>
@@ -257,8 +257,8 @@ function ContextWorkbench(props: {
                   className={cn(
                     "w-full rounded-[16px] border p-3 text-left transition",
                     props.selectedMessage?.id === message.id
-                      ? "border-[rgba(19,35,63,0.12)] bg-white/88"
-                      : "border-[color:var(--border)] bg-white/62 hover:bg-white/78"
+                      ? "border-border bg-muted/60"
+                      : "border-border/60 bg-card/60 hover:bg-muted/40"
                   )}
                   onClick={() => props.onSelectMessage(message.id)}
                 >
@@ -266,9 +266,9 @@ function ContextWorkbench(props: {
                     <Badge>{message.role}</Badge>
                     {message.runId ? <Badge>{message.runId}</Badge> : null}
                     <MessageToolRefChips content={message.content} />
-                    <span className="text-xs text-[color:var(--muted-foreground)]">{formatTimestamp(message.createdAt)}</span>
+                    <span className="text-xs text-muted-foreground">{formatTimestamp(message.createdAt)}</span>
                   </div>
-                  <p className="text-sm leading-6 text-[color:var(--foreground)]">{compactPreviewText(message.content)}</p>
+                  <p className="text-sm leading-6 text-foreground">{compactPreviewText(message.content)}</p>
                 </button>
               ))
             )}
@@ -350,8 +350,8 @@ function CallsWorkbench(props: {
                   className={cn(
                     "w-full rounded-[16px] border p-3 text-left transition",
                     props.selectedTrace?.id === trace.id
-                      ? "border-[rgba(19,35,63,0.12)] bg-white/88"
-                      : "border-[color:var(--border)] bg-white/62 hover:bg-white/78"
+                      ? "border-border bg-muted/60"
+                      : "border-border/60 bg-card/60 hover:bg-muted/40"
                   )}
                   onClick={() => props.onSelectTrace(trace.id)}
                 >
@@ -361,10 +361,10 @@ function CallsWorkbench(props: {
                     <Badge className={statusTone(trace.status)}>{trace.status}</Badge>
                   </div>
                   <div className="grid gap-2 sm:grid-cols-2">
-                    <p className="text-xs text-[color:var(--muted-foreground)]">
+                    <p className="text-xs text-muted-foreground">
                       {trace.output.toolCalls.length} tool calls · {trace.output.toolResults.length} tool results
                     </p>
-                    <p className="text-xs text-[color:var(--muted-foreground)]">{trace.output.finishReason ?? "finish n/a"}</p>
+                    <p className="text-xs text-muted-foreground">{trace.output.finishReason ?? "finish n/a"}</p>
                   </div>
                 </button>
               ))}
@@ -421,8 +421,8 @@ function RuntimeWorkbench(props: {
                     className={cn(
                       "w-full rounded-[16px] border p-3 text-left transition",
                       props.selectedStep?.id === step.id
-                        ? "border-[rgba(19,35,63,0.12)] bg-white/88"
-                        : "border-[color:var(--border)] bg-white/62 hover:bg-white/78"
+                        ? "border-border bg-muted/60"
+                        : "border-border/60 bg-card/60 hover:bg-muted/40"
                     )}
                     onClick={() => props.onSelectStep(step.id)}
                   >
@@ -431,7 +431,7 @@ function RuntimeWorkbench(props: {
                       <Badge>{step.stepType}</Badge>
                       <Badge className={statusTone(step.status)}>{step.status}</Badge>
                     </div>
-                    <p className="text-sm text-[color:var(--foreground)]">{step.name ?? step.stepType}</p>
+                    <p className="text-sm text-foreground">{step.name ?? step.stepType}</p>
                   </button>
                 ))}
               </div>
@@ -476,8 +476,8 @@ function RuntimeWorkbench(props: {
                     className={cn(
                       "w-full rounded-[16px] border p-3 text-left transition",
                       props.selectedEvent?.id === event.id
-                        ? "border-[rgba(19,35,63,0.12)] bg-white/88"
-                        : "border-[color:var(--border)] bg-white/62 hover:bg-white/78"
+                        ? "border-border bg-muted/60"
+                        : "border-border/60 bg-card/60 hover:bg-muted/40"
                     )}
                     onClick={() => props.onSelectEvent(event.id)}
                   >
@@ -485,7 +485,7 @@ function RuntimeWorkbench(props: {
                       <Badge>{event.event}</Badge>
                       {event.runId ? <Badge>{event.runId}</Badge> : null}
                     </div>
-                    <p className="text-xs text-[color:var(--muted-foreground)]">
+                    <p className="text-xs text-muted-foreground">
                       {formatTimestamp(event.createdAt)} · cursor {event.cursor}
                     </p>
                   </button>
@@ -568,8 +568,8 @@ function InspectorOverviewCard(props: {
         <CatalogLine label="events" value={props.eventCount} />
       </div>
 
-      <div className="rounded-[18px] border border-[color:var(--border)] bg-white/62 p-3">
-        <p className="text-sm font-medium text-[color:var(--foreground)]">Run</p>
+      <div className="rounded-[18px] border border-border bg-muted/20 p-3">
+        <p className="text-sm font-medium text-foreground">Run</p>
         <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto_auto]">
           <Input
             value={props.selectedRunId}
@@ -587,7 +587,7 @@ function InspectorOverviewCard(props: {
             Cancel
           </Button>
         </div>
-        <p className="mt-2 text-xs leading-5 text-[color:var(--muted-foreground)]">Load, refresh, or cancel the active run.</p>
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">Load, refresh, or cancel the active run.</p>
       </div>
     </section>
   );
@@ -657,9 +657,9 @@ function RuntimeActivityCard(props: {
                 <div className="mb-2 flex flex-wrap items-center gap-2">
                   <Badge>{event.event}</Badge>
                   {event.runId ? <Badge>{event.runId}</Badge> : null}
-                  <span className="text-xs text-[color:var(--muted-foreground)]">{formatTimestamp(event.createdAt)}</span>
+                  <span className="text-xs text-muted-foreground">{formatTimestamp(event.createdAt)}</span>
                 </div>
-                <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-slate-700">{prettyJson(event.data)}</pre>
+                <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-foreground/80">{prettyJson(event.data)}</pre>
               </div>
             ))}
           </div>
@@ -726,13 +726,13 @@ function LlmSummaryCard(props: {
           {props.resolvedModelRefs.length > 0 ? (
             <div className="space-y-2">
               {props.resolvedModelRefs.map((ref) => (
-                <div key={ref} className="ob-subsection rounded-[14px] px-3 py-2 text-xs leading-6 text-slate-700">
+                <div key={ref} className="ob-subsection rounded-[14px] px-3 py-2 text-xs leading-6 text-foreground/80">
                   {ref}
                 </div>
               ))}
             </div>
           ) : (
-            <p className="text-sm text-[color:var(--muted-foreground)]">No canonical model refs recorded.</p>
+            <p className="text-sm text-muted-foreground">No canonical model refs recorded.</p>
           )}
         </div>
       </InspectorDisclosure>
@@ -744,19 +744,19 @@ function LlmSummaryCard(props: {
       >
         <div className="space-y-4">
           <div>
-            <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-[color:var(--muted-foreground)]">Runtime Tool Names</p>
+            <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Runtime Tool Names</p>
             <ToolNameChips names={props.runtimeToolNames} emptyLabel="No runtime tool names recorded." />
           </div>
           <div>
-            <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-[color:var(--muted-foreground)]">Active Tool Names</p>
+            <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Active Tool Names</p>
             <ToolNameChips names={props.activeToolNames} emptyLabel="No active tool names recorded." />
           </div>
           <div>
-            <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-[color:var(--muted-foreground)]">Runtime Tool Definitions</p>
+            <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Runtime Tool Definitions</p>
             <RuntimeToolList tools={props.runtimeTools} />
           </div>
           <div>
-            <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-[color:var(--muted-foreground)]">External Tool Servers</p>
+            <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">External Tool Servers</p>
             <ToolServerList servers={props.toolServers} />
           </div>
         </div>
@@ -819,7 +819,7 @@ function SessionContextCard(props: {
                   <Badge>{message.role}</Badge>
                   {message.runId ? <Badge>{message.runId}</Badge> : null}
                   <MessageToolRefChips content={message.content} />
-                  <span className="text-xs text-[color:var(--muted-foreground)]">{formatTimestamp(message.createdAt)}</span>
+                  <span className="text-xs text-muted-foreground">{formatTimestamp(message.createdAt)}</span>
                 </div>
                 <MessageContentDetail content={message.content} maxHeightClassName="max-h-48" />
                 {message.metadata ? (
@@ -902,15 +902,15 @@ function ModelCallTraceCard(props: { trace: ModelCallTrace }) {
       ) : null}
 
       {trace.output.text ? (
-        <div className="mt-3 rounded-[18px] border border-[color:var(--border)] bg-white/86 p-4">
-          <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-[color:var(--muted-foreground)]">Assistant Reply</p>
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-slate-700">{trace.output.text}</pre>
+        <div className="mt-3 rounded-[18px] border border-border bg-muted/20 p-4">
+          <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Assistant Reply</p>
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-foreground/80">{trace.output.text}</pre>
         </div>
       ) : null}
 
       {trace.input.activeToolNames.length > 0 ? (
         <div className="mt-3">
-          <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-[color:var(--muted-foreground)]">Active Tools In This Call</p>
+          <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Active Tools In This Call</p>
           <ToolNameChips names={trace.input.activeToolNames} emptyLabel="No active tool names recorded." />
         </div>
       ) : null}
@@ -932,9 +932,9 @@ function ModelCallTraceCard(props: { trace: ModelCallTrace }) {
           >
             <div className="space-y-4">
               <div>
-                <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-[color:var(--muted-foreground)]">Tool Calls</p>
+                <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Tool Calls</p>
                 {trace.output.toolCalls.length === 0 ? (
-                  <p className="text-sm text-[color:var(--muted-foreground)]">No tool calls recorded.</p>
+                  <p className="text-sm text-muted-foreground">No tool calls recorded.</p>
                 ) : (
                   <div className="space-y-2">
                     {trace.output.toolCalls.map((toolCall, index) => (
@@ -950,9 +950,9 @@ function ModelCallTraceCard(props: { trace: ModelCallTrace }) {
                 )}
               </div>
               <div>
-                <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-[color:var(--muted-foreground)]">Tool Results</p>
+                <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Tool Results</p>
                 {trace.output.toolResults.length === 0 ? (
-                  <p className="text-sm text-[color:var(--muted-foreground)]">No tool results recorded.</p>
+                  <p className="text-sm text-muted-foreground">No tool results recorded.</p>
                 ) : (
                   <div className="space-y-2">
                     {trace.output.toolResults.map((toolResult, index) => (
@@ -1039,7 +1039,7 @@ function SessionEventsCard(props: { events: SessionEventContract[] }) {
               <div className="mb-3 flex flex-wrap items-center gap-2">
                 <Badge>{event.event}</Badge>
                 {event.runId ? <Badge>{event.runId}</Badge> : null}
-                <span className="text-xs text-[color:var(--muted-foreground)]">cursor {event.cursor}</span>
+                <span className="text-xs text-muted-foreground">cursor {event.cursor}</span>
               </div>
               <JsonBlock title={formatTimestamp(event.createdAt)} value={event.data} />
             </article>

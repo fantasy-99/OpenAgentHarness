@@ -165,7 +165,7 @@ export function useNavigationActions(params: {
     );
   }
 
-  function clearSessionSelection(sessionToClearId?: string) {
+  function clearSessionSelection(sessionToClearId?: string, options?: { forgetSession?: boolean }) {
     const targetId = sessionToClearId ?? params.navigation.sessionId;
     params.runtime.lastCursorRef.current = undefined;
     params.runtime.streamAbortRef.current?.abort();
@@ -180,7 +180,7 @@ export function useNavigationActions(params: {
     params.runtime.setRunSteps([]);
     params.runtime.setLiveOutput({});
 
-    if (targetId) {
+    if (targetId && options?.forgetSession) {
       params.navigation.setSavedSessions((current) => current.filter((entry) => entry.id !== targetId));
       params.navigation.setRecentSessions((current) => current.filter((entry) => entry !== targetId));
     }
@@ -254,7 +254,16 @@ export function useNavigationActions(params: {
     }
   }
 
-  function removeSavedSession(sessionToRemoveId: string) {
+  async function removeSavedSession(sessionToRemoveId: string) {
+    try {
+      await params.request<void>(`/api/v1/sessions/${sessionToRemoveId}`, { method: "DELETE" });
+    } catch (error) {
+      if (!isNotFoundError(error)) {
+        params.setErrorMessage(toErrorMessage(error));
+        return;
+      }
+    }
+
     params.navigation.setSavedSessions((current) => current.filter((entry) => entry.id !== sessionToRemoveId));
     params.navigation.setRecentSessions((current) => current.filter((entry) => entry !== sessionToRemoveId));
 
@@ -268,6 +277,9 @@ export function useNavigationActions(params: {
       params.runtime.setRunSteps([]);
       params.runtime.setLiveOutput({});
     }
+
+    params.setActivity(`Session ${sessionToRemoveId} 已删除`);
+    params.setErrorMessage("");
   }
 
   async function refreshWorkspaceTemplates(quiet = false) {
@@ -653,7 +665,7 @@ export function useNavigationActions(params: {
       params.navigation.setSession(null);
       params.runtime.setMessages([]);
       if (isNotFoundError(error)) {
-        clearSessionSelection(nextSessionId);
+        clearSessionSelection(nextSessionId, { forgetSession: true });
       }
       if (!quiet) {
         params.setErrorMessage(toErrorMessage(error));

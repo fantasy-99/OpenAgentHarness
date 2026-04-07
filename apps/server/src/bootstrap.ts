@@ -355,6 +355,15 @@ class ScopedSessionRepository implements SessionRepository {
 
     return this.inner.listByWorkspaceId(workspaceId, pageSize, cursor);
   }
+
+  async delete(id: string): Promise<void> {
+    const session = await this.inner.getById(id);
+    if (!session || !this.visibleWorkspaceIds.has(session.workspaceId)) {
+      throw new AppError(404, "session_not_found", `Session ${id} was not found.`);
+    }
+
+    return this.inner.delete(id);
+  }
 }
 
 class ScopedRunRepository implements RunRepository {

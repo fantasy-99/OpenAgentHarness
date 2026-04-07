@@ -131,7 +131,7 @@ export function InspectorWorkspace(props: RuntimeProps) {
                             将中心历史异步同步到当前 workspace 的 <code>.openharness/data/history.db</code>。
                           </p>
                         </div>
-                        <Badge className={props.workspace.historyMirrorEnabled ? "bg-emerald-600 text-white" : ""}>
+                        <Badge className={props.workspace.historyMirrorEnabled ? "bg-emerald-600 text-white dark:bg-emerald-700 dark:text-white" : ""}>
                           {props.workspace.historyMirrorEnabled ? "Enabled" : "Disabled"}
                         </Badge>
                       </div>

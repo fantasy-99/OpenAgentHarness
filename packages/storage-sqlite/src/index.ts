@@ -768,6 +768,10 @@ class SQLitePersistenceCoordinator {
     this.#sessionIndex.set(sessionId, workspaceId);
   }
 
+  forgetSession(sessionId: string): void {
+    this.#sessionIndex.delete(sessionId);
+  }
+
   indexRun(runId: string, workspaceId: string): void {
     this.#runIndex.set(runId, workspaceId);
   }
@@ -848,6 +852,15 @@ class SQLiteSessionRepository implements SessionRepository {
       .all(workspaceId, pageSize, startIndex)
     );
     return rows.map((row) => parseJson<Session>(row.payload));
+  }
+
+  async delete(id: string): Promise<void> {
+    const handle = await this.#coordinator.getSessionHandle(id);
+    runInTransaction(handle.db, () => {
+      handle.db.prepare("delete from messages where session_id = ?").run(id);
+      handle.db.prepare("delete from sessions where id = ?").run(id);
+    });
+    this.#coordinator.forgetSession(id);
   }
 }
 

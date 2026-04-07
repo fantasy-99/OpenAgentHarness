@@ -692,7 +692,7 @@ export function useAppController() {
       } catch (error) {
         if (!controller.signal.aborted) {
           if (isNotFoundError(error)) {
-            navigationActions.clearSessionSelection(sessionId);
+            navigationActions.clearSessionSelection(sessionId, { forgetSession: true });
             setActivity(`Session ${sessionId} 不存在，已清除本地选择`);
             setErrorMessage("");
             return;
@@ -855,6 +855,7 @@ export function useAppController() {
       workspaceTemplates,
       createWorkspace: () => void navigationActions.createWorkspace(),
       refreshWorkspaceTemplates: () => void navigationActions.refreshWorkspaceTemplates(),
+      refreshWorkspaceIndex: () => void navigationActions.refreshWorkspaceIndex(),
       createSession: () => void navigationActions.createSession(),
       sessionId,
       refreshSessionById: (targetId: string) => void navigationActions.refreshSession(targetId),
@@ -945,7 +946,9 @@ export function useAppController() {
       setModelDraft,
       generateOnce: () => void generateOnce(),
       generateBusy,
-      generateOutput
+      generateOutput,
+      streamState,
+      isRunning: !isTerminalRunStatus(run?.status) && run?.status != null
     }
   };
 }

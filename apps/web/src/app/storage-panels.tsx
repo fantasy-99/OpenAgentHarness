@@ -185,12 +185,12 @@ function StorageBackendSummaryCard(props: {
   return (
     <div className="ob-subsection p-4">
       <div className="flex flex-wrap items-center gap-2">
-        <p className="text-sm font-semibold text-[color:var(--foreground)]">{props.title}</p>
+        <p className="text-sm font-semibold text-foreground">{props.title}</p>
         <Badge className={statusTone(props.status === "connected" ? "completed" : props.status === "degraded" ? "failed" : "queued")}>
           {props.status}
         </Badge>
       </div>
-      <p className="mt-2 text-sm leading-6 text-[color:var(--foreground)]">{props.description}</p>
+      <p className="mt-2 text-sm leading-6 text-foreground">{props.description}</p>
       <div className="mt-3 flex flex-wrap gap-2">
         {props.details.map((detail) => (
           <Badge key={detail}>{detail}</Badge>
@@ -246,17 +246,17 @@ function StoragePostgresPanel(props: {
                 className={cn(
                   "rounded-[16px] border p-3 text-left transition",
                   props.selectedTable === table.name
-                    ? "border-[rgba(19,35,63,0.12)] bg-white/88"
-                    : "border-[color:var(--border)] bg-white/62 hover:bg-white/78"
+                    ? "border-border bg-muted/60"
+                    : "border-border/60 bg-card/60 hover:bg-muted/40"
                 )}
                 onClick={() => props.onSelectTable(table.name)}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <p className="text-sm font-medium text-[color:var(--foreground)]">{table.name}</p>
+                  <p className="text-sm font-medium text-foreground">{table.name}</p>
                   <Badge>{table.rowCount}</Badge>
                 </div>
-                <p className="mt-2 text-xs leading-6 text-[color:var(--muted-foreground)]">{table.description}</p>
-                <p className="mt-1 text-[11px] uppercase tracking-[0.14em] text-[color:var(--muted-foreground)]">{table.orderBy}</p>
+                <p className="mt-2 text-xs leading-6 text-muted-foreground">{table.description}</p>
+                <p className="mt-1 text-[11px] uppercase tracking-[0.14em] text-muted-foreground">{table.orderBy}</p>
               </button>
             ))}
           </div>
@@ -276,11 +276,11 @@ function StoragePostgresPanel(props: {
 
           {props.tablePage ? (
             <div className="grid gap-3 xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
-              <div className="subtle-panel space-y-3 rounded-[20px] border border-[color:var(--border)] p-3">
+              <div className="subtle-panel space-y-3 rounded-[20px] border border-border p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <p className="text-sm font-semibold text-[color:var(--foreground)]">{props.tablePage.table}</p>
-                    <p className="text-xs text-[color:var(--muted-foreground)]">
+                    <p className="text-sm font-semibold text-foreground">{props.tablePage.table}</p>
+                    <p className="text-xs text-muted-foreground">
                       {props.tablePage.rowCount} rows · ordered by {props.tablePage.orderBy}
                     </p>
                   </div>
@@ -294,7 +294,7 @@ function StoragePostgresPanel(props: {
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-xs text-[color:var(--muted-foreground)]">
+                  <p className="text-xs text-muted-foreground">
                     offset {props.tablePage.offset} · limit {props.tablePage.limit}
                   </p>
                   <div className="flex gap-2">
@@ -319,10 +319,10 @@ function StoragePostgresPanel(props: {
                   onSelectRow={props.onSelectRow}
                 />
               </div>
-              <div className="subtle-panel space-y-3 rounded-[20px] border border-[color:var(--border)] p-3">
+              <div className="subtle-panel space-y-3 rounded-[20px] border border-border p-3">
                 <div className="flex items-center justify-between gap-2">
                   <div>
-                    <p className="text-sm font-semibold text-[color:var(--foreground)]">
+                    <p className="text-sm font-semibold text-foreground">
                       {props.tablePage.table === "messages"
                         ? "Message Detail"
                         : props.tablePage.table === "run_steps"
@@ -333,7 +333,7 @@ function StoragePostgresPanel(props: {
                               ? "Session Event Detail"
                           : "Row Detail"}
                     </p>
-                    <p className="text-xs text-[color:var(--muted-foreground)]">
+                    <p className="text-xs text-muted-foreground">
                       {props.tablePage.table === "messages"
                         ? "messages 表会按 AI SDK 风格拆开 content，直接查看 role、parts 和 tool trace。"
                         : props.tablePage.table === "run_steps"
@@ -418,8 +418,8 @@ function StorageRedisPanel(props: {
 
           <div className="grid gap-3 xl:grid-cols-[minmax(300px,0.75fr)_minmax(0,1.25fr)]">
             <div className="space-y-3">
-              <div className="subtle-panel rounded-[18px] border border-[color:var(--border)] p-3">
-                <p className="mb-3 text-xs font-medium text-[color:var(--muted-foreground)]">Queues And Locks</p>
+              <div className="subtle-panel rounded-[18px] border border-border p-3">
+                <p className="mb-3 text-xs font-medium text-muted-foreground">Queues And Locks</p>
                 <div className="space-y-4">
                   <StorageKeySummaryList
                     title="Session Queues"
@@ -457,7 +457,7 @@ function StorageRedisPanel(props: {
                   />
                 </div>
               </div>
-              <div className="subtle-panel rounded-[18px] border border-[color:var(--border)] p-3">
+              <div className="subtle-panel rounded-[18px] border border-border p-3">
                 <div className="flex gap-2">
                   <Input value={props.redisKeyPattern} onChange={(event) => props.onRedisKeyPatternChange(event.target.value)} placeholder="oah:*" />
                   <Button variant="secondary" onClick={props.onRefreshKeys} disabled={props.busy}>
@@ -503,11 +503,11 @@ function StorageRedisPanel(props: {
               </div>
             </div>
 
-            <div className="subtle-panel rounded-[18px] border border-[color:var(--border)] p-3">
+            <div className="subtle-panel rounded-[18px] border border-border p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <p className="text-sm font-semibold text-[color:var(--foreground)]">Selected Redis Key</p>
-                  <p className="text-xs text-[color:var(--muted-foreground)]">{props.redisKeyDetail?.key ?? "Pick a key from the list or snapshot above."}</p>
+                  <p className="text-sm font-semibold text-foreground">Selected Redis Key</p>
+                  <p className="text-xs text-muted-foreground">{props.redisKeyDetail?.key ?? "Pick a key from the list or snapshot above."}</p>
                 </div>
                 <div className="flex gap-2">
                   <Button variant="secondary" size="sm" onClick={props.onRefreshKey} disabled={props.busy || !props.selectedRedisKey}>
@@ -558,16 +558,16 @@ function StorageKeySummaryList(props: {
 }) {
   return (
     <div>
-      <p className="mb-2 text-xs font-medium text-[color:var(--muted-foreground)]">{props.title}</p>
+      <p className="mb-2 text-xs font-medium text-muted-foreground">{props.title}</p>
       {props.items.length === 0 ? (
-        <p className="text-sm text-[color:var(--muted-foreground)]">{props.emptyLabel}</p>
+        <p className="text-sm text-muted-foreground">{props.emptyLabel}</p>
       ) : (
         <div className="space-y-2">
           {props.items.map((item) => (
-            <div key={item.keyName} className="rounded-[14px] border border-[color:var(--border)] bg-white/78 px-3 py-2">
+            <div key={item.keyName} className="rounded-[14px] border border-border bg-muted/20 px-3 py-2">
               <div className="flex items-center justify-between gap-2">
                 <button className="min-w-0 flex-1 text-left" onClick={() => props.onSelect(item.keyName)}>
-                  <span className="truncate text-sm font-medium text-[color:var(--foreground)]">{item.label}</span>
+                  <span className="truncate text-sm font-medium text-foreground">{item.label}</span>
                 </button>
                 <div className="flex items-center gap-2">
                   <Badge>{item.value}</Badge>
@@ -579,7 +579,7 @@ function StorageKeySummaryList(props: {
                 </div>
               </div>
               <button className="mt-1 w-full text-left" onClick={() => props.onSelect(item.keyName)}>
-                <p className="break-all text-xs leading-6 text-[color:var(--muted-foreground)]">{item.keyName}</p>
+                <p className="break-all text-xs leading-6 text-muted-foreground">{item.keyName}</p>
               </button>
             </div>
           ))}
@@ -691,13 +691,13 @@ function StorageDataGrid(props: {
   }
 
   return (
-    <div className="data-grid-shell overflow-hidden rounded-[18px] border border-[color:var(--border)] bg-white/92 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]">
+    <div className="data-grid-shell overflow-hidden rounded-[18px] border border-border bg-background">
       <div className="overflow-auto">
-        <table className="min-w-full border-collapse text-left text-xs text-slate-700">
-          <thead className="bg-[rgba(245,248,252,0.96)]">
+        <table className="min-w-full border-collapse text-left text-xs text-foreground/80">
+          <thead className="bg-muted/50">
             <tr>
               {props.columns.map((column) => (
-                <th key={column} className="border-b border-[color:var(--border)] px-3 py-2 font-medium uppercase tracking-[0.14em] text-[color:var(--muted-foreground)]">
+                <th key={column} className="border-b border-border px-3 py-2 font-medium uppercase tracking-[0.14em] text-muted-foreground">
                   {column}
                 </th>
               ))}
@@ -708,15 +708,15 @@ function StorageDataGrid(props: {
               <tr
                 key={`row:${index}`}
                 className={cn(
-                  "cursor-pointer align-top odd:bg-white even:bg-[rgba(247,250,253,0.78)] hover:bg-[rgba(241,246,252,0.96)]",
-                  props.selectedRow === row ? "bg-[rgba(232,239,249,0.96)] even:bg-[rgba(232,239,249,0.96)]" : ""
+                  "cursor-pointer align-top odd:bg-background even:bg-muted/20 hover:bg-muted/40",
+                  props.selectedRow === row ? "bg-primary/5 even:bg-primary/5" : ""
                 )}
                 onClick={() => props.onSelectRow(row)}
               >
                 {props.columns.map((column) => (
-                  <td key={`${index}:${column}`} className="max-w-[280px] border-b border-[color:var(--border)] px-3 py-2">
+                  <td key={`${index}:${column}`} className="max-w-[280px] border-b border-border px-3 py-2">
                     <div
-                      className="line-clamp-4 break-words text-xs leading-6 text-slate-700"
+                      className="line-clamp-4 break-words text-xs leading-6 text-foreground/80"
                       title={typeof row[column] === "string" ? row[column] : prettyJson(row[column])}
                     >
                       {formatStorageCellPreview(row[column], {
@@ -747,7 +747,7 @@ function StorageMessageRowDetail(props: { row: Record<string, unknown> }) {
 
   return (
     <div className="space-y-3">
-      <div className="rounded-[18px] border border-[color:var(--border)] bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(244,248,252,0.94))] p-4">
+      <div className="rounded-[18px] border border-border bg-card p-4">
         <div className="flex flex-wrap items-center gap-2">
           <span className={cn("rounded-full px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em]", modelMessageTone(message.role))}>
             {message.role}
@@ -764,19 +764,19 @@ function StorageMessageRowDetail(props: { row: Record<string, unknown> }) {
         </div>
       </div>
 
-      <div className="rounded-[18px] border border-[color:var(--border)] bg-white/86 p-4">
-        <p className="text-xs font-medium uppercase tracking-[0.16em] text-[color:var(--muted-foreground)]">Message Content</p>
+      <div className="rounded-[18px] border border-border bg-muted/20 p-4">
+        <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Message Content</p>
         <div className="mt-3">
           <MessageContentDetail content={message.content} maxHeightClassName="max-h-[26rem]" />
         </div>
       </div>
 
       {refs.length > 0 ? (
-        <div className="rounded-[18px] border border-[color:var(--border)] bg-white/86 p-4">
-          <p className="text-xs font-medium uppercase tracking-[0.16em] text-[color:var(--muted-foreground)]">Tool Trace</p>
+        <div className="rounded-[18px] border border-border bg-muted/20 p-4">
+          <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Tool Trace</p>
           <div className="mt-3 space-y-2">
             {refs.map((ref, index) => (
-              <div key={`${ref.type}:${ref.toolCallId}:${index}`} className="subtle-panel rounded-[16px] border border-[color:var(--border)] px-3 py-2">
+              <div key={`${ref.type}:${ref.toolCallId}:${index}`} className="subtle-panel rounded-[16px] border border-border px-3 py-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge>{ref.type}</Badge>
                   <Badge>{ref.toolName}</Badge>
@@ -805,7 +805,7 @@ function StorageRunStepRowDetail(props: { row: Record<string, unknown> }) {
 
   return (
     <div className="space-y-3">
-      <div className="rounded-[18px] border border-[color:var(--border)] bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(244,248,252,0.94))] p-4">
+      <div className="rounded-[18px] border border-border bg-card p-4">
         <div className="flex flex-wrap items-center gap-2">
           <Badge>{`step ${step.seq}`}</Badge>
           <Badge>{step.stepType}</Badge>
@@ -823,7 +823,7 @@ function StorageRunStepRowDetail(props: { row: Record<string, unknown> }) {
 
       {modelTrace ? (
         <div className="space-y-3">
-          <div className="rounded-[18px] border border-[color:var(--border)] bg-white/86 p-4">
+          <div className="rounded-[18px] border border-border bg-muted/20 p-4">
             <InspectorPanelHeader
               title="Model Call Trace"
               description="Storage 里的 run_step 已直接还原成 model call 视图，方便在数据库维度核对一次模型请求与返回。"
@@ -833,8 +833,8 @@ function StorageRunStepRowDetail(props: { row: Record<string, unknown> }) {
         </div>
       ) : (
         <>
-          <div className="rounded-[18px] border border-[color:var(--border)] bg-white/86 p-4">
-            <p className="text-xs font-medium uppercase tracking-[0.16em] text-[color:var(--muted-foreground)]">Structured Step Payload</p>
+          <div className="rounded-[18px] border border-border bg-muted/20 p-4">
+            <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Structured Step Payload</p>
             <div className="mt-3 grid gap-3 lg:grid-cols-2">
               <JsonBlock title="Input" value={step.input ?? {}} />
               <JsonBlock title="Output" value={step.output ?? {}} />
@@ -857,7 +857,7 @@ function StorageToolCallRowDetail(props: { row: Record<string, unknown> }) {
 
   return (
     <div className="space-y-3">
-      <div className="rounded-[18px] border border-[color:var(--border)] bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(244,248,252,0.94))] p-4">
+      <div className="rounded-[18px] border border-border bg-card p-4">
         <div className="flex flex-wrap items-center gap-2">
           <Badge>{record.toolName}</Badge>
           <Badge>{record.sourceType}</Badge>
@@ -873,11 +873,11 @@ function StorageToolCallRowDetail(props: { row: Record<string, unknown> }) {
         </div>
       </div>
 
-      <div className="rounded-[18px] border border-[color:var(--border)] bg-white/86 p-4">
-        <p className="text-xs font-medium uppercase tracking-[0.16em] text-[color:var(--muted-foreground)]">Tool Audit Payload</p>
+      <div className="rounded-[18px] border border-border bg-muted/20 p-4">
+        <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Tool Audit Payload</p>
         <div className="mt-3 grid gap-3 lg:grid-cols-2">
           <div className="panel-card overflow-hidden rounded-[22px] border">
-            <div className="border-b border-[color:var(--border)] px-3 py-2 text-xs uppercase tracking-[0.16em] text-[color:var(--muted-foreground)]">
+            <div className="border-b border-border px-3 py-2 text-xs uppercase tracking-[0.16em] text-muted-foreground">
               Request
             </div>
             <div className="p-3">
@@ -885,7 +885,7 @@ function StorageToolCallRowDetail(props: { row: Record<string, unknown> }) {
             </div>
           </div>
           <div className="panel-card overflow-hidden rounded-[22px] border">
-            <div className="border-b border-[color:var(--border)] px-3 py-2 text-xs uppercase tracking-[0.16em] text-[color:var(--muted-foreground)]">
+            <div className="border-b border-border px-3 py-2 text-xs uppercase tracking-[0.16em] text-muted-foreground">
               Response
             </div>
             <div className="p-3">
@@ -911,7 +911,7 @@ function StorageSessionEventRowDetail(props: { row: Record<string, unknown> }) {
 
   return (
     <div className="space-y-3">
-      <div className="rounded-[18px] border border-[color:var(--border)] bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(244,248,252,0.94))] p-4">
+      <div className="rounded-[18px] border border-border bg-card p-4">
         <div className="flex flex-wrap items-center gap-2">
           <Badge>{event.event}</Badge>
           {event.runId ? <Badge>{event.runId}</Badge> : null}
@@ -928,8 +928,8 @@ function StorageSessionEventRowDetail(props: { row: Record<string, unknown> }) {
       </div>
 
       {eventContent !== null ? (
-        <div className="rounded-[18px] border border-[color:var(--border)] bg-white/86 p-4">
-          <p className="text-xs font-medium uppercase tracking-[0.16em] text-[color:var(--muted-foreground)]">Message Payload</p>
+        <div className="rounded-[18px] border border-border bg-muted/20 p-4">
+          <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Message Payload</p>
           <div className="mt-3">
             <MessageContentDetail content={eventContent} maxHeightClassName="max-h-[24rem]" />
           </div>
@@ -955,22 +955,22 @@ function StorageRedisKeyGrid(props: {
   }
 
   return (
-    <div className="data-grid-shell overflow-hidden rounded-[18px] border border-[color:var(--border)] bg-white/92 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)]">
+    <div className="data-grid-shell overflow-hidden rounded-[18px] border border-border bg-background">
       <div className="overflow-auto">
-        <table className="min-w-full border-collapse text-left text-xs text-slate-700">
-          <thead className="bg-[rgba(245,248,252,0.96)]">
+        <table className="min-w-full border-collapse text-left text-xs text-foreground/80">
+          <thead className="bg-muted/50">
             <tr>
-              <th className="w-10 border-b border-[color:var(--border)] px-3 py-2">
+              <th className="w-10 border-b border-border px-3 py-2">
                 <input
                   type="checkbox"
                   checked={props.items.length > 0 && props.items.every((item) => props.selectedKeys.includes(item.key))}
                   onChange={() => props.onToggleSelectAll(props.items.map((item) => item.key))}
                 />
               </th>
-              <th className="border-b border-[color:var(--border)] px-3 py-2 font-medium uppercase tracking-[0.14em] text-[color:var(--muted-foreground)]">key</th>
-              <th className="border-b border-[color:var(--border)] px-3 py-2 font-medium uppercase tracking-[0.14em] text-[color:var(--muted-foreground)]">type</th>
-              <th className="border-b border-[color:var(--border)] px-3 py-2 font-medium uppercase tracking-[0.14em] text-[color:var(--muted-foreground)]">size</th>
-              <th className="border-b border-[color:var(--border)] px-3 py-2 font-medium uppercase tracking-[0.14em] text-[color:var(--muted-foreground)]">ttl</th>
+              <th className="border-b border-border px-3 py-2 font-medium uppercase tracking-[0.14em] text-muted-foreground">key</th>
+              <th className="border-b border-border px-3 py-2 font-medium uppercase tracking-[0.14em] text-muted-foreground">type</th>
+              <th className="border-b border-border px-3 py-2 font-medium uppercase tracking-[0.14em] text-muted-foreground">size</th>
+              <th className="border-b border-border px-3 py-2 font-medium uppercase tracking-[0.14em] text-muted-foreground">ttl</th>
             </tr>
           </thead>
           <tbody>
@@ -978,20 +978,20 @@ function StorageRedisKeyGrid(props: {
               <tr
                 key={item.key}
                 className={cn(
-                  "cursor-pointer align-top transition odd:bg-white even:bg-[rgba(247,250,253,0.78)] hover:bg-[rgba(241,246,252,0.96)]",
-                  props.selectedKey === item.key ? "bg-[rgba(232,239,249,0.96)] even:bg-[rgba(232,239,249,0.96)]" : ""
+                  "cursor-pointer align-top transition odd:bg-background even:bg-muted/20 hover:bg-muted/40",
+                  props.selectedKey === item.key ? "bg-primary/5 even:bg-primary/5" : ""
                 )}
                 onClick={() => props.onSelect(item.key)}
               >
-                <td className="border-b border-[color:var(--border)] px-3 py-2" onClick={(event) => event.stopPropagation()}>
+                <td className="border-b border-border px-3 py-2" onClick={(event) => event.stopPropagation()}>
                   <input type="checkbox" checked={props.selectedKeys.includes(item.key)} onChange={() => props.onToggleSelected(item.key)} />
                 </td>
-                <td className="max-w-[520px] border-b border-[color:var(--border)] px-3 py-2">
-                  <div className="break-all text-xs leading-6 text-slate-700">{item.key}</div>
+                <td className="max-w-[520px] border-b border-border px-3 py-2">
+                  <div className="break-all text-xs leading-6 text-foreground/80">{item.key}</div>
                 </td>
-                <td className="border-b border-[color:var(--border)] px-3 py-2">{item.type}</td>
-                <td className="border-b border-[color:var(--border)] px-3 py-2">{item.size ?? "n/a"}</td>
-                <td className="border-b border-[color:var(--border)] px-3 py-2">{item.ttlMs !== undefined ? `${item.ttlMs}ms` : "persistent"}</td>
+                <td className="border-b border-border px-3 py-2">{item.type}</td>
+                <td className="border-b border-border px-3 py-2">{item.size ?? "n/a"}</td>
+                <td className="border-b border-border px-3 py-2">{item.ttlMs !== undefined ? `${item.ttlMs}ms` : "persistent"}</td>
               </tr>
             ))}
           </tbody>

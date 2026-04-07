@@ -1,6 +1,5 @@
 import { Bot, ChevronDown, ChevronRight, Folder, MoreHorizontal, Trash2 } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -11,10 +10,21 @@ import {
 
 import { formatTimestamp, type SavedSessionRecord, type SavedWorkspaceRecord } from "../support";
 
-function itemClass(active: boolean) {
+function workspaceItemClass(active: boolean) {
   return active
-    ? "bg-foreground/[0.045] border border-foreground/10 shadow-[0_1px_0_rgba(255,255,255,0.72)]"
-    : "border border-transparent hover:bg-background/60";
+    ? "text-foreground"
+    : "text-foreground/82 hover:bg-muted/18 hover:text-foreground/94";
+}
+
+function sessionItemClass(active: boolean) {
+  return active
+    ? "bg-foreground/[0.045] border border-foreground/10 shadow-sm"
+    : "border border-transparent hover:bg-muted/30";
+}
+
+function hasTextSelection() {
+  const selection = window.getSelection();
+  return Boolean(selection && selection.type === "Range" && selection.toString().trim());
 }
 
 export function WorkspaceNavItem(props: {
@@ -28,29 +38,50 @@ export function WorkspaceNavItem(props: {
   onRemove: () => void;
 }) {
   const ExpandIcon = props.expanded ? ChevronDown : ChevronRight;
-  const subtitle = [props.entry.template, `${props.sessionCount} sessions`, props.entry.lastOpenedAt ? formatTimestamp(props.entry.lastOpenedAt) : undefined]
+  const subtitle = [props.entry.template, props.entry.lastOpenedAt ? formatTimestamp(props.entry.lastOpenedAt) : undefined]
     .filter(Boolean)
     .join(" · ");
 
   return (
-    <div className={`group flex items-center gap-2 rounded-md px-2 py-1.5 transition-colors ${itemClass(props.active)}`}>
-      <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0 text-muted-foreground" onClick={props.onToggleExpanded}>
+    <div
+      className={`group relative flex items-center gap-2 rounded-lg px-2 py-2.5 transition-colors cursor-pointer ${workspaceItemClass(props.active)}`}
+      onClick={() => {
+        if (hasTextSelection()) return;
+        props.onSelect();
+      }}
+    >
+      {props.active ? <span className="absolute left-0 top-2 bottom-2 w-px rounded-full bg-foreground/18" aria-hidden="true" /> : null}
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-6 w-6 shrink-0 rounded-md text-muted-foreground/78 hover:bg-background/55 hover:text-foreground"
+        onClick={(e) => { e.stopPropagation(); props.onToggleExpanded(); }}
+      >
         <ExpandIcon className="h-3.5 w-3.5" />
       </Button>
-      <button className="flex min-w-0 flex-1 items-center gap-2.5 text-left" onClick={props.onSelect}>
-        <div className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center ${props.active ? "text-foreground" : "text-muted-foreground"}`}>
-          <Folder className="h-3.5 w-3.5" />
+      <div className="flex min-w-0 flex-1 items-center gap-2.5">
+        <div className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center ${props.active ? "text-foreground/82" : "text-muted-foreground/78"}`}>
+          <Folder className="h-[13px] w-[13px]" />
         </div>
-        <div className="min-w-0">
+        <div className="min-w-0 select-text">
           <p className="truncate text-sm font-medium text-foreground">{props.entry.name}</p>
-          <p className="truncate text-xs text-muted-foreground">{subtitle}</p>
+          <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+            <span className="shrink-0 tabular-nums">{props.sessionCount}</span>
+            <span className="shrink-0 opacity-45">sessions</span>
+            {subtitle ? <span className="shrink-0 opacity-35">·</span> : null}
+            {subtitle ? <span className="truncate">{subtitle}</span> : null}
+          </div>
         </div>
-      </button>
-      {props.sessionCount > 0 ? <Badge variant="secondary" className="rounded-sm px-1.5 py-0 text-[10px]">{props.sessionCount}</Badge> : null}
+      </div>
       {props.canRemove ? (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground/60 opacity-70 transition hover:opacity-100 hover:text-foreground">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 shrink-0 rounded-md text-muted-foreground/56 opacity-0 group-hover:opacity-100 transition hover:bg-background/55 hover:text-foreground"
+              onClick={(e) => e.stopPropagation()}
+            >
               <MoreHorizontal className="h-3.5 w-3.5" />
             </Button>
           </DropdownMenuTrigger>
@@ -75,19 +106,30 @@ export function SessionNavItem(props: {
   const subtitle = [props.entry.agentName, formatTimestamp(props.entry.lastOpenedAt || props.entry.createdAt)].filter(Boolean).join(" · ");
 
   return (
-    <div className={`group flex items-center gap-2 rounded-md px-2 py-1.5 transition-colors ${itemClass(props.active)}`}>
-      <button className="flex min-w-0 flex-1 items-center gap-2.5 text-left" onClick={props.onSelect}>
+    <div
+      className={`group flex items-center gap-2 rounded-md px-2 py-2.5 transition-colors cursor-pointer ${sessionItemClass(props.active)}`}
+      onClick={() => {
+        if (hasTextSelection()) return;
+        props.onSelect();
+      }}
+    >
+      <div className="flex min-w-0 flex-1 items-center gap-2.5 text-left">
         <div className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center ${props.active ? "text-foreground" : "text-muted-foreground"}`}>
           <Bot className="h-3.5 w-3.5" />
         </div>
-        <div className="min-w-0">
+        <div className="min-w-0 select-text">
           <p className="truncate text-sm font-medium text-foreground">{props.entry.title || "Untitled session"}</p>
           <p className="truncate text-xs text-muted-foreground">{subtitle}</p>
         </div>
-      </button>
+      </div>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground/60 opacity-70 transition hover:opacity-100 hover:text-foreground">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 shrink-0 text-muted-foreground/60 opacity-0 group-hover:opacity-100 transition hover:text-foreground"
+            onClick={(e) => e.stopPropagation()}
+          >
             <MoreHorizontal className="h-3.5 w-3.5" />
           </Button>
         </DropdownMenuTrigger>
