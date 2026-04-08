@@ -17,6 +17,7 @@ import {
   isNotFoundError,
   pathLeaf,
   toErrorMessage,
+  type LiveAssistantMessageRecord,
   type SavedSessionRecord,
   type SavedWorkspaceRecord,
   type WorkspaceDraft
@@ -62,7 +63,7 @@ export function useNavigationActions(params: {
     setSelectedRunId: Dispatch<SetStateAction<string>>;
     setRun: Dispatch<SetStateAction<Run | null>>;
     setRunSteps: Dispatch<SetStateAction<RunStep[]>>;
-    setLiveOutput: Dispatch<SetStateAction<Record<string, string>>>;
+    setLiveOutput: Dispatch<SetStateAction<Record<string, LiveAssistantMessageRecord>>>;
     setStreamState: Dispatch<SetStateAction<"idle" | "connecting" | "listening" | "open" | "error">>;
     streamAbortRef: MutableRefObject<AbortController | null>;
     lastCursorRef: MutableRefObject<string | undefined>;

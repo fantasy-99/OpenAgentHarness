@@ -87,6 +87,7 @@ plugins:
             运行时设计: Runtime Design
             生命周期: Lifecycle
             上下文引擎: Context Engine
+            消息投影: Message Projections
             模型网关: Model Gateway
             执行后端: Execution Backend
             Projection 与 Executors: Projection and Executors
@@ -154,6 +155,7 @@ nav:
       - 运行时设计: runtime-design.md
       - 生命周期: runtime/lifecycle.md
       - 上下文引擎: runtime/context-engine.md
+      - 消息投影: runtime/message-projections.md
       - 模型网关: runtime/model-gateway.md
       - 执行后端: runtime/execution-backend.md
       - Hook Runtime: runtime/hook-runtime.md

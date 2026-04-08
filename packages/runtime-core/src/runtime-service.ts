@@ -11,7 +11,12 @@ import type {
 import { AppError } from "./errors.js";
 import { HookApplicationService } from "./runtime/hook-application.js";
 import { HookService } from "./runtime/hooks.js";
+import { AgentCoordinationService } from "./runtime/agent-coordination.js";
 import { ActionRunService } from "./runtime/action-runs.js";
+import {
+  ModelInputService,
+  type ModelExecutionInput
+} from "./runtime/model-input.js";
 import { ModelStreamCoordinator } from "./runtime/model-stream.js";
 import {
   applyModelRequestPatch,
@@ -25,6 +30,7 @@ import {
   summarizeMessageRoles,
   type ToolErrorContentPart
 } from "./runtime/model-call-serialization.js";
+import { RunFinalizationService } from "./runtime/run-finalization.js";
 import { RunStateService } from "./runtime/run-state.js";
 import {
   extractMessageDisplayText,
@@ -36,6 +42,7 @@ import { ToolAuditService } from "./runtime/tool-audit.js";
 import { ToolExecutionService } from "./runtime/tool-execution.js";
 import { ToolMessageService } from "./runtime/tool-messages.js";
 import { RunStepService } from "./runtime/run-steps.js";
+import { buildSessionRuntimeMessages } from "./runtime/runtime-messages.js";
 import {
   type SortOrder,
   type WorkspaceDeleteResult,
@@ -46,31 +53,20 @@ import {
   type WorkspaceFileDownloadResult,
   WorkspaceFileService
 } from "./workspace-files.js";
-import { buildAvailableAgentSwitchesMessage, buildAvailableSubagentsMessage } from "./agent-control.js";
 import { NATIVE_TOOL_NAMES } from "./native-tools.js";
-import { buildAvailableActionsMessage } from "./action-dispatch.js";
-import { buildAvailableSkillsMessage } from "./skill-activation.js";
-import { formatToolOutput } from "./tool-output.js";
 import {
-  assistantContentFromModelOutput,
-  contentToPromptMessage,
   textContent
 } from "./runtime-message-content.js";
 import {
   activeToolNamesForAgent as resolveActiveToolNamesForAgent,
-  buildEnvironmentMessage as composeEnvironmentMessage,
   buildRuntimeTools as createWorkspaceRuntimeTools,
-  canDelegateFromAgent as canAgentDelegate,
   runtimeToolNamesForCatalog as listRuntimeToolNamesForCatalog,
   toolRetryPolicy as resolveToolRetryPolicy,
   toolSourceType as resolveToolSourceType,
-  visibleEnabledToolServers as listVisibleEnabledToolServers,
-  visibleLlmActions as listVisibleLlmActions,
-  visibleLlmSkills as listVisibleLlmSkills
+  visibleEnabledToolServers as listVisibleEnabledToolServers
 } from "./runtime-tooling.js";
 import {
   type ActionRunAcceptedResult,
-  type ActionRetryPolicy,
   type CancelRunResult,
   type CreateSessionMessageParams,
   type CreateSessionParams,
@@ -97,52 +93,10 @@ import {
 } from "./types.js";
 import { createId, nowIso, parseCursor } from "./utils.js";
 
-interface ResolvedRunModel {
-  model: string;
-  canonicalModelRef: string;
-  provider?: string | undefined;
-  modelDefinition?: ModelDefinition | undefined;
-}
-
-interface ModelExecutionInput {
-  model: string;
-  canonicalModelRef: string;
-  provider?: string | undefined;
-  modelDefinition?: ModelDefinition | undefined;
-  temperature?: number | undefined;
-  topP?: number | undefined;
-  maxTokens?: number | undefined;
-  messages: ChatMessage[];
-}
-
 interface RunExecutionContext {
   currentAgentName: string;
   injectSystemReminder: boolean;
   delegatedRunIds: string[];
-}
-
-interface DelegatedRunRecord {
-  childRunId: string;
-  childSessionId: string;
-  targetAgentName: string;
-  parentAgentName: string;
-}
-
-interface AwaitedRunSummary {
-  run: Run;
-  outputContent?: string | undefined;
-}
-
-function escapeXml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("\"", "&quot;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
-
-function isActionRetryPolicy(value: unknown): value is ActionRetryPolicy {
-  return value === "manual" || value === "safe";
 }
 
 function timeoutMsFromSeconds(value: unknown): number | undefined {
@@ -160,18 +114,6 @@ function isAbortError(error: unknown): boolean {
       error.message === "aborted" ||
       error.message === "This operation was aborted")
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function asJsonRecord(value: unknown): Record<string, unknown> | undefined {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-
-  return undefined;
 }
 
 async function withTimeout<T>(
@@ -221,6 +163,7 @@ export class RuntimeService {
   readonly #workspaceRepository: RuntimeServiceOptions["workspaceRepository"];
   readonly #sessionRepository: RuntimeServiceOptions["sessionRepository"];
   readonly #messageRepository: RuntimeServiceOptions["messageRepository"];
+  readonly #runtimeMessageRepository: RuntimeServiceOptions["runtimeMessageRepository"];
   readonly #runRepository: RuntimeServiceOptions["runRepository"];
   readonly #runStepRepository: RuntimeServiceOptions["runStepRepository"];
   readonly #sessionEventStore: RuntimeServiceOptions["sessionEventStore"];
@@ -234,11 +177,15 @@ export class RuntimeService {
   readonly #runState: RunStateService;
   readonly #hooks: HookService;
   readonly #hookApplications: HookApplicationService<ModelExecutionInput>;
+  readonly #modelInputs: ModelInputService;
   readonly #toolAudit: ToolAuditService;
   readonly #toolExecution: ToolExecutionService;
   readonly #toolMessages: ToolMessageService;
   readonly #actions: ActionRunService;
+  readonly #agentCoordination: AgentCoordinationService;
+  readonly #runFinalization: RunFinalizationService;
   readonly #sessionChains = new Map<string, Promise<void>>();
+  readonly #runtimeMessageSyncChains = new Map<string, Promise<void>>();
   readonly #runAbortControllers = new Map<string, AbortController>();
 
   constructor(options: RuntimeServiceOptions) {
@@ -250,6 +197,7 @@ export class RuntimeService {
     this.#workspaceRepository = options.workspaceRepository;
     this.#sessionRepository = options.sessionRepository;
     this.#messageRepository = options.messageRepository;
+    this.#runtimeMessageRepository = options.runtimeMessageRepository;
     this.#runRepository = options.runRepository;
     this.#runStepRepository = options.runStepRepository;
     this.#sessionEventStore = options.sessionEventStore;
@@ -274,6 +222,13 @@ export class RuntimeService {
       recordSystemStep: (run, name, output) => this.#runSteps.recordSystemStep(run, name, output),
       nowIso
     });
+    this.#modelInputs = new ModelInputService({
+      defaultModel: this.#defaultModel,
+      platformModels: this.#platformModels,
+      applyContextHooks: (workspace, session, run, eventName, messages) =>
+        this.#applyContextHooks(workspace, session, run, eventName, messages),
+      collapseLeadingSystemMessages: (messages) => collapseLeadingSystemMessages(messages)
+    });
     this.#hooks = new HookService({
       defaultModel: this.#defaultModel,
       modelGateway: this.#modelGateway,
@@ -281,7 +236,7 @@ export class RuntimeService {
       startRunStep: (input) => this.#runSteps.startRunStep(input),
       completeRunStep: (step, status, output) => this.#runSteps.completeRunStep(step, status, output),
       appendEvent: (input) => this.#appendEvent(input),
-      resolveModelForRun: (workspace, modelRef) => this.#resolveModelForRun(workspace, modelRef),
+      resolveModelForRun: (workspace, modelRef) => this.#modelInputs.resolveModelForRun(workspace, modelRef),
       createId,
       timeoutMsFromSeconds,
       withTimeout,
@@ -357,6 +312,42 @@ export class RuntimeService {
       appendEvent: (input) => this.#appendEvent(input),
       nowIso,
       normalizeJsonObject: (value) => this.#normalizeJsonObject(value)
+    });
+    this.#agentCoordination = new AgentCoordinationService({
+      sessionRepository: this.#sessionRepository,
+      messageRepository: this.#messageRepository,
+      runRepository: this.#runRepository,
+      getRun: (runId) => this.getRun(runId),
+      startRunStep: (input) => this.#runSteps.startRunStep(input),
+      completeRunStep: (step, status, output) => this.#runSteps.completeRunStep(step, status, output),
+      updateRun: (run, patch) => this.#runState.updateRun(run, patch),
+      appendEvent: (input) => this.#appendEvent(input),
+      enqueueRun: (sessionId, runId) => this.#enqueueRun(sessionId, runId),
+      resolveModelForRun: (workspace, modelRef) => this.#modelInputs.resolveModelForRun(workspace, modelRef),
+      extractMessageDisplayText: (message) => this.#extractMessageDisplayText(message),
+      hasMeaningfulText: (value) => this.#hasMeaningfulText(value),
+      createId,
+      nowIso
+    });
+    this.#runFinalization = new RunFinalizationService({
+      sessionRepository: this.#sessionRepository,
+      getRun: (runId) => this.getRun(runId),
+      ensureAssistantMessage: (session, run, currentMessage, allMessages, content, metadata) =>
+        this.#toolMessages.ensureAssistantMessage(session, run, currentMessage, allMessages, content, metadata),
+      updateAssistantMessage: (message, content) =>
+        this.#messageRepository.update({
+          ...message,
+          content
+        }) as Promise<Extract<Message, { role: "assistant" }>>,
+      appendEvent: (input) => this.#appendEvent(input),
+      setRunStatus: (run, nextStatus, patch) => this.#runState.setRunStatus(run, nextStatus, patch),
+      markRunTimedOut: (run, runTimeoutMs) => this.#runState.markRunTimedOut(run, runTimeoutMs),
+      markRunCancelled: (sessionId, run) => this.#runState.markRunCancelled(sessionId, run),
+      recordSystemStep: (run, name, output) => this.#runSteps.recordSystemStep(run, name, output),
+      runLifecycleHooks: (workspace, session, run, eventName) => this.#hookApplications.runLifecycleHooks(workspace, session, run, eventName),
+      buildGeneratedMessageMetadata: (workspace, agentName, modelInput) =>
+        this.#buildGeneratedMessageMetadata(workspace, agentName, modelInput),
+      nowIso
     });
   }
 
@@ -509,7 +500,7 @@ export class RuntimeService {
     const workspace = await this.getWorkspaceRecord(workspaceId);
     const now = nowIso();
     const activeAgentName = input.agentName ?? this.#resolveWorkspaceDefaultAgentName(workspace);
-    const modelRef = this.#normalizeSessionModelRef(workspace, input.modelRef);
+    const modelRef = this.#modelInputs.normalizeSessionModelRef(workspace, input.modelRef);
     if (!activeAgentName) {
       throw new AppError(
         409,
@@ -600,7 +591,8 @@ export class RuntimeService {
     }
 
     if (input.modelRef !== undefined) {
-      const normalizedModelRef = input.modelRef === null ? undefined : this.#normalizeSessionModelRef(workspace, input.modelRef);
+      const normalizedModelRef =
+        input.modelRef === null ? undefined : this.#modelInputs.normalizeSessionModelRef(workspace, input.modelRef);
       if (normalizedModelRef !== session.modelRef && (await this.#sessionHasStarted(session.id))) {
         throw new AppError(
           409,
@@ -925,7 +917,40 @@ export class RuntimeService {
   }
 
   async #appendEvent(input: Omit<SessionEvent, "id" | "cursor" | "createdAt">): Promise<SessionEvent> {
-    return this.#sessionEventStore.append(input);
+    const event = await this.#sessionEventStore.append(input);
+    if (input.event !== "message.delta") {
+      await this.#scheduleRuntimeMessageSync(input.sessionId);
+    }
+    return event;
+  }
+
+  async #scheduleRuntimeMessageSync(sessionId: string): Promise<void> {
+    if (!this.#runtimeMessageRepository) {
+      return;
+    }
+
+    const previous = this.#runtimeMessageSyncChains.get(sessionId) ?? Promise.resolve();
+    const next = previous
+      .catch(() => undefined)
+      .then(async () => {
+        const [messages, events] = await Promise.all([
+          this.#messageRepository.listBySessionId(sessionId),
+          this.#sessionEventStore.listSince(sessionId)
+        ]);
+        const runtimeMessages = buildSessionRuntimeMessages({
+          messages,
+          events
+        });
+        await this.#runtimeMessageRepository?.replaceBySessionId(sessionId, runtimeMessages);
+      })
+      .finally(() => {
+        if (this.#runtimeMessageSyncChains.get(sessionId) === next) {
+          this.#runtimeMessageSyncChains.delete(sessionId);
+        }
+      });
+
+    this.#runtimeMessageSyncChains.set(sessionId, next);
+    await next;
   }
 
   async #enqueueRun(sessionId: string, runId: string): Promise<void> {
@@ -1021,9 +1046,9 @@ export class RuntimeService {
       const executionContext: RunExecutionContext = {
         currentAgentName: run.effectiveAgentName,
         injectSystemReminder: false,
-        delegatedRunIds: this.#delegatedRunRecords(run).map((record) => record.childRunId)
+        delegatedRunIds: this.#agentCoordination.delegatedRunRecords(run).map((record) => record.childRunId)
       };
-      const modelInput = await this.#buildModelInput(
+      const modelInput = await this.#modelInputs.buildModelInput(
         workspace,
         session,
         run,
@@ -1053,7 +1078,7 @@ export class RuntimeService {
           activeAgentName,
           injectSystemReminder
         ) =>
-          this.#buildModelInput(
+          this.#modelInputs.buildModelInput(
             targetWorkspace,
             targetSession,
             targetRun,
@@ -1190,41 +1215,19 @@ export class RuntimeService {
       }
       if (abortController.signal.aborted) {
         if (runTimedOut) {
-          const timedOutRun = await this.#markRunTimedOut(await this.getRun(run.id), runTimeoutMs);
-          if (session) {
-            await this.#appendEvent({
-              sessionId: session.id,
-              runId: timedOutRun.id,
-              event: "run.failed",
-              data: {
-                runId: timedOutRun.id,
-                sessionId: session.id,
-                status: timedOutRun.status,
-                errorCode: timedOutRun.errorCode ?? "run_timed_out",
-                errorMessage: timedOutRun.errorMessage ?? "Run exceeded the configured timeout."
-              }
-            });
-          }
-          await this.#recordSystemStep(timedOutRun, "run.timed_out", {
-            status: timedOutRun.status,
-            ...(timedOutRun.errorCode ? { errorCode: timedOutRun.errorCode } : {}),
-            ...(timedOutRun.errorMessage ? { errorMessage: timedOutRun.errorMessage } : {})
+          await this.#runFinalization.finalizeTimedOutRun({
+            workspace,
+            session,
+            runId: run.id,
+            runTimeoutMs
           });
-          await this.#runLifecycleHooks(workspace, session, timedOutRun, "run_failed");
           return;
         }
 
-        if (session) {
-          await this.#markRunCancelled(session.id, await this.getRun(run.id));
-        } else {
-          const cancelledRun = await this.#setRunStatus(await this.getRun(run.id), "cancelled", {
-            endedAt: nowIso(),
-            cancelRequestedAt: nowIso()
-          });
-          await this.#recordSystemStep(cancelledRun, "run.cancelled", {
-            status: cancelledRun.status
-          });
-        }
+        await this.#runFinalization.finalizeCancelledRun({
+          session,
+          runId: run.id
+        });
         return;
       }
 
@@ -1238,37 +1241,13 @@ export class RuntimeService {
         errorCode: error instanceof AppError ? error.code : "model_stream_failed",
         errorMessage: error instanceof Error ? error.message : "Unknown streaming error."
       });
-      const failedRun =
-        currentRun.status === "failed" || currentRun.status === "timed_out"
-          ? currentRun
-          : await this.#setRunStatus(currentRun, "failed", {
-              endedAt: nowIso(),
-              errorCode: error instanceof AppError ? error.code : "model_stream_failed",
-              errorMessage: error instanceof Error ? error.message : "Unknown streaming error."
-            });
-
-      if (session) {
-        await this.#appendEvent({
-          sessionId: session.id,
-          runId: failedRun.id,
-          event: "run.failed",
-          data: {
-            runId: failedRun.id,
-            sessionId: session.id,
-            status: failedRun.status,
-            errorCode: failedRun.errorCode ?? (error instanceof AppError ? error.code : "model_stream_failed"),
-            errorMessage: failedRun.errorMessage ?? "Unknown streaming error."
-          }
-        });
-      }
-
-      await this.#recordSystemStep(failedRun, failedRun.status === "timed_out" ? "run.timed_out" : "run.failed", {
-        status: failedRun.status,
-        ...(failedRun.errorCode ? { errorCode: failedRun.errorCode } : {}),
-        ...(failedRun.errorMessage ? { errorMessage: failedRun.errorMessage } : {})
+      await this.#runFinalization.finalizeFailedRun({
+        workspace,
+        session,
+        runId: run.id,
+        errorCode: error instanceof AppError ? error.code : "model_stream_failed",
+        errorMessage: error instanceof Error ? error.message : "Unknown streaming error."
       });
-
-      await this.#runLifecycleHooks(workspace, session, failedRun, "run_failed");
     } finally {
       clearInterval(runHeartbeat);
       if (runTimeout) {
@@ -1287,67 +1266,15 @@ export class RuntimeService {
     finalAssistantStep: ModelStepResult | undefined,
     messageMetadata?: Record<string, unknown> | undefined
   ): Promise<void> {
-    const finalizedAssistantContent = assistantContentFromModelOutput({
-      text: completed.text,
-      content: Array.isArray(completed.content) ? completed.content : finalAssistantStep?.content,
-      reasoning: Array.isArray(completed.reasoning) ? completed.reasoning : finalAssistantStep?.reasoning
-    });
-    const latestRun = await this.getRun(run.id);
-    const persistedAssistantMessage = await this.#ensureAssistantMessage(
+    await this.#runFinalization.finalizeSuccessfulRun({
+      workspace,
       session,
-      latestRun,
+      run,
       assistantMessage,
-      undefined,
-      typeof finalizedAssistantContent === "string" ? finalizedAssistantContent : completed.text,
-      messageMetadata ?? this.#buildGeneratedMessageMetadata(workspace, latestRun.effectiveAgentName, { messages: [] })
-    );
-    const updatedMessage =
-      JSON.stringify(persistedAssistantMessage.content) === JSON.stringify(finalizedAssistantContent)
-        ? persistedAssistantMessage
-        : await this.#messageRepository.update({
-            ...persistedAssistantMessage,
-            content: finalizedAssistantContent
-          });
-
-    await this.#appendEvent({
-      sessionId: session.id,
-      runId: run.id,
-      event: "message.completed",
-      data: {
-        runId: run.id,
-        messageId: updatedMessage.id,
-        content: updatedMessage.content,
-        finishReason: completed.finishReason ?? "stop"
-      }
+      completed,
+      finalAssistantStep,
+      messageMetadata
     });
-
-    const endedAt = nowIso();
-    const updatedRun = await this.#setRunStatus(latestRun, "completed", {
-      endedAt
-    });
-    await this.#recordSystemStep(updatedRun, "run.completed", {
-      status: updatedRun.status
-    });
-
-    await this.#sessionRepository.update({
-      ...session,
-      activeAgentName: updatedRun.effectiveAgentName,
-      lastRunAt: endedAt,
-      updatedAt: endedAt
-    });
-
-    await this.#appendEvent({
-      sessionId: session.id,
-      runId: updatedRun.id,
-      event: "run.completed",
-      data: {
-        runId: updatedRun.id,
-        sessionId: session.id,
-        status: updatedRun.status
-      }
-    });
-
-    await this.#runLifecycleHooks(await this.getWorkspaceRecord(run.workspaceId), session, updatedRun, "run_completed");
   }
 
   async #markRunCancelled(sessionId: string, run: Run): Promise<void> {
@@ -1426,359 +1353,12 @@ export class RuntimeService {
     return hasMeaningfulText(value);
   }
 
-  #formatSystemReminder(reminder: string): string {
-    return `<system_reminder>\n${reminder}\n</system_reminder>`;
-  }
-
-  #withInjectedSystemReminder(messages: ChatMessage[], reminder: string): ChatMessage[] {
-    let lastUserMessageIndex = -1;
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      if (messages[index]?.role === "user") {
-        lastUserMessageIndex = index;
-        break;
-      }
-    }
-
-    if (lastUserMessageIndex === -1) {
-      return messages;
-    }
-
-    const userMessage = messages[lastUserMessageIndex];
-    if (!userMessage || userMessage.role !== "user") {
-      return messages;
-    }
-
-    const reminderBlock = this.#formatSystemReminder(reminder);
-    const updatedMessages = [...messages];
-    updatedMessages[lastUserMessageIndex] = {
-      ...userMessage,
-      content:
-        typeof userMessage.content === "string"
-          ? this.#hasMeaningfulText(userMessage.content)
-            ? `${reminderBlock}\n\n${userMessage.content}`
-            : reminderBlock
-          : [{ type: "text", text: reminderBlock }, ...userMessage.content]
-    };
-
-    return updatedMessages;
-  }
-
-  async #buildModelInput(
-    workspace: WorkspaceRecord,
-    session: Session,
-    run: Run,
-    messages: Message[],
-    activeAgentName: string,
-    forceSystemReminder = false
-  ): Promise<ModelExecutionInput> {
-    const activeAgent = workspace.agents[activeAgentName];
-    const inheritedModelRef =
-      typeof run.metadata?.inheritedModelRef === "string" ? run.metadata.inheritedModelRef : undefined;
-    const resolvedModel = this.#resolveModelForRun(workspace, session.modelRef ?? activeAgent?.modelRef ?? inheritedModelRef);
-    let contextMessages = await this.#applyContextHooks(
-      workspace,
-      session,
-      run,
-      "before_context_build",
-      messages.map((message) => contentToPromptMessage(message.role, message.content))
-    );
-    const promptMessages: Array<{ role: "system"; content: string }> = this.#buildStaticPromptMessages(
-      workspace,
-      activeAgentName,
-      resolvedModel
-    );
-
-    if (activeAgent?.systemReminder && this.#shouldInjectSystemReminder(messages, activeAgentName, forceSystemReminder)) {
-      contextMessages = this.#withInjectedSystemReminder(contextMessages, activeAgent.systemReminder);
-    }
-
-    contextMessages = await this.#applyContextHooks(workspace, session, run, "after_context_build", [
-      ...promptMessages,
-      ...contextMessages
-    ]);
-
-    return {
-      model: resolvedModel.model,
-      canonicalModelRef: resolvedModel.canonicalModelRef,
-      ...(resolvedModel.provider ? { provider: resolvedModel.provider } : {}),
-      ...(resolvedModel.modelDefinition ? { modelDefinition: resolvedModel.modelDefinition } : {}),
-      ...(activeAgent?.temperature !== undefined ? { temperature: activeAgent.temperature } : {}),
-      ...(activeAgent?.topP !== undefined ? { topP: activeAgent.topP } : {}),
-      ...(activeAgent?.maxTokens !== undefined ? { maxTokens: activeAgent.maxTokens } : {}),
-      messages: this.#collapseLeadingSystemMessages(contextMessages)
-    };
-  }
-
-  #latestMessageAgentName(messages: Message[]): string | undefined {
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index];
-      if (!message || message.role === "system") {
-        continue;
-      }
-
-      // Ignore the newest user turn; we only care about the previously active agent.
-      if (index === messages.length - 1 && message.role === "user") {
-        continue;
-      }
-
-      const metadata = isRecord(message.metadata) ? message.metadata : undefined;
-      if (typeof metadata?.effectiveAgentName === "string" && metadata.effectiveAgentName.length > 0) {
-        return metadata.effectiveAgentName;
-      }
-
-      if (typeof metadata?.agentName === "string" && metadata.agentName.length > 0) {
-        return metadata.agentName;
-      }
-    }
-
-    return undefined;
-  }
-
-  #shouldInjectSystemReminder(messages: Message[], activeAgentName: string, forceSystemReminder = false): boolean {
-    if (forceSystemReminder) {
-      return true;
-    }
-
-    const latestAgentName = this.#latestMessageAgentName(messages);
-    return latestAgentName !== undefined && latestAgentName !== activeAgentName;
-  }
-
-  #resolveModelForRun(
-    workspace: WorkspaceRecord,
-    modelRef?: string | undefined
-  ): ResolvedRunModel {
-    if (!modelRef || modelRef.length === 0) {
-      const defaultPlatformModel = this.#platformModels[this.#defaultModel];
-      return {
-        model: this.#defaultModel,
-        canonicalModelRef: `platform/${this.#defaultModel}`,
-        ...(defaultPlatformModel ? { provider: defaultPlatformModel.provider, modelDefinition: defaultPlatformModel } : {})
-      };
-    }
-
-    if (modelRef.startsWith("platform/")) {
-      const platformModelName = modelRef.slice("platform/".length);
-      const platformModel = this.#platformModels[platformModelName];
-      return {
-        model: platformModelName,
-        canonicalModelRef: modelRef,
-        ...(platformModel ? { provider: platformModel.provider, modelDefinition: platformModel } : {})
-      };
-    }
-
-    if (modelRef.startsWith("workspace/")) {
-      const workspaceModelName = modelRef.slice("workspace/".length);
-      const workspaceModel = workspace.workspaceModels[workspaceModelName];
-      if (!workspaceModel) {
-        throw new AppError(
-          404,
-          "model_not_found",
-          `Workspace model ${workspaceModelName} was not found in workspace ${workspace.id}.`
-        );
-      }
-
-      return {
-        model: modelRef,
-        canonicalModelRef: modelRef,
-        provider: workspaceModel.provider,
-        modelDefinition: workspaceModel
-      };
-    }
-
-    if (workspace.workspaceModels[modelRef]) {
-      return {
-        model: `workspace/${modelRef}`,
-        canonicalModelRef: `workspace/${modelRef}`,
-        provider: workspace.workspaceModels[modelRef].provider,
-        modelDefinition: workspace.workspaceModels[modelRef]
-      };
-    }
-
-    if (this.#platformModels[modelRef]) {
-      return {
-        model: modelRef,
-        canonicalModelRef: `platform/${modelRef}`,
-        provider: this.#platformModels[modelRef].provider,
-        modelDefinition: this.#platformModels[modelRef]
-      };
-    }
-
-    return {
-      model: modelRef,
-      canonicalModelRef: modelRef
-    };
-  }
-
-  #normalizeSessionModelRef(workspace: WorkspaceRecord, modelRef?: string): string | undefined {
-    const candidate = modelRef?.trim();
-    if (!candidate) {
-      return undefined;
-    }
-
-    if (candidate.startsWith("platform/")) {
-      const platformModelName = candidate.slice("platform/".length);
-      if (!this.#platformModels[platformModelName]) {
-        throw new AppError(404, "model_not_found", `Platform model ${platformModelName} was not found.`);
-      }
-
-      return candidate;
-    }
-
-    if (candidate.startsWith("workspace/")) {
-      const workspaceModelName = candidate.slice("workspace/".length);
-      if (!workspace.workspaceModels[workspaceModelName]) {
-        throw new AppError(404, "model_not_found", `Workspace model ${workspaceModelName} was not found in workspace ${workspace.id}.`);
-      }
-
-      return candidate;
-    }
-
-    if (workspace.workspaceModels[candidate]) {
-      return `workspace/${candidate}`;
-    }
-
-    if (this.#platformModels[candidate]) {
-      return `platform/${candidate}`;
-    }
-
-    throw new AppError(404, "model_not_found", `Model ${candidate} was not found in workspace ${workspace.id}.`);
-  }
-
   async #sessionHasStarted(sessionId: string): Promise<boolean> {
     const [messages, runs] = await Promise.all([
       this.#messageRepository.listBySessionId(sessionId),
       this.#runRepository.listBySessionId(sessionId)
     ]);
     return messages.length > 0 || runs.length > 0;
-  }
-
-  #buildStaticPromptMessages(
-    workspace: WorkspaceRecord,
-    activeAgentName: string,
-    resolvedModel: ResolvedRunModel
-  ): Array<{ role: "system"; content: string }> {
-    const activeAgent = workspace.agents[activeAgentName];
-    const systemPromptSettings = workspace.settings.systemPrompt;
-    const compose = systemPromptSettings?.compose ?? {
-      order: [
-        "base",
-        "llm_optimized",
-        "agent",
-        "actions",
-        "project_agents_md",
-        "skills",
-        "agent_switches",
-        "subagents",
-        "environment"
-      ] as const,
-      includeEnvironment: false
-    };
-    const visibleActions = activeAgent ? listVisibleLlmActions(workspace, activeAgentName) : [];
-    const visibleSkills = activeAgent ? listVisibleLlmSkills(workspace, activeAgentName) : [];
-    const agentSwitchMessage = this.#buildAgentSwitchMessage(workspace, activeAgentName);
-    const availableSubagentsMessage = this.#buildAvailableSubagentsMessage(workspace, activeAgentName);
-    const environmentMessage =
-      compose.includeEnvironment && workspace.kind === "project"
-        ? this.#buildEnvironmentMessage(workspace, activeAgentName)
-        : undefined;
-    const orderedMessages: Array<{ role: "system"; content: string }> = [];
-
-    for (const segment of compose.order) {
-      switch (segment) {
-        case "base":
-          if (systemPromptSettings?.base?.content) {
-            orderedMessages.push({
-              role: "system",
-              content: systemPromptSettings.base.content
-            });
-          }
-          break;
-        case "llm_optimized": {
-          const optimizedPrompt = this.#resolveLlmOptimizedPrompt(workspace, resolvedModel);
-          if (optimizedPrompt) {
-            orderedMessages.push({
-              role: "system",
-              content: optimizedPrompt
-            });
-          }
-          break;
-        }
-        case "agent":
-          if (activeAgent) {
-            orderedMessages.push({
-              role: "system",
-              content: activeAgent.prompt
-            });
-          }
-          break;
-        case "actions":
-          if (visibleActions.length > 0) {
-            orderedMessages.push({
-              role: "system",
-              content: buildAvailableActionsMessage(visibleActions)
-            });
-          }
-          break;
-        case "project_agents_md":
-          if (workspace.projectAgentsMd) {
-            orderedMessages.push({
-              role: "system",
-              content: workspace.projectAgentsMd
-            });
-          }
-          break;
-        case "skills":
-          if (visibleSkills.length > 0) {
-            orderedMessages.push({
-              role: "system",
-              content: buildAvailableSkillsMessage(visibleSkills)
-            });
-          }
-          break;
-        case "agent_switches":
-          if (agentSwitchMessage) {
-            orderedMessages.push({
-              role: "system",
-              content: agentSwitchMessage
-            });
-          }
-          break;
-        case "subagents":
-          if (availableSubagentsMessage) {
-            orderedMessages.push({
-              role: "system",
-              content: availableSubagentsMessage
-            });
-          }
-          break;
-        case "environment":
-          if (environmentMessage) {
-            orderedMessages.push({
-              role: "system",
-              content: environmentMessage
-            });
-          }
-          break;
-      }
-    }
-
-    return orderedMessages;
-  }
-
-  #resolveLlmOptimizedPrompt(workspace: WorkspaceRecord, resolvedModel: ResolvedRunModel): string | undefined {
-    const llmOptimized = workspace.settings.systemPrompt?.llmOptimized;
-    if (!llmOptimized) {
-      return undefined;
-    }
-
-    return (
-      llmOptimized.models?.[resolvedModel.canonicalModelRef]?.content ??
-      (resolvedModel.provider ? llmOptimized.providers?.[resolvedModel.provider]?.content : undefined)
-    );
-  }
-
-  #buildEnvironmentMessage(workspace: WorkspaceRecord, activeAgentName: string): string {
-    return composeEnvironmentMessage(workspace, activeAgentName);
   }
 
   #buildRuntimeTools(
@@ -1797,513 +1377,31 @@ export class RuntimeService {
       executeAction: async (action, input, context) =>
         this.#executeAction(workspace, action, run, context.abortSignal, input),
       delegateAgent: async ({ targetAgentName, task, handoffSummary, taskId }, currentAgentName) => {
-        const accepted = await this.#delegateAgentRun(
+        const accepted = await this.#agentCoordination.delegateAgentRun({
           workspace,
-          session,
-          run,
+          parentSession: session,
+          parentRun: run,
           currentAgentName,
           targetAgentName,
           task,
           handoffSummary,
           taskId
-        );
+        });
         executionContext.delegatedRunIds.push(accepted.childRunId);
         return accepted;
       },
-      awaitDelegatedRuns: async ({ runIds, mode }) => this.#awaitDelegatedRuns(run, runIds, mode),
+      awaitDelegatedRuns: async ({ runIds, mode }) => this.#agentCoordination.awaitDelegatedRuns(runIds, mode),
       switchAgent: async (targetAgentName, currentAgentName) => {
-        const switchStep = await this.#startRunStep({
-          runId: run.id,
-          stepType: "agent_switch",
-          name: `${currentAgentName}->${targetAgentName}`,
-          agentName: currentAgentName,
-          input: {
-            fromAgent: currentAgentName,
-            toAgent: targetAgentName
-          }
-        });
-        await this.#appendEvent({
-          sessionId: session.id,
-          runId: run.id,
-          event: "agent.switch.requested",
-          data: {
-            runId: run.id,
-            sessionId: session.id,
-            fromAgent: currentAgentName,
-            toAgent: targetAgentName
-          }
-        });
-
-        const latestRun = await this.getRun(run.id);
-        const nextSwitchCount = (latestRun.switchCount ?? 0) + 1;
-        await this.#updateRun(latestRun, {
-          effectiveAgentName: targetAgentName,
-          switchCount: nextSwitchCount
+        await this.#agentCoordination.switchAgent({
+          session,
+          run,
+          currentAgentName,
+          targetAgentName
         });
         executionContext.currentAgentName = targetAgentName;
         executionContext.injectSystemReminder = true;
-        await this.#completeRunStep(switchStep, "completed", {
-          fromAgent: currentAgentName,
-          toAgent: targetAgentName,
-          switchCount: nextSwitchCount
-        });
-
-        await this.#appendEvent({
-          sessionId: session.id,
-          runId: run.id,
-          event: "agent.switched",
-          data: {
-            runId: run.id,
-            sessionId: session.id,
-            fromAgent: currentAgentName,
-            toAgent: targetAgentName,
-            switchCount: nextSwitchCount
-          }
-        });
       }
     });
-  }
-
-  #buildAgentSwitchMessage(workspace: WorkspaceRecord, activeAgentName: string): string | undefined {
-    if (workspace.kind === "chat") {
-      return undefined;
-    }
-
-    const currentAgent = workspace.agents[activeAgentName];
-    const message = buildAvailableAgentSwitchesMessage(activeAgentName, currentAgent, workspace.agents);
-    return message.length > 0 ? message : undefined;
-  }
-
-  #buildAvailableSubagentsMessage(workspace: WorkspaceRecord, activeAgentName: string): string | undefined {
-    if (workspace.kind === "chat") {
-      return undefined;
-    }
-
-    if (!canAgentDelegate(workspace, activeAgentName)) {
-      return undefined;
-    }
-
-    const currentAgent = workspace.agents[activeAgentName];
-    const message = buildAvailableSubagentsMessage(activeAgentName, currentAgent, workspace.agents);
-    return message.length > 0 ? message : undefined;
-  }
-
-  #delegatedRunRecords(run: Run): DelegatedRunRecord[] {
-    const rawRecords = run.metadata?.delegatedRuns;
-    if (!Array.isArray(rawRecords)) {
-      return [];
-    }
-
-    return rawRecords.flatMap((entry) => {
-      if (
-        typeof entry === "object" &&
-        entry !== null &&
-        typeof (entry as { childRunId?: unknown }).childRunId === "string" &&
-        typeof (entry as { childSessionId?: unknown }).childSessionId === "string" &&
-        typeof (entry as { targetAgentName?: unknown }).targetAgentName === "string" &&
-        typeof (entry as { parentAgentName?: unknown }).parentAgentName === "string"
-      ) {
-        return [
-          {
-            childRunId: (entry as { childRunId: string }).childRunId,
-            childSessionId: (entry as { childSessionId: string }).childSessionId,
-            targetAgentName: (entry as { targetAgentName: string }).targetAgentName,
-            parentAgentName: (entry as { parentAgentName: string }).parentAgentName
-          }
-        ];
-      }
-
-      return [];
-    });
-  }
-
-  async #delegateAgentRun(
-    workspace: WorkspaceRecord,
-    parentSession: Session,
-    parentRun: Run,
-    currentAgentName: string,
-    targetAgentName: string | undefined,
-    task: string,
-    handoffSummary?: string | undefined,
-    taskId?: string | undefined
-  ): Promise<{ childSessionId: string; childRunId: string; targetAgentName: string }> {
-    if (!canAgentDelegate(workspace, currentAgentName)) {
-      throw new AppError(
-        403,
-        "agent_delegate_not_allowed",
-        `Agent ${currentAgentName} is not allowed to delegate subagent work.`
-      );
-    }
-
-    const resumedSession = taskId ? await this.#sessionRepository.getById(taskId) : null;
-    if (taskId && !resumedSession) {
-      throw new AppError(404, "task_not_found", `Subagent task ${taskId} was not found.`);
-    }
-
-    if (resumedSession && resumedSession.workspaceId !== workspace.id) {
-      throw new AppError(
-        409,
-        "task_workspace_mismatch",
-        `Subagent task ${taskId} does not belong to workspace ${workspace.id}.`
-      );
-    }
-
-    const resolvedTargetAgentName = targetAgentName ?? resumedSession?.activeAgentName ?? resumedSession?.agentName;
-    if (!resolvedTargetAgentName) {
-      throw new AppError(400, "agent_type_required", "SubAgent requires subagent_type or a resumable task_id.");
-    }
-
-    const allowedTargets = workspace.agents[currentAgentName]?.subagents ?? [];
-    if (!allowedTargets.includes(resolvedTargetAgentName)) {
-      throw new AppError(
-        403,
-        "agent_delegate_not_allowed",
-        `Agent ${currentAgentName} is not allowed to delegate to ${resolvedTargetAgentName}.`
-      );
-    }
-
-    const targetAgent = workspace.agents[resolvedTargetAgentName];
-    if (!targetAgent) {
-      throw new AppError(404, "agent_not_found", `Agent ${resolvedTargetAgentName} was not found in workspace ${workspace.id}.`);
-    }
-
-    if (targetAgent.mode === "primary") {
-      throw new AppError(
-        409,
-        "invalid_subagent_target",
-        `Agent ${resolvedTargetAgentName} is a primary agent and cannot be used as a subagent target.`
-      );
-    }
-
-    if (resumedSession && targetAgentName && resumedSession.activeAgentName !== targetAgentName && resumedSession.agentName !== targetAgentName) {
-      throw new AppError(
-        409,
-        "task_agent_mismatch",
-        `Subagent task ${taskId} is currently associated with ${resumedSession.activeAgentName}, not ${targetAgentName}.`
-      );
-    }
-
-    const latestParentRun = await this.getRun(parentRun.id);
-    await this.#enforceSubagentConcurrencyLimit(workspace, latestParentRun, currentAgentName);
-    const delegateStep = await this.#startRunStep({
-      runId: parentRun.id,
-      stepType: "agent_delegate",
-      name: resolvedTargetAgentName,
-      agentName: currentAgentName,
-      input: {
-        targetAgent: resolvedTargetAgentName,
-        task,
-        ...(handoffSummary ? { handoffSummary } : {}),
-        ...(taskId ? { taskId } : {})
-      }
-    });
-
-    const now = nowIso();
-    const childSessionId = resumedSession?.id ?? createId("ses");
-    const childRunId = createId("run");
-    const parentModelRef = this.#resolveModelForRun(
-      workspace,
-      parentSession.modelRef ?? workspace.agents[currentAgentName]?.modelRef
-    ).canonicalModelRef;
-    const childSession: Session = resumedSession ?? {
-      id: childSessionId,
-      workspaceId: workspace.id,
-      parentSessionId: parentSession.id,
-      subjectRef: parentSession.subjectRef,
-      ...(parentSession.modelRef ? { modelRef: parentSession.modelRef } : {}),
-      agentName: resolvedTargetAgentName,
-      activeAgentName: resolvedTargetAgentName,
-      title: `Agent ${resolvedTargetAgentName}`,
-      status: "active",
-      createdAt: now,
-      updatedAt: now
-    };
-    const childMessage: Message = {
-      id: createId("msg"),
-      sessionId: childSessionId,
-      role: "user",
-      content: textContent(this.#buildDelegatedTaskMessage(currentAgentName, resolvedTargetAgentName, task, handoffSummary)),
-      metadata: {
-        parentRunId: parentRun.id,
-        parentSessionId: parentSession.id,
-        delegatedByAgent: currentAgentName,
-        ...(taskId ? { delegatedTaskId: taskId } : {})
-      },
-      createdAt: now
-    };
-    const childRun: Run = {
-      id: childRunId,
-      workspaceId: workspace.id,
-      sessionId: childSessionId,
-      parentRunId: parentRun.id,
-      initiatorRef: parentRun.initiatorRef ?? parentSession.subjectRef,
-      triggerType: "system",
-      triggerRef: "agent.delegate",
-      agentName: childSession.activeAgentName,
-      effectiveAgentName: childSession.activeAgentName,
-      switchCount: 0,
-      status: "queued",
-      createdAt: now,
-      metadata: {
-        parentRunId: parentRun.id,
-        parentSessionId: parentSession.id,
-        parentAgentName: currentAgentName,
-        delegatedTask: task,
-        ...(handoffSummary ? { handoffSummary } : {}),
-        ...(taskId ? { taskId } : {}),
-        ...(targetAgent.modelRef ? {} : { inheritedModelRef: parentModelRef })
-      }
-    };
-
-    if (resumedSession) {
-      await this.#sessionRepository.update({
-        ...childSession,
-        status: "active",
-        updatedAt: now
-      });
-    } else {
-      await this.#sessionRepository.create(childSession);
-    }
-    await this.#messageRepository.create(childMessage);
-    await this.#runRepository.create(childRun);
-
-    const updatedDelegatedRuns = [
-      ...this.#delegatedRunRecords(latestParentRun),
-      {
-        childRunId,
-        childSessionId,
-        targetAgentName: resolvedTargetAgentName,
-        parentAgentName: currentAgentName
-      }
-    ];
-
-    await this.#updateRun(latestParentRun, {
-      metadata: {
-        ...(latestParentRun.metadata ?? {}),
-        delegatedRuns: updatedDelegatedRuns
-      }
-    });
-
-    await this.#appendEvent({
-      sessionId: parentSession.id,
-      runId: parentRun.id,
-      event: "agent.delegate.started",
-      data: {
-        runId: parentRun.id,
-        sessionId: parentSession.id,
-        agentName: currentAgentName,
-        targetAgent: resolvedTargetAgentName,
-        childSessionId,
-        childRunId,
-        ...(taskId ? { taskId, resumed: true } : {})
-      }
-    });
-    await this.#completeRunStep(delegateStep, "completed", {
-      targetAgent: resolvedTargetAgentName,
-      childSessionId,
-      childRunId,
-      ...(taskId ? { taskId, resumed: true } : {})
-    });
-
-    await this.#enqueueRun(childSessionId, childRunId);
-    void this.#monitorDelegatedRun(parentSession.id, parentRun.id, currentAgentName, resolvedTargetAgentName, childRunId);
-
-    return {
-      childSessionId,
-      childRunId,
-      targetAgentName: resolvedTargetAgentName
-    };
-  }
-
-  async #enforceSubagentConcurrencyLimit(
-    workspace: WorkspaceRecord,
-    parentRun: Run,
-    currentAgentName: string
-  ): Promise<void> {
-    const maxConcurrentSubagents = workspace.agents[currentAgentName]?.policy?.maxConcurrentSubagents;
-    if (maxConcurrentSubagents === undefined) {
-      return;
-    }
-
-    const childRuns = await Promise.all(
-      this.#delegatedRunRecords(parentRun).map(async (record) => this.#runRepository.getById(record.childRunId))
-    );
-    const activeRuns = childRuns.filter(
-      (run): run is Run => run !== null && (run.status === "queued" || run.status === "running" || run.status === "waiting_tool")
-    );
-
-    if (activeRuns.length >= maxConcurrentSubagents) {
-      throw new AppError(
-        409,
-        "subagent_concurrency_limit_exceeded",
-        `Agent ${currentAgentName} reached max_concurrent_subagents=${maxConcurrentSubagents}.`
-      );
-    }
-  }
-
-  #buildDelegatedTaskMessage(
-    currentAgentName: string,
-    targetAgentName: string,
-    task: string,
-    handoffSummary?: string | undefined
-  ): string {
-    return [
-      `<delegated_task from_agent="${currentAgentName}" to_agent="${targetAgentName}">`,
-      "<task>",
-      task,
-      "</task>",
-      ...(handoffSummary ? ["<handoff_summary>", handoffSummary, "</handoff_summary>"] : []),
-      "</delegated_task>"
-    ].join("\n");
-  }
-
-  async #monitorDelegatedRun(
-    parentSessionId: string,
-    parentRunId: string,
-    parentAgentName: string,
-    targetAgentName: string,
-    childRunId: string
-  ): Promise<void> {
-    const childRun = await this.#waitForRunTerminalState(childRunId);
-    const childSummary = await this.#collectAwaitedRunSummary(childRunId);
-
-    if (childRun.status === "completed") {
-      await this.#appendEvent({
-        sessionId: parentSessionId,
-        runId: parentRunId,
-        event: "agent.delegate.completed",
-        data: {
-          runId: parentRunId,
-          sessionId: parentSessionId,
-          agentName: parentAgentName,
-          targetAgent: targetAgentName,
-          childRunId,
-          childStatus: childRun.status,
-          output: childSummary.outputContent ?? ""
-        }
-      });
-      return;
-    }
-
-    await this.#appendEvent({
-      sessionId: parentSessionId,
-      runId: parentRunId,
-      event: "agent.delegate.failed",
-      data: {
-        runId: parentRunId,
-        sessionId: parentSessionId,
-        agentName: parentAgentName,
-        targetAgent: targetAgentName,
-        childRunId,
-        childStatus: childRun.status,
-        errorCode: childRun.errorCode,
-        errorMessage: childRun.errorMessage
-      }
-    });
-  }
-
-  async #awaitDelegatedRuns(_parentRun: Run, runIds: string[], mode: "all" | "any"): Promise<string> {
-    const awaitedRuns = mode === "any" ? [await this.#waitForAnyRunTerminalState(runIds)] : await Promise.all(runIds.map(async (runId) => this.#waitForRunTerminalState(runId)));
-    const summaries = await Promise.all(awaitedRuns.map(async (run) => this.#collectAwaitedRunSummary(run.id)));
-    const rendered = summaries.map((summary) => this.#renderAwaitedRunSummary(summary));
-
-    if (rendered.length === 1) {
-      return rendered[0] ?? "";
-    }
-
-    return [
-      `mode: ${mode}`,
-      `results: ${rendered.length}`,
-      "",
-      rendered.join("\n\n")
-    ].join("\n");
-  }
-
-  async #waitForRunTerminalState(runId: string): Promise<Run> {
-    while (true) {
-      const run = await this.getRun(runId);
-      if (this.#isRunTerminal(run.status)) {
-        return run;
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-  }
-
-  async #waitForAnyRunTerminalState(runIds: string[]): Promise<Run> {
-    while (true) {
-      const runs = await Promise.all(runIds.map(async (runId) => this.getRun(runId)));
-      const completedRun = runs.find((run) => this.#isRunTerminal(run.status));
-      if (completedRun) {
-        return completedRun;
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-  }
-
-  #isRunTerminal(status: Run["status"]): boolean {
-    return status === "completed" || status === "failed" || status === "cancelled" || status === "timed_out";
-  }
-
-  async #collectAwaitedRunSummary(runId: string): Promise<AwaitedRunSummary> {
-    const run = await this.getRun(runId);
-    if (!run.sessionId) {
-      return { run };
-    }
-
-    const messages = await this.#messageRepository.listBySessionId(run.sessionId);
-    const runMessages = messages.filter((message) => message.runId === run.id);
-    const assistantMessage = [...runMessages]
-      .reverse()
-      .find((message) => message.role === "assistant");
-    const assistantContent = assistantMessage ? this.#extractMessageDisplayText(assistantMessage) : undefined;
-
-    if (this.#hasMeaningfulText(assistantContent)) {
-      return {
-        run,
-        outputContent: assistantContent
-      };
-    }
-
-    const toolMessage = [...runMessages].reverse().find((message) => message.role === "tool");
-    const toolContent = toolMessage ? this.#extractMessageDisplayText(toolMessage) : undefined;
-
-    return {
-      run,
-      ...(this.#hasMeaningfulText(toolContent) ? { outputContent: toolContent } : {})
-    };
-  }
-
-  #renderAwaitedRunSummary(summary: AwaitedRunSummary): string {
-    return formatToolOutput(
-      [
-        ["task_id", summary.run.sessionId],
-        ["run_id", summary.run.id],
-        ["status", summary.run.status],
-        ["subagent_type", summary.run.effectiveAgentName]
-      ],
-      [
-        ...(summary.outputContent
-          ? [
-              {
-                title: "output",
-                lines: summary.outputContent.split(/\r?\n/),
-                emptyText: "(empty output)"
-              }
-            ]
-          : []),
-        ...(summary.run.errorMessage
-          ? [
-              {
-                title: "error_message",
-                lines: summary.run.errorMessage.split(/\r?\n/),
-                emptyText: "(empty error)"
-              }
-            ]
-          : [])
-      ]
-    );
   }
 
   async #applyBeforeModelHooks(
@@ -2431,7 +1529,7 @@ export class RuntimeService {
     patch: Record<string, unknown>
   ): ModelExecutionInput {
     return applyModelRequestPatch(workspace, current, patch, {
-      resolveModelForRun: (targetWorkspace, modelRef) => this.#resolveModelForRun(targetWorkspace, modelRef),
+      resolveModelForRun: (targetWorkspace, modelRef) => this.#modelInputs.resolveModelForRun(targetWorkspace, modelRef),
       collapseLeadingSystemMessages: (messages) => this.#collapseLeadingSystemMessages(messages),
       createModelExecutionInput: (input) => ({ ...input })
     });

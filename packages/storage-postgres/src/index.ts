@@ -14,6 +14,8 @@ import type {
   HistoryEventRecord,
   HistoryEventRepository,
   Message,
+  RuntimeMessage,
+  RuntimeMessageRepository,
   Run,
   RunStep,
   Session,
@@ -33,6 +35,7 @@ import {
   createId,
   isMessageContentForRole,
   isMessageRole,
+  isRuntimeMessageKind,
   normalizePersistedMessageRecord,
   normalizePersistedMessages,
   normalizePersistedRunStep,
@@ -171,6 +174,19 @@ const messages = pgTable("messages", {
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull()
 });
 
+const runtimeMessages = pgTable("runtime_messages", {
+  id: text("id").primaryKey(),
+  sessionId: text("session_id")
+    .notNull()
+    .references(() => sessions.id, { onDelete: "cascade" }),
+  runId: text("run_id").references(() => runs.id, { onDelete: "cascade" }),
+  role: text("role").notNull(),
+  kind: text("kind").notNull(),
+  content: jsonb("content").$type<RuntimeMessage["content"]>().notNull(),
+  metadata: jsonb("metadata").$type<RuntimeMessage["metadata"]>(),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull()
+});
+
 const runSteps = pgTable("run_steps", {
   id: text("id").primaryKey(),
   runId: text("run_id")
@@ -259,6 +275,7 @@ type OahDatabase = NodePgDatabase<{
   sessions: typeof sessions;
   runs: typeof runs;
   messages: typeof messages;
+  runtimeMessages: typeof runtimeMessages;
   runSteps: typeof runSteps;
   sessionEvents: typeof sessionEvents;
   toolCalls: typeof toolCalls;
@@ -405,6 +422,32 @@ function toMessage(row: typeof messages.$inferSelect): Message {
     metadata: row.metadata ?? undefined,
     createdAt: normalizeTimestamp(row.createdAt) ?? row.createdAt
   });
+}
+
+function buildRuntimeMessageRow(input: RuntimeMessage) {
+  return {
+    id: input.id,
+    sessionId: input.sessionId,
+    runId: input.runId ?? null,
+    role: input.role,
+    kind: input.kind,
+    content: input.content,
+    metadata: input.metadata ?? null,
+    createdAt: input.createdAt
+  };
+}
+
+function toRuntimeMessageRecord(row: typeof runtimeMessages.$inferSelect): RuntimeMessage {
+  return {
+    id: row.id,
+    sessionId: row.sessionId,
+    ...(row.runId ? { runId: row.runId } : {}),
+    role: isMessageRole(row.role) ? row.role : "assistant",
+    kind: isRuntimeMessageKind(row.kind) ? row.kind : "assistant_text",
+    content: row.content,
+    ...(isRecord(row.metadata) ? { metadata: row.metadata } : {}),
+    createdAt: normalizeTimestamp(row.createdAt) ?? row.createdAt
+  };
 }
 
 function buildRunRow(input: Run) {
@@ -808,6 +851,31 @@ class PostgresMessageRepository implements MessageRepository {
   }
 }
 
+class PostgresRuntimeMessageRepository implements RuntimeMessageRepository {
+  constructor(private readonly db: OahDatabase) {}
+
+  async replaceBySessionId(sessionId: string, messages: RuntimeMessage[]): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx.delete(runtimeMessages).where(eq(runtimeMessages.sessionId, sessionId));
+      if (messages.length === 0) {
+        return;
+      }
+
+      await tx.insert(runtimeMessages).values(messages.map((message) => buildRuntimeMessageRow(message)));
+    });
+  }
+
+  async listBySessionId(sessionId: string): Promise<RuntimeMessage[]> {
+    const rows = await this.db
+      .select()
+      .from(runtimeMessages)
+      .where(eq(runtimeMessages.sessionId, sessionId))
+      .orderBy(asc(runtimeMessages.createdAt), asc(runtimeMessages.id));
+
+    return rows.map(toRuntimeMessageRecord);
+  }
+}
+
 class PostgresRunRepository implements RunRepository {
   constructor(private readonly db: OahDatabase) {}
 
@@ -1096,6 +1164,7 @@ export interface PostgresRuntimePersistence {
   workspaceRepository: PostgresWorkspaceRepository;
   sessionRepository: PostgresSessionRepository;
   messageRepository: PostgresMessageRepository;
+  runtimeMessageRepository: PostgresRuntimeMessageRepository;
   runRepository: PostgresRunRepository;
   runStepRepository: PostgresRunStepRepository;
   sessionEventStore: PostgresSessionEventStore;
@@ -1197,6 +1266,18 @@ const schemaStatements = [
   `alter table messages drop column if exists tool_call_id`,
   `create index if not exists messages_session_created_idx on messages (session_id, created_at)`,
   `create index if not exists messages_run_created_idx on messages (run_id, created_at)`,
+  `create table if not exists runtime_messages (
+    id text primary key,
+    session_id text not null references sessions(id) on delete cascade,
+    run_id text references runs(id) on delete cascade,
+    role text not null,
+    kind text not null,
+    content jsonb not null,
+    metadata jsonb,
+    created_at timestamptz not null
+  )`,
+  `create index if not exists runtime_messages_session_created_idx on runtime_messages (session_id, created_at, id)`,
+  `create index if not exists runtime_messages_run_created_idx on runtime_messages (run_id, created_at, id)`,
   `create table if not exists run_steps (
     id text primary key,
     run_id text not null references runs(id) on delete cascade,
@@ -1458,6 +1539,7 @@ export async function createPostgresRuntimePersistence(
       sessions,
       runs,
       messages,
+      runtimeMessages,
       runSteps,
       sessionEvents,
       toolCalls,
@@ -1473,6 +1555,7 @@ export async function createPostgresRuntimePersistence(
     workspaceRepository: new PostgresWorkspaceRepository(db),
     sessionRepository: new PostgresSessionRepository(db),
     messageRepository: new PostgresMessageRepository(db),
+    runtimeMessageRepository: new PostgresRuntimeMessageRepository(db),
     runRepository: new PostgresRunRepository(db),
     runStepRepository: new PostgresRunStepRepository(db),
     sessionEventStore: new PostgresSessionEventStore(db),
@@ -1492,6 +1575,7 @@ export type {
   PostgresWorkspaceRepository,
   PostgresSessionRepository,
   PostgresMessageRepository,
+  PostgresRuntimeMessageRepository,
   PostgresRunRepository,
   PostgresRunStepRepository,
   PostgresSessionEventStore,

@@ -29,6 +29,7 @@ import {
   type ConnectionSettings,
   type HealthReportResponse,
   type InspectorTab,
+  type LiveAssistantMessageRecord,
   type MainViewMode,
   type ModelDraft,
   type PlatformModelListResponse,
@@ -63,7 +64,7 @@ export function useAppController() {
   const [run, setRun] = useState<Run | null>(null);
   const [runSteps, setRunSteps] = useState<RunStep[]>([]);
   const [draftMessage, setDraftMessage] = useState("");
-  const [liveOutput, setLiveOutput] = useState<Record<string, string>>({});
+  const [liveOutput, setLiveOutput] = useState<Record<string, LiveAssistantMessageRecord>>({});
   const [healthStatus, setHealthStatus] = useState("idle");
   const [healthReport, setHealthReport] = useState<HealthReportResponse | null>(null);
   const [readinessReport, setReadinessReport] = useState<ReadinessReportResponse | null>(null);
@@ -745,10 +746,6 @@ export function useAppController() {
       startTransition(() => {
         setDraftMessage("");
         setSelectedRunId(accepted.runId);
-        setLiveOutput((current) => ({
-          ...current,
-          [accepted.runId]: ""
-        }));
       });
       if (autoStream) {
         setStreamRevision((current) => current + 1);
@@ -848,47 +845,63 @@ export function useAppController() {
     }
 
     startTransition(() => {
-      setEvents((current) => [event, ...current].slice(0, 200));
+      setEvents((current) => [event, ...current].slice(0, 5000));
     });
 
     if (event.runId) {
       setSelectedRunId((current) => current || event.runId || "");
     }
 
-    if (event.event === "message.delta" && typeof event.runId === "string" && typeof event.data.delta === "string") {
+    const eventMessageId = typeof event.data.messageId === "string" ? event.data.messageId : undefined;
+
+    if (
+      event.event === "message.delta" &&
+      typeof event.runId === "string" &&
+      typeof eventMessageId === "string" &&
+      typeof event.data.delta === "string"
+    ) {
+      const runId = event.runId;
       setLiveOutput((current) => ({
         ...current,
-        [event.runId!]: `${current[event.runId!] ?? ""}${event.data.delta as string}`
+        [eventMessageId]: {
+          messageId: eventMessageId,
+          runId,
+          sessionId,
+          content: `${current[eventMessageId]?.content ?? ""}${event.data.delta}`,
+          createdAt: current[eventMessageId]?.createdAt ?? event.createdAt
+        }
       }));
     }
 
     if (event.event === "message.completed" && typeof event.runId === "string") {
-      const messageId = typeof event.data.messageId === "string" ? event.data.messageId : undefined;
+      const messageId = eventMessageId;
+      const runId = event.runId;
       const content = normalizeMessageContent(event.data.content);
       if (messageId && content !== null) {
-        const completedMessage = buildMessageRecord({
-          id: messageId,
-          sessionId,
-          runId: event.runId,
-          role: inferCompletedMessageRole(event.data),
-          content,
-          createdAt: event.createdAt
-        });
-        if (!completedMessage) {
-          return;
-        }
-
         startTransition(() => {
-          setMessages((current) => upsertSessionMessage(current, completedMessage));
+          setMessages((current) => {
+            const existingMessage = current.find((message) => message.id === messageId);
+            const completedMessage = buildMessageRecord({
+              id: messageId,
+              sessionId,
+              runId,
+              role: inferCompletedMessageRole(event.data),
+              content,
+              createdAt: existingMessage?.createdAt ?? liveOutput[messageId]?.createdAt ?? event.createdAt
+            });
+            return completedMessage ? upsertSessionMessage(current, completedMessage) : current;
+          });
         });
       }
       setLiveOutput((current) => {
         const next = { ...current };
-        delete next[event.runId!];
+        if (messageId) {
+          delete next[messageId];
+        }
         return next;
       });
       scheduleMessagesRefresh();
-      scheduleRunRefresh(event.runId);
+      scheduleRunRefresh(runId);
     }
 
     if (event.event === "agent.switched" && typeof event.data.toAgent === "string") {
@@ -1094,9 +1107,9 @@ export function useAppController() {
         }
 
         setLiveOutput((current) => {
-          const next = { ...current };
-          delete next[selectedRunIdValue];
-          return next;
+          return Object.fromEntries(
+            Object.entries(current).filter(([, entry]) => entry.runId !== selectedRunIdValue)
+          );
         });
       } catch (error) {
         if (cancelled) {

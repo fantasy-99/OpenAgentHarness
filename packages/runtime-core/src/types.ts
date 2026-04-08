@@ -16,6 +16,7 @@ import type {
 } from "@oah/api-contracts";
 import type { ZodTypeAny } from "zod";
 import { contentToPromptMessage } from "./runtime-message-content.js";
+import type { RuntimeMessage } from "./runtime/runtime-messages.js";
 
 export type RunStatus = Run["status"];
 export type WorkspaceKind = "project" | "chat";
@@ -403,6 +404,7 @@ export interface RuntimeServiceOptions {
   workspaceRepository: WorkspaceRepository;
   sessionRepository: SessionRepository;
   messageRepository: MessageRepository;
+  runtimeMessageRepository?: RuntimeMessageRepository | undefined;
   runRepository: RunRepository;
   runStepRepository: RunStepRepository;
   sessionEventStore: SessionEventStore;
@@ -440,6 +442,11 @@ export interface MessageRepository {
   getById(id: string): Promise<Message | null>;
   update(input: Message): Promise<Message>;
   listBySessionId(sessionId: string): Promise<Message[]>;
+}
+
+export interface RuntimeMessageRepository {
+  replaceBySessionId(sessionId: string, messages: RuntimeMessage[]): Promise<void>;
+  listBySessionId(sessionId: string): Promise<RuntimeMessage[]>;
 }
 
 export interface RunRepository {

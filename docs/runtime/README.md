@@ -21,7 +21,8 @@ Runtime 负责把“调用方发来的一次请求”变成“一个可追踪、
 
 1. [lifecycle.md](./lifecycle.md)
 2. [context-engine.md](./context-engine.md)
-3. [projection-and-executors.md](./projection-and-executors.md)
+3. [message-projections.md](./message-projections.md)
+4. [projection-and-executors.md](./projection-and-executors.md)
 
 ### 想看可靠性和治理
 
@@ -38,6 +39,7 @@ Runtime 负责把“调用方发来的一次请求”变成“一个可追踪、
 
 - [lifecycle.md](./lifecycle.md)
 - [context-engine.md](./context-engine.md)
+- [message-projections.md](./message-projections.md)
 - [projection-and-executors.md](./projection-and-executors.md)
 - [model-gateway.md](./model-gateway.md)
 - [hook-runtime.md](./hook-runtime.md)

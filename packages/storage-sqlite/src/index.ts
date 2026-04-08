@@ -11,6 +11,8 @@ import type {
   HookRunAuditRepository,
   Message,
   MessageRepository,
+  RuntimeMessage,
+  RuntimeMessageRepository,
   Run,
   RunRepository,
   RunStep,
@@ -29,6 +31,7 @@ import {
   isMessageContentForRole,
   isMessageRole,
   createId,
+  isRuntimeMessageKind,
   normalizePersistedMessageRecord,
   normalizePersistedMessages,
   normalizePersistedRunStep,
@@ -112,6 +115,14 @@ const schemaStatements = [
     payload text not null
   )`,
   `create index if not exists messages_session_created_idx on messages (session_id, created_at asc, id asc)`,
+  `create table if not exists runtime_messages (
+    id text primary key,
+    session_id text not null,
+    run_id text,
+    created_at text not null,
+    payload text not null
+  )`,
+  `create index if not exists runtime_messages_session_created_idx on runtime_messages (session_id, created_at asc, id asc)`,
   `create table if not exists runs (
     id text primary key,
     workspace_id text not null,
@@ -1149,6 +1160,45 @@ class SQLiteMessageRepository implements MessageRepository {
   workspaceRepository!: WorkspaceRepository;
 }
 
+class SQLiteRuntimeMessageRepository implements RuntimeMessageRepository {
+  readonly #coordinator: SQLitePersistenceCoordinator;
+
+  constructor(coordinator: SQLitePersistenceCoordinator) {
+    this.#coordinator = coordinator;
+  }
+
+  async replaceBySessionId(sessionId: string, messages: RuntimeMessage[]): Promise<void> {
+    const handle = await this.#coordinator.getSessionHandle(sessionId);
+    runInTransaction(handle.db, () => {
+      handle.db.prepare("delete from runtime_messages where session_id = ?").run(sessionId);
+      const insert = handle.db.prepare(
+        "insert into runtime_messages (id, session_id, run_id, created_at, payload) values (?, ?, ?, ?, ?)"
+      );
+      for (const message of messages) {
+        insert.run(message.id, message.sessionId, message.runId ?? null, message.createdAt, serializeJson(message));
+      }
+    });
+  }
+
+  async listBySessionId(sessionId: string): Promise<RuntimeMessage[]> {
+    const handle = await this.#coordinator.getSessionHandle(sessionId);
+    const rows = coerceRows<JsonRow>(
+      handle.db
+        .prepare("select payload from runtime_messages where session_id = ? order by created_at asc, id asc")
+        .all(sessionId)
+    );
+
+    return rows.map((row) => {
+      const message = parseJson<RuntimeMessage>(row.payload);
+      return {
+        ...message,
+        role: isMessageRole(message.role) ? message.role : "assistant",
+        kind: isRuntimeMessageKind(message.kind) ? message.kind : "assistant_text"
+      };
+    });
+  }
+}
+
 class SQLiteRunRepository implements RunRepository {
   readonly #coordinator: SQLitePersistenceCoordinator;
 
@@ -1606,6 +1656,7 @@ export interface SQLiteRuntimePersistence {
   workspaceRepository: WorkspaceRepository;
   sessionRepository: SessionRepository;
   messageRepository: MessageRepository;
+  runtimeMessageRepository: RuntimeMessageRepository;
   runRepository: RunRepository;
   runStepRepository: RunStepRepository;
   sessionEventStore: SessionEventStore;
@@ -1647,6 +1698,7 @@ export async function createSQLiteRuntimePersistence(
   });
   const sessionRepository = new SQLiteSessionRepository(coordinator);
   const messageRepository = new SQLiteMessageRepository(coordinator);
+  const runtimeMessageRepository = new SQLiteRuntimeMessageRepository(coordinator);
   const runRepository = new SQLiteRunRepository(coordinator);
   const runStepRepository = new SQLiteRunStepRepository(coordinator);
   const sessionEventStore = new SQLiteSessionEventStore(coordinator);
@@ -1663,6 +1715,7 @@ export async function createSQLiteRuntimePersistence(
     workspaceRepository,
     sessionRepository,
     messageRepository,
+    runtimeMessageRepository,
     runRepository,
     runStepRepository,
     sessionEventStore,

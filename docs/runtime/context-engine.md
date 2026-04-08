@@ -24,11 +24,20 @@
 ## 输出
 
 - 系统 prompt
-- 对话历史
+- Runtime Messages
+- Model Messages
 - 模型参数与 model entry 解析结果
 - 允许暴露给 LLM 的 tools 列表
 - 运行策略
 - hook 管道
+
+补充说明：
+
+- `Runtime Messages` 是运行时内部统一消息真相
+- `Model Messages` 是从 `Runtime Messages` 投影得到的模型上下文视图
+- `AI SDK Messages` 是 `Model Messages` 进一步序列化后的最终请求结构
+
+详细设计见 [message-projections.md](./message-projections.md)。
 
 `kind=chat` workspace 的额外约束：
 

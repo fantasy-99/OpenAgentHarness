@@ -19,6 +19,8 @@
       "@oah/config": ["./packages/config/src/index.ts"],
       "@oah/api-contracts": ["./packages/api-contracts/src/index.ts"],
       "@oah/runtime-core": ["./packages/runtime-core/src/index.ts"],
+      "@oah/runtime-core/types": ["./packages/runtime-core/src/types.ts"],
+      "@oah/runtime-core/runtime/runtime-messages": ["./packages/runtime-core/src/runtime/runtime-messages.ts"],
       "@oah/storage-memory": ["./packages/storage-memory/src/index.ts"],
       "@oah/storage-sqlite": ["./packages/storage-sqlite/src/index.ts"],
       "@oah/storage-postgres": ["./packages/storage-postgres/src/index.ts"],

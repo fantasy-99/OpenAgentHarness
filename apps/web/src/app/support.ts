@@ -141,6 +141,14 @@ interface MessageAgentSnapshot {
   mode?: AgentMode;
 }
 
+interface LiveAssistantMessageRecord {
+  messageId: string;
+  runId: string;
+  sessionId: string;
+  content: string;
+  createdAt: string;
+}
+
 interface ModelCallTraceToolCall {
   toolCallId?: string;
   toolName?: string;
@@ -940,6 +948,19 @@ function countMessagesByRole(messages: Array<{ role: Message["role"] }>) {
   };
 }
 
+function compareMessagesChronologically(left: Pick<Message, "createdAt" | "id">, right: Pick<Message, "createdAt" | "id">) {
+  const leftValue = left.createdAt ? Date.parse(left.createdAt) : Number.NaN;
+  const rightValue = right.createdAt ? Date.parse(right.createdAt) : Number.NaN;
+  const timestampComparison =
+    Number.isFinite(leftValue) && Number.isFinite(rightValue) ? leftValue - rightValue : 0;
+
+  if (timestampComparison !== 0) {
+    return timestampComparison;
+  }
+
+  return left.id.localeCompare(right.id);
+}
+
 function upsertSessionMessage(current: Message[], incoming: Message) {
   const existingIndex = current.findIndex((message) => message.id === incoming.id);
   if (existingIndex >= 0) {
@@ -948,17 +969,7 @@ function upsertSessionMessage(current: Message[], incoming: Message) {
     return next;
   }
 
-  return [...current, incoming].sort((left, right) => {
-    const leftValue = left.createdAt ? Date.parse(left.createdAt) : Number.NaN;
-    const rightValue = right.createdAt ? Date.parse(right.createdAt) : Number.NaN;
-    const timestampComparison =
-      Number.isFinite(leftValue) && Number.isFinite(rightValue) ? leftValue - rightValue : 0;
-    if (timestampComparison !== 0) {
-      return timestampComparison;
-    }
-
-    return left.id.localeCompare(right.id);
-  });
+  return [...current, incoming].sort(compareMessagesChronologically);
 }
 
 function inferCompletedMessageRole(data: Record<string, unknown>): "assistant" | "tool" {
@@ -1157,6 +1168,7 @@ export {
   toModelCallTrace,
   uniqueStrings,
   countMessagesByRole,
+  compareMessagesChronologically,
   upsertSessionMessage,
   inferCompletedMessageRole,
   addRecentId,
@@ -1173,6 +1185,7 @@ export {
 
 export type {
   ConnectionSettings,
+  LiveAssistantMessageRecord,
   WorkspaceDraft,
   SavedWorkspaceRecord,
   SavedSessionRecord,

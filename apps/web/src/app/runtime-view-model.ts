@@ -1,11 +1,14 @@
 import type { Message, RunStep, SessionEventContract } from "@oah/api-contracts";
 
 import {
+  compareMessagesChronologically,
+  contentText,
   countMessagesByRole,
   readMessageModelCallStepRef,
   readMessageSystemPromptSnapshot,
   toModelCallTrace,
   uniqueStrings,
+  type LiveAssistantMessageRecord,
   type ModelCallTrace,
   type ModelCallTraceMessage
 } from "./support";
@@ -38,11 +41,210 @@ function resolveMessageSystemMessages(message: Message | null, traces: ModelCall
   return [];
 }
 
+function readEventMessageId(event: SessionEventContract) {
+  return typeof event.data.messageId === "string" ? event.data.messageId : undefined;
+}
+
+function readEventCursorValue(event: SessionEventContract) {
+  const numericCursor = Number.parseInt(event.cursor, 10);
+  return Number.isFinite(numericCursor) ? numericCursor : Number.MAX_SAFE_INTEGER;
+}
+
+function isToolOnlyAssistantMessage(message: Message) {
+  if (message.role !== "assistant" || typeof message.content === "string") {
+    return false;
+  }
+
+  const hasText = message.content.some(
+    (part) => (part.type === "text" || part.type === "reasoning") && typeof part.text === "string" && part.text.trim().length > 0
+  );
+  const hasToolOrApproval = message.content.some(
+    (part) =>
+      part.type === "tool-call" ||
+      part.type === "tool-result" ||
+      part.type === "tool-approval-request"
+  );
+
+  return hasToolOrApproval && !hasText;
+}
+
+function isStreamedAssistantTextMessage(message: Message, deltaMessageIds: Set<string>) {
+  return message.role === "assistant" && deltaMessageIds.has(message.id) && contentText(message.content).trim().length > 0;
+}
+
+function projectRunConversation(messages: Message[], events: SessionEventContract[]) {
+  if (messages.length === 0 || events.length === 0) {
+    return messages;
+  }
+
+  const messagesById = new Map(messages.map((message) => [message.id, message]));
+  const deltaMessageIds = new Set(
+    events.flatMap((event) => (event.event === "message.delta" ? [readEventMessageId(event)].filter((value): value is string => Boolean(value)) : []))
+  );
+  const runMessagesById = new Set(messages.map((message) => message.id));
+  const projected: Message[] = [];
+  const activeSegments = new Map<
+    string,
+    {
+      index: number;
+      content: string;
+      createdAt: string;
+    }
+  >();
+  const segmentCounts = new Map<string, number>();
+  const flushSegment = (messageId: string) => {
+    const activeSegment = activeSegments.get(messageId);
+    if (!activeSegment || activeSegment.content.trim().length === 0) {
+      activeSegments.delete(messageId);
+      return;
+    }
+
+    const persistedMessage = messagesById.get(messageId);
+    if (!persistedMessage) {
+      activeSegments.delete(messageId);
+      return;
+    }
+
+    projected.push({
+      id: `segment:${messageId}:${activeSegment.index}`,
+      sessionId: persistedMessage.sessionId,
+      ...(persistedMessage.runId ? { runId: persistedMessage.runId } : {}),
+      role: "assistant",
+      content: activeSegment.content,
+      ...(persistedMessage.metadata ? { metadata: persistedMessage.metadata } : {}),
+      createdAt: activeSegment.createdAt
+    });
+    activeSegments.delete(messageId);
+  };
+  const flushAllSegments = () => {
+    const activeMessageIds = [...activeSegments.keys()].sort((left, right) => left.localeCompare(right));
+    for (const messageId of activeMessageIds) {
+      flushSegment(messageId);
+    }
+  };
+
+  for (const event of events) {
+    const messageId = readEventMessageId(event);
+
+    if (event.event === "message.delta" && messageId && runMessagesById.has(messageId)) {
+      const existingSegment = activeSegments.get(messageId);
+      if (existingSegment) {
+        existingSegment.content += typeof event.data.delta === "string" ? event.data.delta : "";
+        continue;
+      }
+
+      const nextIndex = (segmentCounts.get(messageId) ?? 0) + 1;
+      segmentCounts.set(messageId, nextIndex);
+      activeSegments.set(messageId, {
+        index: nextIndex,
+        content: typeof event.data.delta === "string" ? event.data.delta : "",
+        createdAt: event.createdAt
+      });
+      continue;
+    }
+
+    if (event.event === "message.completed" && messageId && runMessagesById.has(messageId)) {
+      for (const activeMessageId of [...activeSegments.keys()]) {
+        if (activeMessageId !== messageId) {
+          flushSegment(activeMessageId);
+        }
+      }
+
+      const completedMessage = messagesById.get(messageId);
+      if (!completedMessage) {
+        continue;
+      }
+
+      if (isStreamedAssistantTextMessage(completedMessage, deltaMessageIds)) {
+        flushSegment(messageId);
+        continue;
+      }
+
+      projected.push(completedMessage);
+      continue;
+    }
+
+    if (
+      event.event === "run.completed" ||
+      event.event === "run.failed" ||
+      event.event === "run.cancelled"
+    ) {
+      flushAllSegments();
+    }
+  }
+
+  flushAllSegments();
+
+  const seenProjectedIds = new Set(projected.map((message) => message.id));
+  const fallbackMessages = messages.filter(
+    (message) =>
+      !seenProjectedIds.has(message.id) &&
+      !isStreamedAssistantTextMessage(message, deltaMessageIds)
+  );
+
+  return [...projected, ...fallbackMessages];
+}
+
+function buildProjectedMessageFeed(params: {
+  messages: Message[];
+  deferredEvents: SessionEventContract[];
+  liveMessages: Message[];
+}) {
+  const orderedMessages = [...params.messages].sort(compareMessagesChronologically);
+  const orderedEvents = [...params.deferredEvents].sort((left, right) => readEventCursorValue(left) - readEventCursorValue(right));
+  const eventsByRunId = new Map<string, SessionEventContract[]>();
+  const messagesByRunId = new Map<string, Message[]>();
+
+  for (const event of orderedEvents) {
+    if (!event.runId) {
+      continue;
+    }
+
+    const current = eventsByRunId.get(event.runId) ?? [];
+    current.push(event);
+    eventsByRunId.set(event.runId, current);
+  }
+
+  for (const message of orderedMessages) {
+    if (!message.runId) {
+      continue;
+    }
+
+    const current = messagesByRunId.get(message.runId) ?? [];
+    current.push(message);
+    messagesByRunId.set(message.runId, current);
+  }
+
+  const projectedRuns = new Map<string, Message[]>();
+  for (const [runId, runMessages] of messagesByRunId) {
+    const runEvents = eventsByRunId.get(runId) ?? [];
+    projectedRuns.set(runId, projectRunConversation(runMessages, runEvents));
+  }
+
+  const seenRunIds = new Set<string>();
+  const projectedFeed: Message[] = [];
+  for (const message of orderedMessages) {
+    if (!message.runId) {
+      projectedFeed.push(message);
+      continue;
+    }
+
+    if (seenRunIds.has(message.runId)) {
+      continue;
+    }
+
+    seenRunIds.add(message.runId);
+    projectedFeed.push(...(projectedRuns.get(message.runId) ?? [message]));
+  }
+
+  return [...projectedFeed, ...params.liveMessages];
+}
+
 export function buildRuntimeViewModel(params: {
   messages: Message[];
   runSteps: RunStep[];
   deferredEvents: SessionEventContract[];
-  liveOutput: Record<string, string>;
+  liveOutput: Record<string, LiveAssistantMessageRecord>;
   selectedTraceId: string;
   selectedMessageId: string;
   selectedStepId: string;
@@ -71,28 +273,26 @@ export function buildRuntimeViewModel(params: {
   const resolvedModelRefs = uniqueStrings(
     modelCallTraces.map((trace) => trace.input.canonicalModelRef).filter((value): value is string => Boolean(value))
   );
-  const persistedAssistantRunIds = new Set(
-    params.messages.flatMap((message) => (message.role === "assistant" && message.runId ? [message.runId] : []))
-  );
-  const messageFeed = [
-    ...params.messages,
-    ...Object.entries(params.liveOutput).flatMap(([runId, content]) => {
-      if (!content || persistedAssistantRunIds.has(runId)) {
-        return [];
-      }
-
-      return [
-        {
-          id: `live:${runId}`,
-          sessionId: params.sessionId || "live",
-          runId,
-          role: "assistant" as const,
-          content,
-          createdAt: new Date().toISOString()
-        }
-      ];
-    })
-  ];
+  const liveEntries = Object.values(params.liveOutput).filter((entry) => entry.content.trim().length > 0);
+  const liveMessageIds = new Set(liveEntries.map((entry) => entry.messageId));
+  const persistedMessagesById = new Map(params.messages.map((message) => [message.id, message]));
+  const liveMessages = liveEntries.map((entry) => {
+    const persistedMessage = persistedMessagesById.get(entry.messageId);
+    return {
+      id: `live:${entry.messageId}`,
+      sessionId: entry.sessionId || params.sessionId || "live",
+      runId: entry.runId,
+      role: "assistant" as const,
+      content: entry.content,
+      createdAt: persistedMessage?.createdAt ?? entry.createdAt
+    };
+  });
+  const persistedMessages = params.messages.filter((message) => !liveMessageIds.has(message.id));
+  const messageFeed = buildProjectedMessageFeed({
+    messages: persistedMessages,
+    deferredEvents: params.deferredEvents,
+    liveMessages
+  });
 
   return {
     modelCallTraces,
