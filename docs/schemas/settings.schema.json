@@ -9,6 +9,10 @@
       "type": "string",
       "minLength": 1
     },
+    "template": {
+      "type": "string",
+      "minLength": 1
+    },
     "skill_dirs": {
       "type": "array",
       "items": {
@@ -16,9 +20,6 @@
         "minLength": 1
       },
       "uniqueItems": true
-    },
-    "history_mirror_enabled": {
-      "type": "boolean"
     },
     "template_imports": {
       "$ref": "#/$defs/templateImports"

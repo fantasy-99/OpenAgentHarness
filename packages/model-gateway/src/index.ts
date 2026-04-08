@@ -1,6 +1,17 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { generateText, modelMessageSchema, stepCountIs, streamText, tool, type LanguageModel, type ModelMessage, type ToolSet } from "ai";
+import {
+  generateText,
+  modelMessageSchema,
+  stepCountIs,
+  streamText,
+  tool,
+  type LanguageModel,
+  type ModelMessage,
+  type OnStepFinishEvent,
+  type PrepareStepResult,
+  type ToolSet
+} from "ai";
 
 import type { PlatformModelDefinition, PlatformModelRegistry } from "@oah/config";
 import type { ModelGenerateResponse, Usage } from "@oah/api-contracts";
@@ -169,22 +180,8 @@ function replaceLeadingSystemMessages(
   return [...systemMessages.map((message) => ({ role: message.role, content: message.content })), ...tail] as ModelMessage[];
 }
 
-function toStepResult(step: {
-  stepType?: string;
-  text?: string;
-  content?: unknown[];
-  reasoning?: unknown[];
-  usage?: Record<string, unknown>;
-  warnings?: unknown[];
-  request?: Record<string, unknown>;
-  response?: Record<string, unknown>;
-  providerMetadata?: Record<string, unknown>;
-  finishReason: string;
-  toolCalls: Array<{ toolCallId: string; toolName: string; input: unknown }>;
-  toolResults: Array<{ toolCallId: string; toolName: string; output: unknown }>;
-}): ModelStepResult {
+function toStepResult(step: OnStepFinishEvent<ToolSet>): ModelStepResult {
   return {
-    ...(typeof step.stepType === "string" ? { stepType: step.stepType } : {}),
     ...(typeof step.text === "string" ? { text: step.text } : {}),
     ...(Array.isArray(step.content) ? { content: step.content } : {}),
     ...(Array.isArray(step.reasoning) ? { reasoning: step.reasoning } : {}),
@@ -367,24 +364,24 @@ export class AiSdkModelGateway implements ModelGateway {
                 return undefined;
               }
 
-              return {
+              const preparedMessages = preparation.messages ? normalizeMessages(preparation.messages) : undefined;
+              const nextMessages = preparation.systemMessages
+                ? replaceLeadingSystemMessages(preparedMessages ?? messages, preparation.systemMessages)
+                : preparedMessages;
+
+              const stepPreparation: PrepareStepResult = {
                 ...(preparation.model
                   ? {
                       model: this.#resolveModel(preparation.model, preparation.modelDefinition)
                     }
                   : { model: currentModel }),
-                ...(preparation.messages
-                  ? {
-                      messages: preparation.messages
-                    }
-                  : {}),
-                ...(preparation.systemMessages
-                  ? {
-                      messages: replaceLeadingSystemMessages(messages, preparation.systemMessages)
-                    }
-                  : {}),
-                ...(preparation.activeToolNames ? { activeTools: preparation.activeToolNames } : {})
+                ...(nextMessages ? { messages: nextMessages } : {}),
+                ...(preparation.activeToolNames
+                  ? { activeTools: preparation.activeToolNames }
+                  : {})
               };
+
+              return stepPreparation;
             }
           }
         : {}),

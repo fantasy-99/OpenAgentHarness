@@ -13,9 +13,9 @@ type RuntimeProps = ReturnType<typeof useAppController>["runtimeDetailSurfacePro
 
 export function InspectorWorkspace(props: RuntimeProps) {
   return (
-    <div className="workspace-pane flex min-h-0 flex-1 flex-col overflow-hidden">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <Tabs value={props.inspectorTab} onValueChange={(value) => props.setInspectorTab(value as RuntimeProps["inspectorTab"])} className="flex min-h-0 flex-1 flex-col">
-        <div className="border-b border-border/80 px-5 py-4">
+        <div className="app-toolbar-strip px-5 py-4">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <TabsList variant="line" className="gap-1 p-0">
               <TabsTrigger value="overview">Overview</TabsTrigger>
@@ -110,9 +110,7 @@ export function InspectorWorkspace(props: RuntimeProps) {
                 activeToolNames={props.allAdvertisedToolNames}
                 toolServers={props.allToolServers}
                 mirrorStatus={props.mirrorStatus}
-                mirrorToggleBusy={props.mirrorToggleBusy}
                 mirrorRebuildBusy={props.mirrorRebuildBusy}
-                updateWorkspaceHistoryMirrorEnabled={props.updateWorkspaceHistoryMirrorEnabled}
                 refreshWorkspace={props.refreshWorkspace}
                 rebuildWorkspaceHistoryMirror={props.rebuildWorkspaceHistoryMirror}
               />

@@ -15,6 +15,7 @@ import type {
   WorkspaceCatalog
 } from "@oah/api-contracts";
 import type { ZodTypeAny } from "zod";
+import { contentToPromptMessage } from "./runtime-message-content.js";
 
 export type RunStatus = Run["status"];
 export type WorkspaceKind = "project" | "chat";
@@ -219,6 +220,7 @@ export interface ToolServerDefinition {
   transportType: "stdio" | "http";
   toolPrefix?: string | undefined;
   command?: string | undefined;
+  workingDirectory?: string | undefined;
   url?: string | undefined;
   environment?: Record<string, string> | undefined;
   headers?: Record<string, string> | undefined;
@@ -263,8 +265,8 @@ export interface WorkspaceSystemPromptSettings {
 
 export interface WorkspaceSettingsDefinition {
   defaultAgent?: string | undefined;
+  template?: string | undefined;
   skillDirs?: string[] | undefined;
-  historyMirrorEnabled?: boolean | undefined;
   systemPrompt?: WorkspaceSystemPromptSettings | undefined;
 }
 
@@ -294,7 +296,6 @@ export interface WorkspaceInitializationResult {
   rootPath: string;
   kind?: WorkspaceKind | undefined;
   readOnly?: boolean | undefined;
-  historyMirrorEnabled?: boolean | undefined;
   defaultAgent?: string | undefined;
   projectAgentsMd?: string | undefined;
   settings: WorkspaceSettingsDefinition;
@@ -313,10 +314,6 @@ export interface WorkspaceInitializer {
 
 export interface WorkspaceDeletionHandler {
   deleteWorkspace(workspace: WorkspaceRecord): Promise<void>;
-}
-
-export interface WorkspaceSettingsManager {
-  updateHistoryMirrorEnabled(workspace: WorkspaceRecord, enabled: boolean): Promise<WorkspaceRecord>;
 }
 
 export type ToolCallSourceType = "action" | "skill" | "agent" | "tool" | "native";
@@ -415,7 +412,6 @@ export interface RuntimeServiceOptions {
   artifactRepository?: ArtifactRepository | undefined;
   historyEventRepository?: HistoryEventRepository | undefined;
   workspaceDeletionHandler?: WorkspaceDeletionHandler | undefined;
-  workspaceSettingsManager?: WorkspaceSettingsManager | undefined;
   workspaceInitializer?: WorkspaceInitializer | undefined;
 }
 
@@ -559,6 +555,7 @@ export function toPublicWorkspace(workspace: WorkspaceRecord): Workspace {
     id: workspace.id,
     externalRef: workspace.externalRef,
     name: workspace.name,
+    ...(workspace.template ? { template: workspace.template } : workspace.settings.template ? { template: workspace.settings.template } : {}),
     rootPath: workspace.rootPath,
     executionPolicy: workspace.executionPolicy,
     status: workspace.status,
@@ -571,8 +568,5 @@ export function toPublicWorkspace(workspace: WorkspaceRecord): Workspace {
 }
 
 export function toChatMessages(messages: Message[]): ChatMessage[] {
-  return messages.map((message) => ({
-    role: message.role,
-    content: message.content
-  }));
+  return messages.map((message) => contentToPromptMessage(message.role, message.content));
 }

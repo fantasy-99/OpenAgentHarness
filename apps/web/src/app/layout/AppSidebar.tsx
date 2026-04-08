@@ -26,6 +26,7 @@ import {
   DialogTitle
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 
 import { probeTone, type SavedSessionRecord } from "../support";
@@ -37,13 +38,13 @@ type SidebarProps = ReturnType<typeof useAppController>["sidebarSurfaceProps"];
 function statusClass(tone: "sky" | "emerald" | "rose" | "amber") {
   switch (tone) {
     case "emerald":
-      return "border-emerald-200/80 bg-emerald-50/80 text-emerald-700 dark:border-emerald-800/80 dark:bg-emerald-950/40 dark:text-emerald-400";
+      return "border-foreground/10 bg-white/60 text-foreground";
     case "rose":
-      return "border-rose-200/80 bg-rose-50/80 text-rose-700 dark:border-rose-800/80 dark:bg-rose-950/40 dark:text-rose-400";
+      return "border-foreground/8 bg-black/[0.035] text-foreground/78";
     case "amber":
-      return "border-amber-200/80 bg-amber-50/80 text-amber-700 dark:border-amber-800/80 dark:bg-amber-950/40 dark:text-amber-400";
+      return "border-foreground/10 bg-white/50 text-foreground/84";
     default:
-      return "border-sky-200/80 bg-sky-50/80 text-sky-700 dark:border-sky-800/80 dark:bg-sky-950/40 dark:text-sky-400";
+      return "border-foreground/8 bg-white/44 text-foreground/72";
   }
 }
 
@@ -70,7 +71,7 @@ function compactFilterCount(values: string[]) {
 
 function SidebarSection(props: { title: string; description?: string; action?: ReactNode; children: ReactNode }) {
   return (
-    <section className="space-y-3 border-t border-border/60 pt-4 first:border-t-0 first:pt-0">
+    <section className="space-y-3 border-t border-black/8 pt-4 first:border-t-0 first:pt-0">
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">{props.title}</p>
@@ -93,10 +94,10 @@ function SidebarHero(props: {
   children?: ReactNode;
 }) {
   return (
-    <section className={`border-b border-border/60 pb-4 ${props.accentClassName ?? ""}`}>
+    <section className={`border-b border-black/8 pb-4 ${props.accentClassName ?? ""}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-border/70 bg-muted/35">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-black/10 bg-white/55 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)]">
             {props.icon}
           </div>
           {props.eyebrow || props.title || props.description ? (
@@ -131,7 +132,7 @@ function SidebarFilterField(props: { label: string; value: string; onChange: (va
         value={props.value}
         onChange={(event) => props.onChange(event.target.value)}
         placeholder={props.placeholder}
-        className="h-8 rounded-xl border-border/70 bg-background/85 text-xs shadow-none"
+        className="h-8 rounded-xl border-black/10 bg-white/68 text-xs shadow-none"
       />
     </label>
   );
@@ -143,15 +144,15 @@ function SidebarModeToggle(props: {
   onChange: (key: string) => void;
 }) {
   return (
-    <div className="grid grid-cols-2 gap-1 rounded-2xl border border-border/70 bg-muted/35 p-1">
+    <div className="grid grid-cols-2 gap-1 rounded-2xl border border-black/8 bg-black/[0.03] p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
       {props.items.map((item) => (
         <Button
           key={item.key}
           variant="ghost"
           className={`h-10 justify-start rounded-xl px-3 ${
             props.activeKey === item.key
-              ? "border border-border/70 bg-background shadow-sm"
-              : "text-muted-foreground hover:text-foreground"
+              ? "border border-black/10 bg-white/82 text-foreground shadow-[0_8px_18px_-16px_rgba(17,17,17,0.4)]"
+              : "text-muted-foreground hover:bg-white/45 hover:text-foreground"
           }`}
           onClick={() => props.onChange(item.key)}
         >
@@ -176,8 +177,8 @@ function SidebarActionItem(props: {
       variant="ghost"
       className={`h-auto w-full justify-start rounded-2xl border px-3 py-3 text-left transition-all ${
         props.active
-          ? "border-foreground/10 bg-foreground/[0.06] shadow-sm"
-          : "border-transparent bg-transparent hover:border-border/70 hover:bg-muted/35"
+          ? "border-black/10 bg-white/72 shadow-[0_18px_30px_-26px_rgba(17,17,17,0.35)]"
+          : "border-transparent bg-transparent hover:border-black/8 hover:bg-white/42"
       }`}
       onClick={props.onClick}
     >
@@ -185,7 +186,7 @@ function SidebarActionItem(props: {
         {props.icon ? (
           <div
             className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border ${
-              props.active ? "border-foreground/10 bg-background/85 text-foreground" : "border-border/60 bg-muted/45 text-muted-foreground"
+              props.active ? "border-black/10 bg-white/82 text-foreground" : "border-black/8 bg-black/[0.03] text-muted-foreground"
             }`}
           >
             {props.icon}
@@ -205,7 +206,7 @@ function SidebarActionItem(props: {
 
 function ToggleRow(props: { label: string; checked: boolean; onCheckedChange: (checked: boolean) => void }) {
   return (
-    <label className="flex items-center justify-between gap-3 rounded-md border border-border/70 bg-muted/20 px-3 py-2">
+    <label className="flex items-center justify-between gap-3 rounded-xl border border-black/8 bg-white/45 px-3 py-2">
       <span className="text-sm text-foreground">{props.label}</span>
       <Switch checked={props.checked} onCheckedChange={props.onCheckedChange} />
     </label>
@@ -213,6 +214,15 @@ function ToggleRow(props: { label: string; checked: boolean; onCheckedChange: (c
 }
 
 function RuntimeSidebar(props: SidebarProps) {
+  const showFilteredWorkspaceCount = props.filteredSavedWorkspaces.length !== props.orderedSavedWorkspaces.length;
+  const workspaceCountLabel = showFilteredWorkspaceCount
+    ? `${props.filteredSavedWorkspaces.length} of ${props.orderedSavedWorkspaces.length} workspaces`
+    : `${props.orderedSavedWorkspaces.length} workspaces`;
+  const sessionCountLabel =
+    props.savedSessionsCount === props.totalSavedSessionsCount
+      ? `${props.savedSessionsCount} sessions`
+      : `${props.savedSessionsCount} of ${props.totalSavedSessionsCount} sessions`;
+
   function hasActiveDescendant(
     sessionId: string,
     childSessionsByParentId: Map<string, SavedSessionRecord[]>,
@@ -267,7 +277,7 @@ function RuntimeSidebar(props: SidebarProps) {
             <div className="space-y-0.5">
               {renderSessionTree(childSessions, {
                 depth: depth + 1,
-                childSessionsByParentId,
+                ...(childSessionsByParentId ? { childSessionsByParentId } : {}),
                 workspaceId
               })}
             </div>
@@ -285,7 +295,7 @@ function RuntimeSidebar(props: SidebarProps) {
             <div>
               <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Workspaces</p>
               <p className="mt-1 text-[11px] text-muted-foreground">
-                {props.orderedSavedWorkspaces.length} workspaces · {props.savedSessionsCount} sessions
+                {workspaceCountLabel} · {sessionCountLabel}
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-1">
@@ -324,13 +334,36 @@ function RuntimeSidebar(props: SidebarProps) {
               </Button>
             </div>
           </div>
-          {props.orderedSavedWorkspaces.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-border/80 bg-muted/20 px-4 py-8 text-center">
-              <p className="text-sm font-medium text-foreground">No workspaces</p>
-              <p className="mt-1 text-sm text-muted-foreground">Create or load one.</p>
+          <label className="space-y-1 px-2">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Template</span>
+            <Select
+              value={props.workspaceTemplateFilter || "__all_templates__"}
+              onValueChange={(value) => props.setWorkspaceTemplateFilter(value === "__all_templates__" ? "" : value)}
+            >
+              <SelectTrigger className="h-8 w-full rounded-xl border-black/10 bg-white/68 text-xs shadow-none" aria-label="Workspace template filter">
+                <SelectValue placeholder="All templates" />
+              </SelectTrigger>
+              <SelectContent align="start">
+                <SelectItem value="__all_templates__">All templates</SelectItem>
+                {props.workspaceTemplateFilterOptions.map((template) => (
+                  <SelectItem key={template} value={template}>
+                    {template}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </label>
+          {props.filteredSavedWorkspaces.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-black/12 bg-white/32 px-4 py-8 text-center">
+              <p className="text-sm font-medium text-foreground">
+                {props.workspaceTemplateFilter ? "No matching workspaces" : "No workspaces"}
+              </p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {props.workspaceTemplateFilter ? "Try another template filter." : "Create or load one."}
+              </p>
             </div>
           ) : (
-            props.orderedSavedWorkspaces.map((entry) => {
+            props.filteredSavedWorkspaces.map((entry) => {
               const workspaceSessions = props.sessionsByWorkspaceId.get(entry.id) ?? [];
               const sessionIds = new Set(workspaceSessions.map((sessionEntry) => sessionEntry.id));
               const childSessionsByParentId = new Map<string, typeof workspaceSessions>();
@@ -365,7 +398,7 @@ function RuntimeSidebar(props: SidebarProps) {
                     active={entry.id === props.activeWorkspaceId}
                     expanded={isExpanded}
                     sessionCount={workspaceSessions.length}
-                    lastEditedAt={lastEditedAt}
+                    {...(lastEditedAt ? { lastEditedAt } : {})}
                     canRemove={props.workspaceManagementEnabled}
                     onSelect={() => props.openWorkspace(entry.id)}
                     onToggleExpanded={() => props.toggleWorkspaceExpansion(entry.id)}
@@ -390,7 +423,7 @@ function RuntimeSidebar(props: SidebarProps) {
         </div>
       </div>
 
-      <div className="shrink-0 space-y-3 border-t border-border/80 px-3 py-3">
+      <div className="shrink-0 space-y-3 border-t border-black/8 px-3 py-3">
         <div className="grid gap-2">
           <ToggleRow label="Auto SSE" checked={props.autoStream} onCheckedChange={(checked) => props.setAutoStream(checked)} />
           <ToggleRow label="Current Run" checked={props.filterSelectedRun} onCheckedChange={(checked) => props.setFilterSelectedRun(checked)} />
@@ -418,7 +451,7 @@ function StorageSidebar(props: SidebarProps) {
 
   return (
     <div className="space-y-5 px-3 py-4">
-      <div className="space-y-3 border-b border-border/60 pb-4">
+      <div className="space-y-3 border-b border-black/8 pb-4">
         <SidebarModeToggle
           activeKey={props.storageBrowserTab}
           onChange={(key) => props.onStorageBrowserTabChange(key as "postgres" | "redis")}
@@ -437,8 +470,10 @@ function StorageSidebar(props: SidebarProps) {
         <>
           <SidebarSection
             title="Filters"
-            description={postgresFilterCount > 0 ? `${postgresFilterCount} active` : undefined}
-            action={postgresFilterCount > 0 ? <Badge variant="outline">{postgresFilterCount} active</Badge> : undefined}
+            {...(postgresFilterCount > 0 ? { description: `${postgresFilterCount} active` } : {})}
+            {...(postgresFilterCount > 0
+              ? { action: <Badge variant="outline">{postgresFilterCount} active</Badge> }
+              : {})}
           >
           {!postgresAvailable ? (
             <p className="text-sm text-muted-foreground">Postgres 当前不可用。</p>
@@ -486,11 +521,11 @@ function StorageSidebar(props: SidebarProps) {
           </SidebarSection>
 
           {!postgresAvailable ? (
-            <div className="border-t border-border/60 pt-4">
+            <div className="border-t border-black/8 pt-4">
               <p className="text-sm text-muted-foreground">Postgres 当前不可用。</p>
             </div>
           ) : (
-            <div className="space-y-1.5 border-t border-border/60 pt-4">
+            <div className="space-y-1.5 border-t border-black/8 pt-4">
               {props.storageOverview?.postgres.tables.map((table) => (
                 <SidebarActionItem
                   key={table.name}
@@ -516,7 +551,7 @@ function StorageSidebar(props: SidebarProps) {
                 value={props.redisKeyPattern}
                 onChange={(event) => props.onRedisKeyPatternChange(event.target.value)}
                 placeholder="oah:*"
-                className="h-9 rounded-xl border-border/70 bg-background/85 text-xs shadow-none"
+                className="h-9 rounded-xl border-black/10 bg-white/68 text-xs shadow-none"
               />
               <Button
                 variant="secondary"
@@ -537,7 +572,10 @@ function StorageSidebar(props: SidebarProps) {
             </div>
           </SidebarSection>
 
-          <SidebarSection title="Hot Paths" description={redisHotCount > 0 ? `${redisHotCount} entries` : undefined}>
+          <SidebarSection
+            title="Hot Paths"
+            {...(redisHotCount > 0 ? { description: `${redisHotCount} entries` } : {})}
+          >
             <div className="grid grid-cols-3 gap-2">
               <SidebarMetric label="Queues" value={String(props.storageOverview?.redis.sessionQueues.length ?? 0)} tone="amber" />
               <SidebarMetric label="Locks" value={String(props.storageOverview?.redis.sessionLocks.length ?? 0)} tone="rose" />
@@ -601,7 +639,7 @@ function StorageSidebar(props: SidebarProps) {
                   key={item.key}
                   title={item.key}
                   subtitle={item.type}
-                  badge={item.size !== undefined ? `${item.size}` : undefined}
+                  {...(item.size !== undefined ? { badge: `${item.size}` } : {})}
                   icon={<Rows3 className="h-4 w-4" />}
                   active={props.selectedRedisKey === item.key}
                   onClick={() => {
@@ -626,14 +664,14 @@ function ProviderSidebar(props: SidebarProps) {
     <div className="flex h-full min-h-0 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-4">
         <div className="space-y-5">
-          <div className="space-y-3 border-b border-border/60 pb-4">
+          <div className="space-y-3 border-b border-black/8 pb-4">
             <div className="grid grid-cols-2 gap-2">
               <SidebarMetric label="Health" value={props.healthStatus} tone={probeTone(props.healthStatus)} />
               <SidebarMetric label="Stream" value={props.streamState} tone={streamTone(props.streamState)} />
               <SidebarMetric label="Models" value={String(props.platformModels.length)} tone="emerald" />
               <SidebarMetric label="Providers" value={String(props.modelProviders.length)} tone="sky" />
             </div>
-            <div className="space-y-2 border-l border-border/70 pl-3">
+            <div className="space-y-2 border-l border-black/8 pl-3">
               <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Base URL</p>
               <p className="truncate text-xs text-foreground">{props.connection.baseUrl || "not configured"}</p>
               <div className="flex flex-wrap gap-1.5">
@@ -706,11 +744,11 @@ export function AppSidebar(props: SidebarProps) {
 
   return (
     <>
-      <aside className="bg-background flex min-h-0 w-[288px] shrink-0 flex-col border-r border-border">
-        <div className="border-b border-border/80 bg-gradient-to-b from-muted/35 to-transparent px-3 py-3">
+      <aside className="app-sidebar-surface flex min-h-0 w-[288px] shrink-0 flex-col border-r border-black/10">
+        <div className="border-b border-black/8 bg-gradient-to-b from-white/34 to-transparent px-3 py-3">
           <div className="flex items-start justify-between gap-3">
             <div className="flex min-w-0 items-start gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-border/70 bg-background shadow-sm">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-black/10 bg-white/72 shadow-[inset_0_1px_0_rgba(255,255,255,0.74),0_14px_24px_-22px_rgba(17,17,17,0.42)]">
                 {icon}
               </div>
               <div className="min-w-0">

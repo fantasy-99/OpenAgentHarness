@@ -1,6 +1,6 @@
 import type { ChatMessage, Message, RunStep } from "@oah/api-contracts";
 
-import { isStructuredToolResultOutput, normalizeToolResultOutput } from "./runtime-message-content.js";
+import { isMessageContentForRole, isStructuredToolResultOutput, normalizeToolResultOutput } from "./runtime-message-content.js";
 
 type MessagePart = Extract<Message["content"], unknown[]>[number];
 type ToolCallMessagePart = Extract<MessagePart, { type: "tool-call" }>;
@@ -101,13 +101,54 @@ export function normalizePersistedMessageRecord(message: Message): { message: Me
     return { message, changed: false };
   }
 
-  return {
-    message: {
-      ...message,
-      content: normalizedContent.content as Message["content"]
-    },
-    changed: true
-  };
+  switch (message.role) {
+    case "system":
+      if (isMessageContentForRole("system", normalizedContent.content)) {
+        return {
+          message: {
+            ...message,
+            content: normalizedContent.content
+          },
+          changed: true
+        };
+      }
+      break;
+    case "user":
+      if (isMessageContentForRole("user", normalizedContent.content)) {
+        return {
+          message: {
+            ...message,
+            content: normalizedContent.content
+          },
+          changed: true
+        };
+      }
+      break;
+    case "assistant":
+      if (isMessageContentForRole("assistant", normalizedContent.content)) {
+        return {
+          message: {
+            ...message,
+            content: normalizedContent.content
+          },
+          changed: true
+        };
+      }
+      break;
+    case "tool":
+      if (isMessageContentForRole("tool", normalizedContent.content)) {
+        return {
+          message: {
+            ...message,
+            content: normalizedContent.content
+          },
+          changed: true
+        };
+      }
+      break;
+  }
+
+  return { message, changed: false };
 }
 
 function buildSyntheticToolMessage(anchor: Message, toolCalls: ToolCallMessagePart[], nextMessage?: Message): Message {

@@ -14,6 +14,7 @@ servers:
     description: Local development
 tags:
   - name: Workspaces
+  - name: Files
   - name: Catalog
   - name: Models
   - name: Sessions
@@ -133,28 +134,6 @@ paths:
           description: Workspace deleted
         default:
           $ref: '#/components/responses/ErrorResponse'
-  /workspaces/{workspaceId}/settings:
-    patch:
-      tags: [Workspaces]
-      summary: Update workspace settings
-      operationId: updateWorkspaceSettings
-      parameters:
-        - $ref: '#/components/parameters/WorkspaceId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/UpdateWorkspaceSettingsRequest'
-      responses:
-        '200':
-          description: Updated workspace metadata
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Workspace'
-        default:
-          $ref: '#/components/responses/ErrorResponse'
   /workspaces/{workspaceId}/history-mirror:
     get:
       tags: [Workspaces]
@@ -201,6 +180,170 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WorkspaceCatalog'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /workspaces/{workspaceId}/entries:
+    get:
+      tags: [Files]
+      summary: List direct children of a workspace directory
+      operationId: listWorkspaceEntries
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+        - $ref: '#/components/parameters/DirectoryPathQuery'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/EntrySortBy'
+        - $ref: '#/components/parameters/SortOrder'
+      responses:
+        '200':
+          description: Directory entry page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceEntryPage'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+    delete:
+      tags: [Files]
+      summary: Delete a workspace file or directory
+      operationId: deleteWorkspaceEntry
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+        - $ref: '#/components/parameters/EntryPathQuery'
+        - $ref: '#/components/parameters/Recursive'
+      responses:
+        '200':
+          description: Entry deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceDeleteResult'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /workspaces/{workspaceId}/entries/move:
+    patch:
+      tags: [Files]
+      summary: Rename or move a workspace file or directory
+      operationId: moveWorkspaceEntry
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MoveWorkspaceEntryRequest'
+      responses:
+        '200':
+          description: Entry moved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceEntry'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /workspaces/{workspaceId}/files/content:
+    get:
+      tags: [Files]
+      summary: Read workspace file content
+      operationId: getWorkspaceFileContent
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+        - $ref: '#/components/parameters/EntryPathQuery'
+        - $ref: '#/components/parameters/FileEncoding'
+        - $ref: '#/components/parameters/MaxBytes'
+      responses:
+        '200':
+          description: File content
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceFileContent'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+    put:
+      tags: [Files]
+      summary: Create or overwrite workspace file content
+      operationId: putWorkspaceFileContent
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PutWorkspaceFileRequest'
+      responses:
+        '200':
+          description: File written
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceEntry'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /workspaces/{workspaceId}/files/upload:
+    put:
+      tags: [Files]
+      summary: Upload raw file bytes into a workspace path
+      operationId: uploadWorkspaceFile
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+        - $ref: '#/components/parameters/EntryPathQuery'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: File uploaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceEntry'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /workspaces/{workspaceId}/files/download:
+    get:
+      tags: [Files]
+      summary: Download raw file bytes from a workspace path
+      operationId: downloadWorkspaceFile
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+        - $ref: '#/components/parameters/EntryPathQuery'
+      responses:
+        '200':
+          description: File download
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /workspaces/{workspaceId}/directories:
+    post:
+      tags: [Files]
+      summary: Create a workspace directory
+      operationId: createWorkspaceDirectory
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkspaceDirectoryRequest'
+      responses:
+        '201':
+          description: Directory created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceEntry'
         default:
           $ref: '#/components/responses/ErrorResponse'
   /workspaces/{workspaceId}/sessions:
@@ -511,6 +654,58 @@ components:
       required: false
       schema:
         type: string
+    DirectoryPathQuery:
+      name: path
+      in: query
+      required: false
+      schema:
+        type: string
+        default: .
+    EntryPathQuery:
+      name: path
+      in: query
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    EntrySortBy:
+      name: sortBy
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [name, updatedAt, sizeBytes, type]
+        default: name
+    SortOrder:
+      name: sortOrder
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [asc, desc]
+        default: asc
+    Recursive:
+      name: recursive
+      in: query
+      required: false
+      schema:
+        type: boolean
+        default: false
+    FileEncoding:
+      name: encoding
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [utf8, base64]
+        default: utf8
+    MaxBytes:
+      name: maxBytes
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
     RunIdQuery:
       name: runId
       in: query
@@ -626,11 +821,102 @@ components:
             $ref: '#/components/schemas/Workspace'
         nextCursor:
           type: string
-    UpdateWorkspaceSettingsRequest:
+    WorkspaceEntry:
       type: object
-      required: [historyMirrorEnabled]
+      required:
+        - path
+        - name
+        - type
+        - readOnly
       properties:
-        historyMirrorEnabled:
+        path:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+          enum: [file, directory]
+        sizeBytes:
+          type: integer
+          minimum: 0
+        mimeType:
+          type: string
+        etag:
+          type: string
+        updatedAt:
+          $ref: '#/components/schemas/Timestamp'
+        createdAt:
+          $ref: '#/components/schemas/Timestamp'
+        readOnly:
+          type: boolean
+      additionalProperties: false
+    WorkspaceEntryPage:
+      type: object
+      required:
+        - workspaceId
+        - path
+        - items
+      properties:
+        workspaceId:
+          type: string
+        path:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkspaceEntry'
+        nextCursor:
+          type: string
+      additionalProperties: false
+    WorkspaceFileContent:
+      type: object
+      required:
+        - workspaceId
+        - path
+        - encoding
+        - content
+        - truncated
+        - readOnly
+      properties:
+        workspaceId:
+          type: string
+        path:
+          type: string
+        encoding:
+          type: string
+          enum: [utf8, base64]
+        content:
+          type: string
+        truncated:
+          type: boolean
+        sizeBytes:
+          type: integer
+          minimum: 0
+        mimeType:
+          type: string
+        etag:
+          type: string
+        updatedAt:
+          $ref: '#/components/schemas/Timestamp'
+        readOnly:
+          type: boolean
+      additionalProperties: false
+    WorkspaceDeleteResult:
+      type: object
+      required:
+        - workspaceId
+        - path
+        - type
+        - deleted
+      properties:
+        workspaceId:
+          type: string
+        path:
+          type: string
+        type:
+          type: string
+          enum: [file, directory]
+        deleted:
           type: boolean
       additionalProperties: false
     WorkspaceHistoryMirrorStatus:
@@ -1221,6 +1507,55 @@ components:
           type: string
           enum: [local, container, remote_runner]
           default: local
+      additionalProperties: false
+    PutWorkspaceFileRequest:
+      type: object
+      required:
+        - path
+        - content
+      properties:
+        path:
+          type: string
+          minLength: 1
+        content:
+          type: string
+        encoding:
+          type: string
+          enum: [utf8, base64]
+          default: utf8
+        overwrite:
+          type: boolean
+          default: true
+        ifMatch:
+          type: string
+      additionalProperties: false
+    CreateWorkspaceDirectoryRequest:
+      type: object
+      required:
+        - path
+      properties:
+        path:
+          type: string
+          minLength: 1
+        createParents:
+          type: boolean
+          default: true
+      additionalProperties: false
+    MoveWorkspaceEntryRequest:
+      type: object
+      required:
+        - sourcePath
+        - targetPath
+      properties:
+        sourcePath:
+          type: string
+          minLength: 1
+        targetPath:
+          type: string
+          minLength: 1
+        overwrite:
+          type: boolean
+          default: false
       additionalProperties: false
     WorkspaceImportRequest:
       type: object

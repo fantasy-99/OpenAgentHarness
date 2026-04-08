@@ -26,6 +26,8 @@ import type {
 } from "@oah/runtime-core";
 import {
   AppError,
+  isMessageContentForRole,
+  isMessageRole,
   createId,
   normalizePersistedMessageRecord,
   normalizePersistedMessages,
@@ -79,6 +81,10 @@ interface HistoryEventRow {
 
 interface TableInfoRow {
   name: string;
+}
+
+interface RegistryWorkspaceRow {
+  payload: string;
 }
 
 const schemaStatements = [
@@ -168,6 +174,19 @@ const schemaStatements = [
   `create index if not exists history_events_workspace_idx on history_events (workspace_id, id asc)`
 ];
 
+const registrySchemaStatements = [
+  `create table if not exists workspace_registry (
+    kind text not null,
+    root_path text not null,
+    id text not null,
+    payload text not null,
+    updated_at text not null,
+    primary key (kind, root_path)
+  )`,
+  `create unique index if not exists workspace_registry_id_idx on workspace_registry (id)`,
+  `create index if not exists workspace_registry_updated_idx on workspace_registry (updated_at desc, id asc)`
+];
+
 function defaultProjectDbPath(workspace: Pick<WorkspaceRecord, "rootPath">): string {
   return path.join(workspace.rootPath, ".openharness", "data", "history.db");
 }
@@ -217,6 +236,47 @@ function tableExists(db: DatabaseSync, tableName: string): boolean {
     .prepare("select name from sqlite_master where type = 'table' and name = ? limit 1")
     .get(tableName) as TableInfoRow | undefined;
   return Boolean(row?.name);
+}
+
+function parseLegacyMessage(row: Record<string, unknown>): Message {
+  const roleValue = stringValue(row.role);
+  const role: Message["role"] = isMessageRole(roleValue) ? roleValue : "assistant";
+  const content = parseJsonish(row.content);
+  const metadata = parseJsonish(row.metadata);
+  const base = {
+    id: stringValue(row.id) ?? "",
+    sessionId: stringValue(row.session_id) ?? "",
+    createdAt: stringValue(row.created_at) ?? nowIso(),
+    ...(stringValue(row.run_id) ? { runId: stringValue(row.run_id) } : {}),
+    ...(metadata !== undefined ? { metadata: metadata as Record<string, unknown> } : {})
+  };
+
+  switch (role) {
+    case "system":
+      return {
+        ...base,
+        role,
+        content: isMessageContentForRole(role, content) ? content : ""
+      };
+    case "user":
+      return {
+        ...base,
+        role,
+        content: isMessageContentForRole(role, content) ? content : ""
+      };
+    case "assistant":
+      return {
+        ...base,
+        role,
+        content: isMessageContentForRole(role, content) ? content : ""
+      };
+    case "tool":
+      return {
+        ...base,
+        role,
+        content: isMessageContentForRole(role, content) ? content : []
+      };
+  }
 }
 
 function tableHasColumn(db: DatabaseSync, tableName: string, columnName: string): boolean {
@@ -277,15 +337,7 @@ function migrateLegacyMirrorSchemaIfNeeded(db: DatabaseSync): void {
     if (tableExists(db, "legacy_messages")) {
       const rows = coerceRows<Record<string, unknown>>(db.prepare("select * from legacy_messages").all());
       for (const row of rows) {
-        const payload: Message = {
-          id: stringValue(row.id) ?? "",
-          sessionId: stringValue(row.session_id) ?? "",
-          role: (stringValue(row.role) ?? "assistant") as Message["role"],
-          content: (parseJsonish(row.content) ?? "") as Message["content"],
-          createdAt: stringValue(row.created_at) ?? nowIso(),
-          ...(stringValue(row.run_id) ? { runId: stringValue(row.run_id) } : {}),
-          ...(parseJsonish(row.metadata) !== undefined ? { metadata: parseJsonish(row.metadata) as Record<string, unknown> } : {})
-        };
+        const payload = parseLegacyMessage(row);
 
         db.prepare("insert or replace into messages (id, session_id, run_id, created_at, payload) values (?, ?, ?, ?, ?)")
           .run(payload.id, payload.sessionId, payload.runId ?? null, payload.createdAt, serializeJson(payload));
@@ -651,13 +703,16 @@ class SQLiteWorkspaceRepository implements WorkspaceRepository {
 
 class SQLitePersistenceCoordinator {
   readonly #shadowRoot: string;
+  readonly #registryDbPath: string;
   readonly #workspaceRecords = new Map<string, WorkspaceRecord>();
   readonly #handles = new Map<string, DatabaseHandle>();
   readonly #sessionIndex = new Map<string, string>();
   readonly #runIndex = new Map<string, string>();
+  #registryDb: DatabaseSync | undefined;
 
   constructor(shadowRoot: string) {
     this.#shadowRoot = shadowRoot;
+    this.#registryDbPath = path.join(shadowRoot, "workspace-registry.db");
   }
 
   async upsertWorkspace(workspace: WorkspaceRecord): Promise<void> {
@@ -690,6 +745,23 @@ class SQLitePersistenceCoordinator {
         workspace.updatedAt
       );
     this.reindexWorkspace(handle.db, workspace.id);
+
+    const registryDb = await this.ensureRegistryDb();
+    runInTransaction(registryDb, () => {
+      registryDb
+        .prepare("delete from workspace_registry where id = ? and (kind != ? or root_path != ?)")
+        .run(workspace.id, workspace.kind, workspace.rootPath);
+      registryDb
+        .prepare(
+          `insert into workspace_registry (kind, root_path, id, payload, updated_at)
+           values (?, ?, ?, ?, ?)
+           on conflict(kind, root_path) do update set
+             id = excluded.id,
+             payload = excluded.payload,
+             updated_at = excluded.updated_at`
+        )
+        .run(workspace.kind, workspace.rootPath, workspace.id, serializeJson(workspace), workspace.updatedAt);
+    });
   }
 
   async deleteWorkspace(workspaceId: string): Promise<void> {
@@ -704,8 +776,13 @@ class SQLitePersistenceCoordinator {
     }
 
     if (!workspace) {
+      const registryDb = await this.ensureRegistryDb();
+      registryDb.prepare("delete from workspace_registry where id = ?").run(workspaceId);
       return;
     }
+
+    const registryDb = await this.ensureRegistryDb();
+    registryDb.prepare("delete from workspace_registry where id = ?").run(workspaceId);
 
     const dbPath = this.dbPathForWorkspace(workspace);
     if (dbPath.startsWith(`${this.#shadowRoot}${path.sep}`) || dbPath === this.#shadowRoot) {
@@ -722,6 +799,8 @@ class SQLitePersistenceCoordinator {
       db.close();
     }
     this.#handles.clear();
+    this.#registryDb?.close();
+    this.#registryDb = undefined;
   }
 
   async getWorkspaceHandle(workspaceId: string): Promise<DatabaseHandle> {
@@ -805,6 +884,14 @@ class SQLitePersistenceCoordinator {
     return snapshots;
   }
 
+  async listPersistedWorkspaces(): Promise<WorkspaceRecord[]> {
+    const registryDb = await this.ensureRegistryDb();
+    const rows = coerceRows<RegistryWorkspaceRow>(
+      registryDb.prepare("select payload from workspace_registry order by updated_at desc, id asc").all()
+    );
+    return rows.map((row) => parseJson<WorkspaceRecord>(row.payload));
+  }
+
   dbPathForWorkspace(workspace: Pick<WorkspaceRecord, "id" | "kind" | "readOnly" | "rootPath">): string {
     if (workspace.kind === "project" && !workspace.readOnly) {
       return defaultProjectDbPath(workspace);
@@ -835,6 +922,22 @@ class SQLitePersistenceCoordinator {
     this.#handles.set(workspace.id, handle);
     this.reindexWorkspace(db, workspace.id);
     return handle;
+  }
+
+  async ensureRegistryDb(): Promise<DatabaseSync> {
+    if (this.#registryDb) {
+      return this.#registryDb;
+    }
+
+    await mkdir(path.dirname(this.#registryDbPath), { recursive: true });
+    const db = new DatabaseSync(this.#registryDbPath);
+    db.exec("pragma journal_mode = wal");
+    db.exec("pragma busy_timeout = 5000");
+    for (const statement of registrySchemaStatements) {
+      db.exec(statement);
+    }
+    this.#registryDb = db;
+    return db;
   }
 
   reindexWorkspace(db: DatabaseSync, workspaceId: string): void {
@@ -1511,6 +1614,7 @@ export interface SQLiteRuntimePersistence {
   artifactRepository: ArtifactRepository;
   historyEventRepository: HistoryEventRepository;
   listWorkspaceSnapshots(candidates: WorkspaceRecord[]): Promise<WorkspaceRecord[]>;
+  listPersistedWorkspaces(): Promise<WorkspaceRecord[]>;
   close(): Promise<void>;
 }
 
@@ -1568,6 +1672,9 @@ export async function createSQLiteRuntimePersistence(
     historyEventRepository,
     listWorkspaceSnapshots(candidates) {
       return coordinator.listWorkspaceSnapshots(candidates);
+    },
+    listPersistedWorkspaces() {
+      return coordinator.listPersistedWorkspaces();
     },
     close() {
       return coordinator.close();

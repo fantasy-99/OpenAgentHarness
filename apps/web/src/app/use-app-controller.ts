@@ -44,12 +44,14 @@ import { useNavigationActions } from "./use-navigation-actions";
 import { buildRuntimeViewModel } from "./runtime-view-model";
 import { useNavigationState } from "./use-navigation-state";
 import { useStorageController } from "./use-storage-controller";
+import { useWorkspaceFileManager } from "./use-workspace-file-manager";
 
 export function useAppController() {
   const [connection, setConnection] = usePersistentState<ConnectionSettings>(storageKeys.connection, {
     baseUrl: "",
     token: ""
   });
+  const [workspaceTemplateFilter, setWorkspaceTemplateFilter] = usePersistentState<string>(storageKeys.workspaceTemplateFilter, "");
   const [modelDraft, setModelDraft] = usePersistentState<ModelDraft>(storageKeys.modelDraft, {
     model: "",
     prompt: "你好，请简短回复一句话，确认模型链路已经接通。"
@@ -117,8 +119,6 @@ export function useAppController() {
     setSession,
     showWorkspaceCreator,
     setShowWorkspaceCreator,
-    mirrorToggleBusy,
-    setMirrorToggleBusy,
     mirrorRebuildBusy,
     setMirrorRebuildBusy,
     workspaceManagementEnabled,
@@ -145,6 +145,21 @@ export function useAppController() {
   const shouldAutoFollowConversationRef = useRef(true);
   const selectedRunIdValue = selectedRunId.trim();
   const streamRunId = filterSelectedRun ? selectedRunIdValue : "";
+  const workspaceTemplateFilterValue = workspaceTemplateFilter.trim();
+  const workspaceTemplateFilterOptions = Array.from(
+    new Set(
+      [...workspaceTemplates, ...orderedSavedWorkspaces.map((entry) => entry.template ?? ""), workspaceTemplateFilterValue]
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0)
+    )
+  ).sort((left, right) => left.localeCompare(right));
+  const filteredSavedWorkspaces = workspaceTemplateFilterValue
+    ? orderedSavedWorkspaces.filter((entry) => (entry.template ?? "").trim() === workspaceTemplateFilterValue)
+    : orderedSavedWorkspaces;
+  const filteredSavedSessionsCount = filteredSavedWorkspaces.reduce(
+    (count, entry) => count + (sessionsByWorkspaceId.get(entry.id)?.length ?? 0),
+    0
+  );
   const runtimeViewModel = buildRuntimeViewModel({
     messages,
     runSteps,
@@ -207,6 +222,15 @@ export function useAppController() {
     setActivity,
     setErrorMessage
   });
+  const workspaceFileManager = useWorkspaceFileManager({
+    connection,
+    request,
+    workspaceId: activeWorkspaceId,
+    workspace: workspace,
+    enabled: surfaceMode === "runtime" && mainViewMode === "conversation",
+    setActivity,
+    setErrorMessage
+  });
   const navigationActions = useNavigationActions({
     request,
     setActivity,
@@ -236,7 +260,6 @@ export function useAppController() {
       session,
       setSession,
       setShowWorkspaceCreator,
-      setMirrorToggleBusy,
       setMirrorRebuildBusy,
       setWorkspaceManagementEnabled
     },
@@ -1101,8 +1124,13 @@ export function useAppController() {
     },
     sidebarSurfaceProps: {
       surfaceMode,
+      workspaceTemplateFilter,
+      setWorkspaceTemplateFilter,
+      workspaceTemplateFilterOptions,
+      filteredSavedWorkspaces,
       orderedSavedWorkspaces,
-      savedSessionsCount: savedSessions.length,
+      savedSessionsCount: filteredSavedSessionsCount,
+      totalSavedSessionsCount: savedSessions.length,
       workspaceManagementEnabled,
       showWorkspaceCreator,
       setShowWorkspaceCreator,
@@ -1235,13 +1263,12 @@ export function useAppController() {
       isSwitchingSessionAgent: switchingSessionAgentId === session?.id && pendingSessionAgentName !== null,
       switchSessionAgent: (targetId: string, activeAgentName: string) => void switchSessionAgent(targetId, activeAgentName),
       mirrorStatus,
-      mirrorToggleBusy,
       mirrorRebuildBusy,
-      updateWorkspaceHistoryMirrorEnabled: (enabled: boolean) => void navigationActions.updateWorkspaceHistoryMirrorEnabled(enabled),
       refreshWorkspace: (targetId: string) => void navigationActions.refreshWorkspace(targetId, true),
       rebuildWorkspaceHistoryMirror: () => void navigationActions.rebuildWorkspaceHistoryMirror(),
       streamState,
-      isRunning: !isTerminalRunStatus(run?.status) && run?.status != null
+      isRunning: !isTerminalRunStatus(run?.status) && run?.status != null,
+      fileManager: workspaceFileManager.fileManagerSurfaceProps
     }
   };
 }

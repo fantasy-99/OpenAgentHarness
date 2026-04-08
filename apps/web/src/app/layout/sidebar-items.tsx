@@ -7,14 +7,14 @@ import { formatTimestamp, pathLeaf, type SavedSessionRecord, type SavedWorkspace
 
 function workspaceItemClass(active: boolean) {
   return active
-    ? "text-foreground"
-    : "text-foreground/82 hover:bg-muted/18 hover:text-foreground/94";
+    ? "bg-white/62 text-foreground shadow-[0_16px_28px_-26px_rgba(17,17,17,0.35)]"
+    : "text-foreground/82 hover:bg-white/34 hover:text-foreground/94";
 }
 
 function sessionItemClass(active: boolean) {
   return active
-    ? "bg-foreground/[0.045] border border-foreground/10 shadow-sm"
-    : "border border-transparent hover:bg-muted/30";
+    ? "border border-black/10 bg-white/62 shadow-[0_16px_28px_-26px_rgba(17,17,17,0.35)]"
+    : "border border-transparent hover:bg-white/34";
 }
 
 function hasTextSelection() {
@@ -59,11 +59,11 @@ export function WorkspaceNavItem(props: {
         props.onSelect();
       }}
     >
-      {props.active ? <span className="absolute left-0 top-2 bottom-2 w-1 rounded-full bg-foreground/40" aria-hidden="true" /> : null}
+      {props.active ? <span className="absolute left-0 top-2 bottom-2 w-1 rounded-full bg-foreground/28" aria-hidden="true" /> : null}
       <Button
         variant="ghost"
         size="icon"
-        className="h-6 w-6 shrink-0 rounded-md text-muted-foreground/78 hover:bg-background/55 hover:text-foreground"
+        className="h-6 w-6 shrink-0 rounded-md text-muted-foreground/78 hover:bg-white/58 hover:text-foreground"
         onClick={(e) => { e.stopPropagation(); props.onToggleExpanded(); }}
       >
         <ExpandIcon className="h-3.5 w-3.5" />
@@ -99,7 +99,7 @@ export function WorkspaceNavItem(props: {
         <Button
           variant="ghost"
           size="icon"
-          className="h-6 w-6 shrink-0 rounded-md text-muted-foreground/56 opacity-0 transition group-hover:opacity-100 hover:bg-background/55 hover:text-rose-600 dark:hover:text-rose-400"
+          className="h-6 w-6 shrink-0 rounded-md text-muted-foreground/56 opacity-0 transition group-hover:opacity-100 hover:bg-white/58 hover:text-foreground"
           onClick={(e) => {
             e.stopPropagation();
             props.onRemove();
@@ -131,7 +131,7 @@ export function SessionNavItem(props: {
   const childLineClass = props.active ? "bg-foreground/30" : "bg-border/75 group-hover:bg-border";
   const rowSurfaceClass = isChild
     ? props.active
-      ? "border border-transparent bg-foreground/[0.025]"
+      ? "border border-transparent bg-white/38"
       : "border border-transparent bg-transparent hover:bg-transparent"
     : sessionItemClass(props.active);
   const rowPaddingClass = isChild ? "py-1.5 pr-2.5 pl-2" : "px-2 py-2.5 pr-3";
@@ -170,7 +170,7 @@ export function SessionNavItem(props: {
         <Button
           variant="ghost"
           size="icon"
-          className={`${controlSizeClass} shrink-0 rounded-md text-muted-foreground/72 hover:bg-background/55 hover:text-foreground`}
+          className={`${controlSizeClass} shrink-0 rounded-md text-muted-foreground/72 hover:bg-white/58 hover:text-foreground`}
           onClick={(event) => {
             event.stopPropagation();
             props.onToggleExpanded?.();
@@ -221,7 +221,7 @@ export function SessionNavItem(props: {
         <Button
           variant="ghost"
           size="icon"
-          className="h-6 w-6 shrink-0 rounded-md text-muted-foreground/66 hover:bg-background/78 hover:text-foreground"
+          className="h-6 w-6 shrink-0 rounded-md text-muted-foreground/66 hover:bg-white/68 hover:text-foreground"
           title="Rename session"
           onClick={(event) => {
             event.stopPropagation();
@@ -237,7 +237,7 @@ export function SessionNavItem(props: {
         <Button
           variant="ghost"
           size="icon"
-          className="h-6 w-6 shrink-0 rounded-md text-muted-foreground/66 hover:bg-background/78 hover:text-rose-600 dark:hover:text-rose-400"
+          className="h-6 w-6 shrink-0 rounded-md text-muted-foreground/66 hover:bg-white/68 hover:text-foreground"
           title="Delete session"
           onClick={(event) => {
             event.stopPropagation();

@@ -6,27 +6,27 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --background: hsl(0 0% 98%);
-  --foreground: hsl(0 0% 10%);
-  --card: hsl(0 0% 100%);
-  --muted-foreground: hsl(0 0% 45%);
-  --accent: hsl(0 0% 90%);
-  --accent-strong: #131416;
-  --accent-soft: rgba(17, 19, 24, 0.05);
-  --accent-foreground: hsl(0 0% 15%);
-  --ring: hsl(0 0% 20%);
-  --border: hsl(0 0% 88%);
+  --background: hsl(0 0% 94%);
+  --foreground: hsl(0 0% 9%);
+  --card: hsl(0 0% 98.8%);
+  --muted-foreground: hsl(0 0% 38%);
+  --accent: hsl(0 0% 88.5%);
+  --accent-strong: #111214;
+  --accent-soft: rgba(255, 255, 255, 0.38);
+  --accent-foreground: hsl(0 0% 14%);
+  --ring: hsl(0 0% 14%);
+  --border: hsl(0 0% 82%);
   --card-foreground: hsl(0 0% 10%);
-  --popover: hsl(0 0% 100%);
+  --popover: hsl(0 0% 99.2%);
   --popover-foreground: hsl(0 0% 10%);
-  --primary: hsl(0 0% 15%);
+  --primary: hsl(0 0% 10%);
   --primary-foreground: hsl(0 0% 98%);
-  --secondary: hsl(0 0% 94%);
-  --secondary-foreground: hsl(0 0% 20%);
-  --muted: hsl(0 0% 92%);
-  --destructive: hsl(0 0% 25%);
+  --secondary: hsl(0 0% 89.5%);
+  --secondary-foreground: hsl(0 0% 18%);
+  --muted: hsl(0 0% 91.2%);
+  --destructive: hsl(0 0% 22%);
   --destructive-foreground: hsl(0 0% 98%);
-  --input: hsl(0 0% 88%);
+  --input: hsl(0 0% 80%);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
@@ -41,16 +41,33 @@
   --selection-inverse-foreground: hsl(0 0% 8%);
   --selection-inverse-code-background: hsl(0 0% 100% / 0.86);
   --selection-inverse-code-foreground: hsl(0 0% 4%);
-  --gradient-start: hsl(0 0% 95%);
-  --gradient-end: hsl(0 0% 98%);
-  --sidebar: hsl(0 0% 98%);
+  --gradient-start: hsl(0 0% 91%);
+  --gradient-end: hsl(0 0% 96%);
+  --sidebar: hsl(0 0% 90.8%);
   --sidebar-foreground: hsl(0 0% 10%);
-  --sidebar-primary: hsl(0 0% 15%);
+  --sidebar-primary: hsl(0 0% 14%);
   --sidebar-primary-foreground: hsl(0 0% 98%);
-  --sidebar-accent: hsl(0 0% 94%);
+  --sidebar-accent: hsl(0 0% 86%);
   --sidebar-accent-foreground: hsl(0 0% 20%);
-  --sidebar-border: hsl(0 0% 88%);
+  --sidebar-border: hsl(0 0% 79%);
   --sidebar-ring: hsl(0 0% 20%);
+  --app-shell-background: #e7e7e3;
+  --app-shell-gradient:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.65), transparent 30%),
+    radial-gradient(circle at top right, rgba(255, 255, 255, 0.45), transparent 24%),
+    linear-gradient(180deg, #ebebe7 0%, #ddddda 100%);
+  --app-topbar-background: rgba(239, 239, 234, 0.97);
+  --app-topbar-foreground: rgba(20, 20, 20, 0.95);
+  --app-topbar-muted: rgba(20, 20, 20, 0.5);
+  --app-topbar-border: rgba(17, 17, 17, 0.09);
+  --app-sidebar-background: linear-gradient(180deg, rgba(241, 241, 237, 0.94) 0%, rgba(228, 228, 223, 0.98) 100%);
+  --app-sidebar-border: rgba(255, 255, 255, 0.56);
+  --app-sidebar-shadow: rgba(13, 13, 13, 0.16);
+  --app-main-background: linear-gradient(180deg, rgba(247, 247, 244, 0.82) 0%, rgba(240, 240, 236, 0.96) 100%);
+  --app-main-overlay: rgba(255, 255, 255, 0.34);
+  --app-pane-background: linear-gradient(180deg, rgba(255, 255, 253, 0.76) 0%, rgba(248, 248, 245, 0.94) 100%);
+  --app-pane-border: rgba(17, 17, 17, 0.08);
+  --app-pane-shadow: rgba(17, 17, 17, 0.12);
 }
 
 * {
@@ -70,7 +87,8 @@ body {
   color: var(--foreground);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans SC", sans-serif;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
-  background-color: var(--background);
+  background-color: var(--app-shell-background);
+  background-image: var(--app-shell-gradient);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   letter-spacing: -0.01em;
@@ -79,7 +97,7 @@ body {
 }
 
 #root {
-  min-height: 100%;
+  min-height: 100vh;
   -webkit-user-select: text;
   user-select: text;
 }
@@ -107,26 +125,26 @@ body {
 }
 
 .ob-section {
-  border: 1px solid hsl(var(--border) / 0.7);
+  border: 1px solid color-mix(in srgb, var(--foreground) 8%, transparent);
   border-radius: 16px;
-  background: hsl(var(--card));
-  box-shadow: 0 1px 0 hsl(var(--background) / 0.72), 0 10px 30px hsl(var(--foreground) / 0.025);
+  background: linear-gradient(180deg, rgba(255, 255, 253, 0.88) 0%, rgba(249, 249, 246, 0.96) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.74), 0 18px 40px -34px rgba(17, 17, 17, 0.24);
 }
 
 .ob-subsection {
-  border: 1px solid hsl(var(--border) / 0.6);
+  border: 1px solid color-mix(in srgb, var(--foreground) 7%, transparent);
   border-radius: 12px;
-  background: hsl(var(--muted) / 0.5);
+  background: rgba(255, 255, 255, 0.38);
 }
 
 .panel-card {
-  border-color: hsl(var(--border) / 0.7);
-  background: hsl(var(--card));
-  box-shadow: 0 8px 24px hsl(var(--foreground) / 0.02);
+  border-color: color-mix(in srgb, var(--foreground) 8%, transparent);
+  background: rgba(255, 255, 252, 0.78);
+  box-shadow: 0 18px 36px -32px rgba(17, 17, 17, 0.22);
 }
 
 .subtle-panel {
-  background: hsl(var(--muted) / 0.4);
+  background: rgba(255, 255, 255, 0.28);
 }
 
 .ob-panel-list {
@@ -228,50 +246,85 @@ body {
 }
 
 .app-sidebar-surface {
-  background: var(--background);
+  background: var(--app-sidebar-background);
+  box-shadow:
+    inset -1px 0 0 var(--app-sidebar-border),
+    24px 0 42px -36px var(--app-sidebar-shadow);
 }
 
 .app-main-surface {
-  background: var(--background);
+  position: relative;
+  background: var(--app-main-background);
+  box-shadow: inset 0 1px 0 var(--app-main-overlay);
 }
 
 .app-topbar {
-  background: var(--background);
+  position: relative;
+  background: var(--app-topbar-background);
+  color: var(--app-topbar-foreground);
+  border-bottom: 1px solid var(--app-topbar-border);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    0 16px 34px -30px rgba(17, 17, 17, 0.28);
 }
 
-.workspace-pane {
-  border: 1px solid hsl(var(--border) / 0.5);
-  border-radius: 18px;
-  background: hsl(var(--card) / 0.85);
-  box-shadow: inset 0 1px 0 hsl(var(--background) / 0.74);
+.app-topbar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: none;
+}
+
+.app-shell {
+  background-color: var(--app-shell-background);
+  background-image: var(--app-shell-gradient);
+}
+
+.app-main-surface::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.18) 0%, transparent 24%);
+}
+
+.app-main-surface > * {
+  position: relative;
+  z-index: 1;
+}
+
+.app-toolbar-strip {
+  border-bottom: 1px solid rgba(17, 17, 17, 0.08);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.44) 0%, rgba(255, 255, 255, 0.08) 100%);
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.52);
 }
 
 .shadow-elegant {
   box-shadow:
-    0 1px 2px hsl(var(--foreground) / 0.04),
-    0 2px 4px hsl(var(--foreground) / 0.04),
-    0 4px 8px hsl(var(--foreground) / 0.04);
+    0 1px 2px rgba(17, 17, 17, 0.05),
+    0 6px 14px rgba(17, 17, 17, 0.06),
+    0 18px 28px -24px rgba(17, 17, 17, 0.22);
 }
 
 .shadow-elegant-lg {
   box-shadow:
-    0 2px 4px hsl(var(--foreground) / 0.04),
-    0 4px 8px hsl(var(--foreground) / 0.04),
-    0 8px 16px hsl(var(--foreground) / 0.06),
-    0 16px 32px hsl(var(--foreground) / 0.06);
+    0 2px 4px rgba(17, 17, 17, 0.05),
+    0 12px 22px rgba(17, 17, 17, 0.08),
+    0 28px 48px -36px rgba(17, 17, 17, 0.22);
 }
 
 .border-elegant {
-  border: 1px solid hsl(var(--border));
+  border: 1px solid color-mix(in srgb, var(--foreground) 8%, transparent);
 }
 
 .border-elegant-hover {
-  border: 1px solid hsl(var(--border));
+  border: 1px solid color-mix(in srgb, var(--foreground) 8%, transparent);
   transition: border-color 0.2s;
 }
 
 .border-elegant-hover:hover {
-  border-color: hsl(var(--foreground) / 0.2);
+  border-color: color-mix(in srgb, var(--foreground) 18%, transparent);
 }
 
 .hover-lift {
@@ -282,7 +335,7 @@ body {
 
 .hover-lift:hover {
   transform: translateY(-2px);
-  box-shadow: 0 8px 16px hsl(var(--foreground) / 0.08);
+  box-shadow: 0 14px 24px -18px rgba(17, 17, 17, 0.22);
 }
 
 /* Selection text styling */
@@ -583,13 +636,13 @@ code {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: color-mix(in srgb, var(--foreground) 14%, transparent);
   border-radius: 3px;
   transition: background 0.2s;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--muted-foreground) 50%, transparent);
+  background: color-mix(in srgb, var(--foreground) 24%, transparent);
 }
 
 @media (min-width: 768px) {

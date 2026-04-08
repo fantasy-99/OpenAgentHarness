@@ -86,7 +86,7 @@ describe("bootstrap single workspace mode", () => {
       updatedAt: "2026-01-01T00:00:00.000Z",
       kind: "project" as const,
       readOnly: false,
-      historyMirrorEnabled: false,
+      historyMirrorEnabled: true,
       defaultAgent: "assistant",
       settings: {
         defaultAgent: "assistant",
@@ -145,7 +145,7 @@ describe("bootstrap single workspace mode", () => {
         updatedAt: "2026-01-01T00:00:00.000Z",
         kind: "project" as const,
         readOnly: false,
-        historyMirrorEnabled: false,
+        historyMirrorEnabled: true,
         settings: {
           defaultAgent: "assistant",
           skillDirs: []
@@ -504,4 +504,150 @@ llm:
       await runtime.close();
     }
   }, 15_000);
+
+  it("restores imported external workspaces and their conversation history in sqlite mode", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-bootstrap-external-sqlite-"));
+    tempDirs.push(tempDir);
+
+    const workspaceDir = path.join(tempDir, "workspaces");
+    const chatDir = path.join(tempDir, "chat");
+    const templatesDir = path.join(tempDir, "templates");
+    const modelsDir = path.join(tempDir, "models");
+    const toolsDir = path.join(tempDir, "tools");
+    const skillsDir = path.join(tempDir, "skills");
+    const externalRoot = path.join(tempDir, "external-repo");
+    const configPath = path.join(tempDir, "server.yaml");
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    await Promise.all([
+      mkdir(workspaceDir, { recursive: true }),
+      mkdir(chatDir, { recursive: true }),
+      mkdir(templatesDir, { recursive: true }),
+      mkdir(modelsDir, { recursive: true }),
+      mkdir(toolsDir, { recursive: true }),
+      mkdir(skillsDir, { recursive: true }),
+      mkdir(path.join(externalRoot, ".openharness"), { recursive: true })
+    ]);
+
+    await writeFile(path.join(externalRoot, ".openharness", "settings.yaml"), "default_agent: assistant\n", "utf8");
+    await writeFile(
+      path.join(modelsDir, "openai.yaml"),
+      `
+openai-default:
+  provider: openai
+  name: gpt-4o-mini
+`,
+      "utf8"
+    );
+    await writeFile(
+      configPath,
+      `
+server:
+  host: 127.0.0.1
+  port: 8787
+storage: {}
+paths:
+  workspace_dir: ./workspaces
+  chat_dir: ./chat
+  template_dir: ./templates
+  model_dir: ./models
+  tool_dir: ./tools
+  skill_dir: ./skills
+llm:
+  default_model: openai-default
+`,
+      "utf8"
+    );
+
+    const runtimeA = await bootstrapRuntime({
+      argv: ["--config", configPath],
+      startWorker: false,
+      processKind: "api"
+    });
+
+    let importedWorkspaceId = "";
+    let sessionId = "";
+    try {
+      const imported = await runtimeA.importWorkspace?.({
+        rootPath: externalRoot,
+        kind: "project",
+        name: "External Repo"
+      });
+
+      expect(imported).toMatchObject({
+        rootPath: externalRoot,
+        kind: "project",
+        name: "External Repo"
+      });
+      importedWorkspaceId = imported?.id ?? "";
+
+      const session = await runtimeA.runtimeService.createSession({
+        workspaceId: importedWorkspaceId,
+        caller,
+        input: {}
+      });
+      sessionId = session.id;
+
+      const accepted = await runtimeA.runtimeService.createSessionMessage({
+        sessionId,
+        caller,
+        input: {
+          content: "hello external workspace"
+        }
+      });
+
+      await expect(runtimeA.runtimeService.listSessionMessages(sessionId, 10)).resolves.toMatchObject({
+        items: [expect.objectContaining({ role: "user", content: "hello external workspace" })]
+      });
+
+      await waitFor(async () => {
+        const run = await runtimeA.runtimeService.getRun(accepted.runId);
+        return ["completed", "failed", "cancelled"].includes(run.status);
+      });
+    } finally {
+      await runtimeA.close();
+    }
+
+    const runtimeB = await bootstrapRuntime({
+      argv: ["--config", configPath],
+      startWorker: false,
+      processKind: "api"
+    });
+
+    try {
+      const workspaces = await runtimeB.runtimeService.listWorkspaces(10);
+      expect(workspaces.items).toEqual([
+        expect.objectContaining({
+          id: importedWorkspaceId,
+          rootPath: externalRoot,
+          kind: "project",
+          name: "External Repo"
+        })
+      ]);
+
+      const sessions = await runtimeB.runtimeService.listWorkspaceSessions(importedWorkspaceId, 10);
+      expect(sessions.items).toEqual([
+        expect.objectContaining({
+          id: sessionId,
+          workspaceId: importedWorkspaceId
+        })
+      ]);
+
+      const messages = await runtimeB.runtimeService.listSessionMessages(sessionId, 10);
+      expect(messages.items).toEqual([
+        expect.objectContaining({
+          sessionId,
+          role: "user",
+          content: "hello external workspace"
+        })
+      ]);
+    } finally {
+      await runtimeB.close();
+    }
+  });
 });

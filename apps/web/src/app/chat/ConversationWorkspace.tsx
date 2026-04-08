@@ -10,6 +10,7 @@ import { formatTimestamp, readMessageAgentSnapshot, statusTone } from "../suppor
 import type { Message } from "@oah/api-contracts";
 import type { useAppController } from "../use-app-controller";
 import { Badge } from "@/components/ui/badge";
+import { WorkspaceFileManagerPanel } from "./WorkspaceFileManagerPanel";
 
 type RuntimeProps = ReturnType<typeof useAppController>["runtimeDetailSurfaceProps"];
 
@@ -465,7 +466,7 @@ export function ConversationWorkspace(props: RuntimeProps) {
   };
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col">
+    <div className="relative flex min-h-0 flex-1 flex-col">
       <div
         ref={(el) => {
           (scrollContainerRef as React.MutableRefObject<HTMLDivElement | null>).current = el;
@@ -651,6 +652,8 @@ export function ConversationWorkspace(props: RuntimeProps) {
           </div>
         </div>
       ) : null}
+
+      <WorkspaceFileManagerPanel fileManager={props.fileManager} />
     </div>
   );
 }

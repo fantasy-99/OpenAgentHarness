@@ -76,6 +76,7 @@ export interface DiscoveredToolServer {
   transportType: "stdio" | "http";
   toolPrefix?: string | undefined;
   command?: string | undefined;
+  workingDirectory?: string | undefined;
   url?: string | undefined;
   environment?: Record<string, string> | undefined;
   headers?: Record<string, string> | undefined;
@@ -96,8 +97,8 @@ export interface DiscoveredHook {
 
 export interface WorkspaceSettings {
   defaultAgent?: string | undefined;
+  template?: string | undefined;
   skillDirs?: string[] | undefined;
-  historyMirrorEnabled?: boolean | undefined;
   templateImports?:
     | {
         tools?: string[] | undefined;
@@ -695,6 +696,38 @@ function serializeToolServerDefinition(server: DiscoveredToolServer): Record<str
   };
 }
 
+function rewriteImportedToolCommandForWorkspace(
+  command: string,
+  platformToolDir: string,
+  toolName: string
+): string {
+  const workspaceToolPrefix = `./.openharness/tools/servers/${toolName}`;
+  const existingWorkspacePrefixes = [workspaceToolPrefix, workspaceToolPrefix.replace(/^\.\//u, "")];
+
+  if (existingWorkspacePrefixes.some((prefix) => command.includes(prefix))) {
+    return command;
+  }
+
+  const replacementCandidates = [
+    path.join(platformToolDir, "servers", toolName),
+    path.join(platformToolDir, toolName),
+    `./servers/${toolName}`,
+    `servers/${toolName}`,
+    `./${toolName}`
+  ]
+    .map((candidate) => candidate.trim())
+    .filter((candidate, index, values) => candidate.length > 0 && values.indexOf(candidate) === index)
+    .sort((left, right) => right.length - left.length);
+
+  for (const candidate of replacementCandidates) {
+    if (command.includes(candidate)) {
+      return command.split(candidate).join(workspaceToolPrefix);
+    }
+  }
+
+  return command;
+}
+
 async function importTemplateSkills(
   rootPath: string,
   platformSkillDir: string | undefined,
@@ -752,7 +785,7 @@ async function importTemplateTools(
       throw new Error(`Template tool import was not found: ${toolName}`);
     }
 
-    importedToolDefinitions[toolName] = serializeToolServerDefinition(toolServer);
+    const serializedDefinition = serializeToolServerDefinition(toolServer);
 
     const sourceDirectoryCandidates = [path.join(platformToolDir, "servers", toolName), path.join(platformToolDir, toolName)];
     let sourceDirectory: string | undefined;
@@ -766,6 +799,7 @@ async function importTemplateTools(
     }
 
     if (!sourceDirectory) {
+      importedToolDefinitions[toolName] = serializedDefinition;
       continue;
     }
 
@@ -776,6 +810,16 @@ async function importTemplateTools(
       force: false,
       errorOnExist: false
     });
+
+    if (typeof serializedDefinition.command === "string") {
+      serializedDefinition.command = rewriteImportedToolCommandForWorkspace(
+        serializedDefinition.command,
+        platformToolDir,
+        toolName
+      );
+    }
+
+    importedToolDefinitions[toolName] = serializedDefinition;
   }
 
   await mergeWorkspaceToolSettings(rootPath, importedToolDefinitions);
@@ -817,6 +861,8 @@ export async function initializeWorkspaceFromTemplate(input: InitializeWorkspace
   if (input.skills) {
     await writeWorkspaceSkills(input.rootPath, input.skills);
   }
+
+  await updateWorkspaceTemplateSetting(input.rootPath, input.templateName);
 }
 
 export async function listWorkspaceTemplates(templateDir: string): Promise<WorkspaceTemplateDescriptor[]> {
@@ -848,8 +894,8 @@ export async function loadWorkspaceSettings(workspaceRoot: string): Promise<Work
 
   const typedParsed = parsed as {
     default_agent?: string;
+    template?: string;
     skill_dirs?: string[];
-    history_mirror_enabled?: boolean;
     template_imports?: {
       tools?: string[];
       skills?: string[];
@@ -879,10 +925,8 @@ export async function loadWorkspaceSettings(workspaceRoot: string): Promise<Work
 
   return {
     ...(typedParsed.default_agent ? { defaultAgent: typedParsed.default_agent } : {}),
+    ...(typedParsed.template ? { template: typedParsed.template } : {}),
     ...(typedParsed.skill_dirs ? { skillDirs: typedParsed.skill_dirs } : {}),
-    ...(typeof typedParsed.history_mirror_enabled === "boolean"
-      ? { historyMirrorEnabled: typedParsed.history_mirror_enabled }
-      : {}),
     ...(typedParsed.template_imports
       ? {
           templateImports: {
@@ -899,7 +943,7 @@ export async function loadWorkspaceSettings(workspaceRoot: string): Promise<Work
   };
 }
 
-export async function updateWorkspaceHistoryMirrorSetting(workspaceRoot: string, enabled: boolean): Promise<void> {
+export async function updateWorkspaceTemplateSetting(workspaceRoot: string, template: string): Promise<void> {
   const settingsPath = path.join(workspaceRoot, ".openharness", "settings.yaml");
   await mkdir(path.dirname(settingsPath), { recursive: true });
 
@@ -912,7 +956,7 @@ export async function updateWorkspaceHistoryMirrorSetting(workspaceRoot: string,
     settingsPath,
     YAML.stringify({
       ...(currentRaw as Record<string, unknown>),
-      history_mirror_enabled: enabled
+      template
     }),
     "utf8"
   );
@@ -999,7 +1043,10 @@ export async function loadProjectAgentsMd(workspaceRoot: string): Promise<string
   return readFile(agentsPath, "utf8");
 }
 
-export async function loadWorkspaceToolServers(toolRoot: string): Promise<Record<string, DiscoveredToolServer>> {
+export async function loadWorkspaceToolServers(
+  toolRoot: string,
+  options?: { workingDirectory?: string | undefined }
+): Promise<Record<string, DiscoveredToolServer>> {
   const settingsPath = path.join(toolRoot, "settings.yaml");
   if (!(await pathExists(settingsPath))) {
     return {};
@@ -1041,6 +1088,9 @@ export async function loadWorkspaceToolServers(toolRoot: string): Promise<Record
           transportType: typeof definition.command === "string" ? "stdio" : "http",
           ...(typeof definition.expose?.tool_prefix === "string" ? { toolPrefix: definition.expose.tool_prefix } : {}),
           ...(typeof definition.command === "string" ? { command: definition.command } : {}),
+          ...(typeof definition.command === "string" && options?.workingDirectory
+            ? { workingDirectory: options.workingDirectory }
+            : {}),
           ...(typeof definition.url === "string" ? { url: definition.url } : {}),
           ...(definition.environment ? { environment: definition.environment } : {}),
           ...(definition.headers ? { headers: definition.headers } : {}),
@@ -1337,7 +1387,11 @@ export async function discoverWorkspace(
   const discoveredWorkspaceSkills = kind === "chat" ? {} : await loadSkillsFromRoots(workspaceSkillRoots);
   const skills = kind === "chat" ? {} : discoveredWorkspaceSkills;
   const discoveredWorkspaceToolServers =
-    kind === "chat" ? {} : await loadWorkspaceToolServers(path.join(rootPath, ".openharness", "tools"));
+    kind === "chat"
+      ? {}
+      : await loadWorkspaceToolServers(path.join(rootPath, ".openharness", "tools"), {
+          workingDirectory: rootPath
+        });
   const toolServers = kind === "chat" ? {} : discoveredWorkspaceToolServers;
   const hooks = kind === "chat" ? {} : await loadWorkspaceHooks(rootPath);
   const projectAgentsMd = await loadProjectAgentsMd(rootPath);
@@ -1355,6 +1409,7 @@ export async function discoverWorkspace(
   return {
     id,
     name,
+    ...(settings.template ? { template: settings.template } : {}),
     rootPath,
     executionPolicy: "local" as const,
     status: "active" as const,
@@ -1362,7 +1417,7 @@ export async function discoverWorkspace(
     updatedAt: timestamp,
     kind,
     readOnly: kind === "chat",
-    historyMirrorEnabled: kind === "project" ? settings.historyMirrorEnabled ?? false : false,
+    historyMirrorEnabled: kind === "project",
     defaultAgent: settings.defaultAgent,
     projectAgentsMd,
     settings,
@@ -1386,7 +1441,7 @@ export async function discoverWorkspaces(input: {
 
   const projects = await Promise.all(
     projectEntries
-      .filter((entry) => entry.isDirectory())
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
       .map((entry) =>
         discoverWorkspace(path.join(input.paths.workspace_dir, entry.name), "project", {
           platformModels: input.platformModels,
@@ -1397,7 +1452,7 @@ export async function discoverWorkspaces(input: {
 
   const chats = await Promise.all(
     chatEntries
-      .filter((entry) => entry.isDirectory())
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
       .map((entry) =>
         discoverWorkspace(path.join(input.paths.chat_dir, entry.name), "chat", {
           platformModels: input.platformModels,

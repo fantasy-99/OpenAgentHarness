@@ -38,14 +38,14 @@ export function RuntimeWorkspace(props: RuntimeProps) {
 
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 md:px-5">
+      <div className="app-toolbar-strip flex flex-wrap items-center justify-between gap-3 px-4 py-3 md:px-5">
         <Tabs value={props.mainViewMode} onValueChange={(value) => props.setMainViewMode(value as RuntimeProps["mainViewMode"])}>
-          <TabsList className="h-8">
-            <TabsTrigger value="conversation" className="text-xs">
+          <TabsList className="h-9 rounded-2xl p-1">
+            <TabsTrigger value="conversation" className="h-7 rounded-xl px-3 text-xs">
               <MessageSquareText className="h-4 w-4" />
               Conversation
             </TabsTrigger>
-            <TabsTrigger value="inspector" className="text-xs">
+            <TabsTrigger value="inspector" className="h-7 rounded-xl px-3 text-xs">
               <Sparkles className="h-4 w-4" />
               Inspector
             </TabsTrigger>

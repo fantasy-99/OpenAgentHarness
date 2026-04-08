@@ -7,6 +7,7 @@
 - 想先理解整体约束：看 [overview.md](./overview.md)
 - 想直接查接口定义：看 [openapi.yaml](./openapi.yaml)
 - 想接入消息与运行：先看 [sessions.md](./sessions.md)、[runs.md](./runs.md)、[streaming.md](./streaming.md)
+- 想设计 workspace 内文件管理：看 [files.md](./files.md)
 
 ## 文件结构
 
@@ -16,6 +17,8 @@
   - API 总览与统一约束
 - [workspaces.md](./workspaces.md)
   - workspace、catalog、model 可见性
+- [files.md](./files.md)
+  - workspace 内文件管理草案
 - [models.md](./models.md)
   - 模型网关，供脚本、CLI 和 action 直接调用模型
 - [sessions.md](./sessions.md)

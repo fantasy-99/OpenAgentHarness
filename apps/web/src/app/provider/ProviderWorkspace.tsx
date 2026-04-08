@@ -28,14 +28,16 @@ export function ProviderWorkspace(props: ProviderProps) {
   const defaultModel = props.platformModels.find((model) => model.isDefault);
   const selectedModel =
     props.platformModels.find((model) => model.id === props.modelDraft.model) ?? defaultModel ?? props.platformModels[0];
-  const providerIndex = new Map(props.modelProviders.map((provider) => [provider.id, provider]));
+  const providerIndex = new Map<string, (typeof props.modelProviders)[number]>(
+    props.modelProviders.map((provider) => [provider.id, provider])
+  );
   const providerSummaries = props.modelProviders.map((provider) => ({
     ...provider,
     modelCount: props.platformModels.filter((model) => model.provider === provider.id).length
   }));
 
   return (
-    <section className="workspace-pane flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <div className="min-h-0 flex-1 overflow-auto px-5 py-5">
         <div className="space-y-4">
           <div className="grid gap-4 2xl:grid-cols-[minmax(360px,0.82fr)_minmax(0,1.18fr)]">

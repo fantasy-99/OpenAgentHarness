@@ -13,8 +13,7 @@ import {
   loadPlatformModels,
   resolveWorkspaceCreationRoot,
   loadWorkspaceSettings,
-  loadServerConfig,
-  updateWorkspaceHistoryMirrorSetting
+  loadServerConfig
 } from "@oah/config";
 
 const tempDirs: string[] = [];
@@ -286,22 +285,6 @@ system_prompt:
 
     const settings = await loadWorkspaceSettings(tempDir);
     expect(settings.systemPrompt?.compose.includeEnvironment).toBe(false);
-  });
-
-  it("writes history mirror setting back into .openharness/settings.yaml", async () => {
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-settings-history-mirror-"));
-    tempDirs.push(tempDir);
-
-    await mkdir(path.join(tempDir, ".openharness"), { recursive: true });
-    await writeFile(path.join(tempDir, ".openharness", "settings.yaml"), "default_agent: builder\n", "utf8");
-
-    await updateWorkspaceHistoryMirrorSetting(tempDir, true);
-
-    const settings = await loadWorkspaceSettings(tempDir);
-    const raw = await readFile(path.join(tempDir, ".openharness", "settings.yaml"), "utf8");
-    expect(settings.historyMirrorEnabled).toBe(true);
-    expect(raw).toContain("history_mirror_enabled: true");
-    expect(raw).toContain("default_agent: builder");
   });
 
   it("accepts actions in compose order", async () => {
@@ -983,7 +966,7 @@ Explore the repository.
       path.join(platformToolDir, "settings.yaml"),
       `
 shared-browser:
-  command: node ./servers/shared-browser/index.js
+  command: node ${path.join(platformToolDir, "shared-browser", "index.js")}
   enabled: true
 `,
       "utf8"
@@ -1053,11 +1036,13 @@ Platform-provided helper.
     });
     expect(workspace.toolServers["shared-browser"]).toMatchObject({
       transportType: "stdio",
-      command: "node ./servers/shared-browser/index.js"
+      command: "node ./.openharness/tools/servers/shared-browser/index.js",
+      workingDirectory: workspaceRoot
     });
     expect(workspace.toolServers.browser).toMatchObject({
       transportType: "stdio",
-      command: "node ./servers/browser.js"
+      command: "node ./servers/browser.js",
+      workingDirectory: workspaceRoot
     });
     expect(workspace.skills["shared-skill"]).toMatchObject({
       content: "# Shared Skill\n\nPlatform-provided helper."
@@ -1071,5 +1056,58 @@ Platform-provided helper.
     expect(await readFile(path.join(workspaceRoot, ".openharness", "skills", "shared-skill", "references", "guide.md"), "utf8")).toContain(
       "shared guide"
     );
+  });
+
+  it("does not duplicate workspace tool prefixes when imported commands are already workspace-relative", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-template-import-tool-command-"));
+    tempDirs.push(tempDir);
+
+    const templateDir = path.join(tempDir, "templates");
+    const platformToolDir = path.join(tempDir, "tools");
+    const workspaceRoot = path.join(tempDir, "workspaces", "demo");
+    const templateRoot = path.join(templateDir, "workspace");
+
+    await mkdir(path.join(templateRoot, ".openharness"), { recursive: true });
+    await mkdir(path.join(platformToolDir, "servers", "test-echo"), { recursive: true });
+
+    await writeFile(
+      path.join(templateRoot, ".openharness", "settings.yaml"),
+      `template_imports:
+  tools:
+    - test-echo
+`,
+      "utf8"
+    );
+    await writeFile(
+      path.join(platformToolDir, "settings.yaml"),
+      `
+test-echo:
+  command: python3 ./.openharness/tools/servers/test-echo/test_echo_mcp.py
+  enabled: true
+`,
+      "utf8"
+    );
+    await writeFile(
+      path.join(platformToolDir, "servers", "test-echo", "test_echo_mcp.py"),
+      "print('echo')\n",
+      "utf8"
+    );
+
+    await initializeWorkspaceFromTemplate({
+      templateDir,
+      templateName: "workspace",
+      rootPath: workspaceRoot,
+      platformToolDir
+    });
+
+    const workspace = await discoverWorkspace(workspaceRoot, "project", {
+      platformModels: {}
+    });
+
+    expect(workspace.toolServers["test-echo"]).toMatchObject({
+      transportType: "stdio",
+      command: "python3 ./.openharness/tools/servers/test-echo/test_echo_mcp.py",
+      workingDirectory: workspaceRoot
+    });
   });
 });

@@ -53,7 +53,6 @@ export function useNavigationActions(params: {
     session: Session | null;
     setSession: Dispatch<SetStateAction<Session | null>>;
     setShowWorkspaceCreator: Dispatch<SetStateAction<boolean>>;
-    setMirrorToggleBusy: Dispatch<SetStateAction<boolean>>;
     setMirrorRebuildBusy: Dispatch<SetStateAction<boolean>>;
     setWorkspaceManagementEnabled: Dispatch<SetStateAction<boolean>>;
   };
@@ -506,7 +505,7 @@ export function useNavigationActions(params: {
               status: item.status,
               createdAt: item.createdAt,
               lastOpenedAt: existing?.lastOpenedAt ?? item.updatedAt,
-              ...(existing?.template ? { template: existing.template } : {})
+              ...(item.template ? { template: item.template } : existing?.template ? { template: existing.template } : {})
             } satisfies SavedWorkspaceRecord;
           });
         });
@@ -657,43 +656,6 @@ export function useNavigationActions(params: {
       params.setErrorMessage("");
     } catch (error) {
       params.setErrorMessage(toErrorMessage(error));
-    }
-  }
-
-  async function updateWorkspaceHistoryMirrorEnabled(enabled: boolean) {
-    if (!params.navigation.workspaceId.trim() || !params.navigation.workspace) {
-      params.setErrorMessage("请先加载 workspace。");
-      return;
-    }
-
-    try {
-      params.navigation.setMirrorToggleBusy(true);
-      const updated = await params.request<Workspace>(`/api/v1/workspaces/${params.navigation.workspaceId}/settings`, {
-        method: "PATCH",
-        headers: {
-          "content-type": "application/json"
-        },
-        body: JSON.stringify({
-          historyMirrorEnabled: enabled
-        })
-      });
-
-      startTransition(() => {
-        params.navigation.setWorkspace(updated);
-      });
-      const nextMirrorStatus = await params.request<WorkspaceHistoryMirrorStatus>(
-        `/api/v1/workspaces/${params.navigation.workspaceId}/history-mirror`
-      );
-      startTransition(() => {
-        params.navigation.setMirrorStatus(nextMirrorStatus);
-      });
-      rememberWorkspace(updated);
-      params.setActivity(`Mirror sync 已${enabled ? "开启" : "关闭"}`);
-      params.setErrorMessage("");
-    } catch (error) {
-      params.setErrorMessage(toErrorMessage(error));
-    } finally {
-      params.navigation.setMirrorToggleBusy(false);
     }
   }
 
@@ -854,7 +816,6 @@ export function useNavigationActions(params: {
     refreshWorkspaceIndex,
     refreshWorkspace,
     createWorkspace,
-    updateWorkspaceHistoryMirrorEnabled,
     rebuildWorkspaceHistoryMirror,
     refreshSession,
     createSession

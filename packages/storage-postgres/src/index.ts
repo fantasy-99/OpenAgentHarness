@@ -31,6 +31,8 @@ import type {
 import {
   AppError,
   createId,
+  isMessageContentForRole,
+  isMessageRole,
   normalizePersistedMessageRecord,
   normalizePersistedMessages,
   normalizePersistedRunStep,
@@ -44,6 +46,52 @@ interface SqlQueryable {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function createMessage(input: {
+  id: string;
+  sessionId: string;
+  runId?: string | undefined;
+  role: unknown;
+  content: unknown;
+  metadata?: unknown;
+  createdAt: string;
+}): Message {
+  const role: Message["role"] = isMessageRole(input.role) ? input.role : "assistant";
+  const base = {
+    id: input.id,
+    sessionId: input.sessionId,
+    ...(input.runId ? { runId: input.runId } : {}),
+    ...(isRecord(input.metadata) ? { metadata: input.metadata } : {}),
+    createdAt: input.createdAt
+  };
+
+  switch (role) {
+    case "system":
+      return {
+        ...base,
+        role,
+        content: isMessageContentForRole(role, input.content) ? input.content : ""
+      };
+    case "user":
+      return {
+        ...base,
+        role,
+        content: isMessageContentForRole(role, input.content) ? input.content : ""
+      };
+    case "assistant":
+      return {
+        ...base,
+        role,
+        content: isMessageContentForRole(role, input.content) ? input.content : ""
+      };
+    case "tool":
+      return {
+        ...base,
+        role,
+        content: isMessageContentForRole(role, input.content) ? input.content : []
+      };
+  }
 }
 
 const workspaces = pgTable("workspaces", {
@@ -345,15 +393,15 @@ function buildMessageRow(input: Message) {
 }
 
 function toMessage(row: typeof messages.$inferSelect): Message {
-  return {
+  return createMessage({
     id: row.id,
     sessionId: row.sessionId,
-    ...(row.runId ? { runId: row.runId } : {}),
-    role: row.role as Message["role"],
+    runId: row.runId ?? undefined,
+    role: row.role,
     content: row.content,
-    ...(row.metadata ? { metadata: row.metadata } : {}),
+    metadata: row.metadata ?? undefined,
     createdAt: normalizeTimestamp(row.createdAt) ?? row.createdAt
-  };
+  });
 }
 
 function buildRunRow(input: Run) {
@@ -1232,15 +1280,15 @@ async function normalizePostgresPersistedData(queryable: SqlQueryable): Promise<
       continue;
     }
 
-    const message: Message = {
+    const message = createMessage({
       id: row.id,
       sessionId: row.session_id,
-      ...(typeof row.run_id === "string" ? { runId: row.run_id } : {}),
-      role: row.role as Message["role"],
-      content: row.content as Message["content"],
-      ...(isRecord(row.metadata) ? { metadata: row.metadata } : {}),
+      runId: typeof row.run_id === "string" ? row.run_id : undefined,
+      role: row.role,
+      content: row.content,
+      metadata: row.metadata,
       createdAt: row.created_at
-    };
+    });
 
     const existing = messagesBySession.get(message.sessionId);
     if (existing) {
@@ -1320,15 +1368,15 @@ async function normalizePostgresPersistedData(queryable: SqlQueryable): Promise<
     }
 
     if (row.entity_type === "message" && isRecord(row.payload)) {
-      const normalized = normalizePersistedMessageRecord({
+      const normalized = normalizePersistedMessageRecord(createMessage({
         id: String(row.payload.id ?? ""),
         sessionId: String(row.payload.sessionId ?? ""),
-        ...(typeof row.payload.runId === "string" ? { runId: row.payload.runId } : {}),
-        role: row.payload.role as Message["role"],
-        content: row.payload.content as Message["content"],
-        ...(isRecord(row.payload.metadata) ? { metadata: row.payload.metadata } : {}),
+        runId: typeof row.payload.runId === "string" ? row.payload.runId : undefined,
+        role: row.payload.role,
+        content: row.payload.content,
+        metadata: row.payload.metadata,
         createdAt: String(row.payload.createdAt ?? "")
-      });
+      }));
       if (normalized.changed) {
         await queryable.query("update history_events set payload = $2::jsonb where id = $1", [row.id, normalized.message]);
       }

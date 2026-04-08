@@ -10,6 +10,7 @@
 ## 资源分组
 
 - workspaces
+- files
 - models
 - catalog
 - sessions
@@ -53,6 +54,8 @@
   - 总体约束和接口形态
 - [openapi/workspaces.md](./openapi/workspaces.md)
   - workspace 与 catalog
+- [openapi/files.md](./openapi/files.md)
+  - workspace 内文件管理草案
 - [openapi/models.md](./openapi/models.md)
   - 模型网关
 - [openapi/sessions.md](./openapi/sessions.md)

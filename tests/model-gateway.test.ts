@@ -1,3 +1,4 @@
+import { createServer, type Server } from "node:http";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -94,9 +95,25 @@ rl.on("line", (line) => {
 `;
 
 const preparedClosers: Array<() => Promise<void>> = [];
+const httpServers: Server[] = [];
 
 afterEach(async () => {
   await Promise.allSettled(preparedClosers.splice(0).map((close) => close()));
+  await Promise.allSettled(
+    httpServers.splice(0).map(
+      (server) =>
+        new Promise<void>((resolve, reject) => {
+          server.close((error) => {
+            if (error) {
+              reject(error);
+              return;
+            }
+
+            resolve();
+          });
+        })
+    )
+  );
 });
 
 describe("model gateway mcp tools", () => {
@@ -118,7 +135,7 @@ describe("model gateway mcp tools", () => {
     ]);
     preparedClosers.push(() => prepared.close());
 
-    expect(Object.keys(prepared.tools)).toEqual(["mcp.docs.search"]);
+    expect(Object.keys(prepared.tools).sort()).toEqual(["mcp.docs.search", "search"]);
     const result = await (prepared.tools["mcp.docs.search"].execute as (...args: unknown[]) => Promise<unknown>)(
       { query: "runtime" },
       {}
@@ -129,6 +146,39 @@ describe("model gateway mcp tools", () => {
         {
           type: "text",
           text: 'tool:search args:{"query":"runtime"}'
+        }
+      ]
+    });
+  }, 15_000);
+
+  it("adds unique short-name aliases for namespaced MCP tools", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "oah-mcp-"));
+    const serverPath = path.join(tempDir, "fake-mcp.cjs");
+    await writeFile(serverPath, `${MCP_SERVER_SOURCE}\n`, "utf8");
+
+    const prepared = await prepareToolServers([
+      {
+        name: "docs-server",
+        enabled: true,
+        transportType: "stdio",
+        command: `node ${JSON.stringify(serverPath)}`,
+        toolPrefix: "mcp.docs",
+        include: ["search"]
+      }
+    ]);
+    preparedClosers.push(() => prepared.close());
+
+    expect(Object.keys(prepared.tools).sort()).toEqual(["mcp.docs.search", "search"]);
+    const result = await (prepared.tools.search.execute as (...args: unknown[]) => Promise<unknown>)(
+      { query: "alias-check" },
+      {}
+    );
+
+    expect(result).toMatchObject({
+      content: [
+        {
+          type: "text",
+          text: 'tool:search args:{"query":"alias-check"}'
         }
       ]
     });
@@ -168,7 +218,7 @@ describe("model gateway mcp tools", () => {
     );
     preparedClosers.push(() => prepared.close());
 
-    expect(Object.keys(prepared.tools)).toEqual(["mcp.docs.search"]);
+    expect(Object.keys(prepared.tools).sort()).toEqual(["mcp.docs.search", "search"]);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toMatchObject({
       message: "Skipping unreachable remote MCP server.",
@@ -179,6 +229,232 @@ describe("model gateway mcp tools", () => {
       }
     });
   }, 15_000);
+
+  it("logs local MCP startup failures with command and cwd details", async () => {
+    const errors: Array<{ message: string; details?: Record<string, unknown> }> = [];
+
+    await expect(
+      prepareToolServers(
+        [
+          {
+            name: "broken-local-mcp",
+            enabled: true,
+            transportType: "stdio",
+            command: "node ./.openharness/tools/servers/broken/index.js",
+            workingDirectory: "/tmp/oah-demo"
+          }
+        ],
+        {
+          logger: {
+            error(message, details) {
+              errors.push({ message, details });
+            }
+          }
+        }
+      )
+    ).rejects.toThrow();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      message: "Local MCP server failed during initialization.",
+      details: {
+        serverName: "broken-local-mcp",
+        transportType: "stdio",
+        phase: "client creation",
+        command: "node ./.openharness/tools/servers/broken/index.js",
+        workingDirectory: "/tmp/oah-demo"
+      }
+    });
+  });
+
+  it("falls back to a compatible legacy protocol version for older HTTP MCP servers", async () => {
+    const sessionId = "legacy-session-id";
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+      request.on("end", () => {
+        const protocolVersion = request.headers["mcp-protocol-version"];
+        if (protocolVersion !== "2025-06-18") {
+          response.writeHead(400, {
+            "content-type": "application/json"
+          });
+          response.end(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              error: {
+                code: -32000,
+                message:
+                  "Bad Request: Unsupported protocol version (supported versions: 2025-06-18, 2025-03-26, 2024-11-05, 2024-10-07)"
+              },
+              id: null
+            })
+          );
+          return;
+        }
+
+        const body = chunks.length > 0 ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+        if (request.method === "DELETE") {
+          response.writeHead(204);
+          response.end();
+          return;
+        }
+
+        if (body.method === "initialize") {
+          response.writeHead(200, {
+            "content-type": "text/event-stream",
+            "mcp-session-id": sessionId
+          });
+          response.end(
+            `event: message\n` +
+              `data: ${JSON.stringify({
+                jsonrpc: "2.0",
+                id: body.id,
+                result: {
+                  protocolVersion: "2025-06-18",
+                  capabilities: { tools: { listChanged: true } },
+                  serverInfo: { name: "legacy-http", version: "1.0.0" }
+                }
+              })}\n\n`
+          );
+          return;
+        }
+
+        if (body.method === "notifications/initialized") {
+          response.writeHead(202, {
+            "mcp-session-id": sessionId
+          });
+          response.end();
+          return;
+        }
+
+        if (request.headers["mcp-session-id"] !== sessionId) {
+          response.writeHead(400, {
+            "content-type": "application/json"
+          });
+          response.end(JSON.stringify({ error: { message: "Invalid or missing session ID" } }));
+          return;
+        }
+
+        if (body.method === "tools/list") {
+          response.writeHead(200, {
+            "content-type": "text/event-stream",
+            "mcp-session-id": sessionId
+          });
+          response.end(
+            `event: message\n` +
+              `data: ${JSON.stringify({
+                jsonrpc: "2.0",
+                id: body.id,
+                result: {
+                  tools: [
+                    {
+                      name: "search",
+                      description: "Legacy web search",
+                      inputSchema: {
+                        type: "object",
+                        properties: {
+                          query: { type: "string" }
+                        },
+                        required: ["query"],
+                        additionalProperties: false
+                      }
+                    }
+                  ]
+                }
+              })}\n\n`
+          );
+          return;
+        }
+
+        if (body.method === "tools/call") {
+          response.writeHead(200, {
+            "content-type": "text/event-stream",
+            "mcp-session-id": sessionId
+          });
+          response.end(
+            `event: message\n` +
+              `data: ${JSON.stringify({
+                jsonrpc: "2.0",
+                id: body.id,
+                result: {
+                  content: [
+                    {
+                      type: "text",
+                      text: `legacy:${body.params?.name}:${body.params?.arguments?.query ?? ""}`
+                    }
+                  ]
+                }
+              })}\n\n`
+          );
+          return;
+        }
+
+        response.writeHead(404);
+        response.end();
+      });
+    });
+    httpServers.push(server);
+
+    const port = await new Promise<number>((resolve, reject) => {
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        if (!address || typeof address === "string") {
+          reject(new Error("Failed to bind legacy MCP test server."));
+          return;
+        }
+
+        resolve(address.port);
+      });
+      server.on("error", reject);
+    });
+
+    const warnings: Array<{ message: string; details?: Record<string, unknown> }> = [];
+    const prepared = await prepareToolServers(
+      [
+        {
+          name: "legacy-web-search",
+          enabled: true,
+          transportType: "http",
+          url: `http://127.0.0.1:${port}/mcp`,
+          toolPrefix: "mcp.websearch"
+        }
+      ],
+      {
+        logger: {
+          warn(message, details) {
+            warnings.push({ message, details });
+          }
+        }
+      }
+    );
+    preparedClosers.push(() => prepared.close());
+
+    expect(Object.keys(prepared.tools).sort()).toEqual(["mcp.websearch.search", "search"]);
+    const result = await (prepared.tools["mcp.websearch.search"].execute as (...args: unknown[]) => Promise<unknown>)(
+      { query: "openai" },
+      {}
+    );
+
+    expect(result).toMatchObject({
+      content: [
+        {
+          type: "text",
+          text: "legacy:search:openai"
+        }
+      ]
+    });
+    expect(warnings).toContainEqual({
+      message: "Falling back to legacy MCP HTTP protocol version.",
+      details: {
+        serverName: "legacy-web-search",
+        transportType: "http",
+        url: `http://127.0.0.1:${port}/mcp`,
+        protocolVersion: "2025-06-18"
+      }
+    });
+  });
 });
 
 describe("AiSdkModelGateway openai-compatible provider", () => {

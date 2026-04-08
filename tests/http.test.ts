@@ -5,8 +5,8 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { discoverWorkspace, updateWorkspaceHistoryMirrorSetting } from "@oah/config";
-import type { CallerContext } from "@oah/runtime-core";
+import { discoverWorkspace } from "@oah/config";
+import type { CallerContext, WorkspaceRecord } from "@oah/runtime-core";
 import { RuntimeService } from "@oah/runtime-core";
 import { createMemoryRuntimePersistence } from "@oah/storage-memory";
 
@@ -201,6 +201,51 @@ async function createStartedAppWithWorkspaceAndGateway(
   return createStartedAppWithRuntimeService(runtimeService, gateway);
 }
 
+const tempWorkspaceRoots: string[] = [];
+
+async function createWorkspaceRecord(overrides?: Partial<WorkspaceRecord>): Promise<WorkspaceRecord> {
+  const rootPath = await mkdtemp(path.join(os.tmpdir(), "oah-http-files-"));
+  tempWorkspaceRoots.push(rootPath);
+
+  const now = new Date().toISOString();
+  const workspaceId = `ws_${path.basename(rootPath).replace(/[^a-zA-Z0-9]/g, "").slice(0, 16)}`;
+
+  return {
+    id: workspaceId,
+    name: "files-workspace",
+    rootPath,
+    executionPolicy: "local",
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+    kind: "project",
+    readOnly: false,
+    historyMirrorEnabled: true,
+    defaultAgent: "assistant",
+    settings: {
+      defaultAgent: "assistant",
+      skillDirs: []
+    },
+    workspaceModels: {},
+    agents: {},
+    actions: {},
+    skills: {},
+    toolServers: {},
+    hooks: {},
+    catalog: {
+      workspaceId,
+      agents: [],
+      models: [],
+      actions: [],
+      skills: [],
+      tools: [],
+      hooks: [],
+      nativeTools: []
+    },
+    ...(overrides ?? {})
+  };
+}
+
 let activeApp: Awaited<ReturnType<typeof createStartedApp>> | undefined;
 
 afterEach(async () => {
@@ -208,9 +253,78 @@ afterEach(async () => {
     await activeApp.app.close();
     activeApp = undefined;
   }
+
+  await Promise.all(
+    tempWorkspaceRoots.splice(0).map(async (rootPath) => {
+      await rm(rootPath, { recursive: true, force: true });
+    })
+  );
 });
 
 describe("http api", () => {
+  it("serves a developer landing page, docs page, api index, and openapi specs", async () => {
+    activeApp = await createStartedApp();
+
+    const [landingResponse, docsResponse, apiIndexResponse, openApiYamlResponse, openApiJsonResponse] = await Promise.all([
+      fetch(`${activeApp.baseUrl}/`),
+      fetch(`${activeApp.baseUrl}/docs`),
+      fetch(`${activeApp.baseUrl}/api/v1`),
+      fetch(`${activeApp.baseUrl}/openapi.yaml`),
+      fetch(`${activeApp.baseUrl}/openapi.json`)
+    ]);
+
+    expect(landingResponse.status).toBe(200);
+    expect(landingResponse.headers.get("content-type")).toContain("text/html");
+    const landingBody = await landingResponse.text();
+    expect(landingBody).toContain("/openapi.yaml");
+    expect(landingBody).toContain("/openapi.json");
+
+    expect(docsResponse.status).toBe(200);
+    expect(docsResponse.headers.get("content-type")).toContain("text/html");
+    const docsBody = await docsResponse.text();
+    expect(docsBody).toContain("Developer Quickstart");
+    expect(docsBody).toContain("OpenAPI JSON");
+
+    expect(apiIndexResponse.status).toBe(200);
+    await expect(apiIndexResponse.json()).resolves.toMatchObject({
+      docs: {
+        landingPage: `${activeApp.baseUrl}/`,
+        docsPage: `${activeApp.baseUrl}/docs`,
+        openapiYaml: `${activeApp.baseUrl}/openapi.yaml`,
+        openapiJson: `${activeApp.baseUrl}/openapi.json`
+      },
+      probes: {
+        healthz: `${activeApp.baseUrl}/healthz`,
+        readyz: `${activeApp.baseUrl}/readyz`
+      },
+      groups: {
+        workspaces: {
+          description: expect.any(String),
+          routes: expect.arrayContaining(["GET /api/v1/workspaces"])
+        },
+        messagesAndRuns: {
+          description: expect.any(String),
+          routes: expect.arrayContaining(["GET /api/v1/sessions/{sessionId}/events"])
+        }
+      },
+      entrypoints: {
+        workspaces: expect.arrayContaining(["GET /api/v1/workspaces"]),
+        messagesAndRuns: expect.arrayContaining(["GET /api/v1/sessions/{sessionId}/events"])
+      }
+    });
+
+    expect(openApiYamlResponse.status).toBe(200);
+    expect(openApiYamlResponse.headers.get("content-type")).toContain("application/yaml");
+    const openApiYamlBody = await openApiYamlResponse.text();
+    expect(openApiYamlBody).toContain("openapi: 3.1.0");
+    expect(openApiYamlBody).toContain(`- url: ${activeApp.baseUrl}/api/v1`);
+
+    expect(openApiJsonResponse.status).toBe(200);
+    const openApiJsonBody = (await openApiJsonResponse.json()) as { openapi: string; servers?: Array<{ url?: string }> };
+    expect(openApiJsonBody.openapi).toBe("3.1.0");
+    expect(openApiJsonBody.servers?.[0]?.url).toBe(`${activeApp.baseUrl}/api/v1`);
+  });
+
   it("reports health status", async () => {
     activeApp = await createStartedApp();
 
@@ -605,7 +719,7 @@ describe("http api", () => {
     );
     expect(workspacePage.items.every((workspace) => workspace.kind === "project")).toBe(true);
     expect(workspacePage.items.every((workspace) => workspace.readOnly === false)).toBe(true);
-    expect(workspacePage.items.every((workspace) => workspace.historyMirrorEnabled === false)).toBe(true);
+    expect(workspacePage.items.every((workspace) => workspace.historyMirrorEnabled === true)).toBe(true);
     expect(workspacePage.nextCursor).toBeUndefined();
 
     const workspaceDetailResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/${firstWorkspace.id}`, {
@@ -618,7 +732,7 @@ describe("http api", () => {
       id: firstWorkspace.id,
       kind: "project",
       readOnly: false,
-      historyMirrorEnabled: false
+      historyMirrorEnabled: true
     });
 
     const sessionListResponse = await fetch(
@@ -654,7 +768,7 @@ describe("http api", () => {
       updatedAt: new Date().toISOString(),
       kind: "project",
       readOnly: false,
-      historyMirrorEnabled: false,
+      historyMirrorEnabled: true,
       defaultAgent: "assistant",
       settings: {
         defaultAgent: "assistant",
@@ -968,58 +1082,186 @@ describe("http api", () => {
     await expect(access(workspaceRoot)).rejects.toBeDefined();
   });
 
-  it("updates history mirror setting over HTTP and persists it to workspace settings", async () => {
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-http-history-toggle-"));
-    await mkdir(path.join(tempDir, ".openharness"), { recursive: true });
-    await writeFile(path.join(tempDir, ".openharness", "settings.yaml"), "default_agent: builder\n", "utf8");
-
-    const workspace = await discoverWorkspace(tempDir, "project", {
-      platformModels: {}
-    });
-
+  it("manages workspace files over HTTP", async () => {
     const gateway = new FakeModelGateway(20);
     const persistence = createMemoryRuntimePersistence();
+    const workspace = await createWorkspaceRecord();
     await persistence.workspaceRepository.upsert(workspace);
-    const runtimeService = new RuntimeService({
-      defaultModel: "openai-default",
-      modelGateway: gateway,
-      ...persistence,
-      workspaceSettingsManager: {
-        async updateHistoryMirrorEnabled(currentWorkspace, enabled) {
-          await updateWorkspaceHistoryMirrorSetting(currentWorkspace.rootPath, enabled);
-          const refreshed = await discoverWorkspace(currentWorkspace.rootPath, currentWorkspace.kind, {
-            platformModels: {}
-          });
-          return persistence.workspaceRepository.upsert(refreshed);
-        }
-      }
-    });
+    activeApp = await createStartedAppWithRuntimeService(
+      new RuntimeService({
+        defaultModel: "openai-default",
+        modelGateway: gateway,
+        ...persistence
+      }),
+      gateway
+    );
 
-    activeApp = await createStartedAppWithRuntimeService(runtimeService, gateway);
-
-    const response = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}/settings`, {
-      method: "PATCH",
+    const mkdirResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}/directories`, {
+      method: "POST",
       headers: {
-        authorization: "Bearer token-1",
         "content-type": "application/json"
       },
       body: JSON.stringify({
-        historyMirrorEnabled: true
+        path: "notes"
       })
     });
+    expect(mkdirResponse.status).toBe(201);
 
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
-      id: workspace.id,
-      historyMirrorEnabled: true
+    const writeResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}/files/content`, {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        path: "notes/hello.txt",
+        content: "hello workspace",
+        encoding: "utf8"
+      })
+    });
+    expect(writeResponse.status).toBe(200);
+    await expect(writeResponse.json()).resolves.toMatchObject({
+      path: "notes/hello.txt",
+      type: "file",
+      readOnly: false
     });
 
-    const refreshed = await runtimeService.getWorkspace(workspace.id);
-    const settingsContent = await import("node:fs/promises").then(({ readFile }) =>
-      readFile(path.join(tempDir, ".openharness", "settings.yaml"), "utf8")
+    const listResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}/entries?path=notes`);
+    expect(listResponse.status).toBe(200);
+    await expect(listResponse.json()).resolves.toMatchObject({
+      workspaceId: workspace.id,
+      path: "notes",
+      items: [
+        {
+          path: "notes/hello.txt",
+          name: "hello.txt",
+          type: "file"
+        }
+      ]
+    });
+
+    const readResponse = await fetch(
+      `${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}/files/content?path=${encodeURIComponent("notes/hello.txt")}`
     );
-    expect(refreshed.historyMirrorEnabled).toBe(true);
-    expect(settingsContent).toContain("history_mirror_enabled: true");
+    expect(readResponse.status).toBe(200);
+    const readPayload = (await readResponse.json()) as { content: string; etag?: string };
+    expect(readPayload.content).toBe("hello workspace");
+    expect(readPayload.etag).toBeTruthy();
+
+    const moveResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}/entries/move`, {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        sourcePath: "notes/hello.txt",
+        targetPath: "notes/renamed.txt"
+      })
+    });
+    expect(moveResponse.status).toBe(200);
+    await expect(moveResponse.json()).resolves.toMatchObject({
+      path: "notes/renamed.txt",
+      name: "renamed.txt"
+    });
+
+    const deleteResponse = await fetch(
+      `${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}/entries?path=${encodeURIComponent("notes/renamed.txt")}`,
+      {
+        method: "DELETE"
+      }
+    );
+    expect(deleteResponse.status).toBe(200);
+    await expect(deleteResponse.json()).resolves.toEqual({
+      workspaceId: workspace.id,
+      path: "notes/renamed.txt",
+      type: "file",
+      deleted: true
+    });
+  });
+
+  it("uploads and downloads workspace files over HTTP", async () => {
+    const gateway = new FakeModelGateway(20);
+    const persistence = createMemoryRuntimePersistence();
+    const workspace = await createWorkspaceRecord();
+    await persistence.workspaceRepository.upsert(workspace);
+    activeApp = await createStartedAppWithRuntimeService(
+      new RuntimeService({
+        defaultModel: "openai-default",
+        modelGateway: gateway,
+        ...persistence
+      }),
+      gateway
+    );
+
+    const bytes = Uint8Array.from([0, 1, 2, 250, 255]);
+    const uploadResponse = await fetch(
+      `${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}/files/upload?path=${encodeURIComponent("bin/data.bin")}`,
+      {
+        method: "PUT",
+        headers: {
+          "content-type": "application/octet-stream"
+        },
+        body: bytes
+      }
+    );
+    expect(uploadResponse.status).toBe(200);
+    await expect(uploadResponse.json()).resolves.toMatchObject({
+      path: "bin/data.bin",
+      type: "file",
+      sizeBytes: 5
+    });
+
+    const downloadResponse = await fetch(
+      `${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}/files/download?path=${encodeURIComponent("bin/data.bin")}`
+    );
+    expect(downloadResponse.status).toBe(200);
+    expect(downloadResponse.headers.get("content-disposition")).toContain("data.bin");
+    expect(downloadResponse.headers.get("etag")).toBeTruthy();
+    expect(new Uint8Array(await downloadResponse.arrayBuffer())).toEqual(bytes);
+
+    const contentResponse = await fetch(
+      `${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}/files/content?path=${encodeURIComponent("bin/data.bin")}&encoding=base64`
+    );
+    expect(contentResponse.status).toBe(200);
+    const contentPayload = (await contentResponse.json()) as { content: string };
+    expect(contentPayload.content).toBe(Buffer.from(bytes).toString("base64"));
+  });
+
+  it("rejects unsafe paths and mutations on read-only workspaces", async () => {
+    const gateway = new FakeModelGateway(20);
+    const persistence = createMemoryRuntimePersistence();
+    const workspace = await createWorkspaceRecord({
+      readOnly: true
+    });
+    await persistence.workspaceRepository.upsert(workspace);
+    activeApp = await createStartedAppWithRuntimeService(
+      new RuntimeService({
+        defaultModel: "openai-default",
+        modelGateway: gateway,
+        ...persistence
+      }),
+      gateway
+    );
+
+    const traversalResponse = await fetch(
+      `${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}/files/content?path=${encodeURIComponent("../secret.txt")}`
+    );
+    expect(traversalResponse.status).toBe(403);
+
+    const readonlyResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}/directories`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        path: "notes"
+      })
+    });
+    expect(readonlyResponse.status).toBe(403);
+    await expect(readonlyResponse.json()).resolves.toMatchObject({
+      error: {
+        code: "workspace_read_only"
+      }
+    });
   });
 
   it("reads workspace history mirror status over HTTP", async () => {

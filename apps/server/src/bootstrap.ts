@@ -10,8 +10,7 @@ import {
   listWorkspaceTemplates,
   loadPlatformModels,
   loadServerConfig,
-  resolveWorkspaceCreationRoot,
-  updateWorkspaceHistoryMirrorSetting
+  resolveWorkspaceCreationRoot
 } from "@oah/config";
 import type { ServerConfig } from "@oah/config";
 import { AppError, RuntimeService, createId, parseCursor } from "@oah/runtime-core";
@@ -274,7 +273,7 @@ async function discoverProjectWorkspaces(input: {
 
   const discovered = await Promise.all(
     entries
-      .filter((entry) => entry.isDirectory())
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
       .map(async (entry) =>
         discoverWorkspace(path.join(input.workspaceDir, entry.name), "project", {
           platformModels: input.models,
@@ -738,11 +737,20 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     ? new FanoutSessionEventStore(persistence.sessionEventStore, redisBus)
     : persistence.sessionEventStore;
   const persistedWorkspaceSnapshots =
-    "listWorkspaceSnapshots" in persistence
-      ? await persistence.listWorkspaceSnapshots(discoveredWorkspaces as WorkspaceRecord[])
-      : await listAllWorkspaces(persistence.workspaceRepository);
+    "listPersistedWorkspaces" in persistence
+      ? await persistence.listPersistedWorkspaces()
+      : "listWorkspaceSnapshots" in persistence
+        ? await persistence.listWorkspaceSnapshots(discoveredWorkspaces as WorkspaceRecord[])
+        : await listAllWorkspaces(persistence.workspaceRepository);
+  const bootWorkspaceCandidates =
+    singleWorkspace === undefined
+      ? [
+          ...discoveredWorkspaces,
+          ...persistedWorkspaceSnapshots.filter((workspace) => !isManagedWorkspace(workspace, config.paths))
+        ]
+      : discoveredWorkspaces;
   const reconciledWorkspaces = reconcileDiscoveredWorkspaces(
-    discoveredWorkspaces,
+    bootWorkspaceCandidates,
     persistedWorkspaceSnapshots
   );
   const visibleWorkspaceIds = new Set<string>();
@@ -914,25 +922,6 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
           }
         }
       : {}),
-    workspaceSettingsManager: {
-      async updateHistoryMirrorEnabled(workspace, enabled) {
-        await updateWorkspaceHistoryMirrorSetting(workspace.rootPath, enabled);
-        const refreshed = await discoverWorkspace(workspace.rootPath, workspace.kind, {
-          platformModels: models,
-          platformAgents,
-          platformSkillDir: config.paths.skill_dir,
-          platformToolDir: toolDir
-        } as Parameters<typeof discoverWorkspace>[2]);
-        return workspaceRepository.upsert({
-          ...refreshed,
-          name: workspace.name,
-          executionPolicy: workspace.executionPolicy,
-          status: workspace.status,
-          createdAt: workspace.createdAt,
-          externalRef: workspace.externalRef
-        });
-      }
-    },
     ...(singleWorkspace === undefined
       ? {
           workspaceInitializer: {
@@ -1085,7 +1074,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       cursor = page.length === 100 ? String((cursor ? Number.parseInt(cursor, 10) : 0) + 100) : undefined;
     } while (cursor);
 
-    const enabledWorkspaces = workspaces.filter((workspace) => workspace.kind === "project" && workspace.historyMirrorEnabled);
+    const enabledWorkspaces = workspaces.filter((workspace) => workspace.kind === "project");
 
     if (enabledWorkspaces.length === 0) {
       return {

@@ -8,6 +8,7 @@
 ## 资源分组
 
 - Workspace
+- Files
 - Model Gateway
 - Catalog
 - Session

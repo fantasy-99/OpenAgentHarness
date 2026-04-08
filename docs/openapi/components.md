@@ -6,6 +6,10 @@ OpenAPI 主规范中的 `components/schemas` 目前主要包括：
 
 - `Workspace`
 - `WorkspacePage`
+- `WorkspaceEntry`
+- `WorkspaceEntryPage`
+- `WorkspaceFileContent`
+- `WorkspaceDeleteResult`
 - `WorkspaceImportRequest`
 - `WorkspaceCatalog`
 - `ModelCatalogItem`
@@ -20,7 +24,9 @@ OpenAPI 主规范中的 `components/schemas` 目前主要包括：
 - `Run`
 - `RunStep`
 - `CreateWorkspaceRequest`
-- `UpdateWorkspaceSettingsRequest`
+- `PutWorkspaceFileRequest`
+- `CreateWorkspaceDirectoryRequest`
+- `MoveWorkspaceEntryRequest`
 - `CreateSessionRequest`
 - `CreateMessageRequest`
 - `CreateActionRunRequest`
@@ -63,6 +69,105 @@ OpenAPI 主规范中的 `components/schemas` 目前主要包括：
 - `name`
 - `externalRef`
 
+### `WorkspaceEntry`
+
+用于 `GET /workspaces/{workspaceId}/entries`、`PUT /workspaces/{workspaceId}/files/content`、`POST /workspaces/{workspaceId}/directories`、`PATCH /workspaces/{workspaceId}/entries/move`。
+
+字段：
+
+- `path`
+- `name`
+- `type`
+- `sizeBytes`
+- `mimeType`
+- `etag`
+- `updatedAt`
+- `createdAt`
+- `readOnly`
+
+说明：
+
+- `type` 当前草案只包含 `file | directory`
+- `sizeBytes` 对目录可省略
+
+### `WorkspaceEntryPage`
+
+用于 `GET /workspaces/{workspaceId}/entries`。
+
+字段：
+
+- `workspaceId`
+- `path`
+- `items[]`
+- `nextCursor`
+
+说明：
+
+- 只表示“某个目录下的直接子项分页”，不是递归树
+
+### `WorkspaceFileContent`
+
+用于 `GET /workspaces/{workspaceId}/files/content`。
+
+字段：
+
+- `workspaceId`
+- `path`
+- `encoding`
+- `content`
+- `truncated`
+- `sizeBytes`
+- `mimeType`
+- `etag`
+- `updatedAt`
+- `readOnly`
+
+### `WorkspaceDeleteResult`
+
+用于 `DELETE /workspaces/{workspaceId}/entries`。
+
+字段：
+
+- `workspaceId`
+- `path`
+- `type`
+- `deleted`
+
+### `PutWorkspaceFileRequest`
+
+用于 `PUT /workspaces/{workspaceId}/files/content`。
+
+字段：
+
+- `path`
+- `content`
+- `encoding`
+- `overwrite`
+- `ifMatch`
+
+说明：
+
+- `ifMatch` 用于和读取结果中的 `etag` 配合，支持乐观并发控制
+
+### `CreateWorkspaceDirectoryRequest`
+
+用于 `POST /workspaces/{workspaceId}/directories`。
+
+字段：
+
+- `path`
+- `createParents`
+
+### `MoveWorkspaceEntryRequest`
+
+用于 `PATCH /workspaces/{workspaceId}/entries/move`。
+
+字段：
+
+- `sourcePath`
+- `targetPath`
+- `overwrite`
+
 ### `ModelProvider`
 
 用于描述当前服务端已支持的模型 provider。
@@ -82,14 +187,6 @@ OpenAPI 主规范中的 `components/schemas` 目前主要包括：
 字段：
 
 - `items[]`
-
-### `UpdateWorkspaceSettingsRequest`
-
-用于 `PATCH /workspaces/{workspaceId}/settings`。
-
-字段：
-
-- `historyMirrorEnabled`
 
 ### `WorkspaceHistoryMirrorStatus`
 
@@ -304,6 +401,12 @@ OpenAPI 主规范中的 `components/schemas` 目前主要包括：
 - `actionName`
 - `pageSize`
 - `cursor`
+- `path`
+- `sortBy`
+- `sortOrder`
+- `recursive`
+- `encoding`
+- `maxBytes`
 - `runId` query 参数
 
 ## 错误模型

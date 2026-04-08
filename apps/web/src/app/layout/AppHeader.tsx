@@ -33,10 +33,10 @@ function StatusPill(props: { label: string; value: string; tone: "sky" | "emeral
 
 export function AppHeader(props: HeaderProps) {
   return (
-    <header className="h-14 bg-background border-b border-border flex items-center justify-between gap-4 px-4 sm:px-6 shadow-none overflow-hidden min-w-0">
+    <header className="app-topbar h-[60px] flex items-center justify-between gap-4 px-4 sm:px-6 overflow-hidden min-w-0">
       <div className="flex min-w-0 items-center gap-3">
-        <div className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border/70 bg-gradient-to-br from-background via-card to-muted/70 shadow-sm">
-          <Bot className="h-4 w-4 text-foreground" />
+        <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-[1rem] border border-black/10 bg-white/58 shadow-[inset_0_1px_0_rgba(255,255,255,0.82),0_12px_22px_-18px_rgba(17,17,17,0.24)]">
+          <Bot className="h-4 w-4 text-foreground/90" />
           <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-foreground text-background shadow-md">
             <Sparkles className="h-2.5 w-2.5" />
           </span>
@@ -44,11 +44,11 @@ export function AppHeader(props: HeaderProps) {
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <p className="truncate text-[15px] font-semibold tracking-tight text-foreground">OpenAgentHarness</p>
-            <span className="hidden rounded-full border border-border/70 bg-background/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground md:inline-flex">
+            <span className="hidden rounded-full border border-black/8 bg-white/52 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em] text-foreground/48 md:inline-flex">
               Beta
             </span>
           </div>
-          <p className="truncate text-[11px] text-muted-foreground">
+          <p className="truncate text-[11px] text-foreground/48">
             {props.surfaceMode === "provider"
               ? "Provider Workbench"
               : props.hasActiveSession
@@ -61,14 +61,14 @@ export function AppHeader(props: HeaderProps) {
       </div>
       <div className="flex min-w-0 flex-1 items-center justify-end gap-2.5">
         <Tabs value={props.surfaceMode} onValueChange={(value) => props.onSurfaceModeChange(value as HeaderProps["surfaceMode"])}>
-          <TabsList className="h-8">
-            <TabsTrigger value="runtime" className="text-xs">
+          <TabsList className="h-9 rounded-2xl border border-black/8 bg-black/[0.03] p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.44)]">
+            <TabsTrigger value="runtime" className="h-7 rounded-xl px-3 text-xs text-foreground/54 hover:text-foreground data-active:bg-white/90 data-active:text-foreground">
               Runtime
             </TabsTrigger>
-            <TabsTrigger value="storage" className="text-xs">
+            <TabsTrigger value="storage" className="h-7 rounded-xl px-3 text-xs text-foreground/54 hover:text-foreground data-active:bg-white/90 data-active:text-foreground">
               Storage
             </TabsTrigger>
-            <TabsTrigger value="provider" className="text-xs">
+            <TabsTrigger value="provider" className="h-7 rounded-xl px-3 text-xs text-foreground/54 hover:text-foreground data-active:bg-white/90 data-active:text-foreground">
               Provider
             </TabsTrigger>
           </TabsList>
@@ -86,7 +86,7 @@ export function AppHeader(props: HeaderProps) {
                 }`}
               />
             )}
-            <span className="hidden text-[11px] text-muted-foreground md:inline">{props.streamState}</span>
+            <span className="hidden text-[11px] text-foreground/46 md:inline">{props.streamState}</span>
           </div>
         )}
         <div className="hidden items-center gap-2 xl:flex">

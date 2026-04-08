@@ -244,6 +244,7 @@ function storageTablePreviewLimit(table: StoragePostgresTableName) {
 const storageKeys = {
   connection: "oah.web.connection",
   workspaceDraft: "oah.web.workspaceDraft",
+  workspaceTemplateFilter: "oah.web.workspaceTemplateFilter",
   sessionDraft: "oah.web.sessionDraft",
   modelDraft: "oah.web.modelDraft",
   workspaceId: "oah.web.workspaceId",

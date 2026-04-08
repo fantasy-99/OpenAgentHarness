@@ -1079,7 +1079,7 @@ function OverviewWorkbench(props: {
 
           <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
             <InsightRow label="Workspace Mode" value={props.workspace?.kind ?? "n/a"} />
-            <InsightRow label="Mirror" value={props.workspace?.historyMirrorEnabled ? "enabled" : "disabled"} />
+            <InsightRow label="Mirror" value={props.workspace?.kind === "project" ? "local sqlite" : "unsupported"} />
             <InsightRow label="Latest Event" value={latestEvent?.event ?? "n/a"} />
             <InsightRow label="Current Detail Run" value={props.selectedRunId || props.run?.id || "n/a"} />
           </div>
@@ -1333,14 +1333,12 @@ function WorkspaceWorkbench(props: {
   activeToolNames: string[];
   toolServers: ModelCallTraceToolServer[];
   mirrorStatus: WorkspaceHistoryMirrorStatus | null;
-  mirrorToggleBusy: boolean;
   mirrorRebuildBusy: boolean;
-  updateWorkspaceHistoryMirrorEnabled: (enabled: boolean) => void;
   refreshWorkspace: (targetId: string) => void;
   rebuildWorkspaceHistoryMirror: () => void;
 }) {
   const [panel, setPanel] = useState<"snapshot" | "catalog" | "records">("snapshot");
-  const mirrorEnabled = props.workspace?.historyMirrorEnabled ?? false;
+  const mirrorSupported = props.workspace?.kind === "project";
   const workspaceKind = props.workspace?.kind ?? "n/a";
   const workspaceId = props.workspace?.id ?? "n/a";
   const selectedRunId = props.run?.id ?? "n/a";
@@ -1367,7 +1365,9 @@ function WorkspaceWorkbench(props: {
         <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1.18fr)_minmax(320px,0.82fr)]">
           <div className="rounded-[18px] border border-border/70 bg-muted/15 p-4">
             <div className="flex flex-wrap items-center gap-2">
-              <Badge className={mirrorEnabled ? "bg-foreground text-background" : ""}>{mirrorEnabled ? "Mirror Enabled" : "Mirror Disabled"}</Badge>
+              <Badge className={mirrorSupported ? "bg-foreground text-background" : ""}>
+                {mirrorSupported ? "History Mirror Ready" : "History Mirror Unsupported"}
+              </Badge>
               <Badge variant="outline">{workspaceKind}</Badge>
               <Badge variant="outline">{props.catalog ? "catalog loaded" : "catalog missing"}</Badge>
             </div>
@@ -1390,25 +1390,9 @@ function WorkspaceWorkbench(props: {
               <>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <Button
-                    variant={mirrorEnabled ? "secondary" : "default"}
-                    size="sm"
-                    disabled={props.mirrorToggleBusy || props.workspace.kind !== "project" || mirrorEnabled}
-                    onClick={() => props.updateWorkspaceHistoryMirrorEnabled(true)}
-                  >
-                    Enable Mirror
-                  </Button>
-                  <Button
-                    variant={!mirrorEnabled ? "secondary" : "default"}
-                    size="sm"
-                    disabled={props.mirrorToggleBusy || props.workspace.kind !== "project" || !mirrorEnabled}
-                    onClick={() => props.updateWorkspaceHistoryMirrorEnabled(false)}
-                  >
-                    Disable Mirror
-                  </Button>
-                  <Button
                     variant="ghost"
                     size="sm"
-                    disabled={props.mirrorToggleBusy || props.mirrorRebuildBusy}
+                    disabled={props.mirrorRebuildBusy}
                     onClick={() => props.refreshWorkspace(props.workspace!.id)}
                   >
                     Refresh
@@ -1416,7 +1400,7 @@ function WorkspaceWorkbench(props: {
                   <Button
                     variant="secondary"
                     size="sm"
-                    disabled={props.mirrorRebuildBusy || props.mirrorToggleBusy || props.workspace.kind !== "project" || !mirrorEnabled}
+                    disabled={props.mirrorRebuildBusy || props.workspace.kind !== "project"}
                     onClick={props.rebuildWorkspaceHistoryMirror}
                   >
                     Rebuild
@@ -1458,7 +1442,7 @@ function WorkspaceWorkbench(props: {
                     <>
                       <div className="grid gap-2 sm:grid-cols-2">
                         <InsightRow label="Workspace Kind" value={props.workspace.kind} />
-                        <InsightRow label="Mirror" value={mirrorEnabled ? "enabled" : "disabled"} />
+                        <InsightRow label="Mirror" value={mirrorSupported ? "always on" : "unsupported"} />
                         <InsightRow label="Mirror State" value={props.mirrorStatus?.state ?? "n/a"} />
                         <InsightRow
                           label="Last Synced"

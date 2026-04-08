@@ -119,21 +119,6 @@
 - `chat` workspace 主要删除中心记录
 - 是否同步删除目录，取决于该 workspace 是否位于服务端受管的 `paths.workspace_dir` 下
 
-### `PATCH /workspaces/{workspaceId}/settings`
-
-用途：
-
-- 更新 workspace 级运行时设置
-
-当前支持：
-
-- `historyMirrorEnabled`
-
-说明：
-
-- 服务端会将开关回写到 `.openharness/settings.yaml`
-- `kind=chat` workspace 不支持开启本地 history mirror
-
 ### `GET /workspaces/{workspaceId}/history-mirror`
 
 用途：
@@ -158,7 +143,7 @@
 
 说明：
 
-- 仅 `kind=project` 且 `historyMirrorEnabled=true` 时可用
+- 仅 `kind=project` 时可用
 - 该操作只影响本地镜像，不影响 PostgreSQL 中心事实源
 - 返回重建后的最新 mirror 状态
 

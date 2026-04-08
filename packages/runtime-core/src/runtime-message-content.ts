@@ -3,6 +3,11 @@ import type { ChatMessage, Message } from "@oah/api-contracts";
 type MessageContent = Message["content"];
 type MessageParts = Extract<Message["content"], unknown[]>;
 type MessagePart = MessageParts[number];
+type SystemMessageContent = Extract<Message, { role: "system" }>["content"];
+type UserMessageContent = Extract<Message, { role: "user" }>["content"];
+type AssistantMessageContent = Extract<Message, { role: "assistant" }>["content"];
+type ToolMessageContent = Extract<Message, { role: "tool" }>["content"];
+type AssistantMessagePart = Extract<AssistantMessageContent, unknown[]>[number];
 type ToolCallMessagePart = Extract<MessagePart, { type: "tool-call" }>;
 type ToolResultMessagePart = Extract<MessagePart, { type: "tool-result" }>;
 type ToolResultOutput = ToolResultMessagePart["output"];
@@ -60,7 +65,7 @@ function isToolApprovalResponseMessagePart(value: unknown): boolean {
   return isJsonObject(value) && value.type === "tool-approval-response" && typeof value.approvalId === "string" && typeof value.approved === "boolean";
 }
 
-function normalizeAssistantMessagePart(value: unknown): MessagePart | null {
+function normalizeAssistantMessagePart(value: unknown): AssistantMessagePart | null {
   if (isJsonObject(value) && value.type === "text" && typeof value.text === "string") {
     return value as Extract<MessagePart, { type: "text" }>;
   }
@@ -125,7 +130,10 @@ export function isMessagePartList(value: unknown): value is MessagePart[] {
   });
 }
 
-export function isMessageContentForRole(role: Message["role"], content: unknown): content is MessageContent {
+export function isMessageContentForRole<R extends Message["role"]>(
+  role: R,
+  content: unknown
+): content is Extract<Message, { role: R }>["content"] {
   if (role === "system") {
     return typeof content === "string";
   }
@@ -165,7 +173,7 @@ export function isMessageContentForRole(role: Message["role"], content: unknown)
   );
 }
 
-export function textContent(text: string): MessageContent {
+export function textContent(text: string): string {
   return text;
 }
 
@@ -173,10 +181,10 @@ export function assistantContentFromModelOutput(output: {
   text?: string | undefined;
   content?: unknown[] | undefined;
   reasoning?: unknown[] | undefined;
-}): MessageContent {
-  const parts: MessagePart[] = [];
+}): AssistantMessageContent {
+  const parts: Extract<AssistantMessageContent, unknown[]> = [];
   const seenSerializedParts = new Set<string>();
-  const pushPart = (part: MessagePart) => {
+  const pushPart = (part: AssistantMessagePart) => {
     const serialized = JSON.stringify(part);
     if (seenSerializedParts.has(serialized)) {
       return;
@@ -195,7 +203,7 @@ export function assistantContentFromModelOutput(output: {
 
   for (const part of output.reasoning ?? []) {
     if (isReasoningMessagePart(part)) {
-      pushPart(part as Extract<MessagePart, { type: "reasoning" }>);
+      pushPart(part as AssistantMessagePart);
     }
   }
 
@@ -304,7 +312,7 @@ export function normalizeToolErrorOutput(error: unknown): ToolResultOutput {
 
 export function toolCallContent(
   toolCalls: Array<{ toolCallId: string; toolName: string; input: unknown }>
-): MessageContent {
+): Extract<AssistantMessageContent, unknown[]> {
   return toolCalls.map((toolCall) => ({
     type: "tool-call" as const,
     toolCallId: toolCall.toolCallId,
@@ -355,8 +363,38 @@ export function extractTextFromContent(content: MessageContent): string {
 }
 
 export function contentToPromptMessage(role: Message["role"], content: MessageContent): ChatMessage {
-  return {
-    role,
-    content
-  } as ChatMessage;
+  switch (role) {
+    case "system":
+      if (typeof content !== "string") {
+        throw new Error("Invalid system content.");
+      }
+      return {
+        role,
+        content
+      };
+    case "user":
+      if (!isMessageContentForRole(role, content)) {
+        throw new Error("Invalid user content.");
+      }
+      return {
+        role,
+        content
+      };
+    case "assistant":
+      if (!isMessageContentForRole(role, content)) {
+        throw new Error("Invalid assistant content.");
+      }
+      return {
+        role,
+        content
+      };
+    case "tool":
+      if (!isMessageContentForRole(role, content)) {
+        throw new Error("Invalid tool content.");
+      }
+      return {
+        role,
+        content
+      };
+  }
 }

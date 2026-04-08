@@ -181,16 +181,6 @@ export async function inspectHistoryMirrorStatus(workspace: WorkspaceRecord): Pr
     };
   }
 
-  if (!workspace.historyMirrorEnabled) {
-    return {
-      workspaceId: workspace.id,
-      supported: true,
-      enabled: false,
-      dbPath,
-      state: "disabled"
-    };
-  }
-
   if (!(await pathExists(dbPath))) {
     return {
       workspaceId: workspace.id,
@@ -322,7 +312,7 @@ export class HistoryMirrorSyncer {
 
   async rebuildWorkspace(workspace: WorkspaceRecord): Promise<HistoryMirrorStatus> {
     await this.#runExclusive(async () => {
-      if (workspace.kind !== "project" || !workspace.historyMirrorEnabled) {
+      if (workspace.kind !== "project") {
         return;
       }
 
@@ -342,7 +332,7 @@ export class HistoryMirrorSyncer {
   }
 
   async #syncWorkspace(workspace: WorkspaceRecord, options?: { reset?: boolean | undefined }): Promise<void> {
-    if (workspace.kind !== "project" || !workspace.historyMirrorEnabled) {
+    if (workspace.kind !== "project") {
       return;
     }
 
