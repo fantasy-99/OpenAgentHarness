@@ -1,39 +1,92 @@
-# OpenAPI Spec
+# API 参考
 
-这里保存 Open Agent Harness 的 OpenAPI 3.1 草案和按模块拆分的接口说明。
+HTTP API 基于 REST 资源接口 + SSE 事件流。接口定义以 [openapi.yaml](./openapi.yaml) 为准。
 
-## 先看哪一个
+## 统一约束
 
-- 想先理解整体约束：看 [overview.md](./overview.md)
-- 想直接查接口定义：看 [openapi.yaml](./openapi.yaml)
-- 想接入消息与运行：先看 [sessions.md](./sessions.md)、[runs.md](./runs.md)、[streaming.md](./streaming.md)
-- 想设计 workspace 内文件管理：看 [files.md](./files.md)
+- 对外 API：`/api/v1`
+- 内部模型网关：`/internal/v1/models/*`（仅 loopback，无需 `Authorization`）
+- 宿主应用可注入 caller context resolver 接管认证；未注入时使用最小 caller context
+- 异步入口（发消息、触发 action）返回 `202`
+- 流式输出走 SSE
+- 最终执行状态以 run 资源为准
 
-## 文件结构
+关键边界：`session` = 上下文边界，`run` = 执行边界，同 session 内 run 串行。
 
-- [openapi.yaml](./openapi.yaml)
-  - 单文件 OpenAPI 3.1 草案
-- [overview.md](./overview.md)
-  - API 总览与统一约束
-- [workspaces.md](./workspaces.md)
-  - workspace、catalog、model 可见性
-- [files.md](./files.md)
-  - workspace 内文件管理草案
-- [models.md](./models.md)
-  - 模型网关，供脚本、CLI 和 action 直接调用模型
-- [sessions.md](./sessions.md)
-  - session 与 message
-- [runs.md](./runs.md)
-  - run 查询与取消
-- [actions.md](./actions.md)
-  - action 手动触发
-- [streaming.md](./streaming.md)
-  - SSE 事件流
-- [components.md](./components.md)
-  - 通用 schema、参数与错误模型
+## 端点速查
 
-## 使用原则
+### Workspaces
 
-- 接口定义以 [openapi.yaml](./openapi.yaml) 为准
-- 模块文档用于解释资源边界和语义
-- 如果你既要发起请求又要消费流式结果，建议把 `sessions`、`runs` 和 `streaming` 三页配合看
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/workspace-templates` | 列出模板 |
+| GET | `/workspaces` | 列出 workspace |
+| POST | `/workspaces` | 创建 workspace |
+| POST | `/workspaces/import` | 导入 workspace |
+| GET | `/workspaces/{id}` | 获取详情 |
+| DELETE | `/workspaces/{id}` | 删除 |
+| GET | `/workspaces/{id}/catalog` | 获取能力目录 |
+| GET | `/workspaces/{id}/history-mirror` | 镜像状态 |
+| POST | `/workspaces/{id}/history-mirror/rebuild` | 重建镜像 |
+
+### Files
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/workspaces/{id}/entries` | 列出目录条目 |
+| DELETE | `/workspaces/{id}/entries` | 删除条目 |
+| PATCH | `/workspaces/{id}/entries/move` | 移动/重命名 |
+| GET | `/workspaces/{id}/files/content` | 读取文件 |
+| PUT | `/workspaces/{id}/files/content` | 写入文件 |
+| PUT | `/workspaces/{id}/files/upload` | 上传二进制 |
+| GET | `/workspaces/{id}/files/download` | 下载文件 |
+| POST | `/workspaces/{id}/directories` | 创建目录 |
+
+### Sessions & Messages
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/workspaces/{id}/sessions` | 列出 session |
+| POST | `/workspaces/{id}/sessions` | 创建 session |
+| GET | `/sessions/{id}` | 获取详情 |
+| GET | `/sessions/{id}/messages` | 列出消息 |
+| POST | `/sessions/{id}/messages` | 发送消息（202） |
+| GET | `/sessions/{id}/events` | SSE 事件流 |
+
+### Runs
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/runs/{id}` | 获取详情 |
+| GET | `/runs/{id}/steps` | 列出步骤 |
+| POST | `/runs/{id}/cancel` | 取消（202） |
+
+### Actions
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/workspaces/{id}/actions/{name}/runs` | 触发 action（202） |
+
+### Models (Internal)
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/model-providers` | 列出 provider |
+| POST | `/internal/v1/models/generate` | 同步生成 |
+| POST | `/internal/v1/models/stream` | 流式生成 |
+
+## 模块文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [openapi.yaml](./openapi.yaml) | OpenAPI 3.1 规范 |
+| [workspaces.md](./workspaces.md) | workspace、catalog、模型可见性 |
+| [sessions.md](./sessions.md) | session 与 message |
+| [runs.md](./runs.md) | run 查询与取消 |
+| [actions.md](./actions.md) | action 手动触发 |
+| [files.md](./files.md) | workspace 文件管理 |
+| [models.md](./models.md) | 模型网关 |
+| [streaming.md](./streaming.md) | SSE 事件流 |
+| [components.md](./components.md) | 通用 schema 与错误模型 |
+
+接口定义以 [openapi.yaml](./openapi.yaml) 为准。发消息 + 消费流式结果建议配合看 [sessions](./sessions.md)、[runs](./runs.md)、[streaming](./streaming.md)。

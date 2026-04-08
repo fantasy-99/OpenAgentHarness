@@ -1,23 +1,13 @@
 # Model Providers
 
-这里集中列出当前 Open Agent Harness 已支持的 `provider` 取值。
+当前 Open Agent Harness 支持的 `provider` 取值。新增 provider 时需同步更新 `packages/model-gateway/src/providers.ts` 和本文档。
 
-如果后续新增 provider，应同时更新：
-
-- `packages/model-gateway/src/providers.ts`
-- 本文档
-
-## 当前支持列表
+## 支持列表
 
 ### `openai`
 
 - AI SDK package: `@ai-sdk/openai`
-- 是否必须填写 `url`: 否
-- 适用场景:
-  - 直接连接 OpenAI 官方接口
-  - 需要 OpenAI provider 的完整特性集
-
-示例：
+- `url`: 不需要
 
 ```yaml
 openai-default:
@@ -29,13 +19,7 @@ openai-default:
 ### `openai-compatible`
 
 - AI SDK package: `@ai-sdk/openai-compatible`
-- 是否必须填写 `url`: 是
-- 适用场景:
-  - OpenRouter 等兼容端点
-  - 自建网关
-  - 学校或企业内网的兼容代理
-
-示例：
+- `url`: 必填
 
 ```yaml
 openrouter-main:
@@ -55,6 +39,9 @@ kimi-campus:
 
 ## 选择建议
 
-- 目标端点就是 OpenAI 官方接口时，用 `openai`
-- 目标端点只保证 `/chat/completions` 兼容时，用 `openai-compatible`
-- 如果第二轮对话、assistant 历史消息或工具流异常，优先确认 provider 选择是否正确
+| 场景 | Provider |
+| --- | --- |
+| OpenAI 官方接口 | `openai` |
+| 仅保证 `/chat/completions` 兼容的端点 | `openai-compatible` |
+
+如果工具流或 assistant 历史消息行为异常，优先确认 provider 选择是否正确。

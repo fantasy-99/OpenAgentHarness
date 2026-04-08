@@ -1,32 +1,60 @@
-# Workspace Overview
+# Workspace
 
-The workspace is the main capability boundary in Open Agent Harness.
-
-When a user opens a project, the runtime should discover as much capability as possible from that project instead of forcing large amounts of global configuration.
-
-## When to Read This Page
-
-- you want to create a new workspace
-- you want to understand what belongs in `.openharness/`
-- you are debugging why an agent, model, or skill was not loaded
+The workspace is the primary capability boundary. When a user opens a project, the runtime auto-discovers all capabilities from the project root -- no global configuration required.
 
 ## Workspace Kinds
 
-### `project`
+| Kind | Description | Capability Scope |
+| --- | --- | --- |
+| `project` | Standard project workspace | Full: agents, models, actions, skills, tools, hooks |
+| `chat` | Read-only conversational workspace | Agents + models only; no tool or hook execution |
 
-- normal project workspace
-- can load the full capability set
-- can execute tools
-- can keep a local history mirror in `.openharness/data/history.db`
+The `chat` vs `project` distinction is determined by the server at registration time, not declared by the workspace itself. The server can designate a chat directory via `paths.chat_dir`; each subdirectory is auto-registered as `kind=chat`.
 
-### `chat`
+## Directory Structure
 
-- read-only conversational workspace
-- only loads static prompt, agent, and model configuration
-- does not execute shell, actions, skills, tools, or hooks
-- does not create a local history database
+Full structure:
 
-## Minimal Workspace Shape
+```text
+workspace/
+  AGENTS.md
+  .openharness/
+    settings.yaml
+    data/
+      history.db
+    agents/
+      planner.md
+      builder.md
+      reviewer.md
+    models/
+      GPT.yaml
+      Kimi-K25.yaml
+    actions/
+      code-review/
+        ACTION.yaml
+      run-tests/
+        ACTION.yaml
+    skills/
+      repo-explorer/
+        SKILL.md
+        scripts/
+        references/
+      doc-reader/
+        SKILL.md
+    tools/
+      settings.yaml
+      servers/
+        docs-server/
+        browser/
+    hooks/
+      redact-secrets.yaml
+      policy-guard.yaml
+      scripts/
+      prompts/
+      resources/
+```
+
+Minimal viable structure:
 
 ```text
 workspace/
@@ -39,31 +67,41 @@ workspace/
       openai.yaml
 ```
 
-## What Gets Auto-Discovered
+## Auto-Discovery
 
-At run startup, the runtime looks for:
+The runtime scans these paths at run startup:
 
-- `AGENTS.md`
-- `.openharness/settings.yaml`
-- `.openharness/agents/*.md`
-- `.openharness/models/*.yaml`
-- `.openharness/actions/*/ACTION.yaml`
-- `.openharness/skills/*/SKILL.md`
-- `.openharness/tools/settings.yaml`
-- `.openharness/tools/servers/*`
-- `.openharness/hooks/*.yaml`
+| Path | Purpose |
+| --- | --- |
+| `AGENTS.md` | Project description, injected into system prompt |
+| `.openharness/settings.yaml` | Main config entry point |
+| `.openharness/agents/*.md` | Agent definitions |
+| `.openharness/models/*.yaml` | Model entries |
+| `.openharness/actions/*/ACTION.yaml` | Action definitions |
+| `.openharness/skills/*/SKILL.md` | Skill definitions |
+| `.openharness/tools/settings.yaml` | MCP tool server registry |
+| `.openharness/tools/servers/*` | Local tool server code |
+| `.openharness/hooks/*.yaml` | Hook definitions |
 
-## Read Next
+!!! info
 
-1. [Settings](./settings.md)
-2. [Agents](./agents.md)
-3. [Models](./models.md)
-4. [Actions](./actions.md)
-5. [Skills](./skills.md)
-6. [External Tools (MCP-backed)](./mcp.md)
-7. [Hooks](./hooks.md)
-8. [Loading and Validation](./loading-and-validation.md)
+    `.openharness/data/` is a runtime-managed directory and is not part of capability discovery. `history.db` is an async mirror, not a source of truth. `kind=chat` workspaces do not create this database.
 
-## Translation Note
+**Merge rules:**
 
-This page is translated. Some deeper workspace pages may still fall back to Chinese.
+- Platform built-in agents and workspace agents merge into a visible catalog; workspace wins on name conflict
+- Platform and workspace model entries merge (no override)
+- Agents must reference models via explicit `model_ref`
+- Explicit parameters can only select from the current catalog, not extend it
+- `kind=chat` workspaces only expose agents and models
+- If no `default_agent` is declared and the caller does not specify one, a config error is returned
+
+## FAQ
+
+**What is the core difference between `chat` and `project`?**
+
+Execution strategy. `project` can assemble and execute tool capabilities. `chat` provides static conversation only and never enters the execution backend.
+
+**Why is `.openharness/data/` excluded from config parsing?**
+
+It is a runtime-managed directory. `history.db` is an async mirror, not a source of truth.

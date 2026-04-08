@@ -1,29 +1,14 @@
-# MCP
+# MCP (External Tools)
 
-## 目标
-
-MCP 采用目录式组织：
-
-- `settings.yaml`
-  - MCP server 注册中心
-- `servers/`
-  - 本地代码型 MCP server 目录
-
-这种方式更适合同时支持：
-
-- workspace 自带 MCP server
-- 用户上传自己的 MCP server 代码
-- 远程 MCP server
-- stdio / http 等不同连接方式
-- 显式声明本地 server 的启动命令
+MCP tool server 配置位于 `.openharness/tools/`，采用目录式组织。
 
 ## 目录结构
 
 ```text
-mcp/
-  settings.yaml
+tools/
+  settings.yaml         # Server 注册中心
   servers/
-    docs-server/
+    docs-server/        # 本地代码型 server
       package.json
       index.js
     browser/
@@ -31,11 +16,9 @@ mcp/
       server.py
 ```
 
-## `settings.yaml` 规范
+## settings.yaml
 
-`settings.yaml` 用于声明当前 workspace 中可见的 MCP servers。
-
-建议结构：
+声明当前 workspace 可见的 MCP servers：
 
 ```yaml
 docs-server:
@@ -59,22 +42,25 @@ browser:
   oauth: false
 ```
 
-## 设计原则
+## 字段说明
 
-- `settings.yaml` 负责注册、命名、启用、暴露策略和连接参数
-- 有 `command` 的 server 视为本地进程型 server
-- 有 `url` 的 server 视为远程 server
-- 每个 server 必须二选一，只能声明 `command` 或 `url`
-- 本地代码目录建议放在 `servers/<name>/`
-- 远程 server 可以只在 `settings.yaml` 中声明，无需本地目录
-- 运行时应支持用户上传自己的 server 目录
-- `settings.yaml` 是当前 workspace 的单一 MCP 配置入口
-- `command` 使用字符串
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| 顶层 key | 是 | Server 名称 |
+| `command` | 二选一 | 本地进程型 server 启动命令 |
+| `url` | 二选一 | 远程 server 地址 |
+| `enabled` | 否 | 是否启用 |
+| `environment` | 否 | 追加环境变量 |
+| `headers` | 否 | 请求头（远程 server） |
+| `timeout` | 否 | 超时（毫秒） |
+| `expose` | 否 | 工具暴露策略（前缀、include/exclude） |
+| `oauth` | 否 | 是否使用 OAuth 认证 |
 
-## 当前范围
+每个 server 必须声明 `command` 或 `url`，不可同时声明。
 
-- 支持 `stdio`
-- 支持 `http`
-- 从 workspace 关联 secrets 或平台注入环境中读取认证信息
-- 支持本地代码型 server 和远程 server 并存
-- 本地 server 使用 `command` 声明启动方式
+## 连接方式
+
+| 类型 | 字段 | 说明 |
+| --- | --- | --- |
+| 本地 stdio | `command` | 本地代码放 `servers/<name>/` |
+| 远程 http | `url` | 可只在 settings.yaml 声明，无需本地目录 |

@@ -1,26 +1,37 @@
-# OpenAPI Overview
+# API Reference
 
-This section contains the OpenAPI 3.1 draft and the modular API explanations for Open Agent Harness.
+The HTTP API is built on REST resource endpoints + SSE event streams. The [openapi.yaml](./openapi.yaml) file is the authoritative interface definition.
+
+## Conventions
+
+- Public API: `/api/v1`
+- Internal model gateway: `/internal/v1/models/*` (loopback only, no `Authorization`)
+- Host can inject a caller context resolver; without one, standalone server uses minimal caller context
+- Async entry points (send message, trigger action) return `202`
+- Streaming uses SSE
+- Final execution status determined by the run resource
+
+Key boundaries: `session` = context boundary, `run` = execution boundary, runs within a session are serial.
 
 ## Start Here
 
-- to understand the overall API shape: [overview.md](./overview.md)
-- to inspect the concrete schema: [openapi.yaml](./openapi.yaml)
-- to integrate message sending and execution: read [sessions.md](./sessions.md), [runs.md](./runs.md), and [streaming.md](./streaming.md) together
+- Overall API shape: endpoint tables below
+- Concrete schema: [openapi.yaml](./openapi.yaml)
+- Message sending + execution: read [sessions.md](./sessions.md), [runs.md](./runs.md), [streaming.md](./streaming.md) together
+- File management: [files.md](./files.md)
 
-## File Structure
+## Module Documentation
 
-- [openapi.yaml](./openapi.yaml): single-file OpenAPI draft
-- [overview.md](./overview.md): API conventions and system-wide rules
-- [workspaces.md](./workspaces.md): workspace and catalog visibility
-- [models.md](./models.md): internal model gateway
-- [sessions.md](./sessions.md): sessions and messages
-- [runs.md](./runs.md): run lookup and cancellation
-- [actions.md](./actions.md): manual action triggering
-- [streaming.md](./streaming.md): SSE event streaming
-- [components.md](./components.md): shared schemas and error models
-
-## Rule of Thumb
+| Document | Content |
+| --- | --- |
+| [openapi.yaml](./openapi.yaml) | OpenAPI 3.1 specification |
+| [workspaces.md](./workspaces.md) | Workspace, catalog, model visibility |
+| [sessions.md](./sessions.md) | Sessions and messages |
+| [runs.md](./runs.md) | Run lookup and cancellation |
+| [actions.md](./actions.md) | Manual action triggering |
+| [files.md](./files.md) | Workspace file management |
+| [models.md](./models.md) | Model gateway |
+| [streaming.md](./streaming.md) | SSE event streaming |
+| [components.md](./components.md) | Shared schemas and error models |
 
 The OpenAPI file is the interface source of truth. The Markdown pages explain intent, boundaries, and behavior.
-

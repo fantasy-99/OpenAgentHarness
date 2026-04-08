@@ -2,7 +2,7 @@
 
 本文档集用于沉淀 Open Agent Harness 的当前架构设计。
 
-如果你是在浏览源码仓库，这页更像“设计文档总索引”；如果你是在文档站里阅读，建议优先从 [首页](./index.md) 或 [设计总览](./design-overview.md) 进入。
+如果你是在浏览源码仓库，这页更像"设计文档总索引"；如果你是在文档站里阅读，建议优先从 [首页](./index.md) 或 [设计总览](./design-overview.md) 进入。
 
 ## 核心约束
 
@@ -19,36 +19,15 @@
 
 ## 文档索引
 
-- [architecture-overview.md](./architecture-overview.md)
-  - 总体目标、系统边界、分层架构和关键决策
-- [domain-model.md](./domain-model.md)
-  - 领域对象、注册表和能力边界
-- [server-config.md](./server-config.md)
-  - 服务端配置文件与 `chat` workspace 根目录发现规则
-- [deploy.md](./deploy.md)
-  - 本地启动、联调、embedded worker 与拆分部署方式
-- [debug-cli-tui.md](./debug-cli-tui.md)
-  - 调试用 CLI / TUI 设计
-- [workspace-spec.md](./workspace-spec.md)
-  - workspace 规范导航页
-- [workspace/README.md](./workspace/README.md)
-  - `.openharness/` 目录规范与 YAML DSL 详细拆分文档
-- [workspace/model-providers.md](./workspace/model-providers.md)
-  - 当前运行时已支持的模型 provider 列表
-- [api-design.md](./api-design.md)
-  - API 约束与 OpenAPI 文档导航
-- [runtime-design.md](./runtime-design.md)
-  - runtime 设计导航页
-- [runtime/README.md](./runtime/README.md)
-  - 运行时生命周期、上下文、执行、队列与事件的详细拆分文档
-- [openapi/README.md](./openapi/README.md)
-  - OpenAPI 3.1 草案与模块化接口说明
-- [storage-design.md](./storage-design.md)
-  - PostgreSQL、Redis、workspace 历史镜像、审计与恢复策略
-- [implementation-roadmap.md](./implementation-roadmap.md)
-  - 实施顺序、风险与后续演进
-- [schemas/README.md](./schemas/README.md)
-  - workspace 配置文件的 JSON Schema
+- [architecture-overview.md](./architecture-overview.md) — 总体目标、系统边界、分层架构和关键决策
+- [domain-model.md](./domain-model.md) — 领域对象、注册表和能力边界
+- [server-config.md](./server-config.md) — 服务端配置文件与运行模式
+- [deploy.md](./deploy.md) — 本地启动、联调、embedded worker 与拆分部署方式
+- [workspace/README.md](./workspace/README.md) — `.openharness/` 目录规范与配置详解
+- [runtime/README.md](./runtime/README.md) — 运行时生命周期、上下文、执行、队列与事件
+- [openapi/README.md](./openapi/README.md) — API 参考与 OpenAPI 3.1 规范
+- [storage-design.md](./storage-design.md) — PostgreSQL、Redis、workspace 历史镜像、审计与恢复策略
+- [schemas/README.md](./schemas/README.md) — workspace 配置文件的 JSON Schema
 
 ## 按目标快速跳转
 
@@ -63,8 +42,7 @@
 1. [architecture-overview.md](./architecture-overview.md)
 2. [domain-model.md](./domain-model.md)
 3. [server-config.md](./server-config.md)
-4. [debug-cli-tui.md](./debug-cli-tui.md)
-5. [workspace/README.md](./workspace/README.md)
-6. [runtime/README.md](./runtime/README.md)
-7. [api-design.md](./api-design.md)
-8. [storage-design.md](./storage-design.md)
+4. [workspace/README.md](./workspace/README.md)
+5. [runtime/README.md](./runtime/README.md)
+6. [openapi/README.md](./openapi/README.md)
+7. [storage-design.md](./storage-design.md)

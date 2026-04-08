@@ -1,0 +1,38 @@
+import type {
+  StorageOverview,
+  StoragePostgresTableName,
+  StoragePostgresTablePage,
+  StorageRedisKeyDetail,
+  StorageRedisKeyPage
+} from "@oah/api-contracts";
+
+import type { StorageBrowserTab } from "../support";
+
+export interface StorageWorkbenchProps {
+  browserTab: StorageBrowserTab;
+  overview: StorageOverview | null;
+  tablePage: StoragePostgresTablePage | null;
+  selectedTable: StoragePostgresTableName;
+  selectedRow: Record<string, unknown> | null;
+  onSelectRow: (row: Record<string, unknown> | null) => void;
+  redisKeyPage: StorageRedisKeyPage | null;
+  selectedRedisKey: string;
+  selectedRedisKeys: string[];
+  onSelectedRedisKeysChange: (keys: string[]) => void;
+  onSelectRedisKey: (key: string) => void;
+  redisKeyDetail: StorageRedisKeyDetail | null;
+  onRefreshTable: () => void;
+  onPreviousTablePage: () => void;
+  onNextTablePage: () => void;
+  onClearTableFilters: () => void;
+  onDownloadTableCsv: () => void;
+  onRefreshRedisKeys: () => void;
+  onLoadMoreRedisKeys: () => void;
+  onRefreshRedisKey: () => void;
+  onDeleteRedisKey: () => void;
+  onDeleteSelectedRedisKeys: () => void;
+  onClearRedisSessionQueue: (key: string) => void;
+  onReleaseRedisSessionLock: (key: string) => void;
+  busy: boolean;
+}
+

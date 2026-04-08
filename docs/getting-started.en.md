@@ -1,132 +1,93 @@
 # Quick Start
 
-This page is the shortest path to getting Open Agent Harness running locally.
+## Prerequisites
 
-## Choose a Path
-
-| Goal | Recommended path |
+| Tool | Version |
 | --- | --- |
-| Run the project end-to-end | Follow this page from top to bottom |
-| Understand deployment modes first | Read [Deploy and Run](./deploy.md) |
-| Only preview the docs site | Jump to [Preview the Docs Site](#7-preview-the-docs-site) |
+| Node.js | 20+ |
+| pnpm | 10+ |
+| Docker + docker compose | Latest stable |
 
-!!! tip
+## Installation and Startup
 
-    If this is your first time, the easiest path is: `pnpm infra:up` -> `pnpm dev:server -- --config ./server.example.yaml` -> `pnpm dev:web`.
-
-## 1. Prerequisites
-
-Make sure you have:
-
-- `Node.js 20+`
-- `pnpm 10+`
-- `Docker` and `docker compose`
-- `Python 3.10+` if you want to preview the docs site locally
-
-Install dependencies:
+### Step 1: Install dependencies
 
 ```bash
 pnpm install
 ```
 
-Run commands from the repository root:
+### Step 2: Start infrastructure
 
-```bash
-cd <project-root>
-```
-
-## 2. Start Local Infrastructure
-
-The project uses PostgreSQL and Redis in development:
+Start PostgreSQL and Redis (Docker Compose for development):
 
 ```bash
 pnpm infra:up
 ```
 
-Stop local infrastructure:
-
-```bash
-pnpm infra:down
-```
-
-## 3. Start the Runtime
-
-The simplest option is to start the server with the embedded worker:
+### Step 3: Start the backend
 
 ```bash
 pnpm dev:server -- --config ./server.example.yaml
 ```
 
-If you want to simulate production-style split deployment:
+Listens on `http://127.0.0.1:8787` by default. The embedded worker starts automatically.
 
-```bash
-pnpm dev:server -- --config ./server.example.yaml --api-only
-pnpm dev:worker -- --config ./server.example.yaml
-```
-
-How to choose:
-
-- For local development and integration work, use the default `server`
-- For production-like testing, use `--api-only` plus a standalone `worker`
-
-## 4. Start the Debug Web Console
+### Step 4: Start the debug console
 
 ```bash
 pnpm dev:web
 ```
 
-Default address:
+Open [http://localhost:5174](http://localhost:5174).
 
-- [http://localhost:5174](http://localhost:5174)
+## Verify It Works
 
-If your backend is not on the default address:
+After startup, check:
 
-```bash
-OAH_WEB_PROXY_TARGET=http://127.0.0.1:8787 pnpm dev:web
-```
+1. Backend logs show the runtime mode (embedded worker / api-only)
+2. Browser opens `http://localhost:5174`
+3. Send a message in the console. The run should move from `queued` to executing.
 
-## 5. How To Confirm It Works
+!!! tip
+    If the backend is not at the default address, set the proxy target:
+    ```bash
+    OAH_WEB_PROXY_TARGET=http://127.0.0.1:8787 pnpm dev:web
+    ```
 
-After startup, quickly check:
+## Single Workspace Mode
 
-1. The backend logs show the current runtime mode
-2. The frontend opens at [http://localhost:5174](http://localhost:5174)
-3. A message can move a run from `queued` into execution
-4. In split mode, the worker logs show queue consumption
-
-## 6. Build and Test
-
-```bash
-pnpm build
-pnpm test
-pnpm test:dist
-```
-
-## 7. Preview the Docs Site
-
-The docs site uses `mkdocs-material` plus i18n support:
+To serve a single workspace without a config file, point directly at a workspace path:
 
 ```bash
-python3 -m pip install -r docs/requirements.txt
-mkdocs serve
+pnpm dev:server -- \
+  --workspace /absolute/path/to/workspace \
+  --model-dir /absolute/path/to/models \
+  --default-model openai-default
 ```
 
-Typical local docs address:
+Optional flags: `--workspace-kind chat`, `--tool-dir`, `--skill-dir`, `--host`, `--port`
 
-- [http://127.0.0.1:8000/OpenAgentHarness/](http://127.0.0.1:8000/OpenAgentHarness/)
+!!! info
+    In single workspace mode, the debug console enters the workspace automatically.
 
-Build the static site:
+## Common Commands
 
-```bash
-mkdocs build --strict
-```
+| Command | Purpose |
+| --- | --- |
+| `pnpm install` | Install dependencies |
+| `pnpm infra:up` | Start PostgreSQL + Redis |
+| `pnpm infra:down` | Stop infrastructure |
+| `pnpm dev:server -- --config ./server.example.yaml` | Start backend (embedded worker) |
+| `pnpm dev:server -- --api-only --config ./server.example.yaml` | Start API only |
+| `pnpm dev:worker -- --config ./server.example.yaml` | Start standalone worker |
+| `pnpm dev:web` | Start debug console |
+| `pnpm build` | Full build |
+| `pnpm test` | Run tests |
+| `mkdocs serve` | Preview docs locally |
 
-## 8. Recommended Reading Order
+## Next Steps
 
-1. [Home](./index.md)
-2. [Overview](./design-overview.md)
-3. [Architecture Overview](./architecture-overview.md)
-4. [Deploy and Run](./deploy.md)
-5. [Workspace Overview](./workspace/README.md)
-6. [Runtime Overview](./runtime/README.md)
-7. [OpenAPI Overview](./openapi/README.md)
+- [Architecture Overview](./architecture-overview.md) — Understand the system structure
+- [Workspace Guide](./workspace/README.md) — Configure agents, skills, and tools
+- [Deploy and Run](./deploy.md) — Unified local vs split production deployment
+- [Design Overview](./design-overview.md) — Core design decisions

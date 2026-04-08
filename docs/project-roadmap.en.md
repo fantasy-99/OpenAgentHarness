@@ -1,24 +1,17 @@
 # Project Roadmap
 
-This page is the roadmap entry inside the docs site.
+## Related Docs
 
-## What to Read
+- [Architecture Overview](./architecture-overview.en.md) -- product and system boundaries
+- [Quick Start](./getting-started.md) / [Deploy and Run](./deploy.md) -- startup and deployment
+- [Implementation Roadmap](./implementation-roadmap.md) -- historical phased plan
 
-- For product and system boundaries: [Architecture Overview](./architecture-overview.md)
-- For startup and deployment: [Quick Start](./getting-started.md) and [Deploy and Run](./deploy.md)
-- For the original phased implementation plan: [Implementation Roadmap](./implementation-roadmap.md)
+## Current Focus
 
-## Current Focus Areas
+- Keep runtime truth boundaries consistent across implementation, design docs, and OpenAPI spec
+- Evaluate more aggressive recovery strategies (auto-requeue / resume) as needed; currently fail-closed only
+- Deferred capabilities remain candidates, not commitments: Unix socket model gateway, first-class `action_run` / `artifact`
 
-Based on the current design documents, the main ongoing directions are:
+## Repository Roadmap
 
-- improving runtime reliability, including heartbeat and worker recovery
-- tightening how external caller context is integrated into the runtime
-- keeping documentation, design, and implementation aligned
-
-## Repository Roadmap File
-
-The repository also keeps a root-level roadmap file:
-
-- [Repository ROADMAP.md](https://github.com/fairyshine/OpenAgentHarness/blob/master/ROADMAP.md)
-
+- [ROADMAP.md](https://github.com/fairyshine/OpenAgentHarness/blob/master/ROADMAP.md)

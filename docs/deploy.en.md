@@ -1,99 +1,124 @@
 # Deploy and Run
 
-This page explains the recommended local and production deployment shapes for Open Agent Harness.
+## Deployment Modes
 
-## Choose a Mode First
+| Mode | Processes | Dependencies | When to use |
+| --- | --- | --- | --- |
+| **API + Worker combined** | 1 `server` | PostgreSQL; Redis optional | Local dev, PoC, single-node |
+| **API + Worker split** | 1 `server --api-only` + N `worker` | PostgreSQL + Redis | Production, independent scaling |
+| **Single Workspace** | 1 `server --workspace <path>` | PostgreSQL; Redis optional | Serving one repo or one chat space |
 
-| Scenario | Recommended mode |
-| --- | --- |
-| First local run | `API + embedded worker` |
-| Product integration | `API + embedded worker` |
-| Production-like split testing | `API only + standalone worker` |
-| Multi-instance production deployment | `API only + standalone worker` |
+> **tip**
+> Not sure which to pick? Start with combined mode. You can split later without code changes.
 
-## Runtime Modes
+---
 
-### `API + embedded worker`
+## Local Development
 
-This is the default mode.
-
-- one `server` process is enough
-- the API process hosts an embedded worker
-- if Redis is configured, the embedded worker consumes the Redis queue
-- if Redis is not configured, runs execute in-process
-
-Best for:
-
-- local development
-- product integration
-- PoCs
-- single-node self-hosting
-
-### `API only`
-
-Start it with:
+Three terminals, simplest path:
 
 ```bash
-pnpm dev:server -- --config ./server.example.yaml --api-only
-```
-
-- starts only the API
-- does not host the embedded worker
-- with Redis, you should pair it with a standalone worker
-
-### `standalone worker`
-
-Start it with:
-
-```bash
-pnpm dev:worker -- --config ./server.example.yaml
-```
-
-- consumes the Redis run queue
-- executes queued runs
-- performs history mirror sync
-
-## Recommended Local Setup
-
-Use 3 terminals:
-
-### Terminal 1: infrastructure
-
-```bash
-cd <project-root>
+# Terminal 1 — Infrastructure (PostgreSQL + Redis)
 pnpm infra:up
-```
 
-### Terminal 2: backend
-
-```bash
-cd <project-root>
+# Terminal 2 — Backend (combined mode)
 pnpm dev:server -- --config ./server.example.yaml
-```
 
-### Terminal 3: frontend
-
-```bash
-cd <project-root>
+# Terminal 3 — Frontend
 pnpm dev:web
 ```
 
-Frontend address:
+Frontend default address: `http://localhost:5174`
 
-- [http://localhost:5174](http://localhost:5174)
+> **info**
+> Run `pnpm install` before the first start.
 
-## Production-Like Split Setup
+---
 
-Use 4 terminals:
+## Split Deployment
 
-1. infrastructure: `pnpm infra:up`
-2. API: `pnpm dev:server -- --config ./server.example.yaml --api-only`
-3. worker: `pnpm dev:worker -- --config ./server.example.yaml`
-4. frontend: `pnpm dev:web`
+For production or production-like environments. Requires Redis.
 
-## What To Check After Startup
+```bash
+# Terminal 1 — Infrastructure
+pnpm infra:up
 
-1. The server logs show the selected runtime mode
-2. The frontend opens successfully
-3. A run does not stay in `queued` forever
-4. In split mode, the worker logs show queue consumption
+# Terminal 2 — API only (no embedded worker)
+pnpm dev:server -- --config ./server.example.yaml --api-only
+
+# Terminal 3 — Worker (can run multiple instances)
+pnpm dev:worker -- --config ./server.example.yaml
+
+# Terminal 4 — Frontend
+pnpm dev:web
+```
+
+The API process handles HTTP requests only. Worker processes consume the Redis queue, execute runs, and sync the history mirror.
+
+---
+
+## Single Workspace Mode
+
+Skip the multi-workspace directory structure and point directly at one workspace:
+
+```bash
+pnpm dev:server -- \
+  --workspace /absolute/path/to/workspace \
+  --model-dir /absolute/path/to/models \
+  --default-model openai-default
+```
+
+Optional flags:
+
+| Flag | Description |
+| --- | --- |
+| `--workspace-kind project\|chat` | Workspace type, defaults to `project` |
+| `--tool-dir <path>` | Platform tool directory |
+| `--skill-dir <path>` | Platform skill directory |
+| `--host <addr>` | Listen address, defaults to `127.0.0.1` |
+| `--port <num>` | Listen port, defaults to `8787` |
+
+> **warning**
+> In single workspace mode, workspace management endpoints (`POST /workspaces`, `DELETE /workspaces/:id`, etc.) are disabled.
+
+---
+
+## Startup Verification
+
+After starting the server, verify status with these endpoints:
+
+| Endpoint | Purpose | Expected response |
+| --- | --- | --- |
+| `GET /healthz` | Liveness check | `{ "status": "ok" }` |
+| `GET /readyz` | Readiness check (includes dependencies) | `{ "status": "ready" }`, returns 503 if not ready |
+
+```bash
+curl http://127.0.0.1:8787/healthz
+curl http://127.0.0.1:8787/readyz
+```
+
+Additional checks:
+
+- Server logs print the active runtime mode (`API + embedded worker` / `API only` / `standalone worker`)
+- After sending a message, the run progresses past `queued`
+- In split mode, worker logs show queue consumption
+
+---
+
+## Environment Variables
+
+| Variable | Description | Example |
+| --- | --- | --- |
+| `DATABASE_URL` | PostgreSQL connection string | `postgres://oah:oah@127.0.0.1:5432/open_agent_harness` |
+| `REDIS_URL` | Redis connection string | `redis://127.0.0.1:6379` |
+| `OAH_WEB_PROXY_TARGET` | Frontend proxy target (when backend is not at the default address) | `http://127.0.0.1:8787` |
+
+Reference environment variables in `server.yaml` with `${env.DATABASE_URL}` syntax.
+
+When using containers started by `pnpm infra:up`, the default connection strings are:
+
+```yaml
+storage:
+  postgres_url: postgres://oah:oah@127.0.0.1:5432/open_agent_harness
+  redis_url: redis://127.0.0.1:6379
+```

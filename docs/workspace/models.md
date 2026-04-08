@@ -1,48 +1,27 @@
 # Models
 
-## Model 解析规则
+## 双层来源
 
-### 双层来源
+系统维护两类模型入口：
 
-系统同时维护两类模型入口：
+| 来源 | 位置 | 说明 |
+| --- | --- | --- |
+| 平台级 | 服务端 `paths.model_dir` | 由服务端配置并注册 |
+| Workspace 级 | `.openharness/models/*.yaml` | 由 workspace 声明 |
 
-- 平台级模型入口
-  - 由服务端配置并注册
-  - 具体配置方式见 [../server-config.md](../server-config.md) 中的 `paths.model_dir`
-  - 平台模型文件与 workspace 模型文件复用同一套 YAML 结构
-- workspace 级模型入口
-  - 由 `.openharness/models/*.yaml` 声明
+两类入口使用同一套 YAML 结构。进入 workspace 时，运行时将两者合并成可见 catalog。
 
-### 可见性
+## 引用方式
 
-进入某个 workspace 时，运行时会将两类模型入口合并成一个可见 catalog。
-
-这意味着在同一个 workspace 内：
-
-- 可以使用平台统一提供的模型入口
-- 也可以使用项目自定义的模型入口
-
-### 引用方式
-
-Agent 必须通过 `model.model_ref` 显式引用模型入口。
-
-建议格式：
+Agent 通过 `model.model_ref` 显式引用：
 
 - `platform/openai-default`
 - `workspace/openrouter-personal`
 - `workspace/中文模型`
 
-这里的 `model_ref` 指向一个具体模型入口，而不是抽象 provider 连接。
+`model_ref` 指向具体模型入口，不是抽象 provider 连接。
 
-## Model YAML 规范
-
-Model YAML 用于声明 workspace 级模型入口。
-
-其中 `provider` 字段应对齐 [AI SDK Providers](https://ai-sdk.dev/docs/foundations/providers-and-models#ai-sdk-providers)。
-
-当前 Open Agent Harness 已支持的 provider 列表见 [./model-providers.md](./model-providers.md)。
-
-## 示例
+## Model YAML 示例
 
 ```yaml
 openai-default:
@@ -57,24 +36,14 @@ openrouter-main:
   name: openai/gpt-5
 ```
 
-## 关键字段
+## 字段说明
 
-- 顶层 key
-  - 模型入口的自定义名称
-- `provider`
-  - AI SDK provider 标识
-  - 当前支持值见 [./model-providers.md](./model-providers.md)
-- `key`
-  - 密钥或密钥引用，建议使用变量引用
-- `url`
-  - 可选，自定义 endpoint 或兼容接口地址
-- `name`
-  - 该自定义名称对应的唯一模型名
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| 顶层 key | 是 | 模型入口名称，支持中文 |
+| `provider` | 是 | AI SDK provider 标识，见 [model-providers](./model-providers.md) |
+| `key` | 是 | 密钥引用，建议 `${env.OPENAI_API_KEY}` |
+| `url` | 否 | 自定义 endpoint（`openai-compatible` 必填） |
+| `name` | 是 | 对应的模型名 |
 
-说明：
-
-- 一个文件可以声明多个模型入口
-- 每个自定义名称只对应一个模型
-- 顶层自定义名称支持中文和其他 Unicode 字符
-- `model_ref` 中的自定义名称部分也支持中文和其他 Unicode 字符
-- `key` 建议写变量引用，例如 `${env.OPENAI_API_KEY}`
+一个文件可声明多个模型入口。`model_ref` 中的名称部分支持中文和其他 Unicode 字符。

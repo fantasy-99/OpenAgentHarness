@@ -50,7 +50,7 @@
 
 - [openapi/openapi.yaml](./openapi/openapi.yaml)
   - 单文件 OpenAPI 3.1 草案
-- [openapi/overview.md](./openapi/overview.md)
+- [openapi/README.md](./openapi/README.md)
   - 总体约束和接口形态
 - [openapi/workspaces.md](./openapi/workspaces.md)
   - workspace 与 catalog

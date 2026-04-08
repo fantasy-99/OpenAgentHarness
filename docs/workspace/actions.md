@@ -1,10 +1,6 @@
 # Actions
 
-## 目标
-
-Action 表达一个可被模型和用户调用的命名任务入口。
-
-Action 不再承担通用工作流 DSL 的职责，而是把固定执行逻辑封装成一个高层入口。
+Action 是可被模型和用户调用的命名任务入口。每个 action 封装固定执行逻辑，不承担通用工作流 DSL 职责。
 
 ## 目录结构
 
@@ -16,15 +12,15 @@ actions/
     ACTION.yaml
 ```
 
-常见结构：
+完整结构：
 
 ```text
 actions/
   test-run/
     ACTION.yaml
-    scripts/
-    references/
-    assets/
+    scripts/      # 内部脚本
+    references/   # 补充文档
+    assets/       # 模板和静态资源
 ```
 
 ## 示例
@@ -52,113 +48,70 @@ entry:
   command: npm test
 ```
 
-## 当前 DSL 约束
-
-- 一个 action 只声明一个入口
-- 入口统一使用 `command`
-- `command` 使用字符串
-- shell 命令、本地脚本和解释器调用都通过 `command` 表达
-- 复杂编排逻辑交给脚本或被调用的程序实现
-- 不提供 steps / if / loop / matrix / DAG 语义
-
 ## 顶层字段
 
-- `name`
-- `description`
-- `expose`
-- `input_schema`
-- `recovery`
-- `entry`
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `name` | 是 | Action 名称 |
+| `description` | 是 | 简短说明 |
+| `expose` | 否 | 暴露策略（to_llm / callable_by_user / callable_by_api） |
+| `input_schema` | 否 | JSON Schema 输入约束 |
+| `recovery` | 否 | 重试策略 |
+| `entry` | 是 | 执行入口 |
 
-## `ACTION.yaml` 规范
-
-`ACTION.yaml` 是 action 的主定义文件。
-
-推荐与 action 目录配合使用：
-
-- `scripts/`
-  - action 内部用到的脚本
-- `references/`
-  - 补充文档
-- `assets/`
-  - 模板和静态资源
-
-## `entry` 字段
-
-建议结构：
+## `entry`
 
 ```yaml
 entry:
   command: npm test
+  environment:
+    CI: "true"
+  cwd: ./
+  timeout_seconds: 300
 ```
 
-字段说明：
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `command` | 是 | Shell 命令字符串 |
+| `environment` | 否 | 追加环境变量 |
+| `cwd` | 否 | 工作目录 |
+| `timeout_seconds` | 否 | 执行超时 |
 
-- `command`
-  - 命令字符串
-- `environment`
-  - 可选，追加环境变量
-- `cwd`
-  - 可选，工作目录
-- `timeout_seconds`
-  - 可选，当前 action 超时
-
-## `recovery` 字段
-
-可选结构：
+## `recovery`
 
 ```yaml
 recovery:
   retry_policy: safe
 ```
 
-字段说明：
+| 值 | 说明 |
+| --- | --- |
+| `manual` | 默认值。只允许人工或外部调用方显式重试 |
+| `safe` | 仅用于已确认幂等的 action，为自动恢复提供信号 |
 
-- `retry_policy`
-  - `manual`
-    - 默认值
-    - 只能视为人工或外部调用方显式重试
-    - 不应默认进入未来的自动恢复 / 自动续跑路径
-  - `safe`
-    - 仅用于已明确幂等、可安全重放的 action
-    - 为后续自动恢复策略提供显式信号
+## DSL 约束
 
-规则：
-
-- `command` 始终按 shell 命令字符串执行
+- 一个 action 只有一个入口，统一使用 `command`
+- Shell 命令、脚本、解释器调用都通过 `command` 表达
+- 复杂编排逻辑放在被调用的脚本或程序中
+- 不提供 steps / if / loop / matrix / DAG 语义
 
 ## `command` 示例
 
-字符串形式：
-
 ```yaml
+# Shell
 entry:
   command: npm test
-```
 
-Python：
-
-```yaml
+# Python
 entry:
   command: python ./scripts/run_tests.py --watch
-```
 
-JS：
-
-```yaml
+# Node.js
 entry:
   command: node ./scripts/run-tests.js
-```
 
-TypeScript：
-
-```yaml
+# TypeScript
 entry:
   command: npx tsx ./scripts/code-review.ts
 ```
-
-## 设计原则
-
-- action 是命名任务入口，不是工作流语言
-- action 内部复杂逻辑优先放在命令调用的脚本或程序中
-- 模型调用 action 时，只需要理解 action 的高层语义，不需要关心内部实现

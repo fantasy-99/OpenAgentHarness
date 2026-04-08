@@ -2,104 +2,49 @@
 
 ## 输入
 
-- workspace 元数据
-- workspace settings
+- workspace 元数据与 settings
 - session 历史消息
-- 平台内建 agent 定义
-- 当前 agent 定义
-- 服务端 `paths.model_dir` 中的平台模型入口清单
-- workspace 级模型入口清单
-- `AGENTS.md`
-- `.openharness` 目录中的声明式配置
-- `settings.skill_dirs` 解析出的额外 skill roots
+- 平台内建 agent 定义 + workspace agent 定义
+- 服务端 `paths.model_dir` 平台模型清单 + workspace 模型清单
+- `AGENTS.md` 原文
+- `.openharness` 声明式配置
+- `settings.skill_dirs` 额外 skill 根目录
 
-说明：
-
-- 运行时会读取服务端公共模型目录与当前 workspace 文件
-- 服务端 `paths.tool_dir` / `paths.skill_dir` 主要作为模板初始化的导入源，不直接进入 workspace 运行时上下文
-- 平台模板仅用于初始化 workspace，不参与运行时加载或 merge
-- `paths.chat_dir` 下的只读对话空间不属于“先复制后使用”的模板；它们会被直接发现并按 workspace 加载
-- `kind=chat` workspace 仍沿用同一套加载入口，但只装配只读对话所需的静态配置
+说明：服务端 `paths.tool_dir` / `paths.skill_dir` 仅作为模板导入源，不直接进入运行时上下文。`paths.chat_dir` 下的只读对话空间直接按 workspace 加载，不走模板复制。
 
 ## 输出
 
 - 系统 prompt
-- Runtime Messages
-- Model Messages
+- Runtime Messages（内部事实来源）→ Model Messages（模型上下文视图）→ AI SDK Messages（最终请求结构）
 - 模型参数与 model entry 解析结果
-- 允许暴露给 LLM 的 tools 列表
-- 运行策略
-- hook 管道
+- Tool 列表、运行策略、hook 管道
 
-补充说明：
+详细消息分层见 [message-projections.md](./message-projections.md)。
 
-- `Runtime Messages` 是运行时内部统一消息真相
-- `Model Messages` 是从 `Runtime Messages` 投影得到的模型上下文视图
-- `AI SDK Messages` 是 `Model Messages` 进一步序列化后的最终请求结构
-
-详细设计见 [message-projections.md](./message-projections.md)。
-
-`kind=chat` workspace 的额外约束：
-
-- 只读取 `AGENTS.md`、`.openharness/settings.yaml`、`.openharness/agents/*.md`、`.openharness/models/*.yaml`
-- 不装配 `actions`、`skills`、`tools`、`hooks`
-- 输出的 tool 列表固定为空
-- 不生成执行 backend 所需的运行环境摘要
+`kind=chat` workspace 额外约束：只读取 agents/models/settings，不装配 actions/skills/tools/hooks，tool 列表为空。
 
 ## 上下文装配顺序
 
-建议顺序：
-
 1. 按 `system_prompt.compose.order` 组装静态 system prompt 段
 2. session 历史消息
-3. 如发生 agent 切换，则在最新 user message 上附加 `<system_reminder>`
+3. 若发生 agent 切换，在最新 user message 附加 `<system_reminder>`
 4. 当前消息输入
 
-静态 system prompt 的默认顺序为：
+静态 system prompt 默认顺序：base → llm_optimized → agent prompt → actions catalog → `AGENTS.md` 原文 → skills catalog。若 `include_environment=true`，追加 environment 摘要。
 
-1. workspace `system_prompt.base`
-2. workspace `system_prompt.llm_optimized`
-3. agent 主 prompt
-4. actions catalog
-5. `AGENTS.md` 项目说明原文
-6. skills catalog
+`AGENTS.md` 始终注入全文，不摘要、不裁剪。
 
-若 `include_environment=true`，运行时会在上述静态段之后追加 environment 摘要；默认不追加。
+## Agent 选择规则
 
-`AGENTS.md` 注入规则：
+- 优先使用 run / session 显式指定的 agent
+- 否则使用 `settings.yaml` 的 `default_agent`
+- 两者都没有则返回配置错误
 
-- 启用时始终注入根目录 `AGENTS.md` 的原文全文
-- 不做摘要
-- 不做长度裁剪
-- 不做结构化预处理
+可见 catalog = 平台内建 agent + `.openharness/agents/*.md`。同名时 workspace agent 覆盖 platform agent。API 参数只能选择当前可见 catalog 中存在的 agent/model。
 
-## agent 选择规则
+## `<system_reminder>` 注入规则
 
-- 若 run / session 显式指定了 agent，则优先使用显式值
-- 否则使用 `.openharness/settings.yaml` 中的 `default_agent`
-- 若两者都没有，则返回配置错误
-- `default_agent` 可指向当前可见 catalog 中的 platform agent 或 workspace agent
-
-agent 可见性与覆盖规则：
-
-- 当前 workspace 的可见 agent catalog = 平台内建 agent + `.openharness/agents/*.md`
-- 若平台内建 agent 与 workspace agent 同名，则 workspace agent 覆盖 platform agent
-- session / run 显式参数只能选择当前可见 catalog 中存在的 agent
-
-覆盖规则：
-
-- workspace 当前文件是 workspace 层唯一的声明式事实来源
-- API / session / run 的显式参数只允许选择当前可见 catalog 中已有的 agent、model 或能力
-- 未来若支持临时 override，也只允许收窄权限和可见能力，不允许扩展当前可见 catalog 之外的能力
-
-其中 `<system_reminder>` 的触发规则建议为：
-
-- 创建 session 时显式指定 agent 时默认不注入
-- run 内发生 `agent.switch`，且 `effective_agent_name` 改变
-- 用户手动更新 session 的 `activeAgentName` 后，下一条 user message 首次进入新 agent
-- 同一 agent 连续执行时默认不重复注入
-
-补充说明：
-
-- `kind=chat` workspace 仍可通过 API 或 session 显式选择不同 agent
-- 但由于没有工具控制面，默认不支持 run 中途由模型主动切换 agent
+- 创建 session 时显式指定 agent：不注入
+- run 内 `agent.switch` 导致 `effective_agent_name` 改变：注入
+- 用户手动更新 session agent 后首条消息进入新 agent：注入
+- 同一 agent 连续执行：不重复注入

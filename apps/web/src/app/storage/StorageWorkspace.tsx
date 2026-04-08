@@ -1,12 +1,12 @@
-import { StorageWorkbench } from "../storage-panels";
+import { StorageWorkbench } from "./StorageWorkbench";
 import type { useAppController } from "../use-app-controller";
 
 type StorageProps = ReturnType<typeof useAppController>["storageSurfaceProps"];
 
 export function StorageWorkspace(props: StorageProps) {
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-      <div className="min-h-0 flex-1 overflow-hidden px-5 py-5">
+    <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <div className="min-h-0 h-full flex-1 overflow-hidden px-5 py-5">
         <StorageWorkbench
           browserTab={props.storageBrowserTab}
           overview={props.storageOverview}

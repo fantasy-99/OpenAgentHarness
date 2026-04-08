@@ -1,145 +1,28 @@
 # Model Gateway Module
 
-## 范围
-
-该模块包括：
-
-- 支持的 model provider 列表
-- 模型一次性生成
-- 模型流式生成
-
-它主要服务于：
-
-- workspace action
-- 本地脚本
-- `oah model` CLI
-- 其他需要直接调用平台预设模型的程序
+面向 workspace action、脚本和 `oah model` CLI 的内部模型调用接口。
 
 ## 接口
 
 ### `GET /model-providers`
 
-用途：
-
-- 返回当前服务端已支持的 provider 类型清单
-- 供前端或调试工具构建模型配置表单
-
-返回核心字段：
-
-- `id`
-- `packageName`
-- `description`
-- `requiresUrl`
-- `useCases`
+返回已支持的 provider 类型。字段：`id`、`packageName`、`description`、`requiresUrl`、`useCases`。
 
 ### `POST /internal/v1/models/generate`
 
-用途：
-
-- 使用指定服务端模型执行一次性生成
-
-请求核心字段：
-
-- `model`
-- `prompt`
-- `messages`
-- `temperature`
-- `maxTokens`
-
-返回核心字段：
-
-- `model`
-- `text`
-- `finishReason`
-- `usage`
-
-请求示例：
+一次性生成。请求：`model`、`prompt`、`messages`、`temperature`、`maxTokens`。返回：`model`、`text`、`finishReason`、`usage`。
 
 ```json
-{
-  "model": "openai-default",
-  "prompt": "Summarize the repository"
-}
-```
-
-响应示例：
-
-```json
-{
-  "model": "openai-default",
-  "text": "This repository implements ...",
-  "finishReason": "stop",
-  "usage": {
-    "inputTokens": 120,
-    "outputTokens": 48,
-    "totalTokens": 168
-  }
-}
+// 请求
+{"model": "openai-default", "prompt": "Summarize the repository"}
+// 响应
+{"model": "openai-default", "text": "This repository implements ...", "finishReason": "stop",
+ "usage": {"inputTokens": 120, "outputTokens": 48, "totalTokens": 168}}
 ```
 
 ### `POST /internal/v1/models/stream`
 
-用途：
-
-- 使用指定服务端模型执行流式生成
-
-返回：
-
-- `text/event-stream`
-
-建议事件类型：
-
-- `response.started`
-- `text.delta`
-- `response.completed`
-- `response.failed`
-
-请求示例：
-
-```json
-{
-  "model": "openai-default",
-  "messages": [{ "role": "user", "content": "Summarize the repository" }]
-}
-```
-
-带工具结果的消息示例：
-
-```json
-{
-  "model": "openai-default",
-  "messages": [
-    { "role": "user", "content": "Run the tool" },
-    {
-      "role": "assistant",
-      "content": [
-        {
-          "type": "tool-call",
-          "toolCallId": "call_1",
-          "toolName": "Bash",
-          "input": { "command": "pwd" }
-        }
-      ]
-    },
-    {
-      "role": "tool",
-      "content": [
-        {
-          "type": "tool-result",
-          "toolCallId": "call_1",
-          "toolName": "Bash",
-          "output": {
-            "type": "text",
-            "value": "/tmp/demo"
-          }
-        }
-      ]
-    }
-  ]
-}
-```
-
-流式示例：
+流式生成，返回 `text/event-stream`。事件：`response.started`、`text.delta`、`response.completed`、`response.failed`。
 
 ```text
 event: response.started
@@ -154,25 +37,7 @@ data: {"model":"openai-default","finishReason":"stop"}
 
 ## 设计说明
 
-- 该模块是“模型网关”，不是 session 对话接口
-- 它不创建 session，也不维护对话历史
-- 适合 action、脚本、CLI 临时调用模型
-- 服务端内部仍统一通过 AI SDK 调模型
-- `messages` 字段会先按 AI SDK `ModelMessage[]` 语义校验，再转成 provider 请求
-- 该模块只面向服务端预设模型，不直接访问 workspace 私有模型
-- 请求参数直接使用服务端模型名，例如 `openai-default`
-- 这是内部本地调用接口，不要求 token 认证
-- 当前实现要求从 loopback 地址访问，不挂到公网入口
-- 后续仍可继续收敛为 Unix Socket
-
-## 相关 Schema
-
-OpenAPI 单文件中对应的 schema 包括：
-
-- `ModelProvider`
-- `ModelProviderList`
-- `ModelGenerateRequest`
-- `ModelStreamRequest`
-- `ModelGenerateResponse`
-- `ChatMessage`
-- `Usage`
+- 模型网关，不是 session 对话接口，不维护对话历史
+- 仅面向服务端预设模型，使用服务端模型名（如 `openai-default`）
+- 内部 loopback 接口，无需 token 认证，后续可收敛为 Unix Socket
+- `messages` 按 AI SDK `ModelMessage[]` 校验后转 provider 请求
