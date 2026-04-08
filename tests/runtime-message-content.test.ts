@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { contentToPromptMessage, toolResultContent } from "../packages/runtime-core/src/runtime-message-content";
+import {
+  assistantNarrativeContentFromModelOutput,
+  contentToPromptMessage,
+  toolResultContent
+} from "../packages/runtime-core/src/runtime-message-content";
 
 describe("runtime message content normalization", () => {
   it("passes structured tool-result outputs through unchanged", () => {
@@ -48,6 +52,33 @@ describe("runtime message content normalization", () => {
           type: "text",
           value: "exit_code: 0\nstdout:\nhello"
         }
+      }
+    ]);
+  });
+
+  it("extracts assistant narrative content without tool-call parts", () => {
+    expect(
+      assistantNarrativeContentFromModelOutput({
+        text: "计划已制定好！",
+        content: [
+          {
+            type: "text",
+            text: "计划已制定好！"
+          },
+          {
+            type: "tool-call",
+            toolCallId: "call_switch",
+            toolName: "AgentSwitch",
+            input: {
+              to: "learn"
+            }
+          }
+        ]
+      })
+    ).toEqual([
+      {
+        type: "text",
+        text: "计划已制定好！"
       }
     ]);
   });

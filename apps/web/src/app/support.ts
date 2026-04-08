@@ -146,6 +146,7 @@ interface LiveAssistantMessageRecord {
   runId: string;
   sessionId: string;
   content: string;
+  metadata?: Record<string, unknown>;
   createdAt: string;
 }
 

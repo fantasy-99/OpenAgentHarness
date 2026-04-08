@@ -44,6 +44,10 @@ import { ToolMessageService } from "./runtime/tool-messages.js";
 import { RunStepService } from "./runtime/run-steps.js";
 import { buildSessionRuntimeMessages } from "./runtime/runtime-messages.js";
 import {
+  RuntimeMessageProjector,
+  type ConversationMessage
+} from "./runtime/message-projections.js";
+import {
   type SortOrder,
   type WorkspaceDeleteResult,
   type WorkspaceEntry,
@@ -55,6 +59,8 @@ import {
 } from "./workspace-files.js";
 import { NATIVE_TOOL_NAMES } from "./native-tools.js";
 import {
+  extractTextFromContent,
+  isMessageContentForRole,
   textContent
 } from "./runtime-message-content.js";
 import {
@@ -74,6 +80,7 @@ import {
   type CreateWorkspaceParams,
   type GenerateModelInput,
   type MessageListResult,
+  type RuntimeMessageListResult,
   type RuntimeServiceOptions,
   type SessionEvent,
   type ModelStepResult,
@@ -92,6 +99,7 @@ import {
   type WorkspaceRecord
 } from "./types.js";
 import { createId, nowIso, parseCursor } from "./utils.js";
+import type { RuntimeMessage } from "./runtime/runtime-messages.js";
 
 interface RunExecutionContext {
   currentAgentName: string;
@@ -184,6 +192,7 @@ export class RuntimeService {
   readonly #actions: ActionRunService;
   readonly #agentCoordination: AgentCoordinationService;
   readonly #runFinalization: RunFinalizationService;
+  readonly #runtimeMessageProjector: RuntimeMessageProjector;
   readonly #sessionChains = new Map<string, Promise<void>>();
   readonly #runtimeMessageSyncChains = new Map<string, Promise<void>>();
   readonly #runAbortControllers = new Map<string, AbortController>();
@@ -349,6 +358,7 @@ export class RuntimeService {
         this.#buildGeneratedMessageMetadata(workspace, agentName, modelInput),
       nowIso
     });
+    this.#runtimeMessageProjector = new RuntimeMessageProjector();
   }
 
   async createWorkspace({ input }: CreateWorkspaceParams): Promise<import("@oah/api-contracts").Workspace> {
@@ -664,6 +674,36 @@ export class RuntimeService {
     const startIndex = parseCursor(cursor);
     const items = messages.slice(startIndex, startIndex + pageSize);
     const nextCursor = startIndex + pageSize < messages.length ? String(startIndex + pageSize) : undefined;
+
+    return nextCursor === undefined ? { items } : { items, nextCursor };
+  }
+
+  async listSessionRuntimeMessages(sessionId: string, pageSize = 100, cursor?: string): Promise<RuntimeMessageListResult> {
+    await this.getSession(sessionId);
+    const runtimeMessages = await this.#loadSessionRuntimeMessages(sessionId);
+    const startIndex = parseCursor(cursor);
+    const items = runtimeMessages.slice(startIndex, startIndex + pageSize);
+    const nextCursor = startIndex + pageSize < runtimeMessages.length ? String(startIndex + pageSize) : undefined;
+
+    return nextCursor === undefined ? { items } : { items, nextCursor };
+  }
+
+  async listSessionConversationMessages(sessionId: string, pageSize = 100, cursor?: string): Promise<MessageListResult> {
+    await this.getSession(sessionId);
+    const runtimeMessages = await this.#loadSessionRuntimeMessages(sessionId);
+    const runtimeMessagesById = new Map(runtimeMessages.map((message) => [message.id, message]));
+    const projection = this.#runtimeMessageProjector.projectToConversation(runtimeMessages, {
+      sessionId,
+      activeAgentName: "",
+      applyCompactBoundary: false
+    });
+    const conversationMessages = projection.messages.map((message) =>
+      this.#toConversationMessage(sessionId, message, runtimeMessagesById)
+    );
+    const startIndex = parseCursor(cursor);
+    const items = conversationMessages.slice(startIndex, startIndex + pageSize);
+    const nextCursor =
+      startIndex + pageSize < conversationMessages.length ? String(startIndex + pageSize) : undefined;
 
     return nextCursor === undefined ? { items } : { items, nextCursor };
   }
@@ -1048,11 +1088,12 @@ export class RuntimeService {
         injectSystemReminder: false,
         delegatedRunIds: this.#agentCoordination.delegatedRunRecords(run).map((record) => record.childRunId)
       };
+      const runtimeMessages = await this.#loadSessionRuntimeMessages(session.id, allMessages);
       const modelInput = await this.#modelInputs.buildModelInput(
         workspace,
         session,
         run,
-        allMessages,
+        runtimeMessages,
         executionContext.currentAgentName
       );
       const hookedModelInput = await this.#applyBeforeModelHooks(workspace, session, run, modelInput);
@@ -1070,7 +1111,7 @@ export class RuntimeService {
         activeToolServers,
         runtimeToolNames,
         logger: this.#logger,
-        buildModelInput: (
+        buildModelInput: async (
           targetWorkspace,
           targetSession,
           targetRun,
@@ -1082,7 +1123,7 @@ export class RuntimeService {
             targetWorkspace,
             targetSession,
             targetRun,
-            targetMessages,
+            await this.#buildRuntimeMessagesForSession(targetSession.id, targetMessages),
             activeAgentName,
             injectSystemReminder
           ),
@@ -1095,6 +1136,8 @@ export class RuntimeService {
         setRunStatusIfPossible: (targetRunId, nextStatus) => this.#setRunStatusIfPossible(targetRunId, nextStatus),
         ensureAssistantMessage: (targetSession, targetRun, currentMessage, targetMessages, content, metadata) =>
           this.#ensureAssistantMessage(targetSession, targetRun, currentMessage, targetMessages, content, metadata),
+        persistAssistantStepText: (targetSession, targetRun, step, currentMessage, targetMessages, metadata) =>
+          this.#persistAssistantStepText(targetSession, targetRun, step, currentMessage, targetMessages, metadata),
         persistAssistantToolCalls: (targetSession, targetRun, step, targetMessages, metadata) =>
           this.#persistAssistantToolCalls(targetSession, targetRun, step, targetMessages, metadata),
         persistToolResults: (targetSession, targetRun, step, failedToolResults, persistedToolCalls, targetMessages, metadata) =>
@@ -1361,6 +1404,86 @@ export class RuntimeService {
     return messages.length > 0 || runs.length > 0;
   }
 
+  async #loadSessionRuntimeMessages(sessionId: string, persistedMessages?: Message[]): Promise<RuntimeMessage[]> {
+    if (persistedMessages) {
+      return this.#buildRuntimeMessagesForSession(sessionId, persistedMessages);
+    }
+
+    if (this.#runtimeMessageRepository) {
+      const storedRuntimeMessages = await this.#runtimeMessageRepository.listBySessionId(sessionId);
+      if (storedRuntimeMessages.length > 0) {
+        return storedRuntimeMessages;
+      }
+    }
+
+    return this.#buildRuntimeMessagesForSession(sessionId);
+  }
+
+  async #buildRuntimeMessagesForSession(sessionId: string, persistedMessages?: Message[]): Promise<RuntimeMessage[]> {
+    const [messages, events] = await Promise.all([
+      persistedMessages ? Promise.resolve(persistedMessages) : this.#messageRepository.listBySessionId(sessionId),
+      this.#sessionEventStore.listSince(sessionId)
+    ]);
+
+    return buildSessionRuntimeMessages({
+      messages,
+      events
+    });
+  }
+
+  #toConversationMessage(
+    sessionId: string,
+    message: ConversationMessage,
+    runtimeMessagesById: Map<string, RuntimeMessage>
+  ): Message {
+    const sourceRuntimeMessage = message.sourceMessageIds
+      .map((sourceMessageId) => runtimeMessagesById.get(sourceMessageId))
+      .find((candidate): candidate is RuntimeMessage => candidate !== undefined);
+    const metadata = {
+      ...(sourceRuntimeMessage?.metadata ?? {}),
+      projectedView: message.view,
+      projectedSemanticType: message.semanticType,
+      projectedSourceMessageIds: message.sourceMessageIds,
+      ...(message.metadata ? { projectionMetadata: message.metadata } : {})
+    };
+
+    const baseMessage = {
+      id: sourceRuntimeMessage?.id ?? message.sourceMessageIds[0] ?? createId("msg"),
+      sessionId,
+      ...(sourceRuntimeMessage?.runId ? { runId: sourceRuntimeMessage.runId } : {}),
+      metadata,
+      createdAt: sourceRuntimeMessage?.createdAt ?? nowIso()
+    };
+
+    switch (message.role) {
+      case "system":
+        return {
+          ...baseMessage,
+          role: "system",
+          content: typeof message.content === "string" ? message.content : extractTextFromContent(message.content)
+        };
+      case "user":
+        return {
+          ...baseMessage,
+          role: "user",
+          content: isMessageContentForRole("user", message.content) ? message.content : extractTextFromContent(message.content)
+        };
+      case "assistant":
+        return {
+          ...baseMessage,
+          role: "assistant",
+          content:
+            isMessageContentForRole("assistant", message.content) ? message.content : extractTextFromContent(message.content)
+        };
+      case "tool":
+        return {
+          ...baseMessage,
+          role: "tool",
+          content: isMessageContentForRole("tool", message.content) ? message.content : []
+        };
+    }
+  }
+
   #buildRuntimeTools(
     workspace: WorkspaceRecord,
     run: Run,
@@ -1581,6 +1704,17 @@ export class RuntimeService {
     metadata?: Record<string, unknown> | undefined
   ): Promise<void> {
     await this.#toolMessages.persistAssistantToolCalls(session, run, step, allMessages, metadata);
+  }
+
+  async #persistAssistantStepText(
+    session: Session,
+    run: Run,
+    step: ModelStepResult,
+    currentMessage: Extract<Message, { role: "assistant" }> | undefined,
+    allMessages: Message[],
+    metadata?: Record<string, unknown> | undefined
+  ): Promise<Extract<Message, { role: "assistant" }> | undefined> {
+    return this.#toolMessages.persistAssistantStepText(session, run, step, currentMessage, allMessages, metadata);
   }
 
   async #persistToolResults(

@@ -65,6 +65,14 @@ export interface ModelStreamCoordinatorDependencies<TModelInput extends ModelExe
     content?: string,
     metadata?: Record<string, unknown> | undefined
   ) => Promise<AssistantMessage>;
+  persistAssistantStepText: (
+    session: Session,
+    run: Run,
+    step: ModelStepResult,
+    currentMessage: AssistantMessage | undefined,
+    allMessages: Message[],
+    metadata?: Record<string, unknown> | undefined
+  ) => Promise<AssistantMessage | undefined>;
   persistAssistantToolCalls: (
     session: Session,
     run: Run,
@@ -135,6 +143,7 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
   readonly #completeRunStep: ModelStreamCoordinatorDependencies<TModelInput>["completeRunStep"];
   readonly #setRunStatusIfPossible: ModelStreamCoordinatorDependencies<TModelInput>["setRunStatusIfPossible"];
   readonly #ensureAssistantMessage: ModelStreamCoordinatorDependencies<TModelInput>["ensureAssistantMessage"];
+  readonly #persistAssistantStepText: ModelStreamCoordinatorDependencies<TModelInput>["persistAssistantStepText"];
   readonly #persistAssistantToolCalls: ModelStreamCoordinatorDependencies<TModelInput>["persistAssistantToolCalls"];
   readonly #persistToolResults: ModelStreamCoordinatorDependencies<TModelInput>["persistToolResults"];
   readonly #appendEvent: ModelStreamCoordinatorDependencies<TModelInput>["appendEvent"];
@@ -182,6 +191,7 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
     this.#completeRunStep = dependencies.completeRunStep;
     this.#setRunStatusIfPossible = dependencies.setRunStatusIfPossible;
     this.#ensureAssistantMessage = dependencies.ensureAssistantMessage;
+    this.#persistAssistantStepText = dependencies.persistAssistantStepText;
     this.#persistAssistantToolCalls = dependencies.persistAssistantToolCalls;
     this.#persistToolResults = dependencies.persistToolResults;
     this.#appendEvent = dependencies.appendEvent;
@@ -415,6 +425,18 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
         ) {
           this.#finalAssistantStep = step;
         }
+        if (step.toolCalls.length > 0) {
+          await this.#persistAssistantStepText(
+            this.#session,
+            this.#run,
+            step,
+            this.#assistantMessage,
+            this.#allMessages,
+            messageMetadata
+          );
+          this.#assistantMessage = undefined;
+          this.#accumulatedText = "";
+        }
         await this.#persistAssistantToolCalls(this.#session, this.#run, step, this.#allMessages, messageMetadata);
         await this.#persistToolResults(
           this.#session,
@@ -450,7 +472,8 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
       data: {
         runId: this.#run.id,
         messageId: updatedMessage.id,
-        delta: chunk
+        delta: chunk,
+        ...(updatedMessage.metadata ? { metadata: updatedMessage.metadata } : {})
       }
     });
     return updatedMessage;

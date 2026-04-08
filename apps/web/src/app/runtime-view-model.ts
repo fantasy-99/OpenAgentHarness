@@ -50,6 +50,10 @@ function readEventCursorValue(event: SessionEventContract) {
   return Number.isFinite(numericCursor) ? numericCursor : Number.MAX_SAFE_INTEGER;
 }
 
+function readComparableMessageId(message: Pick<Message, "id">) {
+  return message.id.startsWith("live:") ? message.id.slice("live:".length) : message.id;
+}
+
 function isToolOnlyAssistantMessage(message: Message) {
   if (message.role !== "assistant" || typeof message.content === "string") {
     return false;
@@ -69,7 +73,7 @@ function isToolOnlyAssistantMessage(message: Message) {
 }
 
 function isStreamedAssistantTextMessage(message: Message, deltaMessageIds: Set<string>) {
-  return message.role === "assistant" && deltaMessageIds.has(message.id) && contentText(message.content).trim().length > 0;
+  return message.role === "assistant" && deltaMessageIds.has(readComparableMessageId(message)) && contentText(message.content).trim().length > 0;
 }
 
 function projectRunConversation(messages: Message[], events: SessionEventContract[]) {
@@ -77,12 +81,13 @@ function projectRunConversation(messages: Message[], events: SessionEventContrac
     return messages;
   }
 
-  const messagesById = new Map(messages.map((message) => [message.id, message]));
+  const messagesById = new Map(messages.map((message) => [readComparableMessageId(message), message] as const));
   const deltaMessageIds = new Set(
     events.flatMap((event) => (event.event === "message.delta" ? [readEventMessageId(event)].filter((value): value is string => Boolean(value)) : []))
   );
-  const runMessagesById = new Set(messages.map((message) => message.id));
+  const runMessagesById = new Set(messages.map((message) => readComparableMessageId(message)));
   const projected: Message[] = [];
+  const seenProjectedMessageIds = new Set<string>();
   const activeSegments = new Map<
     string,
     {
@@ -114,6 +119,7 @@ function projectRunConversation(messages: Message[], events: SessionEventContrac
       ...(persistedMessage.metadata ? { metadata: persistedMessage.metadata } : {}),
       createdAt: activeSegment.createdAt
     });
+    seenProjectedMessageIds.add(messageId);
     activeSegments.delete(messageId);
   };
   const flushAllSegments = () => {
@@ -161,6 +167,7 @@ function projectRunConversation(messages: Message[], events: SessionEventContrac
       }
 
       projected.push(completedMessage);
+      seenProjectedMessageIds.add(messageId);
       continue;
     }
 
@@ -175,10 +182,9 @@ function projectRunConversation(messages: Message[], events: SessionEventContrac
 
   flushAllSegments();
 
-  const seenProjectedIds = new Set(projected.map((message) => message.id));
   const fallbackMessages = messages.filter(
     (message) =>
-      !seenProjectedIds.has(message.id) &&
+      !seenProjectedMessageIds.has(readComparableMessageId(message)) &&
       !isStreamedAssistantTextMessage(message, deltaMessageIds)
   );
 
@@ -205,7 +211,16 @@ function buildProjectedMessageFeed(params: {
     eventsByRunId.set(event.runId, current);
   }
 
+  const mergedMessagesById = new Map<string, Message>();
   for (const message of orderedMessages) {
+    mergedMessagesById.set(readComparableMessageId(message), message);
+  }
+  for (const message of params.liveMessages) {
+    mergedMessagesById.set(readComparableMessageId(message), message);
+  }
+  const mergedMessages = [...mergedMessagesById.values()].sort(compareMessagesChronologically);
+
+  for (const message of mergedMessages) {
     if (!message.runId) {
       continue;
     }
@@ -223,7 +238,7 @@ function buildProjectedMessageFeed(params: {
 
   const seenRunIds = new Set<string>();
   const projectedFeed: Message[] = [];
-  for (const message of orderedMessages) {
+  for (const message of mergedMessages) {
     if (!message.runId) {
       projectedFeed.push(message);
       continue;
@@ -237,7 +252,7 @@ function buildProjectedMessageFeed(params: {
     projectedFeed.push(...(projectedRuns.get(message.runId) ?? [message]));
   }
 
-  return [...projectedFeed, ...params.liveMessages];
+  return projectedFeed;
 }
 
 export function buildRuntimeViewModel(params: {
@@ -274,7 +289,6 @@ export function buildRuntimeViewModel(params: {
     modelCallTraces.map((trace) => trace.input.canonicalModelRef).filter((value): value is string => Boolean(value))
   );
   const liveEntries = Object.values(params.liveOutput).filter((entry) => entry.content.trim().length > 0);
-  const liveMessageIds = new Set(liveEntries.map((entry) => entry.messageId));
   const persistedMessagesById = new Map(params.messages.map((message) => [message.id, message]));
   const liveMessages = liveEntries.map((entry) => {
     const persistedMessage = persistedMessagesById.get(entry.messageId);
@@ -284,12 +298,12 @@ export function buildRuntimeViewModel(params: {
       runId: entry.runId,
       role: "assistant" as const,
       content: entry.content,
+      ...(persistedMessage?.metadata || entry.metadata ? { metadata: persistedMessage?.metadata ?? entry.metadata } : {}),
       createdAt: persistedMessage?.createdAt ?? entry.createdAt
     };
   });
-  const persistedMessages = params.messages.filter((message) => !liveMessageIds.has(message.id));
   const messageFeed = buildProjectedMessageFeed({
-    messages: persistedMessages,
+    messages: params.messages,
     deferredEvents: params.deferredEvents,
     liveMessages
   });

@@ -93,6 +93,22 @@ function normalizeAssistantMessagePart(value: unknown): AssistantMessagePart | n
   return null;
 }
 
+function normalizeNarrativeAssistantMessagePart(value: unknown): AssistantMessagePart | null {
+  if (isJsonObject(value) && value.type === "text" && typeof value.text === "string") {
+    return value as Extract<MessagePart, { type: "text" }>;
+  }
+
+  if (isFileMessagePart(value)) {
+    return value as Extract<MessagePart, { type: "file" }>;
+  }
+
+  if (isReasoningMessagePart(value)) {
+    return value as Extract<MessagePart, { type: "reasoning" }>;
+  }
+
+  return null;
+}
+
 export function isMessageRole(value: unknown): value is Message["role"] {
   return value === "system" || value === "user" || value === "assistant" || value === "tool";
 }
@@ -216,6 +232,55 @@ export function assistantContentFromModelOutput(output: {
   }
 
   return parts.length > 0 ? parts : textContent(typeof output.text === "string" ? output.text : "");
+}
+
+export function assistantNarrativeContentFromModelOutput(output: {
+  text?: string | undefined;
+  content?: unknown[] | undefined;
+  reasoning?: unknown[] | undefined;
+}): AssistantMessageContent | undefined {
+  const parts: Extract<AssistantMessageContent, unknown[]> = [];
+  const seenSerializedParts = new Set<string>();
+  const pushPart = (part: AssistantMessagePart) => {
+    const serialized = JSON.stringify(part);
+    if (seenSerializedParts.has(serialized)) {
+      return;
+    }
+
+    seenSerializedParts.add(serialized);
+    parts.push(part);
+  };
+
+  for (const part of output.content ?? []) {
+    const normalized = normalizeNarrativeAssistantMessagePart(part);
+    if (normalized) {
+      pushPart(normalized);
+    }
+  }
+
+  for (const part of output.reasoning ?? []) {
+    if (isReasoningMessagePart(part)) {
+      pushPart(part as AssistantMessagePart);
+    }
+  }
+
+  const hasTextPart = parts.some((part) => part.type === "text" && part.text.length > 0);
+  if (!hasTextPart && typeof output.text === "string" && output.text.length > 0) {
+    pushPart({
+      type: "text",
+      text: output.text
+    });
+  }
+
+  if (parts.length > 0) {
+    return parts;
+  }
+
+  if (typeof output.text === "string" && output.text.length > 0) {
+    return textContent(output.text);
+  }
+
+  return undefined;
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {

@@ -1,9 +1,17 @@
 import type { Message, Run, Session } from "@oah/api-contracts";
 
-import { textContent, toolCallContent, toolErrorResultContent, toolResultContent } from "../runtime-message-content.js";
+import {
+  assistantNarrativeContentFromModelOutput,
+  textContent,
+  toolCallContent,
+  toolErrorResultContent,
+  toolResultContent
+} from "../runtime-message-content.js";
 import type { MessageRepository, RuntimeLogger, SessionEvent } from "../types.js";
 import type { ModelStepResult } from "../types.js";
 import type { ToolErrorContentPart } from "./model-call-serialization.js";
+
+type AssistantMessage = Extract<Message, { role: "assistant" }>;
 
 export interface ToolMessageServiceDependencies {
   messageRepository: MessageRepository;
@@ -34,11 +42,11 @@ export class ToolMessageService {
   async ensureAssistantMessage(
     session: Session,
     run: Run,
-    currentMessage: Extract<Message, { role: "assistant" }> | undefined,
+    currentMessage: AssistantMessage | undefined,
     allMessages?: Message[],
     content = "",
     metadata?: Record<string, unknown> | undefined
-  ): Promise<Extract<Message, { role: "assistant" }>> {
+  ): Promise<AssistantMessage> {
     if (currentMessage) {
       return currentMessage;
     }
@@ -51,10 +59,59 @@ export class ToolMessageService {
       content: textContent(content),
       ...(metadata ? { metadata } : {}),
       createdAt: this.#nowIso()
-    })) as Extract<Message, { role: "assistant" }>;
+    })) as AssistantMessage;
 
     allMessages?.push(message);
     return message;
+  }
+
+  async persistAssistantStepText(
+    session: Session,
+    run: Run,
+    step: ModelStepResult,
+    currentMessage: AssistantMessage | undefined,
+    allMessages: Message[],
+    metadata?: Record<string, unknown> | undefined
+  ): Promise<AssistantMessage | undefined> {
+    const assistantContent = assistantNarrativeContentFromModelOutput({
+      text: step.text,
+      content: step.content,
+      reasoning: step.reasoning
+    });
+
+    if (!assistantContent) {
+      return undefined;
+    }
+
+    const assistantMessage = await this.ensureAssistantMessage(
+      session,
+      run,
+      currentMessage,
+      allMessages,
+      typeof assistantContent === "string" ? assistantContent : step.text ?? "",
+      metadata
+    );
+    const updatedMessage =
+      JSON.stringify(assistantMessage.content) === JSON.stringify(assistantContent)
+        ? assistantMessage
+        : ((await this.#messageRepository.update({
+            ...assistantMessage,
+            content: assistantContent
+          })) as AssistantMessage);
+
+    await this.#appendEvent({
+      sessionId: session.id,
+      runId: run.id,
+      event: "message.completed",
+      data: {
+        runId: run.id,
+        messageId: updatedMessage.id,
+        content: updatedMessage.content,
+        ...(updatedMessage.metadata ? { metadata: updatedMessage.metadata } : {})
+      }
+    });
+
+    return updatedMessage;
   }
 
   async persistAssistantToolCalls(
@@ -93,7 +150,8 @@ export class ToolMessageService {
       data: {
         runId: run.id,
         messageId: assistantToolCallMessage.id,
-        content: assistantToolCallMessage.content
+        content: assistantToolCallMessage.content,
+        ...(assistantToolCallMessage.metadata ? { metadata: assistantToolCallMessage.metadata } : {})
       }
     });
   }
@@ -141,7 +199,8 @@ export class ToolMessageService {
           messageId: toolMessage.id,
           content: toolMessage.content,
           toolName: toolResult.toolName,
-          toolCallId: toolResult.toolCallId
+          toolCallId: toolResult.toolCallId,
+          ...(toolMessage.metadata ? { metadata: toolMessage.metadata } : {})
         }
       });
     }
@@ -181,7 +240,8 @@ export class ToolMessageService {
           content: toolMessage.content,
           toolName: toolError.toolName,
           toolCallId: toolError.toolCallId,
-          resultType: "error"
+          resultType: "error",
+          ...(toolMessage.metadata ? { metadata: toolMessage.metadata } : {})
         }
       });
     }
@@ -220,7 +280,8 @@ export class ToolMessageService {
         content: toolMessage.content,
         ...(input.actionName ? { actionName: input.actionName } : {}),
         toolCallId: input.toolCallId,
-        toolName: input.toolName
+        toolName: input.toolName,
+        ...(toolMessage.metadata ? { metadata: toolMessage.metadata } : {})
       }
     });
 

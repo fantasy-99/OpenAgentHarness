@@ -1513,6 +1513,164 @@ describe("runtime service", () => {
     );
   });
 
+  it("persists assistant text before an AgentSwitch as a separate message with the pre-switch agent metadata", async () => {
+    const gateway = new FakeModelGateway();
+    gateway.streamScenarioFactory = () => ({
+      preToolText: "计划已制定好！以下是本次会话的学习路线：先理解核心概念，再进入练习。",
+      text: "现在开始第一步：什么是大语言模型？",
+      toolSteps: [
+        {
+          toolName: "AgentSwitch",
+          input: { to: "learn" },
+          toolCallId: "call_switch"
+        }
+      ]
+    });
+
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_agent_switch_transcript",
+      name: "agent-switch-transcript",
+      rootPath: "/tmp/agent-switch-transcript",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "plan",
+      settings: {
+        defaultAgent: "plan",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        plan: {
+          name: "plan",
+          mode: "primary",
+          prompt: "You are the planning agent.",
+          tools: {
+            native: [],
+            actions: [],
+            skills: [],
+            external: []
+          },
+          switch: ["learn"],
+          subagents: []
+        },
+        learn: {
+          name: "learn",
+          mode: "primary",
+          prompt: "You are the teaching agent.",
+          tools: {
+            native: [],
+            actions: [],
+            skills: [],
+            external: []
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_agent_switch_transcript",
+        agents: [
+          { name: "plan", mode: "primary", source: "workspace" },
+          { name: "learn", mode: "primary", source: "workspace" }
+        ],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: "project_agent_switch_transcript",
+      caller,
+      input: {
+        agentName: "plan"
+      }
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "先帮我制定学习路线，然后切到教学模式。" }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const messages = await runtimeService.listSessionMessages(session.id, 20);
+    const planTextMessage = messages.items.find(
+      (message) => message.role === "assistant" && messageText(message)?.includes("计划已制定好！以下是本次会话的学习路线")
+    );
+    const assistantToolCallMessage = messages.items.find((message) => hasToolCallPart(message, "AgentSwitch", "call_switch"));
+    const toolResultMessage = messages.items.find((message) => hasToolResultPart(message, "AgentSwitch", "call_switch"));
+    const learnTextMessage = messages.items.find(
+      (message) => message.role === "assistant" && messageText(message)?.includes("现在开始第一步：什么是大语言模型？")
+    );
+
+    expect(messages.items.map((message) => message.role)).toEqual(["user", "assistant", "assistant", "tool", "assistant"]);
+    expect(messageText(planTextMessage)).toContain("计划已制定好");
+    expect(messageText(planTextMessage)).not.toContain("现在开始第一步");
+    expect(planTextMessage?.metadata).toMatchObject({
+      agentName: "plan",
+      effectiveAgentName: "plan",
+      agentMode: "primary"
+    });
+    expect(assistantToolCallMessage?.metadata).toMatchObject({
+      agentName: "plan",
+      effectiveAgentName: "plan",
+      agentMode: "primary"
+    });
+    expect(toolResultMessage?.metadata).toMatchObject({
+      agentName: "plan",
+      effectiveAgentName: "plan",
+      agentMode: "primary"
+    });
+    expect(learnTextMessage?.metadata).toMatchObject({
+      agentName: "learn",
+      effectiveAgentName: "learn",
+      agentMode: "primary"
+    });
+    expect(messages.items.indexOf(planTextMessage as Message)).toBeLessThan(
+      messages.items.indexOf(assistantToolCallMessage as Message)
+    );
+
+    const events = await runtimeService.listSessionEvents(session.id, undefined, accepted.runId);
+    const planCompletedEvent = events.find(
+      (event) => event.event === "message.completed" && event.data.messageId === planTextMessage?.id
+    );
+    expect(planCompletedEvent?.data.metadata).toMatchObject({
+      agentName: "plan",
+      effectiveAgentName: "plan"
+    });
+  });
+
   it("delegates to a subagent, awaits the child run, and inherits the parent model when the subagent has no model", async () => {
     const gateway = new FakeModelGateway();
     gateway.streamScenarioFactory = (input) => {
@@ -1901,6 +2059,11 @@ describe("runtime service", () => {
         text: " 用户要求切换到plan模式，我已经成功切换。_plan_"
       }
     ]);
+    expect(completedEvent?.data.metadata).toMatchObject({
+      agentName: "plan",
+      effectiveAgentName: "plan",
+      agentMode: "primary"
+    });
   });
 
   it("defaults SubAgent launches to background when the target agent enables it", async () => {

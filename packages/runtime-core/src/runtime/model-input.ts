@@ -1,4 +1,4 @@
-import type { ChatMessage, Message, Run, Session } from "@oah/api-contracts";
+import type { ChatMessage, Run, Session } from "@oah/api-contracts";
 
 import { buildAvailableAgentSwitchesMessage, buildAvailableSubagentsMessage } from "../agent-control.js";
 import { buildAvailableActionsMessage } from "../action-dispatch.js";
@@ -13,7 +13,7 @@ import {
 import type { ModelDefinition, WorkspaceRecord } from "../types.js";
 import { ModelMessageSerializer } from "./ai-sdk-message-serializer.js";
 import { RuntimeMessageProjector } from "./message-projections.js";
-import { toRuntimeMessages } from "./runtime-messages.js";
+import type { RuntimeMessage } from "./runtime-messages.js";
 
 export interface ResolvedRunModel {
   model: string;
@@ -67,7 +67,7 @@ export class ModelInputService {
     workspace: WorkspaceRecord,
     session: Session,
     run: Run,
-    messages: Message[],
+    runtimeMessages: RuntimeMessage[],
     activeAgentName: string,
     forceSystemReminder = false
   ): Promise<ModelExecutionInput> {
@@ -78,7 +78,6 @@ export class ModelInputService {
       workspace,
       session.modelRef ?? activeAgent?.modelRef ?? inheritedModelRef
     );
-    const runtimeMessages = toRuntimeMessages(messages);
     const modelProjection = this.#runtimeMessageProjector.projectToModel(runtimeMessages, {
       sessionId: session.id,
       activeAgentName,
@@ -101,7 +100,10 @@ export class ModelInputService {
       resolvedModel
     );
 
-    if (activeAgent?.systemReminder && this.#shouldInjectSystemReminder(messages, activeAgentName, forceSystemReminder)) {
+    if (
+      activeAgent?.systemReminder &&
+      this.#shouldInjectSystemReminder(runtimeMessages, activeAgentName, forceSystemReminder)
+    ) {
       contextMessages = this.#withInjectedSystemReminder(contextMessages, activeAgent.systemReminder);
     }
 
@@ -224,7 +226,7 @@ export class ModelInputService {
     throw new AppError(404, "model_not_found", `Model ${candidate} was not found in workspace ${workspace.id}.`);
   }
 
-  #latestMessageAgentName(messages: Message[]): string | undefined {
+  #latestMessageAgentName(messages: RuntimeMessage[]): string | undefined {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index];
       if (!message || message.role === "system") {
@@ -251,7 +253,7 @@ export class ModelInputService {
     return undefined;
   }
 
-  #shouldInjectSystemReminder(messages: Message[], activeAgentName: string, forceSystemReminder = false): boolean {
+  #shouldInjectSystemReminder(messages: RuntimeMessage[], activeAgentName: string, forceSystemReminder = false): boolean {
     if (forceSystemReminder) {
       return true;
     }

@@ -110,7 +110,8 @@ export class RunFinalizationService {
         runId: input.run.id,
         messageId: updatedMessage.id,
         content: updatedMessage.content,
-        finishReason: input.completed.finishReason ?? "stop"
+        finishReason: input.completed.finishReason ?? "stop",
+        ...(updatedMessage.metadata ? { metadata: updatedMessage.metadata } : {})
       }
     });
 

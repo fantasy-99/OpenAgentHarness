@@ -3,7 +3,7 @@ import type { Message } from "@oah/api-contracts";
 import { toolResultContent } from "../runtime-message-content.js";
 import type { RuntimeMessage } from "./runtime-messages.js";
 
-export type ProjectionView = "transcript" | "model" | "compact" | "debug" | "export";
+export type ProjectionView = "conversation" | "transcript" | "model" | "compact" | "debug" | "export";
 
 export interface ProjectedMessageBase {
   view: ProjectionView;
@@ -22,6 +22,10 @@ export interface ProjectedMessageBase {
 
 export interface TranscriptMessage extends ProjectedMessageBase {
   view: "transcript";
+}
+
+export interface ConversationMessage extends ProjectedMessageBase {
+  view: "conversation";
 }
 
 export interface DebugMessage extends ProjectedMessageBase {
@@ -168,6 +172,24 @@ function buildModelMessage(
 }
 
 export class RuntimeMessageProjector {
+  projectToConversation(
+    runtimeMessages: RuntimeMessage[],
+    _context: ProjectionContext
+  ): ProjectionResult<ConversationMessage> {
+    return {
+      messages: runtimeMessages
+        .filter((message) => message.metadata?.visibleInTranscript !== false)
+        .map((message) => projectGenericMessage(message, "conversation")),
+      diagnostics: {
+        hiddenMessageIds: runtimeMessages
+          .filter((message) => message.metadata?.visibleInTranscript === false)
+          .map((message) => message.id),
+        truncatedMessageIds: [],
+        injectedNotes: []
+      }
+    };
+  }
+
   projectToTranscript(
     runtimeMessages: RuntimeMessage[],
     _context: ProjectionContext

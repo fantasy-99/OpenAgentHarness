@@ -17,6 +17,7 @@ import {
   downloadJsonFile,
   inferCompletedMessageRole,
   isNotFoundError,
+  isRecord,
   isTerminalRunEvent,
   isTerminalRunStatus,
   normalizeMessageContent,
@@ -853,6 +854,7 @@ export function useAppController() {
     }
 
     const eventMessageId = typeof event.data.messageId === "string" ? event.data.messageId : undefined;
+    const eventMetadata = isRecord(event.data.metadata) ? event.data.metadata : undefined;
 
     if (
       event.event === "message.delta" &&
@@ -861,6 +863,9 @@ export function useAppController() {
       typeof event.data.delta === "string"
     ) {
       const runId = event.runId;
+      const needsMessageHydration =
+        !liveOutput[eventMessageId] &&
+        !messages.some((message) => message.id === eventMessageId);
       setLiveOutput((current) => ({
         ...current,
         [eventMessageId]: {
@@ -868,9 +873,16 @@ export function useAppController() {
           runId,
           sessionId,
           content: `${current[eventMessageId]?.content ?? ""}${event.data.delta}`,
+          ...(() => {
+            const metadata = current[eventMessageId]?.metadata ?? eventMetadata;
+            return metadata ? { metadata } : {};
+          })(),
           createdAt: current[eventMessageId]?.createdAt ?? event.createdAt
         }
       }));
+      if (needsMessageHydration) {
+        scheduleMessagesRefresh();
+      }
     }
 
     if (event.event === "message.completed" && typeof event.runId === "string") {
@@ -887,6 +899,10 @@ export function useAppController() {
               runId,
               role: inferCompletedMessageRole(event.data),
               content,
+              ...(() => {
+                const metadata = existingMessage?.metadata ?? liveOutput[messageId]?.metadata ?? eventMetadata;
+                return metadata ? { metadata } : {};
+              })(),
               createdAt: existingMessage?.createdAt ?? liveOutput[messageId]?.createdAt ?? event.createdAt
             });
             return completedMessage ? upsertSessionMessage(current, completedMessage) : current;
@@ -906,6 +922,7 @@ export function useAppController() {
 
     if (event.event === "agent.switched" && typeof event.data.toAgent === "string") {
       syncCurrentSessionAgent(event.data.toAgent, event.createdAt);
+      scheduleMessagesRefresh();
     }
 
     if (
@@ -1297,6 +1314,7 @@ export function useAppController() {
       setSelectedRunId,
       run,
       runSteps,
+      sessionEvents: events,
       deferredEvents,
       messageFeed,
       refreshRunById: (targetId: string) => void refreshRun(targetId, true),

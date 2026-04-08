@@ -449,6 +449,11 @@ export interface RuntimeMessageRepository {
   listBySessionId(sessionId: string): Promise<RuntimeMessage[]>;
 }
 
+export interface RuntimeMessageListResult {
+  items: RuntimeMessage[];
+  nextCursor?: string | undefined;
+}
+
 export interface RunRepository {
   create(input: Run): Promise<Run>;
   getById(id: string): Promise<Run | null>;

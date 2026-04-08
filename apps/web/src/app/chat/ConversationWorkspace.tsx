@@ -6,11 +6,12 @@ import { Bot, ChevronRight, Folder, Loader2, RefreshCw, Send, Square, Wrench, Co
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 
-import { formatTimestamp, readMessageAgentSnapshot, statusTone } from "../support";
+import { formatTimestamp, statusTone } from "../support";
 import type { Message } from "@oah/api-contracts";
 import type { useAppController } from "../use-app-controller";
 import { Badge } from "@/components/ui/badge";
 import { WorkspaceFileManagerPanel } from "./WorkspaceFileManagerPanel";
+import { resolveMessageAgentInfo } from "./message-agent-info";
 
 type RuntimeProps = ReturnType<typeof useAppController>["runtimeDetailSurfaceProps"];
 
@@ -23,38 +24,6 @@ function agentModeTone(mode: "primary" | "subagent" | "all") {
     case "all":
       return "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300";
   }
-}
-
-function resolveMessageAgentInfo(message: Message, props: RuntimeProps) {
-  if (message.role !== "assistant" && message.role !== "tool") {
-    return null;
-  }
-
-  const agentModeByName = new Map((props.catalog?.agents ?? []).map((agent) => [agent.name, agent.mode]));
-  const snapshot = readMessageAgentSnapshot(message);
-  const latestStepForMessageRun =
-    message.runId
-      ? [...props.runSteps]
-          .reverse()
-          .find((step) => step.runId === message.runId && typeof step.agentName === "string" && step.agentName.trim())
-      : undefined;
-
-  const agentName =
-    snapshot?.name ??
-    latestStepForMessageRun?.agentName ??
-    (message.runId && props.run?.id === message.runId ? props.run?.effectiveAgentName ?? props.run?.agentName : undefined) ??
-    props.session?.activeAgentName ??
-    undefined;
-
-  if (!agentName) {
-    return null;
-  }
-
-  const mode = agentModeByName.get(agentName);
-  return {
-    name: agentName,
-    mode: snapshot?.mode ?? mode
-  };
 }
 
 function MarkdownText({ text, isUser }: { text: string; isUser?: boolean }) {
@@ -519,7 +488,14 @@ export function ConversationWorkspace(props: RuntimeProps) {
               const isUser = message.role === "user";
               const isStreaming = message.id.startsWith("live:");
               const isToolOnly = !isUser && isToolOnlyMessage(message.content);
-              const messageAgentInfo = resolveMessageAgentInfo(message, props);
+              const messageAgentInfo = resolveMessageAgentInfo({
+                message,
+                catalog: props.catalog,
+                runSteps: props.runSteps,
+                run: props.run,
+                session: props.session,
+                sessionEvents: props.sessionEvents
+              });
 
               return (
                 <article key={message.id} className={`group/message animate-fade-in flex gap-3 md:gap-4 py-2 md:py-3 ${isUser ? "flex-row-reverse" : ""}`}>

@@ -74,6 +74,9 @@ export class FakeModelGateway implements ModelGateway {
             text?: string | undefined;
             content?: unknown[] | undefined;
             reasoning?: unknown[] | undefined;
+            preToolText?: string | undefined;
+            preToolContent?: unknown[] | undefined;
+            preToolReasoning?: unknown[] | undefined;
             toolSteps?: Array<{
               toolName: string;
               input: unknown;
@@ -177,6 +180,7 @@ export class FakeModelGateway implements ModelGateway {
     const gateway = this;
     async function* streamGenerator() {
       let emitted = "";
+      let preToolEmitted = "";
 
       try {
         const toolBatches =
@@ -185,6 +189,22 @@ export class FakeModelGateway implements ModelGateway {
         for (const [index, toolBatch] of toolBatches.entries()) {
           if (options?.signal?.aborted) {
             throw new Error("aborted");
+          }
+
+          if (index === 0 && typeof scenario?.preToolText === "string" && scenario.preToolText.length > 0) {
+            const preToolChunks = scenario.preToolText.match(/.{1,4}/g) ?? [scenario.preToolText];
+            for (const chunk of preToolChunks) {
+              if (options?.signal?.aborted) {
+                throw new Error("aborted");
+              }
+
+              if (gateway.delayMs > 0) {
+                await sleep(gateway.delayMs);
+              }
+
+              preToolEmitted += chunk;
+              yield chunk;
+            }
           }
 
           const executeToolStep = async (
@@ -281,6 +301,9 @@ export class FakeModelGateway implements ModelGateway {
 
           await options?.onStepFinish?.({
             finishReason: "tool-calls",
+            ...(preToolEmitted.length > 0 ? { text: preToolEmitted } : {}),
+            ...(index === 0 && Array.isArray(scenario?.preToolContent) ? { content: scenario.preToolContent } : {}),
+            ...(index === 0 && Array.isArray(scenario?.preToolReasoning) ? { reasoning: scenario.preToolReasoning } : {}),
             toolCalls: executedBatch.map((entry) => entry.toolCall),
             toolResults: executedBatch.flatMap((entry) => (entry.toolResult ? [entry.toolResult] : [])),
             ...(executedBatch.some((entry) => entry.toolError)

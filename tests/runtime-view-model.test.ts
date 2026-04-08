@@ -201,6 +201,43 @@ describe("buildRuntimeViewModel", () => {
     });
   });
 
+  it("preserves live assistant metadata for the conversation view", () => {
+    const viewModel = buildRuntimeViewModel({
+      messages: [],
+      runSteps: [createModelCallStep()],
+      deferredEvents: [],
+      liveOutput: {
+        msg_streaming: {
+          messageId: "msg_streaming",
+          runId: "run_1",
+          sessionId: "ses_1",
+          content: "fresh live reply",
+          metadata: {
+            agentName: "plan",
+            effectiveAgentName: "plan",
+            agentMode: "primary"
+          },
+          createdAt: "2026-04-07T00:00:05.000Z"
+        }
+      },
+      selectedTraceId: "",
+      selectedMessageId: "",
+      selectedStepId: "",
+      selectedEventId: "",
+      sessionId: "ses_1"
+    });
+
+    expect(viewModel.messageFeed).toHaveLength(1);
+    expect(viewModel.messageFeed[0]).toMatchObject({
+      id: "live:msg_streaming",
+      metadata: {
+        agentName: "plan",
+        effectiveAgentName: "plan",
+        agentMode: "primary"
+      }
+    });
+  });
+
   it("projects interrupted assistant text into separate bubbles using session events", () => {
     const userMessage: Message = {
       id: "msg_user",
@@ -319,5 +356,136 @@ describe("buildRuntimeViewModel", () => {
       toolResult.content,
       "second part"
     ]);
+  });
+
+  it("keeps a live interrupted assistant segment in its projected position before completion", () => {
+    const userMessage: Message = {
+      id: "msg_user",
+      sessionId: "ses_1",
+      role: "user",
+      content: "hello",
+      createdAt: "2026-04-07T00:00:00.000Z"
+    };
+    const assistantToolCall = createAssistantMessage({
+      id: "msg_tool_call",
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: "tool_1",
+          toolName: "AgentSwitch",
+          input: { to: "plan" }
+        }
+      ],
+      metadata: {
+        agentName: "plan",
+        effectiveAgentName: "plan",
+        agentMode: "primary"
+      },
+      createdAt: "2026-04-07T00:00:02.000Z"
+    });
+    const toolResult: Message = {
+      id: "msg_tool_result",
+      sessionId: "ses_1",
+      runId: "run_1",
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "tool_1",
+          toolName: "AgentSwitch",
+          output: {
+            type: "text",
+            value: "switched"
+          }
+        }
+      ],
+      createdAt: "2026-04-07T00:00:03.000Z"
+    };
+
+    const viewModel = buildRuntimeViewModel({
+      messages: [userMessage, assistantToolCall, toolResult],
+      runSteps: [createModelCallStep()],
+      deferredEvents: [
+        createEvent({
+          cursor: "1",
+          runId: "run_1",
+          event: "message.delta",
+          data: {
+            messageId: "msg_streamed",
+            delta: "first part"
+          }
+        }),
+        createEvent({
+          cursor: "2",
+          runId: "run_1",
+          event: "message.completed",
+          data: {
+            messageId: "msg_tool_call",
+            content: assistantToolCall.content
+          }
+        }),
+        createEvent({
+          cursor: "3",
+          runId: "run_1",
+          event: "message.completed",
+          data: {
+            messageId: "msg_tool_result",
+            toolCallId: "tool_1",
+            toolName: "AgentSwitch",
+            content: toolResult.content
+          }
+        }),
+        createEvent({
+          cursor: "4",
+          runId: "run_1",
+          event: "message.delta",
+          data: {
+            messageId: "msg_streamed",
+            delta: "second part"
+          }
+        })
+      ],
+      liveOutput: {
+        msg_streamed: {
+          messageId: "msg_streamed",
+          runId: "run_1",
+          sessionId: "ses_1",
+          content: "first partsecond part",
+          metadata: {
+            agentName: "plan",
+            effectiveAgentName: "plan",
+            agentMode: "primary"
+          },
+          createdAt: "2026-04-07T00:00:01.000Z"
+        }
+      },
+      selectedTraceId: "",
+      selectedMessageId: "",
+      selectedStepId: "",
+      selectedEventId: "",
+      sessionId: "ses_1"
+    });
+
+    expect(viewModel.messageFeed.map((message) => message.id)).toEqual([
+      "msg_user",
+      "segment:msg_streamed:1",
+      "msg_tool_call",
+      "msg_tool_result",
+      "segment:msg_streamed:2"
+    ]);
+    expect(viewModel.messageFeed.map((message) => message.content)).toEqual([
+      "hello",
+      "first part",
+      assistantToolCall.content,
+      toolResult.content,
+      "second part"
+    ]);
+    expect(viewModel.messageFeed[4]).toMatchObject({
+      metadata: {
+        agentName: "plan",
+        effectiveAgentName: "plan",
+        agentMode: "primary"
+      }
+    });
   });
 });
