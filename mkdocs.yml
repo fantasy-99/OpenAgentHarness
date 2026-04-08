@@ -14,8 +14,8 @@ hooks:
 theme:
   name: material
   language: zh
-  logo: assets/oah-aqua-mark.svg
-  favicon: assets/oah-aqua-favicon.svg
+  logo: assets/logo-mkdocs.png
+  favicon: assets/logo-mkdocs.png
   font: false
   palette:
     - media: "(prefers-color-scheme: light)"

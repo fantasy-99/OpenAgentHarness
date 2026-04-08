@@ -119,6 +119,10 @@
   width: 1.75rem;
 }
 
+[data-md-color-scheme="slate"] .md-header__button.md-logo img {
+  filter: invert(1) brightness(1.08);
+}
+
 /* ---- Left Sidebar (primary) ---- */
 
 .md-sidebar--primary {

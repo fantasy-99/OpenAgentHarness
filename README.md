@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-readme-dark.png" />
+    <img src="assets/logo-readme.png" width="180" alt="Open Agent Harness Logo" />
+  </picture>
+</p>
+
 <h1 align="center">Open Agent Harness</h1>
 
 <p align="center">
