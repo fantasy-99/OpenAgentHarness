@@ -795,14 +795,44 @@ export function AppSidebar(props: SidebarProps) {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
-            <Input value={props.workspaceDraft.name} onChange={(event) => props.setWorkspaceDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Workspace name" />
-            <Input list="workspace-template-options" value={props.workspaceDraft.template} onChange={(event) => props.setWorkspaceDraft((current) => ({ ...current, template: event.target.value }))} placeholder="Template" />
-            <datalist id="workspace-template-options">
-              {props.workspaceTemplates.map((template) => (
-                <option key={template} value={template} />
-              ))}
-            </datalist>
-            <Input value={props.workspaceDraft.rootPath} onChange={(event) => props.setWorkspaceDraft((current) => ({ ...current, rootPath: event.target.value }))} placeholder="Root path" />
+            <Input
+              value={props.workspaceDraft.name}
+              onChange={(event) => props.setWorkspaceDraft((current) => ({ ...current, name: event.target.value }))}
+              placeholder="Workspace name"
+            />
+            <div className="space-y-1">
+              <Select
+                value={props.workspaceDraft.template.trim() || undefined}
+                onValueChange={(value) => props.setWorkspaceDraft((current) => ({ ...current, template: value }))}
+              >
+                <SelectTrigger className="h-10 w-full rounded-xl border-black/10 bg-white/68 text-sm shadow-none" aria-label="Workspace template">
+                  <SelectValue placeholder={props.workspaceTemplates.length > 0 ? "Select template" : "No templates available"} />
+                </SelectTrigger>
+                <SelectContent align="start">
+                  {props.workspaceTemplates.length > 0 ? (
+                    props.workspaceTemplates.map((template) => (
+                      <SelectItem key={template} value={template}>
+                        {template}
+                      </SelectItem>
+                    ))
+                  ) : (
+                    <SelectItem value="__no_templates__" disabled>
+                      No templates available
+                    </SelectItem>
+                  )}
+                </SelectContent>
+              </Select>
+              <p className="px-1 text-xs leading-5 text-muted-foreground">
+                {props.workspaceTemplates.length > 0
+                  ? "Choose one of the server-provided workspace templates."
+                  : "Template list is empty. Use the refresh button to load templates from the server."}
+              </p>
+            </div>
+            <Input
+              value={props.workspaceDraft.rootPath}
+              onChange={(event) => props.setWorkspaceDraft((current) => ({ ...current, rootPath: event.target.value }))}
+              placeholder="Root path"
+            />
             <p className="px-1 text-xs leading-5 text-muted-foreground">
               Managed mode: auto-create under workspace_dir/workspace_id. Custom mode: use the path you enter here.
             </p>
