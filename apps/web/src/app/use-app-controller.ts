@@ -11,9 +11,11 @@ import type {
 } from "@oah/api-contracts";
 
 import {
+  buildRuntimeConsoleEntries,
   buildMessageRecord,
   buildUrl,
   consumeSse,
+  createHttpRequestError,
   downloadJsonFile,
   inferCompletedMessageRole,
   isNotFoundError,
@@ -24,9 +26,12 @@ import {
   readJsonResponse,
   sanitizeFileSegment,
   storageKeys,
+  toErrorSummary,
   toErrorMessage,
   upsertSessionMessage,
   usePersistentState,
+  type AppRequestErrorSummary,
+  type ConsoleFilter,
   type ConnectionSettings,
   type HealthReportResponse,
   type InspectorTab,
@@ -38,6 +43,7 @@ import {
   type ModelProviderListResponse,
   type ModelProviderRecord,
   type ReadinessReportResponse,
+  type RuntimeConsoleEntry,
   type SurfaceMode,
   type SseFrame
 } from "./support";
@@ -74,6 +80,7 @@ export function useAppController() {
   const [streamState, setStreamState] = useState<"idle" | "connecting" | "listening" | "open" | "error">("idle");
   const [activity, setActivity] = useState("等待连接");
   const [errorMessage, setErrorMessage] = useState("");
+  const [activeError, setActiveError] = useState<AppRequestErrorSummary | null>(null);
   const [generateOutput, setGenerateOutput] = useState<ModelGenerateResponse | null>(null);
   const [generateBusy, setGenerateBusy] = useState(false);
   const [autoStream, setAutoStream] = useState(true);
@@ -87,6 +94,9 @@ export function useAppController() {
   const [selectedStepId, setSelectedStepId] = useState("");
   const [selectedEventId, setSelectedEventId] = useState("");
   const [timelineInspectorMode, setTimelineInspectorMode] = useState<"all" | "execution" | "messages" | "calls" | "steps" | "events">("all");
+  const [consoleOpen, setConsoleOpen] = useState(false);
+  const [consoleHeight, setConsoleHeight] = useState(280);
+  const [consoleFilter, setConsoleFilter] = useState<ConsoleFilter>("all");
   const [pendingSessionAgentName, setPendingSessionAgentName] = useState<string | null>(null);
   const [switchingSessionAgentId, setSwitchingSessionAgentId] = useState<string | null>(null);
   const [pendingSessionModelRef, setPendingSessionModelRef] = useState<string | null>(null);
@@ -197,6 +207,7 @@ export function useAppController() {
     resolvedModelRefs,
     messageFeed
   } = runtimeViewModel;
+  const consoleEntries = buildRuntimeConsoleEntries(events, activeError);
 
   async function request<T>(path: string, init?: RequestInit, options?: { auth?: boolean }) {
     const headers = new Headers(init?.headers);
@@ -213,12 +224,39 @@ export function useAppController() {
     });
 
     if (!response.ok) {
-      const body = await readJsonResponse<{ error?: { message?: string } }>(response).catch(() => undefined);
-      throw new Error(body?.error?.message ?? `${response.status} ${response.statusText}`);
+      throw await createHttpRequestError(response);
     }
 
     return readJsonResponse<T>(response);
   }
+
+  const clearActiveError = useEffectEvent(() => {
+    setErrorMessage("");
+    setActiveError(null);
+  });
+
+  const reportError = useEffectEvent((error: unknown) => {
+    const nextMessage = toErrorMessage(error);
+    const summary = toErrorSummary(error);
+    setErrorMessage(nextMessage);
+    setActiveError(summary ? { ...summary, message: nextMessage } : { message: nextMessage, timestamp: new Date().toISOString() });
+  });
+
+  const openConsoleForErrors = useEffectEvent(() => {
+    setConsoleOpen(true);
+    setConsoleFilter("errors");
+  });
+
+  useEffect(() => {
+    if (!errorMessage) {
+      setActiveError(null);
+      return;
+    }
+
+    setActiveError((current) =>
+      current?.message === errorMessage ? current : { message: errorMessage, timestamp: new Date().toISOString() }
+    );
+  }, [errorMessage]);
 
   const storageController = useStorageController({
     connection,
@@ -401,12 +439,12 @@ export function useAppController() {
           ? "服务探针发现降级项"
           : "服务健康检查通过"
       );
-      setErrorMessage("");
+      clearActiveError();
     } catch (error) {
       setHealthStatus("error");
       setHealthReport(null);
       setReadinessReport(null);
-      setErrorMessage(toErrorMessage(error));
+      reportError(error);
     }
   }
 
@@ -418,11 +456,11 @@ export function useAppController() {
       });
       if (!quiet) {
         setActivity(`已加载 ${response.items.length} 个模型 provider`);
-        setErrorMessage("");
+        clearActiveError();
       }
     } catch (error) {
       if (!quiet) {
-        setErrorMessage(toErrorMessage(error));
+        reportError(error);
       }
     }
   }
@@ -435,11 +473,11 @@ export function useAppController() {
       });
       if (!quiet) {
         setActivity(`已加载 ${response.items.length} 个平台模型`);
-        setErrorMessage("");
+        clearActiveError();
       }
     } catch (error) {
       if (!quiet) {
-        setErrorMessage(toErrorMessage(error));
+        reportError(error);
       }
     }
   }
@@ -455,11 +493,11 @@ export function useAppController() {
         setMessages(messagePage.items);
       });
       if (!quiet) {
-        setErrorMessage("");
+        clearActiveError();
       }
     } catch (error) {
       if (!quiet) {
-        setErrorMessage(toErrorMessage(error));
+        reportError(error);
       }
     }
   }
@@ -509,11 +547,11 @@ export function useAppController() {
       });
 
       if (!quiet) {
-        setErrorMessage("");
+        clearActiveError();
       }
     } catch (error) {
       if (!quiet) {
-        setErrorMessage(toErrorMessage(error));
+        reportError(error);
       }
     }
   }
@@ -548,11 +586,11 @@ export function useAppController() {
       }
 
       if (!quiet) {
-        setErrorMessage("");
+        clearActiveError();
       }
     } catch (error) {
       if (!quiet) {
-        setErrorMessage(toErrorMessage(error));
+        reportError(error);
       }
     }
   }
@@ -569,11 +607,11 @@ export function useAppController() {
         setSelectedRunId(targetId);
       });
       if (!quiet) {
-        setErrorMessage("");
+        clearActiveError();
       }
     } catch (error) {
       if (!quiet) {
-        setErrorMessage(toErrorMessage(error));
+        reportError(error);
       }
     }
   }
@@ -589,11 +627,11 @@ export function useAppController() {
         setRunSteps((current) => mergeRunStepsForRun(current, targetId, page.items));
       });
       if (!quiet) {
-        setErrorMessage("");
+        clearActiveError();
       }
     } catch (error) {
       if (!quiet) {
-        setErrorMessage(toErrorMessage(error));
+        reportError(error);
       }
     }
   }
@@ -707,7 +745,7 @@ export function useAppController() {
 
   async function sendMessage() {
     if (!sessionId.trim()) {
-      setErrorMessage("请先创建或加载 session。");
+      reportError("请先创建或加载 session。");
       return;
     }
 
@@ -758,9 +796,10 @@ export function useAppController() {
         refreshRunSteps(accepted.runId, true)
       ]);
       setActivity(`消息已入队，run=${accepted.runId}`);
-      setErrorMessage("");
+      clearActiveError();
     } catch (error) {
-      setErrorMessage(toErrorMessage(error));
+      reportError(error);
+      openConsoleForErrors();
     }
   }
 
@@ -775,9 +814,10 @@ export function useAppController() {
       });
       await refreshRun(selectedRunId, true);
       setActivity(`已请求取消 run ${selectedRunId}`);
-      setErrorMessage("");
+      clearActiveError();
     } catch (error) {
-      setErrorMessage(toErrorMessage(error));
+      reportError(error);
+      openConsoleForErrors();
     }
   }
 
@@ -800,9 +840,10 @@ export function useAppController() {
       );
       setGenerateOutput(response);
       setActivity(`内部模型网关 generate 成功，model=${response.model}`);
-      setErrorMessage("");
+      clearActiveError();
     } catch (error) {
-      setErrorMessage(toErrorMessage(error));
+      reportError(error);
+      openConsoleForErrors();
     } finally {
       setGenerateBusy(false);
     }
@@ -969,6 +1010,20 @@ export function useAppController() {
   }, []);
 
   useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.ctrlKey && event.key === "`") {
+        event.preventDefault();
+        setConsoleOpen((current) => !current);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
+
+  useEffect(() => {
     shouldAutoFollowConversationRef.current = true;
   }, [sessionId]);
 
@@ -1052,11 +1107,12 @@ export function useAppController() {
           if (isNotFoundError(error)) {
             navigationActions.clearSessionSelection(sessionId, { forgetSession: true });
             setActivity(`Session ${sessionId} 不存在，已清除本地选择`);
-            setErrorMessage("");
+            clearActiveError();
             return;
           }
           setStreamState("error");
-          setErrorMessage(toErrorMessage(error));
+          reportError(error);
+          openConsoleForErrors();
         }
       }
     })();
@@ -1138,7 +1194,7 @@ export function useAppController() {
         }, 1500);
 
         if (streamState === "error") {
-          setErrorMessage(toErrorMessage(error));
+          reportError(error);
         }
       }
     };
@@ -1177,8 +1233,28 @@ export function useAppController() {
         ? "Messages, model calls, steps, and events in one feed"
         : "Workspace controls, catalog inventory, and raw records";
 
+  function inspectConsoleEntry(entry: RuntimeConsoleEntry) {
+    if (entry.runId) {
+      setSelectedRunId(entry.runId);
+      void refreshRun(entry.runId, true);
+      void refreshRunSteps(entry.runId, true);
+    }
+
+    if (entry.stepId) {
+      setSelectedStepId(entry.stepId);
+    }
+
+    if (entry.eventId) {
+      setSelectedEventId(entry.eventId);
+    }
+
+    setMainViewMode("inspector");
+    setInspectorTab("timeline");
+  }
+
   return {
     errorMessage,
+    activeError,
     surfaceMode,
     headerProps: {
       surfaceMode,
@@ -1195,7 +1271,9 @@ export function useAppController() {
         : null,
       healthStatus,
       streamState,
-      onSurfaceModeChange: setSurfaceMode
+      onSurfaceModeChange: setSurfaceMode,
+      consoleOpen,
+      toggleConsole: () => setConsoleOpen((current) => !current)
     },
     storageSurfaceProps: storageController.storageSurfaceProps,
     providerSurfaceProps: {
@@ -1368,6 +1446,18 @@ export function useAppController() {
       streamState,
       isRunning: !isTerminalRunStatus(run?.status) && run?.status != null,
       fileManager: workspaceFileManager.fileManagerSurfaceProps
+    },
+    consolePanelProps: {
+      isOpen: consoleOpen && surfaceMode === "runtime",
+      height: consoleHeight,
+      onHeightChange: setConsoleHeight,
+      onClose: () => setConsoleOpen(false),
+      filter: consoleFilter,
+      onFilterChange: setConsoleFilter,
+      entries: consoleEntries,
+      onEntryInspect: inspectConsoleEntry,
+      openErrors: openConsoleForErrors,
+      clearError: clearActiveError
     }
   };
 }

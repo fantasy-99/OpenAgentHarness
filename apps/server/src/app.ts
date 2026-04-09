@@ -1,4 +1,4 @@
-import Fastify from "fastify";
+import Fastify, { type FastifyRequest } from "fastify";
 
 import { isAppError } from "@oah/runtime-core";
 
@@ -11,6 +11,16 @@ import type { AppDependencies } from "./http/types.js";
 
 export type { AppDependencies } from "./http/types.js";
 
+function readRequestParam(request: FastifyRequest, key: string): string | undefined {
+  const params = request.params;
+  if (!params || typeof params !== "object" || Array.isArray(params)) {
+    return undefined;
+  }
+
+  const value = (params as Record<string, unknown>)[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 export function createApp(dependencies: AppDependencies) {
   const app = Fastify({
     logger: dependencies.logger ?? true
@@ -22,7 +32,38 @@ export function createApp(dependencies: AppDependencies) {
     done(null, body);
   });
 
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler(async (error, request, reply) => {
+    const sessionIdFromParams = readRequestParam(request, "sessionId");
+    const runIdFromParams = readRequestParam(request, "runId");
+    let resolvedSessionId = sessionIdFromParams;
+
+    if (!resolvedSessionId && runIdFromParams) {
+      const run = await dependencies.runtimeService.getRun(runIdFromParams).catch(() => null);
+      resolvedSessionId = run?.sessionId;
+    }
+
+    if (resolvedSessionId && dependencies.appendRuntimeLog) {
+      await dependencies.appendRuntimeLog({
+        sessionId: resolvedSessionId,
+        ...(runIdFromParams ? { runId: runIdFromParams } : {}),
+        level: "error",
+        category: "http",
+        message: isAppError(error) ? error.message : "Unhandled HTTP request failure.",
+        details: {
+          code: isAppError(error) ? error.code : "internal_error",
+          statusCode: isAppError(error) ? error.statusCode : 500,
+          method: request.method,
+          url: request.url,
+          ...(isAppError(error) && error.details ? { details: error.details } : {}),
+          ...(error instanceof Error ? { errorName: error.name } : {})
+        },
+        context: {
+          sessionId: resolvedSessionId,
+          ...(runIdFromParams ? { runId: runIdFromParams } : {})
+        }
+      }).catch(() => undefined);
+    }
+
     if (isAppError(error)) {
       void sendError(reply, error.statusCode, error.code, error.message, error.details);
       return;

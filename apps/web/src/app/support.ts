@@ -1,8 +1,12 @@
 import { useEffect, useState } from "react";
 
 import type {
+  ErrorResponse,
   Message,
   MessageContent,
+  RuntimeLogCategory,
+  RuntimeLogEventData,
+  RuntimeLogLevel,
   Run,
   RunStep,
   SessionEventContract,
@@ -123,6 +127,7 @@ type InspectorTab = "overview" | "timeline" | "workspace";
 type MainViewMode = "conversation" | "inspector";
 type SurfaceMode = "runtime" | "storage" | "provider";
 type StorageBrowserTab = "postgres" | "redis";
+type ConsoleFilter = "all" | "errors" | "runs" | "tools" | "hooks" | "model" | "system";
 type MessageParts = Extract<Message["content"], unknown[]>;
 type MessagePart = MessageParts[number];
 type SystemMessageContent = Extract<Message, { role: "system" }>["content"];
@@ -224,6 +229,30 @@ interface ModelCallTrace {
   rawOutput: unknown;
 }
 
+interface AppRequestErrorSummary {
+  message: string;
+  code?: string;
+  details?: Record<string, unknown>;
+  statusCode?: number;
+  statusText?: string;
+  timestamp?: string;
+}
+
+interface RuntimeConsoleEntry {
+  id: string;
+  timestamp: string;
+  level: RuntimeLogLevel;
+  category: RuntimeLogCategory;
+  message: string;
+  details?: unknown;
+  source: "server" | "web";
+  eventId?: string;
+  eventName?: SessionEventContract["event"];
+  runId?: string;
+  cursor?: string;
+  stepId?: string;
+}
+
 const storagePostgresTables: StoragePostgresTableName[] = [
   "workspaces",
   "sessions",
@@ -313,12 +342,78 @@ async function readJsonResponse<T>(response: Response): Promise<T> {
   return JSON.parse(raw) as T;
 }
 
+class HttpRequestError extends Error {
+  readonly code?: string | undefined;
+  readonly details?: Record<string, unknown> | undefined;
+  readonly statusCode: number;
+  readonly statusText: string;
+
+  constructor(input: {
+    message: string;
+    statusCode: number;
+    statusText: string;
+    code?: string;
+    details?: Record<string, unknown>;
+  }) {
+    super(input.message);
+    this.name = "HttpRequestError";
+    this.code = input.code;
+    this.details = input.details;
+    this.statusCode = input.statusCode;
+    this.statusText = input.statusText;
+  }
+}
+
+async function createHttpRequestError(response: Response): Promise<HttpRequestError> {
+  const body = await readJsonResponse<ErrorResponse>(response).catch(() => undefined);
+  return new HttpRequestError({
+    message: body?.error?.message ?? `${response.status} ${response.statusText}`,
+    statusCode: response.status,
+    statusText: response.statusText,
+    ...(body?.error?.code ? { code: body.error.code } : {}),
+    ...(body?.error?.details ? { details: body.error.details } : {})
+  });
+}
+
 function toErrorMessage(error: unknown) {
   if (error instanceof Error) {
+    if (error instanceof HttpRequestError && error.code) {
+      return `${error.code}: ${error.message}`;
+    }
+
     return error.message;
   }
 
   return String(error);
+}
+
+function toErrorSummary(error: unknown): AppRequestErrorSummary | null {
+  if (error instanceof HttpRequestError) {
+    return {
+      message: error.message,
+      ...(error.code ? { code: error.code } : {}),
+      ...(error.details ? { details: error.details } : {}),
+      statusCode: error.statusCode,
+      statusText: error.statusText,
+      timestamp: new Date().toISOString()
+    };
+  }
+
+  if (error instanceof Error) {
+    return {
+      message: error.message,
+      timestamp: new Date().toISOString()
+    };
+  }
+
+  if (typeof error === "string") {
+    return {
+      message: error,
+      timestamp: new Date().toISOString()
+    };
+  }
+
+  return null;
 }
 
 function isNotFoundError(error: unknown) {
@@ -1137,6 +1232,194 @@ async function consumeSse(
   }
 }
 
+function isRuntimeLogLevel(value: unknown): value is RuntimeLogLevel {
+  return value === "debug" || value === "info" || value === "warn" || value === "error";
+}
+
+function isRuntimeLogCategory(value: unknown): value is RuntimeLogCategory {
+  return value === "run" || value === "model" || value === "tool" || value === "hook" || value === "agent" || value === "http" || value === "system";
+}
+
+function runtimeLogDataFromEvent(event: SessionEventContract): RuntimeLogEventData | null {
+  if (!isRecord(event.data)) {
+    return null;
+  }
+
+  const { level, category, message, source, timestamp } = event.data;
+  if (
+    !isRuntimeLogLevel(level) ||
+    !isRuntimeLogCategory(category) ||
+    typeof message !== "string" ||
+    (source !== "server" && source !== "web") ||
+    typeof timestamp !== "string"
+  ) {
+    return null;
+  }
+
+  return {
+    level,
+    category,
+    message,
+    ...(event.data.details !== undefined ? { details: event.data.details } : {}),
+    ...(isRecord(event.data.context) ? { context: event.data.context } : {}),
+    source,
+    timestamp
+  };
+}
+
+function levelFromEventName(eventName: SessionEventContract["event"], data: Record<string, unknown>): RuntimeLogLevel {
+  switch (eventName) {
+    case "tool.failed":
+    case "run.failed":
+      return "error";
+    case "hook.notice":
+    case "run.cancelled":
+      return typeof data.errorMessage === "string" || typeof data.errorCode === "string" ? "warn" : "info";
+    default:
+      return "info";
+  }
+}
+
+function categoryFromEventName(eventName: SessionEventContract["event"]): RuntimeLogCategory | null {
+  switch (eventName) {
+    case "run.queued":
+    case "run.started":
+    case "run.completed":
+    case "run.failed":
+    case "run.cancelled":
+      return "run";
+    case "tool.started":
+    case "tool.completed":
+    case "tool.failed":
+      return "tool";
+    case "hook.notice":
+      return "hook";
+    case "agent.switch.requested":
+    case "agent.switched":
+    case "agent.delegate.started":
+    case "agent.delegate.completed":
+    case "agent.delegate.failed":
+      return "agent";
+    default:
+      return null;
+  }
+}
+
+function consoleMessageFromEvent(event: SessionEventContract): string {
+  switch (event.event) {
+    case "run.queued":
+      return `Run queued${typeof event.data.runId === "string" ? ` · ${event.data.runId}` : ""}`;
+    case "run.started":
+      return `Run started${typeof event.data.runId === "string" ? ` · ${event.data.runId}` : ""}`;
+    case "run.completed":
+      return `Run completed${typeof event.data.runId === "string" ? ` · ${event.data.runId}` : ""}`;
+    case "run.failed":
+      return typeof event.data.errorMessage === "string" ? event.data.errorMessage : "Run failed.";
+    case "run.cancelled":
+      return "Run cancelled.";
+    case "tool.started":
+      return `Tool started: ${typeof event.data.toolName === "string" ? event.data.toolName : "unknown"}`;
+    case "tool.completed":
+      return `Tool completed: ${typeof event.data.toolName === "string" ? event.data.toolName : "unknown"}`;
+    case "tool.failed":
+      return typeof event.data.errorMessage === "string"
+        ? event.data.errorMessage
+        : `Tool failed: ${typeof event.data.toolName === "string" ? event.data.toolName : "unknown"}`;
+    case "hook.notice":
+      return typeof event.data.errorMessage === "string"
+        ? event.data.errorMessage
+        : `Hook notice: ${typeof event.data.hookName === "string" ? event.data.hookName : "unknown"}`;
+    case "agent.switch.requested":
+      return `Agent switch requested${typeof event.data.toAgent === "string" ? ` → ${event.data.toAgent}` : ""}`;
+    case "agent.switched":
+      return `Agent switched${typeof event.data.toAgent === "string" ? ` → ${event.data.toAgent}` : ""}`;
+    case "agent.delegate.started":
+      return `Delegation started${typeof event.data.agentName === "string" ? ` · ${event.data.agentName}` : ""}`;
+    case "agent.delegate.completed":
+      return "Delegation completed.";
+    case "agent.delegate.failed":
+      return typeof event.data.errorMessage === "string" ? event.data.errorMessage : "Delegation failed.";
+    default:
+      return event.event;
+  }
+}
+
+function buildRuntimeConsoleEntries(events: SessionEventContract[], activeError: AppRequestErrorSummary | null): RuntimeConsoleEntry[] {
+  const eventEntries = events
+    .map((event): RuntimeConsoleEntry | null => {
+      if (event.event === "message.delta" || event.event === "message.completed") {
+        return null;
+      }
+
+      const runtimeLog = event.event === "runtime.log" ? runtimeLogDataFromEvent(event) : null;
+      if (runtimeLog) {
+        return {
+          id: `console:${event.id}`,
+          timestamp: runtimeLog.timestamp,
+          level: runtimeLog.level,
+          category: runtimeLog.category,
+          message: runtimeLog.message,
+          ...(runtimeLog.details !== undefined ? { details: runtimeLog.details } : {}),
+          source: runtimeLog.source,
+          eventId: event.id,
+          eventName: event.event,
+          ...(event.runId ? { runId: event.runId } : {}),
+          cursor: event.cursor,
+          ...(typeof runtimeLog.context?.stepId === "string" ? { stepId: runtimeLog.context.stepId } : {})
+        };
+      }
+
+      const category = categoryFromEventName(event.event);
+      if (!category) {
+        return null;
+      }
+
+      return {
+        id: `console:${event.id}`,
+        timestamp: event.createdAt,
+        level: levelFromEventName(event.event, event.data),
+        category,
+        message: consoleMessageFromEvent(event),
+        details: event.data,
+        source: "server",
+        eventId: event.id,
+        eventName: event.event,
+        ...(event.runId ? { runId: event.runId } : {}),
+        cursor: event.cursor,
+        ...(typeof event.data.stepId === "string" ? { stepId: event.data.stepId } : {})
+      };
+    })
+    .filter((entry): entry is RuntimeConsoleEntry => entry !== null);
+
+  const errorEntries: RuntimeConsoleEntry[] = activeError
+    ? [
+        {
+          id: "console:active-error",
+          timestamp: activeError.timestamp ?? new Date().toISOString(),
+          level: "error",
+          category: "http",
+          message: activeError.message,
+          details: {
+            ...(activeError.code ? { code: activeError.code } : {}),
+            ...(activeError.details ? { details: activeError.details } : {}),
+            ...(activeError.statusCode ? { statusCode: activeError.statusCode } : {}),
+            ...(activeError.statusText ? { statusText: activeError.statusText } : {})
+          },
+          source: "web"
+        }
+      ]
+    : [];
+
+  return [...eventEntries, ...errorEntries].sort((left, right) => {
+    const timestampCompare = left.timestamp.localeCompare(right.timestamp);
+    if (timestampCompare !== 0) {
+      return timestampCompare;
+    }
+
+    return left.id.localeCompare(right.id);
+  });
+}
+
 export {
   storageKeys,
   storagePostgresTables,
@@ -1144,8 +1427,10 @@ export {
   usePersistentState,
   normalizeBaseUrl,
   buildUrl,
+  createHttpRequestError,
   readJsonResponse,
   toErrorMessage,
+  toErrorSummary,
   isNotFoundError,
   prettyJson,
   sanitizeFileSegment,
@@ -1181,11 +1466,14 @@ export {
   formatTimestamp,
   statusTone,
   probeTone,
-  consumeSse
+  consumeSse,
+  buildRuntimeConsoleEntries
 };
 
 export type {
+  AppRequestErrorSummary,
   ConnectionSettings,
+  ConsoleFilter,
   LiveAssistantMessageRecord,
   WorkspaceDraft,
   SavedWorkspaceRecord,
@@ -1202,6 +1490,7 @@ export type {
   MainViewMode,
   SurfaceMode,
   StorageBrowserTab,
+  RuntimeConsoleEntry,
   ModelCallTraceMessage,
   ModelCallTraceToolCall,
   ModelCallTraceToolResult,

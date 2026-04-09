@@ -67,7 +67,7 @@ Two workspaces on the same runtime can behave completely differently for differe
 | Workspace Type | Description |
 | --- | --- |
 | **`project`** | Writable, executable — enables shell, actions, skills, tools, and hooks |
-| **`chat`** | Read-only conversation mode — no file modifications, no execution tools |
+| **`chat`** | Read-only conversation mode — no file modifications |
 
 ## Capability Model
 

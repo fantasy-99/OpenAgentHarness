@@ -67,7 +67,7 @@ Open Agent Harness 是一个**可部署的后端运行时**，负责承载 Agent
 | Workspace 类型 | 说明 |
 | --- | --- |
 | **`project`** | 可写、可执行——启用 shell、action、skill、tool、hook |
-| **`chat`** | 只读对话模式——不修改文件、不启用执行型工具 |
+| **`chat`** | 只读对话模式——不修改文件 |
 
 ## 能力模型
 

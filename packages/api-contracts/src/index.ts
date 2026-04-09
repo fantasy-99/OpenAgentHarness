@@ -745,6 +745,26 @@ export const runEventsQuerySchema = z.object({
   cursor: z.string().optional()
 });
 
+export const runtimeLogLevelSchema = z.enum(["debug", "info", "warn", "error"]);
+export const runtimeLogCategorySchema = z.enum(["run", "model", "tool", "hook", "agent", "http", "system"]);
+export const runtimeLogEventContextSchema = z.object({
+  workspaceId: z.string().optional(),
+  sessionId: z.string().optional(),
+  runId: z.string().optional(),
+  stepId: z.string().optional(),
+  toolCallId: z.string().optional(),
+  agentName: z.string().optional()
+});
+export const runtimeLogEventDataSchema = z.object({
+  level: runtimeLogLevelSchema,
+  category: runtimeLogCategorySchema,
+  message: z.string(),
+  details: z.union([jsonValueSchema, z.string()]).optional(),
+  context: runtimeLogEventContextSchema.optional(),
+  source: z.enum(["server", "web"]),
+  timestamp: timestampSchema
+});
+
 export const storageTableQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
@@ -783,6 +803,7 @@ export const sessionEventSchema = z.object({
     "tool.started",
     "tool.completed",
     "tool.failed",
+    "runtime.log",
     "run.completed",
     "run.failed",
     "run.cancelled"
@@ -838,6 +859,10 @@ export type StorageRedisDeleteKeysRequest = z.infer<typeof storageRedisDeleteKey
 export type StorageRedisDeleteKeysResponse = z.infer<typeof storageRedisDeleteKeysResponseSchema>;
 export type StorageRedisMaintenanceRequest = z.infer<typeof storageRedisMaintenanceRequestSchema>;
 export type StorageRedisMaintenanceResponse = z.infer<typeof storageRedisMaintenanceResponseSchema>;
+export type RuntimeLogLevel = z.infer<typeof runtimeLogLevelSchema>;
+export type RuntimeLogCategory = z.infer<typeof runtimeLogCategorySchema>;
+export type RuntimeLogEventContext = z.infer<typeof runtimeLogEventContextSchema>;
+export type RuntimeLogEventData = z.infer<typeof runtimeLogEventDataSchema>;
 export type WorkspaceSkillInput = z.infer<typeof workspaceSkillInputSchema>;
 export type CreateWorkspaceRequest = z.infer<typeof createWorkspaceRequestSchema>;
 export type PutWorkspaceFileRequest = z.infer<typeof putWorkspaceFileRequestSchema>;

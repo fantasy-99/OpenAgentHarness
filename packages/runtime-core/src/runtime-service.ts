@@ -45,7 +45,7 @@ import { RunStepService } from "./runtime/run-steps.js";
 import { buildSessionRuntimeMessages } from "./runtime/runtime-messages.js";
 import {
   RuntimeMessageProjector,
-  type ConversationMessage
+  type TranscriptMessage
 } from "./runtime/message-projections.js";
 import {
   type SortOrder,
@@ -688,22 +688,22 @@ export class RuntimeService {
     return nextCursor === undefined ? { items } : { items, nextCursor };
   }
 
-  async listSessionConversationMessages(sessionId: string, pageSize = 100, cursor?: string): Promise<MessageListResult> {
+  async listSessionTranscriptMessages(sessionId: string, pageSize = 100, cursor?: string): Promise<MessageListResult> {
     await this.getSession(sessionId);
     const runtimeMessages = await this.#loadSessionRuntimeMessages(sessionId);
     const runtimeMessagesById = new Map(runtimeMessages.map((message) => [message.id, message]));
-    const projection = this.#runtimeMessageProjector.projectToConversation(runtimeMessages, {
+    const projection = this.#runtimeMessageProjector.projectToTranscript(runtimeMessages, {
       sessionId,
       activeAgentName: "",
       applyCompactBoundary: false
     });
-    const conversationMessages = projection.messages.map((message) =>
-      this.#toConversationMessage(sessionId, message, runtimeMessagesById)
+    const transcriptMessages = projection.messages.map((message) =>
+      this.#toTranscriptMessage(sessionId, message, runtimeMessagesById)
     );
     const startIndex = parseCursor(cursor);
-    const items = conversationMessages.slice(startIndex, startIndex + pageSize);
+    const items = transcriptMessages.slice(startIndex, startIndex + pageSize);
     const nextCursor =
-      startIndex + pageSize < conversationMessages.length ? String(startIndex + pageSize) : undefined;
+      startIndex + pageSize < transcriptMessages.length ? String(startIndex + pageSize) : undefined;
 
     return nextCursor === undefined ? { items } : { items, nextCursor };
   }
@@ -1258,6 +1258,14 @@ export class RuntimeService {
       }
       if (abortController.signal.aborted) {
         if (runTimedOut) {
+          this.#logger?.error?.("Runtime run timed out.", {
+            workspaceId: workspace.id,
+            sessionId: session?.id,
+            runId: run.id,
+            triggerType: run.triggerType,
+            errorCode: "run_timed_out",
+            errorMessage: runTimeoutMs ? `Run exceeded timeout after ${runTimeoutMs}ms.` : "Run exceeded the configured timeout."
+          });
           await this.#runFinalization.finalizeTimedOutRun({
             workspace,
             session,
@@ -1267,6 +1275,13 @@ export class RuntimeService {
           return;
         }
 
+        this.#logger?.warn?.("Runtime run cancelled.", {
+          workspaceId: workspace.id,
+          sessionId: session?.id,
+          runId: run.id,
+          triggerType: run.triggerType,
+          status: "cancelled"
+        });
         await this.#runFinalization.finalizeCancelledRun({
           session,
           runId: run.id
@@ -1431,9 +1446,9 @@ export class RuntimeService {
     });
   }
 
-  #toConversationMessage(
+  #toTranscriptMessage(
     sessionId: string,
-    message: ConversationMessage,
+    message: TranscriptMessage,
     runtimeMessagesById: Map<string, RuntimeMessage>
   ): Message {
     const sourceRuntimeMessage = message.sourceMessageIds

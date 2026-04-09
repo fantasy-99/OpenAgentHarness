@@ -867,6 +867,10 @@ class SQLitePersistenceCoordinator {
     return this.getWorkspaceHandle(await this.getWorkspaceIdForRun(runId));
   }
 
+  async listOpenHandles(): Promise<DatabaseHandle[]> {
+    return [...this.#handles.values()];
+  }
+
   async listWorkspaceSnapshots(candidates: WorkspaceRecord[]): Promise<WorkspaceRecord[]> {
     const snapshots: WorkspaceRecord[] = [];
 
@@ -1454,6 +1458,16 @@ class SQLiteSessionEventStore implements SessionEventStore {
             .all(sessionId, normalizedCursor)
         );
     return rows.map((row) => parseJson<SessionEvent>(row.payload));
+  }
+
+  async deleteById(eventId: string): Promise<void> {
+    const handles = await this.#coordinator.listOpenHandles();
+    for (const handle of handles) {
+      const result = handle.db.prepare("delete from session_events where id = ?").run(eventId);
+      if (result.changes > 0) {
+        return;
+      }
+    }
   }
 
   subscribe(sessionId: string, listener: (event: SessionEvent) => void): () => void {

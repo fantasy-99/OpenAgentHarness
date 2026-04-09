@@ -2003,7 +2003,62 @@ describe("runtime service", () => {
   });
 
   it("persists reasoning-only assistant completions as message parts", async () => {
-    const { gateway, runtimeService, workspace } = await createRuntime();
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_reasoning_only_completion",
+      name: "reasoning-only-completion",
+      rootPath: "/tmp/reasoning-only-completion",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "plan",
+      settings: {
+        defaultAgent: "plan",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        plan: {
+          name: "plan",
+          mode: "primary",
+          prompt: "You are the planning agent.",
+          tools: {
+            native: [],
+            actions: [],
+            skills: [],
+            external: []
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_reasoning_only_completion",
+        agents: [{ name: "plan", mode: "primary", source: "workspace" }],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
     gateway.streamScenarioFactory = () => ({
       text: "",
       reasoning: [
@@ -2022,9 +2077,11 @@ describe("runtime service", () => {
     };
 
     const session = await runtimeService.createSession({
-      workspaceId: workspace.id,
+      workspaceId: "project_reasoning_only_completion",
       caller,
-      input: {}
+      input: {
+        agentName: "plan"
+      }
     });
 
     const accepted = await runtimeService.createSessionMessage({

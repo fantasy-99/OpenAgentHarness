@@ -23,6 +23,7 @@ import {
   createRedisSessionEventBus,
   createRedisSessionRunQueue
 } from "@oah/storage-redis";
+import { DualWriteSessionEventStore, appendRuntimeLogEvent, buildRuntimeConsoleLogger } from "./runtime-console.js";
 import {
   buildSingleWorkspaceConfig,
   describeRuntimeProcess,
@@ -111,6 +112,15 @@ export interface BootstrappedRuntime {
     import("./history-mirror.js").HistoryMirrorStatus
   >;
   storageAdmin: StorageAdmin;
+  appendRuntimeLog(input: {
+    sessionId: string;
+    runId?: string | undefined;
+    level: "debug" | "info" | "warn" | "error";
+    category: "run" | "model" | "tool" | "hook" | "agent" | "http" | "system";
+    message: string;
+    details?: unknown;
+    context?: import("@oah/api-contracts").RuntimeLogEventContext | undefined;
+  }): Promise<void>;
   healthReport(): Promise<{
     status: "ok" | "degraded";
     storage: {
@@ -158,39 +168,6 @@ async function fileExists(targetPath: string): Promise<boolean> {
 
 function isTruthyEnvValue(value: string | undefined): boolean {
   return value !== undefined && /^(1|true|yes|on)$/iu.test(value.trim());
-}
-
-function buildRuntimeDebugLogger(enabled: boolean): RuntimeLogger | undefined {
-  if (!enabled) {
-    return undefined;
-  }
-
-  return {
-    debug(message, details) {
-      if (details) {
-        console.debug(`[oah-runtime-debug] ${message}`, details);
-        return;
-      }
-
-      console.debug(`[oah-runtime-debug] ${message}`);
-    },
-    warn(message, details) {
-      if (details) {
-        console.warn(`[oah-runtime-debug] ${message}`, details);
-        return;
-      }
-
-      console.warn(`[oah-runtime-debug] ${message}`);
-    },
-    error(message, details) {
-      if (details) {
-        console.error(`[oah-runtime-debug] ${message}`, details);
-        return;
-      }
-
-      console.error(`[oah-runtime-debug] ${message}`);
-    }
-  };
 }
 
 export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<BootstrappedRuntime> {
@@ -251,12 +228,6 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
             logWorkspaceDiscoveryError(rootPath, kind, error);
           }
         } as Parameters<typeof discoverWorkspaces>[0]);
-  const runtimeDebugLogger = buildRuntimeDebugLogger(isTruthyEnvValue(process.env.OAH_RUNTIME_DEBUG));
-  const modelGateway = new AiSdkModelGateway({
-    defaultModelName: config.llm.default_model,
-    models,
-    logger: runtimeDebugLogger
-  });
   const postgresConfigured = Boolean(config.storage.postgres_url && config.storage.postgres_url.trim().length > 0);
   const persistence = postgresConfigured
     ? await createPostgresRuntimePersistence({
@@ -306,9 +277,6 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     hasRedisRunQueue: Boolean(redisRunQueue)
   });
   const workerMode = startWorker ? "embedded" : redisRunQueue ? "external" : "disabled";
-  const sessionEventStore = redisBus
-    ? new FanoutSessionEventStore(persistence.sessionEventStore, redisBus)
-    : persistence.sessionEventStore;
   const persistedWorkspaceSnapshots = hasPersistedWorkspaceListing(persistence)
     ? await persistence.listPersistedWorkspaces()
     : hasWorkspaceSnapshotListing(persistence)
@@ -329,6 +297,28 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   const workspaceRepository = new ScopedWorkspaceRepository(persistence.workspaceRepository, visibleWorkspaceIds);
   const sessionRepository = new ScopedSessionRepository(persistence.sessionRepository, visibleWorkspaceIds);
   const runRepository = new ScopedRunRepository(persistence.runRepository, visibleWorkspaceIds);
+  const primarySessionEventStore =
+    primaryStorageMode === "postgres"
+      ? new DualWriteSessionEventStore({
+          primary: persistence.sessionEventStore,
+          sessionRepository,
+          workspaceRepository
+        })
+      : persistence.sessionEventStore;
+  const sessionEventStore = redisBus
+    ? new FanoutSessionEventStore(primarySessionEventStore, redisBus)
+    : primarySessionEventStore;
+  const runtimeDebugLogger = buildRuntimeConsoleLogger({
+    enabled: true,
+    echoToStdout: isTruthyEnvValue(process.env.OAH_RUNTIME_DEBUG),
+    sessionEventStore: primarySessionEventStore,
+    now: () => new Date().toISOString()
+  });
+  const modelGateway = new AiSdkModelGateway({
+    defaultModelName: config.llm.default_model,
+    models,
+    logger: runtimeDebugLogger
+  });
   let workspaceRegistrySyncPromise: Promise<void> | undefined;
   let lastWorkspaceRegistrySyncAt = 0;
   let workspaceRegistryPollTimer: NodeJS.Timeout | undefined;
@@ -735,6 +725,12 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       return historyMirrorSyncer.rebuildWorkspace(workspace);
     },
     storageAdmin,
+    appendRuntimeLog(input) {
+      return appendRuntimeLogEvent(primarySessionEventStore, {
+        ...input,
+        timestamp: new Date().toISOString()
+      });
+    },
     async healthReport() {
       const mirror = await historyMirrorSummary();
       const checks = {

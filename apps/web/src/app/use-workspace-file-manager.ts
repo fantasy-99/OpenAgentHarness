@@ -9,8 +9,8 @@ import type {
 
 import {
   buildUrl,
+  createHttpRequestError,
   pathLeaf,
-  readJsonResponse,
   toErrorMessage,
   type ConnectionSettings
 } from "./support";
@@ -463,8 +463,7 @@ export function useWorkspaceFileManager(params: {
           }
         );
         if (!response.ok) {
-          const body = await readJsonResponse<{ error?: { message?: string } }>(response).catch(() => undefined);
-          throw new Error(body?.error?.message ?? `${response.status} ${response.statusText}`);
+          throw await createHttpRequestError(response);
         }
       }
       await refreshEntries({ path: currentPath, quiet: true });
@@ -498,8 +497,7 @@ export function useWorkspaceFileManager(params: {
         }
       );
       if (!response.ok) {
-        const body = await readJsonResponse<{ error?: { message?: string } }>(response).catch(() => undefined);
-        throw new Error(body?.error?.message ?? `${response.status} ${response.statusText}`);
+        throw await createHttpRequestError(response);
       }
 
       const blob = await response.blob();

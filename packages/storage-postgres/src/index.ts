@@ -1046,6 +1046,10 @@ class PostgresSessionEventStore implements SessionEventStore {
     return rows.map(toSessionEvent);
   }
 
+  async deleteById(eventId: string): Promise<void> {
+    await this.db.delete(sessionEvents).where(eq(sessionEvents.id, eventId));
+  }
+
   subscribe(sessionId: string, listener: (event: SessionEvent) => void): () => void {
     const listeners = this.#listeners.get(sessionId) ?? new Set();
     listeners.add(listener);

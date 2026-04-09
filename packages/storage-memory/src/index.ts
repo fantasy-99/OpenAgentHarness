@@ -291,6 +291,16 @@ export class InMemorySessionEventStore implements SessionEventStore {
     return events.filter((event, index) => index >= normalizedStart && (!runId || event.runId === runId));
   }
 
+  async deleteById(eventId: string): Promise<void> {
+    for (const [sessionId, events] of this.#eventsBySession.entries()) {
+      const nextEvents = events.filter((event) => event.id !== eventId);
+      if (nextEvents.length !== events.length) {
+        this.#eventsBySession.set(sessionId, nextEvents);
+        return;
+      }
+    }
+  }
+
   subscribe(sessionId: string, listener: (event: SessionEvent) => void): () => void {
     const listeners = this.#listeners.get(sessionId) ?? new Set();
     listeners.add(listener);

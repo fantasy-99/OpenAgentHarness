@@ -1,4 +1,4 @@
-import { Loader2, Network, Orbit } from "lucide-react";
+import { Loader2, Network, Orbit, SquareTerminal } from "lucide-react";
 
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
@@ -96,6 +96,18 @@ export function AppHeader(props: HeaderProps) {
             tone={props.streamState === "open" || props.streamState === "listening" ? "emerald" : props.streamState === "error" ? "rose" : "sky"}
           />
         </div>
+        <button
+          type="button"
+          onClick={props.toggleConsole}
+          className={`inline-flex h-9 items-center gap-2 rounded-2xl border px-3 text-xs transition ${
+            props.consoleOpen
+              ? "border-black/15 bg-white/92 text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.64)]"
+              : "border-black/8 bg-black/[0.03] text-foreground/58 hover:bg-white/75 hover:text-foreground"
+          }`}
+        >
+          <SquareTerminal className="h-4 w-4" />
+          <span className="hidden sm:inline">Console</span>
+        </button>
       </div>
     </header>
   );

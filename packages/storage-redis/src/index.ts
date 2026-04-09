@@ -374,6 +374,10 @@ export class FanoutSessionEventStore implements SessionEventStore {
     return event;
   }
 
+  async deleteById(eventId: string): Promise<void> {
+    await this.#primary.deleteById(eventId);
+  }
+
   async listSince(sessionId: string, cursor?: string, runId?: string): Promise<SessionEvent[]> {
     return this.#primary.listSince(sessionId, cursor, runId);
   }

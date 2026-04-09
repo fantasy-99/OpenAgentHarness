@@ -1,6 +1,7 @@
 import type { FastifyRequest } from "fastify";
 
 import type { CallerContext, ModelGateway, RuntimeService, WorkspaceRecord } from "@oah/runtime-core";
+import type { RuntimeLogEventContext } from "@oah/api-contracts";
 import type { HistoryMirrorStatus } from "../history-mirror.js";
 import type { StorageAdmin } from "../storage-admin.js";
 
@@ -107,6 +108,15 @@ export interface AppDependencies {
   getWorkspaceHistoryMirrorStatus?: (workspace: WorkspaceRecord) => Promise<HistoryMirrorStatus>;
   rebuildWorkspaceHistoryMirror?: (workspace: WorkspaceRecord) => Promise<HistoryMirrorStatus>;
   storageAdmin?: StorageAdmin;
+  appendRuntimeLog?: (input: {
+    sessionId: string;
+    runId?: string | undefined;
+    level: "debug" | "info" | "warn" | "error";
+    category: "run" | "model" | "tool" | "hook" | "agent" | "http" | "system";
+    message: string;
+    details?: unknown;
+    context?: RuntimeLogEventContext | undefined;
+  }) => Promise<void>;
 }
 
 export interface AppRouteOptions {

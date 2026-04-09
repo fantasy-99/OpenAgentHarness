@@ -8,6 +8,7 @@ import type {
   ModelCatalogItem,
   ModelGenerateRequest,
   ModelGenerateResponse,
+  RuntimeLogEventData,
   Run,
   RunStep,
   Session,
@@ -39,6 +40,7 @@ export type SessionEventName =
   | "tool.started"
   | "tool.completed"
   | "tool.failed"
+  | "runtime.log"
   | "run.completed"
   | "run.failed"
   | "run.cancelled";
@@ -59,6 +61,8 @@ export interface SessionEvent {
   data: Record<string, unknown>;
   createdAt: string;
 }
+
+export type { RuntimeLogEventData };
 
 export interface RuntimeLogger {
   debug?(message: string, details?: Record<string, unknown>): void;
@@ -470,6 +474,7 @@ export interface RunStepRepository {
 
 export interface SessionEventStore {
   append(input: Omit<SessionEvent, "id" | "cursor" | "createdAt">): Promise<SessionEvent>;
+  deleteById(eventId: string): Promise<void>;
   listSince(sessionId: string, cursor?: string, runId?: string): Promise<SessionEvent[]>;
   subscribe(sessionId: string, listener: (event: SessionEvent) => void): () => void;
 }

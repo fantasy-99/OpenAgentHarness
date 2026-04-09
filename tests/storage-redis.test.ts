@@ -20,6 +20,9 @@ describe("storage redis", () => {
       async listSince() {
         return [];
       },
+      async deleteById() {
+        return undefined;
+      },
       subscribe() {
         return () => undefined;
       }
@@ -59,6 +62,9 @@ describe("storage redis", () => {
       },
       async listSince() {
         return [];
+      },
+      async deleteById() {
+        return undefined;
       },
       subscribe(_sessionId: string, listener: (event: import("@oah/runtime-core").SessionEvent) => void) {
         primaryListener = listener;
