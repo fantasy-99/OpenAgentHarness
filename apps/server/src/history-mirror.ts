@@ -248,6 +248,7 @@ export class HistoryMirrorSyncer {
   readonly #batchSize: number;
   readonly #logger: HistoryMirrorLogger;
   readonly #databases = new Map<string, MirrorDatabaseHandle>();
+  readonly #unavailableWorkspaceRoots = new Map<string, string>();
   #activeOperation: Promise<void> | undefined;
   #timer: NodeJS.Timeout | undefined;
 
@@ -332,11 +333,31 @@ export class HistoryMirrorSyncer {
   }
 
   async #syncWorkspace(workspace: WorkspaceRecord, options?: { reset?: boolean | undefined }): Promise<void> {
-    if (workspace.kind !== "project") {
+    if (workspace.kind !== "project" || workspace.historyMirrorEnabled === false) {
+      this.#unavailableWorkspaceRoots.delete(workspace.id);
       return;
     }
 
-    const handle = await this.#openMirrorDatabase(workspace);
+    if (!(await pathExists(workspace.rootPath))) {
+      const previousRootPath = this.#unavailableWorkspaceRoots.get(workspace.id);
+      if (previousRootPath !== workspace.rootPath) {
+        this.#logger.warn?.(
+          `History mirror skipped for workspace ${workspace.id}; root path is unavailable on this machine: ${workspace.rootPath}`
+        );
+        this.#unavailableWorkspaceRoots.set(workspace.id, workspace.rootPath);
+      }
+      return;
+    }
+
+    this.#unavailableWorkspaceRoots.delete(workspace.id);
+
+    let handle: MirrorDatabaseHandle;
+    try {
+      handle = await this.#openMirrorDatabase(workspace);
+    } catch (error) {
+      this.#logger.warn?.(`History mirror database unavailable for workspace ${workspace.id}; skipping sync.`, error);
+      return;
+    }
     let lastAppliedEventId = options?.reset ? 0 : this.#readMirrorState(handle.db, workspace.id)?.lastEventId ?? 0;
 
     try {

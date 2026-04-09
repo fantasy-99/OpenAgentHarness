@@ -131,6 +131,42 @@ llm:
     expect(config.paths.workspace_dir).toBe(path.join(tempDir, "workspaces"));
   });
 
+  it("treats a commented-only storage block as empty storage", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-config-comment-only-storage-"));
+    tempDirs.push(tempDir);
+
+    for (const dirName of ["workspaces", "chat", "templates", "models", "tools", "skills"]) {
+      await mkdir(path.join(tempDir, dirName), { recursive: true });
+    }
+
+    const configPath = path.join(tempDir, "server.yaml");
+    await writeFile(
+      configPath,
+      `
+server:
+  host: 127.0.0.1
+  port: 8787
+storage:
+  # postgres_url: \${env.DATABASE_URL}
+  # redis_url: \${env.REDIS_URL}
+paths:
+  workspace_dir: ./workspaces
+  chat_dir: ./chat
+  template_dir: ./templates
+  model_dir: ./models
+  tool_dir: ./tools
+  skill_dir: ./skills
+llm:
+  default_model: openai-default
+`,
+      "utf8"
+    );
+
+    const config = await loadServerConfig(configPath);
+    expect(config.storage).toEqual({});
+    expect(config.paths.tool_dir).toBe(path.join(tempDir, "tools"));
+  });
+
   it("fails when an env placeholder cannot be resolved", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-config-missing-env-"));
     tempDirs.push(tempDir);

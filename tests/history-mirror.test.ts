@@ -371,6 +371,74 @@ describe("history mirror syncer", () => {
     await expect(access(historyMirrorDbPath(workspaceRoot))).rejects.toBeDefined();
   });
 
+  it("skips workspaces whose root path is unavailable on this machine", async () => {
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "oah-history-mirror-bad-root-"));
+    tempRoots.push(tempRoot);
+
+    const blockingFile = path.join(tempRoot, "not-a-directory");
+    await writeFile(blockingFile, "block", "utf8");
+
+    const persistence = createMemoryRuntimePersistence();
+    await persistence.workspaceRepository.upsert({
+      id: "ws_history_unopenable",
+      name: "history-unopenable",
+      rootPath: path.join(blockingFile, "workspace"),
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: true,
+      settings: {
+        historyMirrorEnabled: true,
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {},
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "ws_history_unopenable",
+        agents: [],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const warnings: string[] = [];
+    const syncer = new HistoryMirrorSyncer({
+      workspaceRepository: persistence.workspaceRepository,
+      historyEventRepository: {
+        async append() {
+          throw new Error("append should not be called in sync tests");
+        },
+        async listByWorkspaceId() {
+          return [];
+        }
+      },
+      logger: {
+        warn(message) {
+          warnings.push(message);
+        }
+      }
+    });
+
+    await expect(syncer.syncOnce()).resolves.toBeUndefined();
+    await expect(syncer.syncOnce()).resolves.toBeUndefined();
+    await syncer.close();
+
+    expect(warnings).toEqual([
+      `History mirror skipped for workspace ws_history_unopenable; root path is unavailable on this machine: ${path.join(blockingFile, "workspace")}`
+    ]);
+  });
+
   it("rebuilds a corrupted local history.db mirror from central history events", async () => {
     const workspaceRoot = await mkdtemp(path.join(tmpdir(), "oah-history-mirror-rebuild-"));
     tempRoots.push(workspaceRoot);

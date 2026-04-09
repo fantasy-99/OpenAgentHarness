@@ -611,7 +611,17 @@ export async function loadServerConfig(configPath: string): Promise<ServerConfig
   ]);
 
   const parsed = YAML.parse(fileContent) ?? {};
-  const expanded = expandEnv(parsed);
+  const expandedRaw = expandEnv(parsed);
+  const expanded =
+    expandedRaw && typeof expandedRaw === "object" && !Array.isArray(expandedRaw)
+      ? ({
+          ...expandedRaw,
+          storage:
+            expandedRaw.storage && typeof expandedRaw.storage === "object" && !Array.isArray(expandedRaw.storage)
+              ? expandedRaw.storage
+              : {}
+        } as Record<string, unknown>)
+      : expandedRaw;
   const validate = createAjv().compile<ServerConfig>(schema);
   if (!validate(expanded)) {
     throw new Error(`Invalid server config: ${validationMessage(validate.errors)}`);
