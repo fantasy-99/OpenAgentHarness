@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 
-import type { Run, RunStep, Session } from "@oah/api-contracts";
+import type { Message, Run, RunStep, Session } from "@oah/api-contracts";
 
 import { AppError } from "../errors.js";
 import type { ActionDefinition, SessionEvent, SessionRepository, WorkspaceRecord } from "../types.js";
@@ -41,6 +41,30 @@ export interface ActionRunServiceDependencies {
   appendEvent: (input: Omit<SessionEvent, "id" | "cursor" | "createdAt">) => Promise<SessionEvent>;
   nowIso: () => string;
   normalizeJsonObject: (value: unknown) => Record<string, unknown>;
+}
+
+function buildActionMessageMetadata(workspace: WorkspaceRecord, agentName: string): Record<string, unknown> {
+  const agentMode = workspace.agents[agentName]?.mode;
+
+  return {
+    agentName,
+    effectiveAgentName: agentName,
+    ...(agentMode ? { agentMode } : {})
+  };
+}
+
+function mergeToolMetadata(
+  metadata: Record<string, unknown>,
+  toolMetadata: {
+    toolStatus: "running" | "completed" | "failed";
+    toolSourceType: "action";
+    toolDurationMs?: number | undefined;
+  }
+): Record<string, unknown> {
+  return {
+    ...metadata,
+    ...toolMetadata
+  };
 }
 
 export class ActionRunService {
@@ -88,17 +112,54 @@ export class ActionRunService {
       throw new AppError(404, "action_not_found", `Action ${actionName} was not found in workspace ${workspace.id}.`);
     }
 
+    const actionToolCallId = `action-run:${run.id}:${action.name}`;
+    const actionInput = this.#normalizeJsonObject(run.metadata?.input ?? null);
+    const actionMetadata = buildActionMessageMetadata(workspace, run.effectiveAgentName);
+    const actionStartedAt = Date.now();
+    let persistedToolCallMessage: Message | undefined;
+
     const actionStep = await this.#startRunStep({
       runId: run.id,
       stepType: "tool_call",
       name: action.name,
       ...(run.effectiveAgentName ? { agentName: run.effectiveAgentName } : {}),
       input: {
+        toolCallId: actionToolCallId,
         sourceType: "action",
         actionName: action.name,
-        input: this.#normalizeJsonObject(run.metadata?.input ?? null)
+        ...(action.retryPolicy ? { retryPolicy: action.retryPolicy } : {}),
+        input: actionInput
       }
     });
+
+    if (session) {
+      await this.#appendEvent({
+        sessionId: session.id,
+        runId: run.id,
+        event: "tool.started",
+        data: {
+          runId: run.id,
+          sessionId: session.id,
+          toolCallId: actionToolCallId,
+          toolName: action.name,
+          sourceType: "action",
+          ...(action.retryPolicy ? { retryPolicy: action.retryPolicy } : {}),
+          input: actionInput,
+          metadata: actionMetadata
+        }
+      });
+      persistedToolCallMessage = await this.#toolMessages.persistStandaloneToolCallMessage({
+        session,
+        run,
+        toolCallId: actionToolCallId,
+        toolName: action.name,
+        toolInput: actionInput,
+        metadata: mergeToolMetadata(actionMetadata, {
+          toolStatus: "running",
+          toolSourceType: "action"
+        })
+      });
+    }
 
     let result: ActionExecutionResult;
     try {
@@ -109,31 +170,101 @@ export class ActionRunService {
       const completedActionStep = await this.#completeRunStep(actionStep, failedStatus, {
         sourceType: "action",
         actionName: action.name,
+        ...(action.retryPolicy ? { retryPolicy: action.retryPolicy } : {}),
         ...(latestRun.errorCode ? { errorCode: latestRun.errorCode } : {}),
-        ...(latestRun.errorMessage ? { errorMessage: latestRun.errorMessage } : {})
+        ...(latestRun.errorMessage ? { errorMessage: latestRun.errorMessage } : {}),
+        durationMs: Date.now() - actionStartedAt
       });
       await this.#recordToolCallAuditFromStep(completedActionStep, action.name, failedStatus);
+      if (session) {
+        const failedMetadata = mergeToolMetadata(actionMetadata, {
+          toolStatus: "failed",
+          toolSourceType: "action",
+          toolDurationMs: Date.now() - actionStartedAt
+        });
+        await this.#appendEvent({
+          sessionId: session.id,
+          runId: run.id,
+          event: "tool.failed",
+          data: {
+            runId: run.id,
+            sessionId: session.id,
+            toolCallId: actionToolCallId,
+            toolName: action.name,
+            sourceType: "action",
+            ...(action.retryPolicy ? { retryPolicy: action.retryPolicy } : {}),
+            errorCode: latestRun.errorCode ?? (error instanceof AppError ? error.code : "tool_execution_failed"),
+            errorMessage: latestRun.errorMessage ?? (error instanceof Error ? error.message : "Unknown tool execution error."),
+            durationMs: Date.now() - actionStartedAt,
+            metadata: failedMetadata
+          }
+        });
+        if (persistedToolCallMessage && "metadata" in persistedToolCallMessage) {
+          await this.#toolMessages.updateMessageMetadata(
+            persistedToolCallMessage,
+            failedMetadata
+          );
+        }
+        await this.#toolMessages.persistStandaloneToolErrorMessage({
+          session,
+          run,
+          toolCallId: actionToolCallId,
+          toolName: action.name,
+          error,
+          actionName: action.name,
+          metadata: failedMetadata
+        });
+      }
       throw error;
     }
 
     const completedActionStep = await this.#completeRunStep(actionStep, "completed", {
       sourceType: "action",
       actionName: action.name,
+      ...(action.retryPolicy ? { retryPolicy: action.retryPolicy } : {}),
       exitCode: result.exitCode,
       stdout: result.stdout,
-      stderr: result.stderr
+      stderr: result.stderr,
+      durationMs: Date.now() - actionStartedAt
     });
     await this.#recordToolCallAuditFromStep(completedActionStep, action.name, "completed");
 
     if (session) {
-      const actionToolCallId = `action-run:${run.id}:${action.name}`;
+      const completedMetadata = mergeToolMetadata(actionMetadata, {
+        toolStatus: "completed",
+        toolSourceType: "action",
+        toolDurationMs: Date.now() - actionStartedAt
+      });
+      await this.#appendEvent({
+        sessionId: session.id,
+        runId: run.id,
+        event: "tool.completed",
+        data: {
+          runId: run.id,
+          sessionId: session.id,
+          toolCallId: actionToolCallId,
+          toolName: action.name,
+          sourceType: "action",
+          ...(action.retryPolicy ? { retryPolicy: action.retryPolicy } : {}),
+          output: result.output,
+          durationMs: Date.now() - actionStartedAt,
+          metadata: completedMetadata
+        }
+      });
+      if (persistedToolCallMessage && "metadata" in persistedToolCallMessage) {
+        await this.#toolMessages.updateMessageMetadata(
+          persistedToolCallMessage,
+          completedMetadata
+        );
+      }
       await this.#toolMessages.persistStandaloneToolResultMessage({
         session,
         run,
         toolCallId: actionToolCallId,
         toolName: action.name,
         output: result.output,
-        actionName: action.name
+        actionName: action.name,
+        metadata: completedMetadata
       });
     }
 

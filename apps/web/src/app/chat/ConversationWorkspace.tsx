@@ -14,6 +14,11 @@ import { WorkspaceFileManagerPanel } from "./WorkspaceFileManagerPanel";
 import { resolveMessageAgentInfo } from "./message-agent-info";
 
 type RuntimeProps = ReturnType<typeof useAppController>["runtimeDetailSurfaceProps"];
+type ToolStatus = "running" | "completed" | "failed";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 function agentModeTone(mode: "primary" | "subagent" | "all") {
   switch (mode) {
@@ -24,6 +29,46 @@ function agentModeTone(mode: "primary" | "subagent" | "all") {
     case "all":
       return "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300";
   }
+}
+
+function toolStatusTone(status: ToolStatus) {
+  switch (status) {
+    case "running":
+      return "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300";
+    case "completed":
+      return "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300";
+    case "failed":
+      return "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-300";
+  }
+}
+
+function readToolMeta(messageMetadata: Message["metadata"] | undefined) {
+  if (!isRecord(messageMetadata)) {
+    return {};
+  }
+
+  return {
+    status:
+      messageMetadata.toolStatus === "running" ||
+      messageMetadata.toolStatus === "completed" ||
+      messageMetadata.toolStatus === "failed"
+        ? (messageMetadata.toolStatus as ToolStatus)
+        : undefined,
+    durationMs: typeof messageMetadata.toolDurationMs === "number" ? messageMetadata.toolDurationMs : undefined,
+    sourceType: typeof messageMetadata.toolSourceType === "string" ? messageMetadata.toolSourceType : undefined
+  };
+}
+
+function formatToolDuration(durationMs: number | undefined) {
+  if (durationMs === undefined || !Number.isFinite(durationMs)) {
+    return null;
+  }
+
+  if (durationMs < 1000) {
+    return `${Math.max(0, Math.round(durationMs))} ms`;
+  }
+
+  return `${(durationMs / 1000).toFixed(durationMs >= 10000 ? 0 : 1)} s`;
 }
 
 function MarkdownText({ text, isUser }: { text: string; isUser?: boolean }) {
@@ -109,10 +154,18 @@ function paramTypeBadgeClass(kind: ParamKind) {
   }
 }
 
-function ToolCallBlock({ part }: { part: { type: "tool-call"; toolName?: string; input?: Record<string, unknown> } }) {
+function ToolCallBlock({
+  part,
+  messageMetadata
+}: {
+  part: { type: "tool-call"; toolName?: string; input?: Record<string, unknown> };
+  messageMetadata?: Message["metadata"];
+}) {
   const [expanded, setExpanded] = useState(true);
   const params = part.input ?? {};
   const hasParams = Object.keys(params).length > 0;
+  const toolMeta = readToolMeta(messageMetadata);
+  const durationLabel = formatToolDuration(toolMeta.durationMs);
 
   return (
     <div className="rounded-2xl border border-border/60 bg-muted/35 overflow-hidden shadow-sm">
@@ -126,6 +179,22 @@ function ToolCallBlock({ part }: { part: { type: "tool-call"; toolName?: string;
         </span>
         <Wrench className="w-3 h-3 text-foreground/40 flex-shrink-0" />
         <code className="text-[11px] font-mono font-semibold text-foreground/80">{part.toolName ?? "unknown"}</code>
+        {toolMeta.status ? (
+          <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide ${toolStatusTone(toolMeta.status)}`}>
+            {toolMeta.status === "running" ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+            {toolMeta.status}
+          </span>
+        ) : null}
+        {toolMeta.sourceType ? (
+          <span className="inline-flex items-center rounded-md border border-border/60 bg-background/45 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/75">
+            {toolMeta.sourceType}
+          </span>
+        ) : null}
+        {durationLabel ? (
+          <span className="inline-flex items-center rounded-md border border-border/60 bg-background/45 px-2 py-0.5 text-[10px] font-medium text-muted-foreground/75">
+            {durationLabel}
+          </span>
+        ) : null}
         {hasParams && (
           <span className="text-xs text-muted-foreground/50 truncate flex-1">
             · {Object.keys(params).join(", ")}
@@ -208,10 +277,18 @@ function resolveToolResultContent(output: ToolResultOutput | undefined): { conte
   }
 }
 
-function ToolResultBlock({ part }: { part: { type: "tool-result"; toolName?: string; output?: ToolResultOutput } }) {
+function ToolResultBlock({
+  part,
+  messageMetadata
+}: {
+  part: { type: "tool-result"; toolName?: string; output?: ToolResultOutput };
+  messageMetadata?: Message["metadata"];
+}) {
   const [expanded, setExpanded] = useState(true);
   const { content, isError } = resolveToolResultContent(part.output);
   const preview = content.slice(0, 60).replace(/\n/g, " ") + (content.length > 60 ? "…" : "");
+  const toolMeta = readToolMeta(messageMetadata);
+  const durationLabel = formatToolDuration(toolMeta.durationMs);
 
   return (
     <div className={`rounded-2xl border overflow-hidden shadow-sm ${isError ? "border-destructive/20 bg-destructive/5" : "border-border/60 bg-muted/35"}`}>
@@ -229,6 +306,21 @@ function ToolResultBlock({ part }: { part: { type: "tool-result"; toolName?: str
             {part.toolName}
           </code>
         )}
+        {toolMeta.status ? (
+          <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide ${toolStatusTone(toolMeta.status)}`}>
+            {toolMeta.status}
+          </span>
+        ) : null}
+        {toolMeta.sourceType ? (
+          <span className="inline-flex items-center rounded-md border border-border/60 bg-background/45 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/75">
+            {toolMeta.sourceType}
+          </span>
+        ) : null}
+        {durationLabel ? (
+          <span className="inline-flex items-center rounded-md border border-border/60 bg-background/45 px-2 py-0.5 text-[10px] font-medium text-muted-foreground/75">
+            {durationLabel}
+          </span>
+        ) : null}
         <span className={`text-xs truncate flex-1 ${isError ? "text-destructive/80" : "text-muted-foreground/60"}`}>
           {preview}
         </span>
@@ -266,7 +358,15 @@ function isToolOnlyMessage(content: Message["content"]) {
 }
 
 /** Render message content — text parts as prose, reasoning as collapsible, tool calls/results as chips */
-function MessageContent({ content, isUser }: { content: Message["content"]; isUser?: boolean }) {
+function MessageContent({
+  content,
+  isUser,
+  messageMetadata
+}: {
+  content: Message["content"];
+  isUser?: boolean;
+  messageMetadata?: Message["metadata"];
+}) {
   if (typeof content === "string") {
     return <MarkdownText text={content} {...(isUser !== undefined ? { isUser } : {})} />;
   }
@@ -324,9 +424,17 @@ function MessageContent({ content, isUser }: { content: Message["content"]; isUs
         <div className="space-y-2 pt-1">
           {toolParts.map((part, i) =>
             part.type === "tool-call" ? (
-              <ToolCallBlock key={i} part={part as { type: "tool-call"; toolName?: string; input?: Record<string, unknown> }} />
+              <ToolCallBlock
+                key={i}
+                part={part as { type: "tool-call"; toolName?: string; input?: Record<string, unknown> }}
+                messageMetadata={messageMetadata}
+              />
             ) : (
-              <ToolResultBlock key={i} part={part as { type: "tool-result"; toolName?: string; output?: ToolResultOutput }} />
+              <ToolResultBlock
+                key={i}
+                part={part as { type: "tool-result"; toolName?: string; output?: ToolResultOutput }}
+                messageMetadata={messageMetadata}
+              />
             )
           )}
         </div>
@@ -517,7 +625,7 @@ export function ConversationWorkspace(props: RuntimeProps) {
                           : "selection-surface select-text rounded-2xl px-4 py-3 shadow-elegant border-elegant hover-lift bg-card"
                       }
                     >
-                      <MessageContent content={message.content} isUser={isUser} />
+                      <MessageContent content={message.content} isUser={isUser} messageMetadata={message.metadata} />
                       {isStreaming && (
                         <span className="mt-1 inline-block h-4 w-0.5 animate-pulse bg-current opacity-60" />
                       )}

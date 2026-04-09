@@ -146,11 +146,13 @@ interface MessageAgentSnapshot {
   mode?: AgentMode;
 }
 
-interface LiveAssistantMessageRecord {
-  messageId: string;
+interface LiveConversationMessageRecord {
+  persistedMessageId?: string;
+  toolCallId?: string;
   runId: string;
   sessionId: string;
-  content: string;
+  role?: "assistant" | "tool";
+  content: Message["content"];
   metadata?: Record<string, unknown>;
   createdAt: string;
 }
@@ -1474,7 +1476,7 @@ export type {
   AppRequestErrorSummary,
   ConnectionSettings,
   ConsoleFilter,
-  LiveAssistantMessageRecord,
+  LiveConversationMessageRecord,
   WorkspaceDraft,
   SavedWorkspaceRecord,
   SavedSessionRecord,

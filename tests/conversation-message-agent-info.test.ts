@@ -251,4 +251,73 @@ describe("resolveMessageAgentInfo", () => {
       mode: "primary"
     });
   });
+
+  it("uses live tool message metadata instead of guessing from later run state", () => {
+    const message: Message = {
+      id: "live:tool-result:call_1",
+      sessionId: "ses_1",
+      runId: "run_1",
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "call_1",
+          toolName: "Search",
+          output: {
+            type: "text",
+            value: "done"
+          }
+        }
+      ],
+      metadata: {
+        agentName: "assistant",
+        effectiveAgentName: "assistant",
+        agentMode: "primary"
+      },
+      createdAt: "2026-04-08T00:00:02.000Z"
+    };
+
+    const agentInfo = resolveMessageAgentInfo({
+      message,
+      catalog,
+      runSteps: [
+        ...staleRunSteps,
+        {
+          id: "step_model_2",
+          runId: "run_1",
+          seq: 2,
+          stepType: "model_call",
+          status: "completed",
+          agentName: "planner",
+          startedAt: "2026-04-08T00:00:03.000Z",
+          endedAt: "2026-04-08T00:00:04.000Z"
+        }
+      ],
+      run: {
+        ...run,
+        effectiveAgentName: "planner"
+      },
+      session: {
+        ...session,
+        activeAgentName: "planner"
+      },
+      sessionEvents: [
+        createEvent({
+          cursor: "10",
+          runId: "run_1",
+          event: "agent.switched",
+          data: {
+            runId: "run_1",
+            fromAgent: "assistant",
+            toAgent: "planner"
+          }
+        })
+      ]
+    });
+
+    expect(agentInfo).toEqual({
+      name: "assistant",
+      mode: "primary"
+    });
+  });
 });

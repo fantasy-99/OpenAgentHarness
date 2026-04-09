@@ -477,6 +477,81 @@ describe("runtime service", () => {
     expect(runCompleted).toEqual([first.runId, second.runId]);
   });
 
+  it("persists AI SDK step request, response, and provider metadata snapshots", async () => {
+    const { runtimeService, workspace, gateway } = await createRuntime();
+    gateway.streamScenarioFactory = () => ({
+      text: "snapshots persisted",
+      stepRequest: {
+        body: {
+          prompt: "persist snapshots"
+        }
+      },
+      stepResponse: {
+        id: "resp_snapshot_1",
+        model: "openai-default",
+        headers: {
+          "x-request-id": "req_snapshot_1"
+        }
+      },
+      stepProviderMetadata: {
+        openai: {
+          requestId: "req_snapshot_1",
+          sessionId: "sess_snapshot_1"
+        }
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: workspace.id,
+      caller,
+      input: {}
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "persist snapshots" }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const runSteps = await runtimeService.listRunSteps(accepted.runId);
+    const modelCallStep = runSteps.items.find((step) => step.stepType === "model_call");
+
+    expect(modelCallStep?.output).toMatchObject({
+      response: {
+        request: {
+          body: {
+            prompt: "persist snapshots"
+          }
+        },
+        response: {
+          id: "resp_snapshot_1",
+          model: "openai-default",
+          headers: {
+            "x-request-id": "req_snapshot_1"
+          }
+        },
+        providerMetadata: {
+          openai: {
+            requestId: "req_snapshot_1",
+            sessionId: "sess_snapshot_1"
+          }
+        }
+      }
+    });
+  });
+
   it("supports a third session message and lists persisted messages with the default page size", async () => {
     const { runtimeService, workspace } = await createRuntime();
     const caller = {
@@ -2123,6 +2198,116 @@ describe("runtime service", () => {
     });
   });
 
+  it("includes systemMessages in message.delta metadata only when the prompt changes", async () => {
+    const gateway = new FakeModelGateway();
+    gateway.streamScenarioFactory = () => ({
+      text: "abcdefgh"
+    });
+
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_delta_metadata_prompt_dedup",
+      name: "delta-metadata-prompt-dedup",
+      rootPath: "/tmp/delta-metadata-prompt-dedup",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "builder",
+      settings: {
+        defaultAgent: "builder",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        builder: {
+          name: "builder",
+          mode: "primary",
+          prompt: "You are the builder agent.",
+          tools: {
+            native: [],
+            actions: [],
+            skills: [],
+            external: []
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_delta_metadata_prompt_dedup",
+        agents: [{ name: "builder", mode: "primary", source: "workspace" }],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: "project_delta_metadata_prompt_dedup",
+      caller,
+      input: {
+        agentName: "builder"
+      }
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "stream two chunks please" }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const events = await runtimeService.listSessionEvents(session.id, undefined, accepted.runId);
+    const deltaEvents = events.filter((event) => event.event === "message.delta");
+
+    expect(deltaEvents).toHaveLength(2);
+    expect(deltaEvents[0]?.data.metadata).toMatchObject({
+      agentName: "builder",
+      effectiveAgentName: "builder",
+      agentMode: "primary",
+      systemMessages: [
+        {
+          role: "system",
+          content: expect.stringContaining("You are the builder agent.")
+        }
+      ]
+    });
+    expect(deltaEvents[1]?.data.metadata).toMatchObject({
+      agentName: "builder",
+      effectiveAgentName: "builder",
+      agentMode: "primary"
+    });
+    expect(deltaEvents[1]?.data.metadata).not.toHaveProperty("systemMessages");
+  });
+
   it("defaults SubAgent launches to background when the target agent enables it", async () => {
     const gateway = new FakeModelGateway();
     gateway.streamScenarioFactory = (input) => {
@@ -2969,6 +3154,309 @@ describe("runtime service", () => {
     expect(runSteps.items.some((step) => step.stepType === "system" && step.name === "run.completed")).toBe(true);
   });
 
+  it("streams session-attached action runs as tool-call and tool-result messages", async () => {
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_action_session_stream",
+      name: "action-session-stream",
+      rootPath: "/tmp/action-session-stream",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "builder",
+      settings: {
+        defaultAgent: "builder",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        builder: {
+          name: "builder",
+          mode: "primary",
+          prompt: "Run actions directly when asked.",
+          tools: {
+            native: [],
+            actions: ["debug.echo"],
+            skills: [],
+            external: []
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {
+        "debug.echo": {
+          name: "debug.echo",
+          description: "Echo text",
+          callableByApi: true,
+          callableByUser: true,
+          exposeToLlm: false,
+          retryPolicy: "safe",
+          directory: "/tmp",
+          entry: {
+            command: "printf session-action-ok"
+          }
+        }
+      },
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_action_session_stream",
+        agents: [{ name: "builder", mode: "primary", source: "workspace" }],
+        models: [],
+        actions: [
+          {
+            name: "debug.echo",
+            description: "Echo text",
+            callableByApi: true,
+            callableByUser: true,
+            exposeToLlm: false,
+            retryPolicy: "safe"
+          }
+        ],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: "project_action_session_stream",
+      caller,
+      input: {}
+    });
+
+    const accepted = await runtimeService.triggerActionRun({
+      workspaceId: "project_action_session_stream",
+      sessionId: session.id,
+      actionName: "debug.echo",
+      caller
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const page = await runtimeService.listSessionMessages(session.id, 20);
+    const expectedToolCallId = `action-run:${accepted.runId}:debug.echo`;
+    expect(page.items.map((message) => message.role)).toEqual(["assistant", "tool"]);
+    expect(hasToolCallPart(page.items[0], "debug.echo", expectedToolCallId)).toBe(true);
+    expect(hasToolResultPart(page.items[1], "debug.echo", expectedToolCallId)).toBe(true);
+    expect(messageText(page.items[1])).toBe("session-action-ok");
+    expect(page.items[0]?.metadata).toMatchObject({
+      toolStatus: "completed",
+      toolSourceType: "action",
+      toolDurationMs: expect.any(Number),
+      agentName: "builder",
+      effectiveAgentName: "builder",
+      agentMode: "primary"
+    });
+    expect(page.items[1]?.metadata).toMatchObject({
+      toolStatus: "completed",
+      toolSourceType: "action",
+      toolDurationMs: expect.any(Number),
+      agentName: "builder",
+      effectiveAgentName: "builder",
+      agentMode: "primary"
+    });
+
+    const events = await runtimeService.listSessionEvents(session.id, undefined, accepted.runId);
+    expect(events.find((event) => event.event === "tool.started")?.data).toMatchObject({
+      toolCallId: expectedToolCallId,
+      toolName: "debug.echo",
+      sourceType: "action",
+      retryPolicy: "safe",
+      metadata: {
+        agentName: "builder",
+        effectiveAgentName: "builder",
+        agentMode: "primary"
+      }
+    });
+    expect(events.find((event) => event.event === "tool.completed")?.data).toMatchObject({
+      toolCallId: expectedToolCallId,
+      toolName: "debug.echo",
+      sourceType: "action",
+      retryPolicy: "safe",
+      output: "session-action-ok",
+      metadata: {
+        agentName: "builder",
+        effectiveAgentName: "builder",
+        agentMode: "primary"
+      }
+    });
+
+    const runSteps = await runtimeService.listRunSteps(accepted.runId);
+    expect(runSteps.items.find((step) => step.name === "debug.echo")?.input).toMatchObject({
+      toolCallId: expectedToolCallId,
+      sourceType: "action",
+      retryPolicy: "safe"
+    });
+  });
+
+  it("persists failed tool output for session-attached action runs", async () => {
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_action_session_failure",
+      name: "action-session-failure",
+      rootPath: "/tmp/action-session-failure",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "builder",
+      settings: {
+        defaultAgent: "builder",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        builder: {
+          name: "builder",
+          mode: "primary",
+          prompt: "Run actions directly when asked.",
+          tools: {
+            native: [],
+            actions: ["debug.fail"],
+            skills: [],
+            external: []
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {
+        "debug.fail": {
+          name: "debug.fail",
+          description: "Fail loudly",
+          callableByApi: true,
+          callableByUser: true,
+          exposeToLlm: false,
+          retryPolicy: "manual",
+          directory: "/tmp",
+          entry: {
+            command: "node -e \"process.stderr.write('boom fail'); process.exit(1)\""
+          }
+        }
+      },
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_action_session_failure",
+        agents: [{ name: "builder", mode: "primary", source: "workspace" }],
+        models: [],
+        actions: [
+          {
+            name: "debug.fail",
+            description: "Fail loudly",
+            callableByApi: true,
+            callableByUser: true,
+            exposeToLlm: false,
+            retryPolicy: "manual"
+          }
+        ],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: "project_action_session_failure",
+      caller,
+      input: {}
+    });
+
+    const accepted = await runtimeService.triggerActionRun({
+      workspaceId: "project_action_session_failure",
+      sessionId: session.id,
+      actionName: "debug.fail",
+      caller
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "failed";
+    });
+
+    const expectedToolCallId = `action-run:${accepted.runId}:debug.fail`;
+    const page = await runtimeService.listSessionMessages(session.id, 20);
+    expect(page.items.map((message) => message.role)).toEqual(["assistant", "tool"]);
+    expect(hasToolCallPart(page.items[0], "debug.fail", expectedToolCallId)).toBe(true);
+    expect(hasToolResultPart(page.items[1], "debug.fail", expectedToolCallId)).toBe(true);
+    expect(messageText(page.items[1])).toContain("boom fail");
+    expect(page.items[0]?.metadata).toMatchObject({
+      toolStatus: "failed",
+      toolSourceType: "action",
+      toolDurationMs: expect.any(Number),
+      agentName: "builder",
+      effectiveAgentName: "builder",
+      agentMode: "primary"
+    });
+    expect(page.items[1]?.metadata).toMatchObject({
+      toolStatus: "failed",
+      toolSourceType: "action",
+      toolDurationMs: expect.any(Number),
+      agentName: "builder",
+      effectiveAgentName: "builder",
+      agentMode: "primary"
+    });
+
+    const events = await runtimeService.listSessionEvents(session.id, undefined, accepted.runId);
+    expect(events.find((event) => event.event === "tool.failed")?.data).toMatchObject({
+      toolCallId: expectedToolCallId,
+      toolName: "debug.fail",
+      sourceType: "action",
+      retryPolicy: "manual",
+      errorCode: "action_failed",
+      errorMessage: "boom fail",
+      metadata: {
+        agentName: "builder",
+        effectiveAgentName: "builder",
+        agentMode: "primary"
+      }
+    });
+  });
+
   it("resolves workspace model refs for agent execution", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
@@ -3708,6 +4196,31 @@ describe("runtime service", () => {
       return run.status === "completed";
     });
 
+    const messages = await runtimeService.listSessionMessages(session.id, 20);
+    expect(messages.items.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+      "assistant",
+      "tool",
+      "tool",
+      "assistant"
+    ]);
+    expect(messages.items.filter((message) => hasToolCallPart(message, "Glob", "call_list_fast"))).toHaveLength(1);
+    expect(messages.items.filter((message) => hasToolCallPart(message, "Glob", "call_list_slow"))).toHaveLength(1);
+    expect(messages.items.find((message) => hasToolCallPart(message, "Glob", "call_list_fast"))?.metadata).toMatchObject({
+      toolStatus: "completed",
+      toolSourceType: "native",
+      toolDurationMs: expect.any(Number)
+    });
+    expect(messages.items.find((message) => hasToolCallPart(message, "Glob", "call_list_slow"))?.metadata).toMatchObject({
+      toolStatus: "completed",
+      toolSourceType: "native",
+      toolDurationMs: expect.any(Number)
+    });
+
+    const events = await runtimeService.listSessionEvents(session.id, undefined, accepted.runId);
+    expect(events.filter((event) => event.event === "message.completed")).toHaveLength(5);
+
     expect(gateway.maxConcurrentToolExecutions).toBeGreaterThan(1);
   });
 
@@ -4397,18 +4910,44 @@ describe("runtime service", () => {
     expect(messageText(page.items[2])).toContain("exit_code: 0");
     expect(messageText(page.items[2])).toContain("output:");
     expect(messageText(page.items[2])).toContain("mode:quick");
+    expect(page.items[1]?.metadata).toMatchObject({
+      toolStatus: "completed",
+      toolSourceType: "action",
+      toolDurationMs: expect.any(Number),
+      agentName: "builder",
+      effectiveAgentName: "builder",
+      agentMode: "primary"
+    });
+    expect(page.items[2]?.metadata).toMatchObject({
+      toolStatus: "completed",
+      toolSourceType: "action",
+      toolDurationMs: expect.any(Number),
+      agentName: "builder",
+      effectiveAgentName: "builder",
+      agentMode: "primary"
+    });
     expect(messageText(page.items[3])).toBe("I ran the debug.echo action.");
 
     const events = await runtimeService.listSessionEvents(session.id, undefined, accepted.runId);
     expect(events.find((event) => event.event === "tool.started")?.data).toMatchObject({
       toolCallId: "call_action",
       toolName: "run_action",
-      retryPolicy: "safe"
+      retryPolicy: "safe",
+      metadata: {
+        agentName: "builder",
+        effectiveAgentName: "builder",
+        agentMode: "primary"
+      }
     });
     expect(events.find((event) => event.event === "tool.completed")?.data).toMatchObject({
       toolCallId: "call_action",
       toolName: "run_action",
-      retryPolicy: "safe"
+      retryPolicy: "safe",
+      metadata: {
+        agentName: "builder",
+        effectiveAgentName: "builder",
+        agentMode: "primary"
+      }
     });
 
     const runSteps = await runtimeService.listRunSteps(accepted.runId);

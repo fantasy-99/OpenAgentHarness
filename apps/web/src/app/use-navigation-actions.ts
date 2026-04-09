@@ -17,7 +17,7 @@ import {
   isNotFoundError,
   pathLeaf,
   toErrorMessage,
-  type LiveAssistantMessageRecord,
+  type LiveConversationMessageRecord,
   type SavedSessionRecord,
   type SavedWorkspaceRecord,
   type WorkspaceDraft
@@ -63,7 +63,7 @@ export function useNavigationActions(params: {
     setSelectedRunId: Dispatch<SetStateAction<string>>;
     setRun: Dispatch<SetStateAction<Run | null>>;
     setRunSteps: Dispatch<SetStateAction<RunStep[]>>;
-    setLiveOutput: Dispatch<SetStateAction<Record<string, LiveAssistantMessageRecord>>>;
+    setLiveMessagesByKey: Dispatch<SetStateAction<Record<string, LiveConversationMessageRecord>>>;
     setStreamState: Dispatch<SetStateAction<"idle" | "connecting" | "listening" | "open" | "error">>;
     streamAbortRef: MutableRefObject<AbortController | null>;
     lastCursorRef: MutableRefObject<string | undefined>;
@@ -202,7 +202,7 @@ export function useNavigationActions(params: {
     params.runtime.setSelectedRunId("");
     params.runtime.setRun(null);
     params.runtime.setRunSteps([]);
-    params.runtime.setLiveOutput({});
+    params.runtime.setLiveMessagesByKey({});
 
     if (targetId && options?.forgetSession) {
       params.navigation.setSavedSessions((current) => current.filter((entry) => entry.id !== targetId));
@@ -733,7 +733,7 @@ export function useNavigationActions(params: {
         params.runtime.setSelectedRunId("");
         params.runtime.setRun(null);
         params.runtime.setRunSteps([]);
-        params.runtime.setLiveOutput({});
+        params.runtime.setLiveMessagesByKey({});
       });
     }
 
@@ -798,7 +798,7 @@ export function useNavigationActions(params: {
         params.runtime.setSelectedRunId("");
         params.runtime.setRun(null);
         params.runtime.setRunSteps([]);
-        params.runtime.setLiveOutput({});
+        params.runtime.setLiveMessagesByKey({});
       });
       await refreshSession(created.id, true);
       rememberSession(created);

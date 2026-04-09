@@ -999,6 +999,7 @@ class PostgresSessionEventStore implements SessionEventStore {
 
   async append(input: Omit<SessionEvent, "id" | "cursor" | "createdAt">): Promise<SessionEvent> {
     const event = await this.db.transaction(async (tx) => {
+      await tx.select({ id: sessions.id }).from(sessions).where(eq(sessions.id, input.sessionId)).for("update").execute();
       const current = await tx
         .select({
           maxCursor: sql<number>`coalesce(max(${sessionEvents.cursor}), -1)`

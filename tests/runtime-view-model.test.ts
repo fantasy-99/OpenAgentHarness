@@ -90,7 +90,7 @@ describe("buildRuntimeViewModel", () => {
       messages: [message],
       runSteps: [createModelCallStep()],
       deferredEvents: [],
-      liveOutput: {},
+      liveMessagesByKey: {},
       selectedTraceId: "",
       selectedMessageId: message.id,
       selectedStepId: "",
@@ -114,7 +114,7 @@ describe("buildRuntimeViewModel", () => {
       messages: [message],
       runSteps: [createModelCallStep()],
       deferredEvents: [],
-      liveOutput: {},
+      liveMessagesByKey: {},
       selectedTraceId: "",
       selectedMessageId: message.id,
       selectedStepId: "",
@@ -146,9 +146,9 @@ describe("buildRuntimeViewModel", () => {
       messages: [toolCallMessage],
       runSteps: [createModelCallStep()],
       deferredEvents: [],
-      liveOutput: {
-        [finalAssistantMessageId]: {
-          messageId: finalAssistantMessageId,
+      liveMessagesByKey: {
+        [`message:${finalAssistantMessageId}`]: {
+          persistedMessageId: finalAssistantMessageId,
           runId: "run_1",
           sessionId: "ses_1",
           content: "streaming final reply",
@@ -177,9 +177,9 @@ describe("buildRuntimeViewModel", () => {
       messages: [persistedAssistantMessage],
       runSteps: [createModelCallStep()],
       deferredEvents: [],
-      liveOutput: {
-        msg_streaming: {
-          messageId: "msg_streaming",
+      liveMessagesByKey: {
+        "message:msg_streaming": {
+          persistedMessageId: "msg_streaming",
           runId: "run_1",
           sessionId: "ses_1",
           content: "fresh live reply",
@@ -206,9 +206,9 @@ describe("buildRuntimeViewModel", () => {
       messages: [],
       runSteps: [createModelCallStep()],
       deferredEvents: [],
-      liveOutput: {
-        msg_streaming: {
-          messageId: "msg_streaming",
+      liveMessagesByKey: {
+        "message:msg_streaming": {
+          persistedMessageId: "msg_streaming",
           runId: "run_1",
           sessionId: "ses_1",
           content: "fresh live reply",
@@ -235,6 +235,170 @@ describe("buildRuntimeViewModel", () => {
         effectiveAgentName: "plan",
         agentMode: "primary"
       }
+    });
+  });
+
+  it("renders live tool-call and tool-result messages before persistence catches up", () => {
+    const viewModel = buildRuntimeViewModel({
+      messages: [],
+      runSteps: [createModelCallStep()],
+      deferredEvents: [],
+      liveMessagesByKey: {
+        "tool-call:call_readme": {
+          toolCallId: "call_readme",
+          runId: "run_1",
+          sessionId: "ses_1",
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "call_readme",
+              toolName: "Read",
+              input: {
+                path: "README.md"
+              }
+            }
+          ],
+          metadata: {
+            toolStatus: "running",
+            toolSourceType: "native"
+          },
+          createdAt: "2026-04-07T00:00:03.000Z"
+        },
+        "tool-result:call_readme": {
+          toolCallId: "call_readme",
+          runId: "run_1",
+          sessionId: "ses_1",
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "call_readme",
+              toolName: "Read",
+              output: {
+                type: "text",
+                value: "README body"
+              }
+            }
+          ],
+          metadata: {
+            toolStatus: "completed",
+            toolSourceType: "native",
+            toolDurationMs: 320
+          },
+          createdAt: "2026-04-07T00:00:04.000Z"
+        }
+      },
+      selectedTraceId: "",
+      selectedMessageId: "",
+      selectedStepId: "",
+      selectedEventId: "",
+      sessionId: "ses_1"
+    });
+
+    expect(viewModel.messageFeed.map((message) => message.id)).toEqual([
+      "live:tool-call:call_readme",
+      "live:tool-result:call_readme"
+    ]);
+    expect(viewModel.messageFeed.map((message) => message.role)).toEqual(["assistant", "tool"]);
+    expect(viewModel.messageFeed[0]).toMatchObject({
+      metadata: {
+        toolStatus: "running",
+        toolSourceType: "native"
+      }
+    });
+    expect(viewModel.messageFeed[1]).toMatchObject({
+      metadata: {
+        toolStatus: "completed",
+        toolSourceType: "native",
+        toolDurationMs: 320
+      }
+    });
+  });
+
+  it("hides live tool messages once matching persisted messages exist", () => {
+    const persistedToolCall = createAssistantMessage({
+      id: "msg_tool_call",
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: "call_readme",
+          toolName: "Read",
+          input: {
+            path: "README.md"
+          }
+        }
+      ],
+      metadata: {
+        toolStatus: "completed",
+        toolSourceType: "native",
+        toolDurationMs: 320
+      },
+      createdAt: "2026-04-07T00:00:03.000Z"
+    });
+    const persistedToolResult: Message = {
+      id: "msg_tool_result",
+      sessionId: "ses_1",
+      runId: "run_1",
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "call_readme",
+          toolName: "Read",
+          output: {
+            type: "text",
+            value: "README body"
+          }
+        }
+      ],
+      metadata: {
+        toolStatus: "completed",
+        toolSourceType: "native",
+        toolDurationMs: 320
+      },
+      createdAt: "2026-04-07T00:00:04.000Z"
+    };
+
+    const viewModel = buildRuntimeViewModel({
+      messages: [persistedToolCall, persistedToolResult],
+      runSteps: [createModelCallStep()],
+      deferredEvents: [],
+      liveMessagesByKey: {
+        "tool-call:call_readme": {
+          toolCallId: "call_readme",
+          runId: "run_1",
+          sessionId: "ses_1",
+          role: "assistant",
+          content: persistedToolCall.content,
+          createdAt: "2026-04-07T00:00:03.000Z"
+        },
+        "tool-result:call_readme": {
+          toolCallId: "call_readme",
+          runId: "run_1",
+          sessionId: "ses_1",
+          role: "tool",
+          content: persistedToolResult.content,
+          createdAt: "2026-04-07T00:00:04.000Z"
+        }
+      },
+      selectedTraceId: "",
+      selectedMessageId: "",
+      selectedStepId: "",
+      selectedEventId: "",
+      sessionId: "ses_1"
+    });
+
+    expect(viewModel.messageFeed.map((message) => message.id)).toEqual(["msg_tool_call", "msg_tool_result"]);
+    expect(viewModel.messageFeed[0]?.metadata).toMatchObject({
+      toolStatus: "completed",
+      toolSourceType: "native",
+      toolDurationMs: 320
+    });
+    expect(viewModel.messageFeed[1]?.metadata).toMatchObject({
+      toolStatus: "completed",
+      toolSourceType: "native",
+      toolDurationMs: 320
     });
   });
 
@@ -334,7 +498,7 @@ describe("buildRuntimeViewModel", () => {
           }
         })
       ],
-      liveOutput: {},
+      liveMessagesByKey: {},
       selectedTraceId: "",
       selectedMessageId: streamedAssistant.id,
       selectedStepId: "",
@@ -445,9 +609,9 @@ describe("buildRuntimeViewModel", () => {
           }
         })
       ],
-      liveOutput: {
-        msg_streamed: {
-          messageId: "msg_streamed",
+      liveMessagesByKey: {
+        "message:msg_streamed": {
+          persistedMessageId: "msg_streamed",
           runId: "run_1",
           sessionId: "ses_1",
           content: "first partsecond part",

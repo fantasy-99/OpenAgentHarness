@@ -1,14 +1,16 @@
 import type { Message, RunStep, SessionEventContract } from "@oah/api-contracts";
 
 import {
+  buildMessageRecord,
   compareMessagesChronologically,
   contentText,
+  contentToolRefs,
   countMessagesByRole,
   readMessageModelCallStepRef,
   readMessageSystemPromptSnapshot,
   toModelCallTrace,
   uniqueStrings,
-  type LiveAssistantMessageRecord,
+  type LiveConversationMessageRecord,
   type ModelCallTrace,
   type ModelCallTraceMessage
 } from "./support";
@@ -259,7 +261,7 @@ export function buildRuntimeViewModel(params: {
   messages: Message[];
   runSteps: RunStep[];
   deferredEvents: SessionEventContract[];
-  liveOutput: Record<string, LiveAssistantMessageRecord>;
+  liveMessagesByKey: Record<string, LiveConversationMessageRecord>;
   selectedTraceId: string;
   selectedMessageId: string;
   selectedStepId: string;
@@ -288,19 +290,43 @@ export function buildRuntimeViewModel(params: {
   const resolvedModelRefs = uniqueStrings(
     modelCallTraces.map((trace) => trace.input.canonicalModelRef).filter((value): value is string => Boolean(value))
   );
-  const liveEntries = Object.values(params.liveOutput).filter((entry) => entry.content.trim().length > 0);
   const persistedMessagesById = new Map(params.messages.map((message) => [message.id, message]));
-  const liveMessages = liveEntries.map((entry) => {
-    const persistedMessage = persistedMessagesById.get(entry.messageId);
-    return {
-      id: `live:${entry.messageId}`,
+  const persistedToolRefKeys = new Set(
+    params.messages.flatMap((message) =>
+      contentToolRefs(message.content).map((ref) => `${ref.type}:${ref.toolCallId ?? ""}:${ref.toolName ?? ""}`)
+    )
+  );
+  const liveEntries = Object.entries(params.liveMessagesByKey).filter(([, entry]) => {
+    const hasTextContent = contentText(entry.content).trim().length > 0;
+    const toolRefKeys = contentToolRefs(entry.content).map(
+      (ref) => `${ref.type}:${ref.toolCallId ?? ""}:${ref.toolName ?? ""}`
+    );
+    if (!hasTextContent && toolRefKeys.length === 0) {
+      return false;
+    }
+
+    if (entry.persistedMessageId && persistedMessagesById.has(entry.persistedMessageId)) {
+      return true;
+    }
+
+    if (toolRefKeys.length === 0) {
+      return hasTextContent;
+    }
+
+    return toolRefKeys.some((key) => !persistedToolRefKeys.has(key));
+  });
+  const liveMessages = liveEntries.flatMap(([liveMessageKey, entry]) => {
+    const persistedMessage = entry.persistedMessageId ? persistedMessagesById.get(entry.persistedMessageId) : undefined;
+    const liveMessage = buildMessageRecord({
+      id: `live:${entry.persistedMessageId ?? liveMessageKey}`,
       sessionId: entry.sessionId || params.sessionId || "live",
       runId: entry.runId,
-      role: "assistant" as const,
+      role: persistedMessage?.role ?? entry.role ?? "assistant",
       content: entry.content,
       ...(persistedMessage?.metadata || entry.metadata ? { metadata: persistedMessage?.metadata ?? entry.metadata } : {}),
       createdAt: persistedMessage?.createdAt ?? entry.createdAt
-    };
+    });
+    return liveMessage ? [liveMessage] : [];
   });
   const messageFeed = buildProjectedMessageFeed({
     messages: params.messages,

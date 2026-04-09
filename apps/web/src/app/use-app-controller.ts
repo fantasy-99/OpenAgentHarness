@@ -14,6 +14,7 @@ import {
   buildRuntimeConsoleEntries,
   buildMessageRecord,
   buildUrl,
+  contentToolRefs,
   consumeSse,
   createHttpRequestError,
   downloadJsonFile,
@@ -35,7 +36,7 @@ import {
   type ConnectionSettings,
   type HealthReportResponse,
   type InspectorTab,
-  type LiveAssistantMessageRecord,
+  type LiveConversationMessageRecord,
   type MainViewMode,
   type ModelDraft,
   type PlatformModelListResponse,
@@ -71,7 +72,7 @@ export function useAppController() {
   const [run, setRun] = useState<Run | null>(null);
   const [runSteps, setRunSteps] = useState<RunStep[]>([]);
   const [draftMessage, setDraftMessage] = useState("");
-  const [liveOutput, setLiveOutput] = useState<Record<string, LiveAssistantMessageRecord>>({});
+  const [liveMessagesByKey, setLiveMessagesByKey] = useState<Record<string, LiveConversationMessageRecord>>({});
   const [healthStatus, setHealthStatus] = useState("idle");
   const [healthReport, setHealthReport] = useState<HealthReportResponse | null>(null);
   const [readinessReport, setReadinessReport] = useState<ReadinessReportResponse | null>(null);
@@ -180,7 +181,7 @@ export function useAppController() {
     messages,
     runSteps,
     deferredEvents,
-    liveOutput,
+    liveMessagesByKey,
     selectedTraceId,
     selectedMessageId,
     selectedStepId,
@@ -313,7 +314,7 @@ export function useAppController() {
       setSelectedRunId,
       setRun,
       setRunSteps,
-      setLiveOutput,
+      setLiveMessagesByKey,
       setStreamState,
       streamAbortRef,
       lastCursorRef,
@@ -896,6 +897,83 @@ export function useAppController() {
 
     const eventMessageId = typeof event.data.messageId === "string" ? event.data.messageId : undefined;
     const eventMetadata = isRecord(event.data.metadata) ? event.data.metadata : undefined;
+    const eventToolCallId = typeof event.data.toolCallId === "string" ? event.data.toolCallId : undefined;
+    const eventToolName = typeof event.data.toolName === "string" ? event.data.toolName : undefined;
+
+    const normalizeToolCallInput = (value: unknown): Record<string, unknown> | undefined => {
+      if (isRecord(value)) {
+        return value;
+      }
+
+      if (value === undefined) {
+        return undefined;
+      }
+
+      return {
+        value
+      };
+    };
+
+    const normalizeToolResultOutput = (value: unknown, failed: boolean, fallback?: string) => {
+      if (isRecord(value) && typeof value.type === "string") {
+        return value;
+      }
+
+      if (typeof value === "string") {
+        return {
+          type: failed ? "error-text" : "text",
+          value
+        };
+      }
+
+      if (value === undefined) {
+        return {
+          type: failed ? "error-text" : "text",
+          value: fallback ?? (failed ? "Tool execution failed." : "")
+        };
+      }
+
+      return {
+        type: failed ? "error-json" : "json",
+        value
+      };
+    };
+
+    const upsertLiveToolMessage = (input: {
+      key: string;
+      role: "assistant" | "tool";
+      content: Message["content"];
+      createdAt: string;
+      metadata?: Record<string, unknown>;
+      toolCallId?: string;
+    }) => {
+      setLiveMessagesByKey((current) => {
+        const existingEntry = current[input.key];
+        return {
+          ...current,
+          [input.key]: {
+            ...(existingEntry?.persistedMessageId ? { persistedMessageId: existingEntry.persistedMessageId } : {}),
+            ...(() => {
+              const toolCallId = input.toolCallId ?? existingEntry?.toolCallId;
+              return toolCallId ? { toolCallId } : {};
+            })(),
+            runId: event.runId ?? "",
+            sessionId,
+            role: input.role,
+            content: input.content,
+            ...(() => {
+              const metadata = {
+                ...(isRecord(existingEntry?.metadata) ? existingEntry.metadata : {}),
+                ...(eventMetadata ?? {}),
+                ...(input.metadata ?? {})
+              };
+              return Object.keys(metadata).length > 0 ? { metadata } : {};
+            })(),
+            createdAt: existingEntry?.createdAt ?? input.createdAt
+          }
+        };
+      });
+    };
 
     if (
       event.event === "message.delta" &&
@@ -904,25 +982,127 @@ export function useAppController() {
       typeof event.data.delta === "string"
     ) {
       const runId = event.runId;
+      const liveMessageKey = `message:${eventMessageId}`;
       const needsMessageHydration =
-        !liveOutput[eventMessageId] &&
+        !liveMessagesByKey[liveMessageKey] &&
         !messages.some((message) => message.id === eventMessageId);
-      setLiveOutput((current) => ({
+      setLiveMessagesByKey((current) => ({
         ...current,
-        [eventMessageId]: {
-          messageId: eventMessageId,
+        [liveMessageKey]: {
+          persistedMessageId: eventMessageId,
           runId,
           sessionId,
-          content: `${current[eventMessageId]?.content ?? ""}${event.data.delta}`,
+          role: "assistant",
+          content: `${typeof current[liveMessageKey]?.content === "string" ? current[liveMessageKey].content : ""}${event.data.delta}`,
           ...(() => {
-            const metadata = current[eventMessageId]?.metadata ?? eventMetadata;
+            const metadata = current[liveMessageKey]?.metadata ?? eventMetadata;
             return metadata ? { metadata } : {};
           })(),
-          createdAt: current[eventMessageId]?.createdAt ?? event.createdAt
+          createdAt: current[liveMessageKey]?.createdAt ?? event.createdAt
         }
       }));
       if (needsMessageHydration) {
         scheduleMessagesRefresh();
+      }
+    }
+
+    if (event.event === "tool.started" && typeof event.runId === "string" && eventToolCallId && eventToolName) {
+      const toolCallContent = normalizeMessageContent([
+        {
+          type: "tool-call",
+          toolCallId: eventToolCallId,
+          toolName: eventToolName,
+          input: normalizeToolCallInput(event.data.input) ?? {}
+        }
+      ]);
+      if (toolCallContent !== null) {
+        const toolCallMessage = buildMessageRecord({
+          id: `live-tool-call:${eventToolCallId}`,
+          sessionId,
+          runId: event.runId,
+          role: "assistant",
+          content: toolCallContent,
+          ...(eventMetadata ? { metadata: eventMetadata } : {}),
+          createdAt: event.createdAt
+        });
+        if (toolCallMessage) {
+          upsertLiveToolMessage({
+            key: `tool-call:${eventToolCallId}`,
+            role: "assistant",
+            content: toolCallMessage.content,
+            createdAt: event.createdAt,
+            metadata: {
+              toolStatus: "running",
+              ...(typeof event.data.sourceType === "string" ? { toolSourceType: event.data.sourceType } : {})
+            },
+            toolCallId: eventToolCallId
+          });
+        }
+      }
+    }
+
+    if (
+      (event.event === "tool.completed" || event.event === "tool.failed") &&
+      typeof event.runId === "string" &&
+      eventToolCallId &&
+      eventToolName
+    ) {
+      const toolResultContent = normalizeMessageContent([
+        {
+          type: "tool-result",
+          toolCallId: eventToolCallId,
+          toolName: eventToolName,
+          output: normalizeToolResultOutput(
+            event.data.output,
+            event.event === "tool.failed",
+            typeof event.data.errorMessage === "string" ? event.data.errorMessage : undefined
+          )
+        }
+      ]);
+      if (toolResultContent !== null) {
+        const toolResultMessage = buildMessageRecord({
+          id: `live-tool-result:${eventToolCallId}`,
+          sessionId,
+          runId: event.runId,
+          role: "tool",
+          content: toolResultContent,
+          ...(eventMetadata ? { metadata: eventMetadata } : {}),
+          createdAt: event.createdAt
+        });
+        if (toolResultMessage) {
+          upsertLiveToolMessage({
+            key: `tool-result:${eventToolCallId}`,
+            role: "tool",
+            content: toolResultMessage.content,
+            createdAt: event.createdAt,
+            metadata: {
+              toolStatus: event.event === "tool.failed" ? "failed" : "completed",
+              ...(typeof event.data.sourceType === "string" ? { toolSourceType: event.data.sourceType } : {}),
+              ...(typeof event.data.durationMs === "number" ? { toolDurationMs: event.data.durationMs } : {})
+            },
+            toolCallId: eventToolCallId
+          });
+        }
+        setLiveMessagesByKey((current) => {
+          const toolCallKey = `tool-call:${eventToolCallId}`;
+          const currentEntry = current[toolCallKey];
+          if (!currentEntry) {
+            return current;
+          }
+
+          return {
+            ...current,
+            [toolCallKey]: {
+              ...currentEntry,
+              metadata: {
+                ...(isRecord(currentEntry.metadata) ? currentEntry.metadata : {}),
+                toolStatus: event.event === "tool.failed" ? "failed" : "completed",
+                ...(typeof event.data.sourceType === "string" ? { toolSourceType: event.data.sourceType } : {}),
+                ...(typeof event.data.durationMs === "number" ? { toolDurationMs: event.data.durationMs } : {})
+              }
+            }
+          };
+        });
       }
     }
 
@@ -941,19 +1121,34 @@ export function useAppController() {
               role: inferCompletedMessageRole(event.data),
               content,
               ...(() => {
-                const metadata = existingMessage?.metadata ?? liveOutput[messageId]?.metadata ?? eventMetadata;
+                const metadata =
+                  existingMessage?.metadata ?? liveMessagesByKey[`message:${messageId}`]?.metadata ?? eventMetadata;
                 return metadata ? { metadata } : {};
               })(),
-              createdAt: existingMessage?.createdAt ?? liveOutput[messageId]?.createdAt ?? event.createdAt
+              createdAt:
+                existingMessage?.createdAt ?? liveMessagesByKey[`message:${messageId}`]?.createdAt ?? event.createdAt
             });
             return completedMessage ? upsertSessionMessage(current, completedMessage) : current;
           });
         });
       }
-      setLiveOutput((current) => {
+      setLiveMessagesByKey((current) => {
         const next = { ...current };
         if (messageId) {
-          delete next[messageId];
+          delete next[`message:${messageId}`];
+        }
+        if (content !== null) {
+          const completedRefs = new Set(
+            contentToolRefs(content).map((ref) => `${ref.type}:${ref.toolCallId ?? ""}:${ref.toolName ?? ""}`)
+          );
+          for (const [key, entry] of Object.entries(next)) {
+            const entryRefs = contentToolRefs(entry.content).map(
+              (ref) => `${ref.type}:${ref.toolCallId ?? ""}:${ref.toolName ?? ""}`
+            );
+            if (entryRefs.some((ref) => completedRefs.has(ref))) {
+              delete next[key];
+            }
+          }
         }
         return next;
       });
@@ -1179,7 +1374,7 @@ export function useAppController() {
           return;
         }
 
-        setLiveOutput((current) => {
+        setLiveMessagesByKey((current) => {
           return Object.fromEntries(
             Object.entries(current).filter(([, entry]) => entry.runId !== selectedRunIdValue)
           );
@@ -1223,7 +1418,7 @@ export function useAppController() {
     window.requestAnimationFrame(() => {
       tail.scrollIntoView({ block: "end" });
     });
-  }, [liveOutput, messageFeed.length, selectedRunIdValue]);
+  }, [liveMessagesByKey, messageFeed.length, selectedRunIdValue]);
 
   const latestEvent = deferredEvents[0];
   const inspectorSubtitle =

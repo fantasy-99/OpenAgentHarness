@@ -2,6 +2,19 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createPostgresRuntimePersistence, ensurePostgresSchema } from "@oah/storage-postgres";
 
+function sqlText(statement: unknown): string {
+  if (typeof statement === "string") {
+    return statement;
+  }
+
+  if (statement && typeof statement === "object" && "text" in statement) {
+    const text = (statement as { text?: unknown }).text;
+    return typeof text === "string" ? text : String(statement);
+  }
+
+  return String(statement);
+}
+
 describe("storage postgres", () => {
   it("creates all expected schema statements", async () => {
     const query = vi.fn(async () => ({ rows: [] }));
@@ -53,6 +66,54 @@ describe("storage postgres", () => {
 
     await persistence.close();
     expect(end).not.toHaveBeenCalled();
+  });
+
+  it("serializes session event appends per session with a row lock", async () => {
+    const query = vi.fn(async (statement: unknown) => {
+      const text = sqlText(statement).toLowerCase();
+
+      if (text.includes("for update")) {
+        return {
+          rows: [{ id: "ses_1" }]
+        };
+      }
+
+      if (text.includes("coalesce(max(")) {
+        return {
+          rows: [{ maxCursor: 0 }]
+        };
+      }
+
+      return { rows: [] };
+    });
+    const release = vi.fn();
+    const connect = vi.fn(async () => ({
+      query,
+      release
+    }));
+
+    const persistence = await createPostgresRuntimePersistence({
+      pool: {
+        connect,
+        query,
+        end: vi.fn(async () => undefined)
+      } as unknown as import("pg").Pool,
+      ensureSchema: false
+    });
+
+    await expect(
+      persistence.sessionEventStore.append({
+        sessionId: "ses_1",
+        runId: "run_1",
+        event: "message.delta",
+        data: {
+          runId: "run_1",
+          messageId: "msg_1",
+          delta: "test"
+        }
+      })
+    ).rejects.toThrow();
+    expect(query.mock.calls.some(([statement]) => sqlText(statement).toLowerCase().includes("for update"))).toBe(true);
   });
 
   it("serializes schema creation with a PostgreSQL advisory lock when connect is available", async () => {
@@ -179,7 +240,8 @@ describe("storage postgres", () => {
                   }
                 ],
                 toolCallsCount: 1,
-                toolResultsCount: 1
+                toolResultsCount: 1,
+                toolErrorsCount: 1
               },
               started_at: "2026-01-01T00:00:03.000Z",
               ended_at: "2026-01-01T00:00:04.000Z"
@@ -246,7 +308,9 @@ describe("storage postgres", () => {
           "request" in (values[1] as Record<string, unknown>) &&
           typeof values[2] === "object" &&
           values[2] !== null &&
-          "response" in (values[2] as Record<string, unknown>)
+          "response" in (values[2] as Record<string, unknown>) &&
+          typeof (values[2] as Record<string, unknown>).runtime === "object" &&
+          (values[2] as { runtime?: { toolErrorsCount?: unknown } }).runtime?.toolErrorsCount === 1
       )
     ).toBe(true);
     expect(

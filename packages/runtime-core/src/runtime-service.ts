@@ -1138,9 +1138,18 @@ export class RuntimeService {
           this.#ensureAssistantMessage(targetSession, targetRun, currentMessage, targetMessages, content, metadata),
         persistAssistantStepText: (targetSession, targetRun, step, currentMessage, targetMessages, metadata) =>
           this.#persistAssistantStepText(targetSession, targetRun, step, currentMessage, targetMessages, metadata),
-        persistAssistantToolCalls: (targetSession, targetRun, step, targetMessages, metadata) =>
-          this.#persistAssistantToolCalls(targetSession, targetRun, step, targetMessages, metadata),
-        persistToolResults: (targetSession, targetRun, step, failedToolResults, persistedToolCalls, targetMessages, metadata) =>
+        persistAssistantToolCalls: (targetSession, targetRun, step, targetMessages, metadata, toolMetadataByCallId) =>
+          this.#persistAssistantToolCalls(targetSession, targetRun, step, targetMessages, metadata, toolMetadataByCallId),
+        persistToolResults: (
+          targetSession,
+          targetRun,
+          step,
+          failedToolResults,
+          persistedToolCalls,
+          targetMessages,
+          metadata,
+          toolMetadataByCallId
+        ) =>
           this.#persistToolResults(
             targetSession,
             targetRun,
@@ -1148,7 +1157,8 @@ export class RuntimeService {
             failedToolResults,
             persistedToolCalls,
             targetMessages,
-            metadata
+            metadata,
+            toolMetadataByCallId
           ),
         appendEvent: (input) => this.#appendEvent(input),
         updateMessageContent: (message, content) =>
@@ -1183,7 +1193,8 @@ export class RuntimeService {
         runtimeTools,
         executionContext,
         toolCallStartedAt: streamCoordinator.toolCallStartedAt,
-        toolCallSteps: streamCoordinator.toolCallSteps
+        toolCallSteps: streamCoordinator.toolCallSteps,
+        toolMessageMetadataByCallId: streamCoordinator.toolMessageMetadataByCallId
       });
       this.#logger?.debug?.("Runtime run starting model stream.", {
         workspaceId: workspace.id,
@@ -1716,9 +1727,17 @@ export class RuntimeService {
     run: Run,
     step: ModelStepResult,
     allMessages: Message[],
-    metadata?: Record<string, unknown> | undefined
+    metadata?: Record<string, unknown> | undefined,
+    toolMetadataByCallId?: Map<
+      string,
+      {
+        toolStatus: "completed" | "failed";
+        toolSourceType: "action" | "skill" | "agent" | "tool" | "native";
+        toolDurationMs?: number | undefined;
+      }
+    >
   ): Promise<void> {
-    await this.#toolMessages.persistAssistantToolCalls(session, run, step, allMessages, metadata);
+    await this.#toolMessages.persistAssistantToolCalls(session, run, step, allMessages, metadata, toolMetadataByCallId);
   }
 
   async #persistAssistantStepText(
@@ -1739,7 +1758,15 @@ export class RuntimeService {
     failedToolResults: ToolErrorContentPart[],
     persistedToolCalls: Set<string>,
     allMessages: Message[],
-    metadata?: Record<string, unknown> | undefined
+    metadata?: Record<string, unknown> | undefined,
+    toolMetadataByCallId?: Map<
+      string,
+      {
+        toolStatus: "completed" | "failed";
+        toolSourceType: "action" | "skill" | "agent" | "tool" | "native";
+        toolDurationMs?: number | undefined;
+      }
+    >
   ): Promise<void> {
     await this.#toolMessages.persistToolResults(
       session,
@@ -1748,7 +1775,8 @@ export class RuntimeService {
       failedToolResults,
       persistedToolCalls,
       allMessages,
-      metadata
+      metadata,
+      toolMetadataByCallId
     );
   }
 

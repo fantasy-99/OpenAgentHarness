@@ -15,7 +15,71 @@ interface RunExecutionContextLike {
   injectSystemReminder: boolean;
 }
 
+type ToolMessageMetadata = {
+  toolStatus: "completed" | "failed";
+  toolSourceType: "action" | "skill" | "agent" | "tool" | "native";
+  toolDurationMs?: number | undefined;
+};
+
 type AssistantMessage = Extract<Message, { role: "assistant" }>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readSystemMessageSignature(metadata: Record<string, unknown> | undefined): string | undefined {
+  if (!metadata || !Array.isArray(metadata.systemMessages)) {
+    return undefined;
+  }
+
+  return JSON.stringify(metadata.systemMessages);
+}
+
+function buildDeltaEventMetadata(
+  metadata: Record<string, unknown> | undefined,
+  previousSystemMessageSignature: string | undefined
+): {
+  metadata?: Record<string, unknown> | undefined;
+  systemMessageSignature: string | undefined;
+} {
+  if (!metadata) {
+    return {
+      metadata: undefined,
+      systemMessageSignature: previousSystemMessageSignature
+    };
+  }
+
+  const nextSystemMessageSignature = readSystemMessageSignature(metadata);
+  if (nextSystemMessageSignature === undefined || nextSystemMessageSignature !== previousSystemMessageSignature) {
+    return {
+      metadata,
+      systemMessageSignature: nextSystemMessageSignature
+    };
+  }
+
+  if (!isRecord(metadata) || !("systemMessages" in metadata)) {
+    return {
+      metadata,
+      systemMessageSignature: nextSystemMessageSignature
+    };
+  }
+
+  const { systemMessages: _ignored, ...trimmedMetadata } = metadata;
+  return {
+    metadata: Object.keys(trimmedMetadata).length > 0 ? trimmedMetadata : undefined,
+    systemMessageSignature: nextSystemMessageSignature
+  };
+}
+
+function buildAgentEventMetadata(workspace: WorkspaceRecord, agentName: string): Record<string, unknown> {
+  const agentMode = workspace.agents[agentName]?.mode;
+
+  return {
+    agentName,
+    effectiveAgentName: agentName,
+    ...(agentMode ? { agentMode } : {})
+  };
+}
 
 export interface ModelStreamCoordinatorDependencies<TModelInput extends ModelExecutionInputSnapshot> {
   workspace: WorkspaceRecord;
@@ -78,7 +142,8 @@ export interface ModelStreamCoordinatorDependencies<TModelInput extends ModelExe
     run: Run,
     step: ModelStepResult,
     allMessages: Message[],
-    metadata?: Record<string, unknown> | undefined
+    metadata?: Record<string, unknown> | undefined,
+    toolMetadataByCallId?: Map<string, ToolMessageMetadata> | undefined
   ) => Promise<void>;
   persistToolResults: (
     session: Session,
@@ -87,7 +152,8 @@ export interface ModelStreamCoordinatorDependencies<TModelInput extends ModelExe
     failedToolResults: ToolErrorContentPart[],
     persistedToolCalls: Set<string>,
     allMessages: Message[],
-    metadata?: Record<string, unknown> | undefined
+    metadata?: Record<string, unknown> | undefined,
+    toolMetadataByCallId?: Map<string, ToolMessageMetadata> | undefined
   ) => Promise<void>;
   appendEvent: (input: {
     sessionId: string;
@@ -164,11 +230,13 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
   readonly #modelCallSteps = new Map<number, RunStep>();
   readonly #modelCallMessageMetadata = new Map<number, Record<string, unknown>>();
   readonly #persistedToolCalls = new Set<string>();
+  readonly #toolMessageMetadataByCallId = new Map<string, ToolMessageMetadata>();
 
   #assistantMessage: AssistantMessage | undefined;
   #accumulatedText = "";
   #latestHookedModelInput: TModelInput;
   #latestMessageGenerationMetadata: Record<string, unknown> | undefined;
+  #latestDeltaSystemMessageSignature: string | undefined;
   #finalAssistantStep: ModelStepResult | undefined;
   #completedModelStepCount = 0;
 
@@ -213,6 +281,10 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
 
   get toolCallSteps(): Map<string, RunStep> {
     return this.#toolCallSteps;
+  }
+
+  get toolMessageMetadataByCallId(): Map<string, ToolMessageMetadata> {
+    return this.#toolMessageMetadataByCallId;
   }
 
   get latestHookedModelInput(): TModelInput {
@@ -348,10 +420,17 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
         this.#toolCallStartedAt.delete(toolResult.toolCallId);
         this.#activeToolCallIds.delete(toolResult.toolCallId);
         const toolStep = this.#toolCallSteps.get(toolResult.toolCallId);
+        const toolAgentName = toolStep?.agentName ?? this.#executionContext.currentAgentName;
+        const toolSourceType = this.#resolveToolSourceType(toolResult.toolName);
         const retryPolicy = toolStep ? this.#runStepRetryPolicy(toolStep) : undefined;
+        this.#toolMessageMetadataByCallId.set(toolResult.toolCallId, {
+          toolStatus: "completed",
+          toolSourceType,
+          ...(startedAt !== undefined ? { toolDurationMs: Date.now() - startedAt } : {})
+        });
         if (toolStep) {
           const completedToolStep = await this.#completeRunStep(toolStep, "completed", {
-            sourceType: this.#resolveToolSourceType(toolResult.toolName),
+            sourceType: toolSourceType,
             ...(retryPolicy ? { retryPolicy } : {}),
             output: this.#normalizeJsonObject(toolResult.output),
             ...(startedAt !== undefined ? { durationMs: Date.now() - startedAt } : {})
@@ -368,10 +447,11 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
             sessionId: this.#session.id,
             toolCallId: toolResult.toolCallId,
             toolName: toolResult.toolName,
-            sourceType: this.#resolveToolSourceType(toolResult.toolName),
+            sourceType: toolSourceType,
             ...(retryPolicy ? { retryPolicy } : {}),
             output: toolResult.output,
-            ...(startedAt !== undefined ? { durationMs: Date.now() - startedAt } : {})
+            ...(startedAt !== undefined ? { durationMs: Date.now() - startedAt } : {}),
+            metadata: buildAgentEventMetadata(this.#workspace, toolAgentName)
           }
         });
         this.#logger?.debug?.("Runtime tool call finished.", {
@@ -391,6 +471,10 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
           this.#modelCallMessageMetadata.get(this.#completedModelStepCount) ?? this.#latestMessageGenerationMetadata;
         const failedToolResults = this.#extractFailedToolResults(step);
         for (const toolError of failedToolResults) {
+          this.#toolMessageMetadataByCallId.set(toolError.toolCallId, {
+            toolStatus: "failed",
+            toolSourceType: this.#resolveToolSourceType(toolError.toolName)
+          });
           this.#toolCallStartedAt.delete(toolError.toolCallId);
           this.#toolCallSteps.delete(toolError.toolCallId);
           this.#activeToolCallIds.delete(toolError.toolCallId);
@@ -437,7 +521,14 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
           this.#assistantMessage = undefined;
           this.#accumulatedText = "";
         }
-        await this.#persistAssistantToolCalls(this.#session, this.#run, step, this.#allMessages, messageMetadata);
+        await this.#persistAssistantToolCalls(
+          this.#session,
+          this.#run,
+          step,
+          this.#allMessages,
+          messageMetadata,
+          this.#toolMessageMetadataByCallId
+        );
         await this.#persistToolResults(
           this.#session,
           this.#run,
@@ -445,8 +536,18 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
           failedToolResults,
           this.#persistedToolCalls,
           this.#allMessages,
-          messageMetadata
+          messageMetadata,
+          this.#toolMessageMetadataByCallId
         );
+        for (const toolCall of step.toolCalls) {
+          this.#toolMessageMetadataByCallId.delete(toolCall.toolCallId);
+        }
+        for (const toolResult of step.toolResults) {
+          this.#toolMessageMetadataByCallId.delete(toolResult.toolCallId);
+        }
+        for (const toolError of failedToolResults) {
+          this.#toolMessageMetadataByCallId.delete(toolError.toolCallId);
+        }
       }
     };
   }
@@ -465,6 +566,8 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
     this.#accumulatedText += chunk;
     const updatedMessage = await this.#updateMessageContent(message, this.#accumulatedText);
     this.#assistantMessage = updatedMessage;
+    const deltaEventMetadata = buildDeltaEventMetadata(updatedMessage.metadata, this.#latestDeltaSystemMessageSignature);
+    this.#latestDeltaSystemMessageSignature = deltaEventMetadata.systemMessageSignature;
     await this.#appendEvent({
       sessionId: this.#session.id,
       runId: this.#run.id,
@@ -473,7 +576,7 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
         runId: this.#run.id,
         messageId: updatedMessage.id,
         delta: chunk,
-        ...(updatedMessage.metadata ? { metadata: updatedMessage.metadata } : {})
+        ...(deltaEventMetadata.metadata ? { metadata: deltaEventMetadata.metadata } : {})
       }
     });
     return updatedMessage;

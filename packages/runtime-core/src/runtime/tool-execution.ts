@@ -13,12 +13,28 @@ interface RunExecutionContextLike {
   currentAgentName: string;
 }
 
+type ToolMessageMetadata = {
+  toolStatus: "completed" | "failed";
+  toolSourceType: "action" | "skill" | "agent" | "tool" | "native";
+  toolDurationMs?: number | undefined;
+};
+
 function asJsonRecord(value: unknown): Record<string, unknown> | undefined {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return value as Record<string, unknown>;
   }
 
   return undefined;
+}
+
+function buildAgentEventMetadata(workspace: WorkspaceRecord, agentName: string): Record<string, unknown> {
+  const agentMode = workspace.agents[agentName]?.mode;
+
+  return {
+    agentName,
+    effectiveAgentName: agentName,
+    ...(agentMode ? { agentMode } : {})
+  };
 }
 
 export interface ToolExecutionServiceDependencies {
@@ -120,6 +136,7 @@ export class ToolExecutionService {
     executionContext: RunExecutionContextLike;
     toolCallStartedAt: Map<string, number>;
     toolCallSteps: Map<string, RunStep>;
+    toolMessageMetadataByCallId: Map<string, ToolMessageMetadata>;
   }): RuntimeToolSet {
     return Object.fromEntries(
       Object.entries(input.runtimeTools).map(([toolName, definition]) => [
@@ -176,7 +193,8 @@ export class ToolExecutionService {
                   toolName,
                   sourceType: this.#resolveToolSourceType(toolName),
                   retryPolicy,
-                  input: executedInput
+                  input: executedInput,
+                  metadata: buildAgentEventMetadata(input.workspace, currentAgentName)
                 }
               });
               await this.#setRunStatusIfPossible(input.run.id, "waiting_tool");
@@ -207,6 +225,11 @@ export class ToolExecutionService {
               if (context.toolCallId) {
                 input.toolCallStartedAt.delete(context.toolCallId);
                 input.toolCallSteps.delete(context.toolCallId);
+                input.toolMessageMetadataByCallId.set(context.toolCallId, {
+                  toolStatus: "failed",
+                  toolSourceType: this.#resolveToolSourceType(toolName),
+                  ...(startedAt !== undefined ? { toolDurationMs: Date.now() - startedAt } : {})
+                });
               }
               if (toolStep) {
                 const failedToolStep = await this.#completeRunStep(toolStep, "failed", {
@@ -231,7 +254,8 @@ export class ToolExecutionService {
                   retryPolicy,
                   errorCode: error instanceof AppError ? error.code : "tool_execution_failed",
                   errorMessage: error instanceof Error ? error.message : "Unknown tool execution error.",
-                  ...(startedAt !== undefined ? { durationMs: Date.now() - startedAt } : {})
+                  ...(startedAt !== undefined ? { durationMs: Date.now() - startedAt } : {}),
+                  metadata: buildAgentEventMetadata(input.workspace, currentAgentName)
                 }
               });
               this.#logger?.error?.("Runtime tool call failed.", {

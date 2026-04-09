@@ -17,7 +17,7 @@ const MODEL_CALL_RUNTIME_INPUT_KEYS = new Set([
   "toolServers"
 ]);
 
-const MODEL_CALL_RUNTIME_OUTPUT_KEYS = new Set(["toolCallsCount", "toolResultsCount"]);
+const MODEL_CALL_RUNTIME_OUTPUT_KEYS = new Set(["toolCallsCount", "toolResultsCount", "toolErrorsCount"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

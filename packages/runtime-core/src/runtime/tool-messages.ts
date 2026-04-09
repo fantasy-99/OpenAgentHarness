@@ -12,6 +12,11 @@ import type { ModelStepResult } from "../types.js";
 import type { ToolErrorContentPart } from "./model-call-serialization.js";
 
 type AssistantMessage = Extract<Message, { role: "assistant" }>;
+type ToolMessageMetadata = {
+  toolStatus: "running" | "completed" | "failed";
+  toolSourceType?: string | undefined;
+  toolDurationMs?: number | undefined;
+};
 
 export interface ToolMessageServiceDependencies {
   messageRepository: MessageRepository;
@@ -37,6 +42,20 @@ export class ToolMessageService {
     this.#createId = dependencies.createId;
     this.#nowIso = dependencies.nowIso;
     this.#previewValue = dependencies.previewValue;
+  }
+
+  #mergeToolMetadata(
+    metadata: Record<string, unknown> | undefined,
+    toolMetadata: ToolMessageMetadata | undefined
+  ): Record<string, unknown> | undefined {
+    if (!metadata && !toolMetadata) {
+      return undefined;
+    }
+
+    return {
+      ...(metadata ?? {}),
+      ...(toolMetadata ?? {})
+    };
   }
 
   async ensureAssistantMessage(
@@ -119,7 +138,8 @@ export class ToolMessageService {
     run: Run,
     step: ModelStepResult,
     allMessages: Message[],
-    metadata?: Record<string, unknown> | undefined
+    metadata?: Record<string, unknown> | undefined,
+    toolMetadataByCallId?: Map<string, ToolMessageMetadata> | undefined
   ): Promise<void> {
     if (step.toolCalls.length === 0) {
       return;
@@ -132,28 +152,33 @@ export class ToolMessageService {
       toolNames: step.toolCalls.map((toolCall) => toolCall.toolName)
     });
 
-    const assistantToolCallMessage = await this.#messageRepository.create({
-      id: this.#createId("msg"),
-      sessionId: session.id,
-      runId: run.id,
-      role: "assistant",
-      content: toolCallContent(step.toolCalls),
-      ...(metadata ? { metadata } : {}),
-      createdAt: this.#nowIso()
-    });
-
-    allMessages.push(assistantToolCallMessage);
-    await this.#appendEvent({
-      sessionId: session.id,
-      runId: run.id,
-      event: "message.completed",
-      data: {
+    for (const toolCall of step.toolCalls) {
+      const assistantToolCallMessage = await this.#messageRepository.create({
+        id: this.#createId("msg"),
+        sessionId: session.id,
         runId: run.id,
-        messageId: assistantToolCallMessage.id,
-        content: assistantToolCallMessage.content,
-        ...(assistantToolCallMessage.metadata ? { metadata: assistantToolCallMessage.metadata } : {})
-      }
-    });
+        role: "assistant",
+        content: toolCallContent([toolCall]),
+        ...(() => {
+          const mergedMetadata = this.#mergeToolMetadata(metadata, toolMetadataByCallId?.get(toolCall.toolCallId));
+          return mergedMetadata ? { metadata: mergedMetadata } : {};
+        })(),
+        createdAt: this.#nowIso()
+      });
+
+      allMessages.push(assistantToolCallMessage);
+      await this.#appendEvent({
+        sessionId: session.id,
+        runId: run.id,
+        event: "message.completed",
+        data: {
+          runId: run.id,
+          messageId: assistantToolCallMessage.id,
+          content: assistantToolCallMessage.content,
+          ...(assistantToolCallMessage.metadata ? { metadata: assistantToolCallMessage.metadata } : {})
+        }
+      });
+    }
   }
 
   async persistToolResults(
@@ -163,7 +188,8 @@ export class ToolMessageService {
     failedToolResults: ToolErrorContentPart[],
     persistedToolCalls: Set<string>,
     allMessages: Message[],
-    metadata?: Record<string, unknown> | undefined
+    metadata?: Record<string, unknown> | undefined,
+    toolMetadataByCallId?: Map<string, ToolMessageMetadata> | undefined
   ): Promise<void> {
     for (const toolResult of step.toolResults) {
       if (persistedToolCalls.has(toolResult.toolCallId)) {
@@ -185,7 +211,10 @@ export class ToolMessageService {
         runId: run.id,
         role: "tool",
         content: toolResultContent(toolResult),
-        ...(metadata ? { metadata } : {}),
+        ...(() => {
+          const mergedMetadata = this.#mergeToolMetadata(metadata, toolMetadataByCallId?.get(toolResult.toolCallId));
+          return mergedMetadata ? { metadata: mergedMetadata } : {};
+        })(),
         createdAt: this.#nowIso()
       });
       allMessages.push(toolMessage);
@@ -225,7 +254,10 @@ export class ToolMessageService {
         runId: run.id,
         role: "tool",
         content: toolErrorResultContent(toolError),
-        ...(metadata ? { metadata } : {}),
+        ...(() => {
+          const mergedMetadata = this.#mergeToolMetadata(metadata, toolMetadataByCallId?.get(toolError.toolCallId));
+          return mergedMetadata ? { metadata: mergedMetadata } : {};
+        })(),
         createdAt: this.#nowIso()
       });
       allMessages.push(toolMessage);
@@ -286,5 +318,97 @@ export class ToolMessageService {
     });
 
     return toolMessage;
+  }
+
+  async persistStandaloneToolCallMessage(input: {
+    session: Session;
+    run: Run;
+    toolCallId: string;
+    toolName: string;
+    toolInput: unknown;
+    metadata?: Record<string, unknown> | undefined;
+  }): Promise<Message> {
+    const toolCallMessage = await this.#messageRepository.create({
+      id: this.#createId("msg"),
+      sessionId: input.session.id,
+      runId: input.run.id,
+      role: "assistant",
+      content: toolCallContent([
+        {
+          toolCallId: input.toolCallId,
+          toolName: input.toolName,
+          input: input.toolInput
+        }
+      ]),
+      ...(input.metadata ? { metadata: input.metadata } : {}),
+      createdAt: this.#nowIso()
+    });
+
+    await this.#appendEvent({
+      sessionId: input.session.id,
+      runId: input.run.id,
+      event: "message.completed",
+      data: {
+        runId: input.run.id,
+        messageId: toolCallMessage.id,
+        content: toolCallMessage.content,
+        ...(toolCallMessage.metadata ? { metadata: toolCallMessage.metadata } : {})
+      }
+    });
+
+    return toolCallMessage;
+  }
+
+  async persistStandaloneToolErrorMessage(input: {
+    session: Session;
+    run: Run;
+    toolCallId: string;
+    toolName: string;
+    error: unknown;
+    actionName?: string | undefined;
+    metadata?: Record<string, unknown> | undefined;
+  }): Promise<Message> {
+    const toolMessage = await this.#messageRepository.create({
+      id: this.#createId("msg"),
+      sessionId: input.session.id,
+      runId: input.run.id,
+      role: "tool",
+      content: toolErrorResultContent({
+        toolCallId: input.toolCallId,
+        toolName: input.toolName,
+        error: input.error
+      }),
+      ...(input.metadata ? { metadata: input.metadata } : {}),
+      createdAt: this.#nowIso()
+    });
+
+    await this.#appendEvent({
+      sessionId: input.session.id,
+      runId: input.run.id,
+      event: "message.completed",
+      data: {
+        runId: input.run.id,
+        messageId: toolMessage.id,
+        content: toolMessage.content,
+        ...(input.actionName ? { actionName: input.actionName } : {}),
+        toolCallId: input.toolCallId,
+        toolName: input.toolName,
+        resultType: "error",
+        ...(toolMessage.metadata ? { metadata: toolMessage.metadata } : {})
+      }
+    });
+
+    return toolMessage;
+  }
+
+  async updateMessageMetadata(message: Message, metadata?: Record<string, unknown> | undefined): Promise<Message> {
+    if (!metadata) {
+      return message;
+    }
+
+    return this.#messageRepository.update({
+      ...message,
+      metadata
+    });
   }
 }

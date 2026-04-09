@@ -74,6 +74,9 @@ export class FakeModelGateway implements ModelGateway {
             text?: string | undefined;
             content?: unknown[] | undefined;
             reasoning?: unknown[] | undefined;
+            stepRequest?: Record<string, unknown> | undefined;
+            stepResponse?: Record<string, unknown> | undefined;
+            stepProviderMetadata?: Record<string, unknown> | undefined;
             preToolText?: string | undefined;
             preToolContent?: unknown[] | undefined;
             preToolReasoning?: unknown[] | undefined;
@@ -338,6 +341,9 @@ export class FakeModelGateway implements ModelGateway {
           text: emitted,
           ...(Array.isArray(scenario?.content) ? { content: scenario.content } : {}),
           ...(Array.isArray(scenario?.reasoning) ? { reasoning: scenario.reasoning } : {}),
+          ...(scenario?.stepRequest ? { request: scenario.stepRequest } : {}),
+          ...(scenario?.stepResponse ? { response: scenario.stepResponse } : {}),
+          ...(scenario?.stepProviderMetadata ? { providerMetadata: scenario.stepProviderMetadata } : {}),
           finishReason: "stop",
           toolCalls: [],
           toolResults: []
