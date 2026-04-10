@@ -462,7 +462,8 @@ export const storagePostgresTableNameSchema = z.enum([
   "tool_calls",
   "hook_runs",
   "artifacts",
-  "history_events"
+  "history_events",
+  "archives"
 ]);
 
 export const storagePostgresTableSummarySchema = z.object({
@@ -498,7 +499,26 @@ export const storageOverviewSchema = z.object({
     available: z.boolean(),
     primaryStorage: z.boolean(),
     database: z.string().optional(),
-    tables: z.array(storagePostgresTableSummarySchema)
+    tables: z.array(storagePostgresTableSummarySchema),
+    historyEvents: z
+      .object({
+        cleanupEnabled: z.boolean(),
+        retentionDays: z.number().int().min(1),
+        rowCount: z.number().int().min(0),
+        oldestOccurredAt: z.string().optional(),
+        newestOccurredAt: z.string().optional()
+      })
+      .optional(),
+    archives: z
+      .object({
+        exportEnabled: z.boolean(),
+        rowCount: z.number().int().min(0),
+        pendingExports: z.number().int().min(0),
+        exportedRows: z.number().int().min(0),
+        oldestPendingArchiveDate: z.string().optional(),
+        newestExportedAt: z.string().optional()
+      })
+      .optional()
   }),
   redis: z.object({
     configured: z.boolean(),

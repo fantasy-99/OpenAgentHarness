@@ -124,6 +124,31 @@ function isAbortError(error: unknown): boolean {
   );
 }
 
+function resolveArchiveTimeZone(): string {
+  return process.env.OAH_ARCHIVE_TIMEZONE?.trim() || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+function formatArchiveDate(timestamp: string, timeZone: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date(timestamp));
+}
+
+function buildArchiveMetadata() {
+  const deletedAt = nowIso();
+  const timezone = resolveArchiveTimeZone();
+
+  return {
+    archiveDate: formatArchiveDate(deletedAt, timezone),
+    archivedAt: deletedAt,
+    deletedAt,
+    timezone
+  };
+}
+
 async function withTimeout<T>(
   operation: (signal: AbortSignal | undefined) => Promise<T>,
   timeoutMs: number | undefined,
@@ -177,6 +202,7 @@ export class RuntimeService {
   readonly #sessionEventStore: RuntimeServiceOptions["sessionEventStore"];
   readonly #runQueue: RuntimeServiceOptions["runQueue"];
   readonly #toolCallAuditRepository: RuntimeServiceOptions["toolCallAuditRepository"];
+  readonly #workspaceArchiveRepository: RuntimeServiceOptions["workspaceArchiveRepository"];
   readonly #workspaceDeletionHandler: RuntimeServiceOptions["workspaceDeletionHandler"];
   readonly #workspaceInitializer: RuntimeServiceOptions["workspaceInitializer"];
   readonly #workspaceFiles: WorkspaceFileService;
@@ -212,6 +238,7 @@ export class RuntimeService {
     this.#sessionEventStore = options.sessionEventStore;
     this.#runQueue = options.runQueue;
     this.#toolCallAuditRepository = options.toolCallAuditRepository;
+    this.#workspaceArchiveRepository = options.workspaceArchiveRepository;
     this.#workspaceDeletionHandler = options.workspaceDeletionHandler;
     this.#workspaceInitializer = options.workspaceInitializer;
     this.#workspaceFiles = new WorkspaceFileService();
@@ -502,6 +529,12 @@ export class RuntimeService {
 
   async deleteWorkspace(workspaceId: string): Promise<void> {
     const workspace = await this.getWorkspaceRecord(workspaceId);
+    if (this.#workspaceArchiveRepository) {
+      await this.#workspaceArchiveRepository.archiveWorkspace({
+        workspace,
+        ...buildArchiveMetadata()
+      });
+    }
     await this.#workspaceDeletionHandler?.deleteWorkspace(workspace);
     await this.#workspaceRepository.delete(workspaceId);
   }
@@ -631,6 +664,7 @@ export class RuntimeService {
 
   async deleteSession(sessionId: string): Promise<void> {
     const session = await this.getSession(sessionId);
+    const workspace = await this.getWorkspaceRecord(session.workspaceId);
     const workspaceSessions = await this.#listAllWorkspaceSessions(session.workspaceId);
     const childSessionIdsByParentId = new Map<string, string[]>();
 
@@ -653,6 +687,15 @@ export class RuntimeService {
     };
 
     visit(sessionId);
+
+    if (this.#workspaceArchiveRepository) {
+      await this.#workspaceArchiveRepository.archiveSessionTree({
+        workspace,
+        rootSessionId: sessionId,
+        sessionIds: deletionOrder,
+        ...buildArchiveMetadata()
+      });
+    }
 
     for (const targetSessionId of deletionOrder) {
       await this.#sessionRepository.delete(targetSessionId);

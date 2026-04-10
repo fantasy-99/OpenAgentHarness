@@ -399,6 +399,50 @@ export interface HistoryEventRepository {
   listByWorkspaceId(workspaceId: string, limit: number, afterId?: number): Promise<HistoryEventRecord[]>;
 }
 
+export interface WorkspaceArchiveRecord {
+  id: string;
+  workspaceId: string;
+  scopeType: "workspace" | "session";
+  scopeId: string;
+  archiveDate: string;
+  archivedAt: string;
+  deletedAt: string;
+  timezone: string;
+  exportedAt?: string | undefined;
+  exportPath?: string | undefined;
+  workspace: WorkspaceRecord;
+  sessions: Session[];
+  runs: Run[];
+  messages: Message[];
+  runtimeMessages: RuntimeMessage[];
+  runSteps: RunStep[];
+  toolCalls: ToolCallAuditRecord[];
+  hookRuns: HookRunAuditRecord[];
+  artifacts: ArtifactRecord[];
+}
+
+export interface WorkspaceArchiveRepository {
+  archiveWorkspace(input: {
+    workspace: WorkspaceRecord;
+    archiveDate: string;
+    archivedAt: string;
+    deletedAt: string;
+    timezone: string;
+  }): Promise<WorkspaceArchiveRecord>;
+  archiveSessionTree(input: {
+    workspace: WorkspaceRecord;
+    rootSessionId: string;
+    sessionIds: string[];
+    archiveDate: string;
+    archivedAt: string;
+    deletedAt: string;
+    timezone: string;
+  }): Promise<WorkspaceArchiveRecord>;
+  listPendingArchiveDates(beforeArchiveDate: string, limit: number): Promise<string[]>;
+  listByArchiveDate(archiveDate: string): Promise<WorkspaceArchiveRecord[]>;
+  markExported(ids: string[], input: { exportedAt: string; exportPath: string }): Promise<void>;
+}
+
 export interface RuntimeServiceOptions {
   defaultModel: string;
   modelGateway: ModelGateway;
@@ -417,6 +461,7 @@ export interface RuntimeServiceOptions {
   hookRunAuditRepository?: HookRunAuditRepository | undefined;
   artifactRepository?: ArtifactRepository | undefined;
   historyEventRepository?: HistoryEventRepository | undefined;
+  workspaceArchiveRepository?: WorkspaceArchiveRepository | undefined;
   workspaceDeletionHandler?: WorkspaceDeletionHandler | undefined;
   workspaceInitializer?: WorkspaceInitializer | undefined;
 }

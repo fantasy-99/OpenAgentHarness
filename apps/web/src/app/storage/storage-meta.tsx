@@ -35,6 +35,9 @@ export const STORAGE_TABLE_META: Record<
   },
   history_events: {
     label: "History Events"
+  },
+  archives: {
+    label: "Archives"
   }
 };
 
@@ -46,4 +49,3 @@ export function StorageToolbarMeta(props: { label: string; value: string | numbe
     </div>
   );
 }
-

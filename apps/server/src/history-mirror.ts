@@ -2,7 +2,21 @@ import path from "node:path";
 import { access, mkdir, rm } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 
-import { nowIso, type HistoryEventRecord, type HistoryEventRepository, type WorkspaceRecord, type WorkspaceRepository } from "@oah/runtime-core";
+import type {
+  ArtifactRecord,
+  HistoryEventRecord,
+  HistoryEventRepository,
+  HookRunAuditRecord,
+  Message,
+  RuntimeMessage,
+  Run,
+  RunStep,
+  Session,
+  ToolCallAuditRecord,
+  WorkspaceRecord,
+  WorkspaceRepository
+} from "@oah/runtime-core";
+import { nowIso } from "@oah/runtime-core";
 
 export interface HistoryMirrorLogger {
   info?(message: string): void;
@@ -13,8 +27,38 @@ export interface HistoryMirrorLogger {
 export interface HistoryMirrorSyncerOptions {
   workspaceRepository: WorkspaceRepository;
   historyEventRepository: HistoryEventRepository;
+  snapshotSource?: HistoryMirrorSnapshotSource | undefined;
   pollIntervalMs?: number | undefined;
   batchSize?: number | undefined;
+  logger?: HistoryMirrorLogger | undefined;
+}
+
+export interface HistoryMirrorSnapshot {
+  watermarkEventId: number;
+  sessions: Session[];
+  messages: Message[];
+  runtimeMessages: RuntimeMessage[];
+  runs: Run[];
+  runSteps: RunStep[];
+  toolCalls: ToolCallAuditRecord[];
+  hookRuns: HookRunAuditRecord[];
+  artifacts: ArtifactRecord[];
+}
+
+export interface HistoryMirrorSnapshotSource {
+  readWorkspaceSnapshot(workspaceId: string): Promise<HistoryMirrorSnapshot>;
+  readWorkspaceRuntimeMessages?(workspaceId: string): Promise<RuntimeMessage[]>;
+}
+
+export interface HistoryEventMaintenanceRepository extends HistoryEventRepository {
+  pruneByWorkspace(workspaceId: string, maxEventId: number, occurredBefore: string): Promise<number>;
+}
+
+export interface HistoryEventCleanerOptions {
+  workspaceRepository: WorkspaceRepository;
+  historyEventRepository: HistoryEventMaintenanceRepository;
+  retentionMs?: number | undefined;
+  pollIntervalMs?: number | undefined;
   logger?: HistoryMirrorLogger | undefined;
 }
 
@@ -42,10 +86,35 @@ export interface HistoryMirrorStatus {
 }
 
 const mirrorSchemaStatements = [
+  `create table if not exists workspaces (
+    id text primary key,
+    external_ref text,
+    name text not null,
+    root_path text not null,
+    execution_policy text not null,
+    status text not null,
+    kind text not null,
+    read_only integer not null,
+    history_mirror_enabled integer not null,
+    default_agent text,
+    project_agents_md text,
+    settings text not null,
+    workspace_models text not null,
+    agents text not null,
+    actions text not null,
+    skills text not null,
+    mcp_servers text not null,
+    hooks text not null,
+    catalog text not null,
+    created_at text not null,
+    updated_at text not null
+  )`,
   `create table if not exists sessions (
     id text primary key,
     workspace_id text not null,
+    parent_session_id text,
     subject_ref text not null,
+    model_ref text,
     agent_name text,
     active_agent_name text not null,
     title text,
@@ -65,10 +134,22 @@ const mirrorSchemaStatements = [
     created_at text not null
   )`,
   `create index if not exists messages_session_created_idx on messages (session_id, created_at)`,
+  `create table if not exists runtime_messages (
+    id text primary key,
+    session_id text not null,
+    run_id text,
+    role text not null,
+    kind text not null,
+    content text not null,
+    metadata text,
+    created_at text not null
+  )`,
+  `create index if not exists runtime_messages_session_created_idx on runtime_messages (session_id, created_at, id)`,
   `create table if not exists runs (
     id text primary key,
     workspace_id text not null,
     session_id text,
+    parent_run_id text,
     initiator_ref text,
     trigger_type text not null,
     trigger_ref text,
@@ -78,6 +159,7 @@ const mirrorSchemaStatements = [
     status text not null,
     cancel_requested_at text,
     started_at text,
+    heartbeat_at text,
     ended_at text,
     error_code text,
     error_message text,
@@ -244,6 +326,7 @@ export async function inspectHistoryMirrorStatus(workspace: WorkspaceRecord): Pr
 export class HistoryMirrorSyncer {
   readonly #workspaceRepository: WorkspaceRepository;
   readonly #historyEventRepository: HistoryEventRepository;
+  readonly #snapshotSource: HistoryMirrorSnapshotSource | undefined;
   readonly #pollIntervalMs: number;
   readonly #batchSize: number;
   readonly #logger: HistoryMirrorLogger;
@@ -255,6 +338,7 @@ export class HistoryMirrorSyncer {
   constructor(options: HistoryMirrorSyncerOptions) {
     this.#workspaceRepository = options.workspaceRepository;
     this.#historyEventRepository = options.historyEventRepository;
+    this.#snapshotSource = options.snapshotSource;
     this.#pollIntervalMs = options.pollIntervalMs ?? 1_000;
     this.#batchSize = options.batchSize ?? 250;
     this.#logger = options.logger ?? {};
@@ -324,9 +408,16 @@ export class HistoryMirrorSyncer {
         rm(`${dbPath}-shm`, { force: true }),
         rm(`${dbPath}-wal`, { force: true })
       ]);
-      await this.#syncWorkspace(workspace, {
-        reset: true
-      });
+      if (this.#snapshotSource) {
+        const handle = await this.#openMirrorDatabase(workspace);
+        const snapshot = await this.#snapshotSource.readWorkspaceSnapshot(workspace.id);
+        this.#replaceMirrorWithSnapshot(handle.db, workspace, snapshot);
+        await this.#syncWorkspace(workspace);
+      } else {
+        await this.#syncWorkspace(workspace, {
+          reset: true
+        });
+      }
     });
 
     return inspectHistoryMirrorStatus(workspace);
@@ -358,7 +449,19 @@ export class HistoryMirrorSyncer {
       this.#logger.warn?.(`History mirror database unavailable for workspace ${workspace.id}; skipping sync.`, error);
       return;
     }
-    let lastAppliedEventId = options?.reset ? 0 : this.#readMirrorState(handle.db, workspace.id)?.lastEventId ?? 0;
+    const previousState = options?.reset ? undefined : this.#readMirrorState(handle.db, workspace.id);
+    if (this.#snapshotSource && (options?.reset || !previousState)) {
+      const snapshot = await this.#snapshotSource.readWorkspaceSnapshot(workspace.id);
+      this.#replaceMirrorWithSnapshot(handle.db, workspace, snapshot);
+    } else {
+      this.#runInTransaction(handle.db, () => {
+        this.#upsertWorkspace(handle.db, workspace);
+      });
+    }
+    let lastAppliedEventId =
+      this.#readMirrorState(handle.db, workspace.id)?.lastEventId ??
+      previousState?.lastEventId ??
+      (options?.reset ? 0 : 0);
 
     try {
       while (true) {
@@ -375,12 +478,17 @@ export class HistoryMirrorSyncer {
             );
           }
           if (options?.reset || lastAppliedEventId > 0) {
-            this.#writeMirrorState(handle.db, workspace.id, lastAppliedEventId, "idle", null);
+            this.#runInTransaction(handle.db, () => {
+              this.#upsertWorkspace(handle.db, workspace);
+              this.#writeMirrorState(handle.db, workspace.id, lastAppliedEventId, "idle", null);
+            });
           }
+          await this.#refreshRuntimeMessagesIfSupported(handle.db, workspace.id);
           return;
         }
 
         this.#runInTransaction(handle.db, () => {
+          this.#upsertWorkspace(handle.db, workspace);
           for (const event of events) {
             this.#applyHistoryEvent(handle.db, event);
           }
@@ -434,10 +542,27 @@ export class HistoryMirrorSyncer {
     for (const statement of mirrorSchemaStatements) {
       db.exec(statement);
     }
+    this.#ensureMirrorSchemaColumns(db);
 
     const handle = { dbPath, db };
     this.#databases.set(workspace.id, handle);
     return handle;
+  }
+
+  #ensureMirrorSchemaColumns(db: DatabaseSync): void {
+    this.#ensureTableColumn(db, "sessions", "parent_session_id", "text");
+    this.#ensureTableColumn(db, "sessions", "model_ref", "text");
+    this.#ensureTableColumn(db, "runs", "parent_run_id", "text");
+    this.#ensureTableColumn(db, "runs", "heartbeat_at", "text");
+  }
+
+  #ensureTableColumn(db: DatabaseSync, table: string, column: string, definition: string): void {
+    const columns = db.prepare(`pragma table_info(${table})`).all() as Array<{ name?: string }>;
+    if (columns.some((row) => row.name === column)) {
+      return;
+    }
+
+    db.exec(`alter table ${table} add column ${column} ${definition}`);
   }
 
   #closeMirrorDatabase(workspaceId: string): void {
@@ -482,6 +607,75 @@ export class HistoryMirrorSyncer {
     ).run(workspaceId, lastEventId, nowIso(), status, errorMessage);
   }
 
+  #replaceMirrorWithSnapshot(db: DatabaseSync, workspace: WorkspaceRecord, snapshot: HistoryMirrorSnapshot): void {
+    this.#runInTransaction(db, () => {
+      db.exec("delete from workspaces");
+      db.exec("delete from sessions");
+      db.exec("delete from messages");
+      db.exec("delete from runtime_messages");
+      db.exec("delete from runs");
+      db.exec("delete from run_steps");
+      db.exec("delete from tool_calls");
+      db.exec("delete from hook_runs");
+      db.exec("delete from artifacts");
+      db.prepare("delete from mirror_state where workspace_id = ?").run(workspace.id);
+
+      this.#upsertWorkspace(db, workspace);
+      for (const session of snapshot.sessions) {
+        this.#upsertSession(db, session);
+      }
+      for (const message of snapshot.messages) {
+        this.#upsertMessage(db, message);
+      }
+      for (const runtimeMessage of snapshot.runtimeMessages) {
+        this.#upsertRuntimeMessage(db, runtimeMessage);
+      }
+      for (const run of snapshot.runs) {
+        this.#upsertRun(db, run);
+      }
+      for (const step of snapshot.runSteps) {
+        this.#upsertRunStep(db, step);
+      }
+      for (const toolCall of snapshot.toolCalls) {
+        this.#upsertToolCall(db, toolCall);
+      }
+      for (const hookRun of snapshot.hookRuns) {
+        this.#upsertHookRun(db, hookRun);
+      }
+      for (const artifact of snapshot.artifacts) {
+        this.#upsertArtifact(db, artifact);
+      }
+
+      this.#writeMirrorState(db, workspace.id, snapshot.watermarkEventId, "idle", null);
+    });
+  }
+
+  #upsertWorkspace(db: DatabaseSync, workspace: WorkspaceRecord): void {
+    this.#upsertRow(db, "workspaces", "id", {
+      id: workspace.id,
+      external_ref: workspace.externalRef ?? null,
+      name: workspace.name,
+      root_path: workspace.rootPath,
+      execution_policy: workspace.executionPolicy,
+      status: workspace.status,
+      kind: workspace.kind,
+      read_only: workspace.readOnly ? 1 : 0,
+      history_mirror_enabled: workspace.historyMirrorEnabled ? 1 : 0,
+      default_agent: workspace.defaultAgent ?? null,
+      project_agents_md: workspace.projectAgentsMd ?? null,
+      settings: JSON.stringify(workspace.settings),
+      workspace_models: JSON.stringify(workspace.workspaceModels),
+      agents: JSON.stringify(workspace.agents),
+      actions: JSON.stringify(workspace.actions),
+      skills: JSON.stringify(workspace.skills),
+      mcp_servers: JSON.stringify(workspace.toolServers),
+      hooks: JSON.stringify(workspace.hooks),
+      catalog: JSON.stringify(workspace.catalog),
+      created_at: workspace.createdAt,
+      updated_at: workspace.updatedAt
+    });
+  }
+
   #applyHistoryEvent(db: DatabaseSync, event: HistoryEventRecord): void {
     if (event.op === "delete") {
       this.#deleteMirrorRow(db, event);
@@ -495,109 +689,238 @@ export class HistoryMirrorSyncer {
     const payload = event.payload;
     switch (event.entityType) {
       case "session":
-        this.#upsertRow(db, "sessions", "id", {
+        this.#upsertSession(db, {
           id: this.#string(payload.id) ?? event.entityId,
-          workspace_id: this.#string(payload.workspaceId) ?? event.workspaceId,
-          subject_ref: this.#requiredString(payload.subjectRef, "subjectRef", event),
-          agent_name: this.#string(payload.agentName),
-          active_agent_name: this.#requiredString(payload.activeAgentName, "activeAgentName", event),
-          title: this.#string(payload.title),
+          workspaceId: this.#string(payload.workspaceId) ?? event.workspaceId,
+          ...(this.#string(payload.parentSessionId) ? { parentSessionId: this.#string(payload.parentSessionId)! } : {}),
+          subjectRef: this.#requiredString(payload.subjectRef, "subjectRef", event),
+          ...(this.#string(payload.modelRef) ? { modelRef: this.#string(payload.modelRef)! } : {}),
+          ...(this.#string(payload.agentName) ? { agentName: this.#string(payload.agentName)! } : {}),
+          activeAgentName: this.#requiredString(payload.activeAgentName, "activeAgentName", event),
+          ...(this.#string(payload.title) ? { title: this.#string(payload.title)! } : {}),
           status: this.#requiredString(payload.status, "status", event),
-          last_run_at: this.#string(payload.lastRunAt),
-          created_at: this.#requiredString(payload.createdAt, "createdAt", event),
-          updated_at: this.#requiredString(payload.updatedAt, "updatedAt", event)
+          ...(this.#string(payload.lastRunAt) ? { lastRunAt: this.#string(payload.lastRunAt)! } : {}),
+          createdAt: this.#requiredString(payload.createdAt, "createdAt", event),
+          updatedAt: this.#requiredString(payload.updatedAt, "updatedAt", event)
         });
         return;
       case "message":
-        this.#upsertRow(db, "messages", "id", {
+        this.#upsertMessage(db, {
           id: this.#string(payload.id) ?? event.entityId,
-          session_id: this.#requiredString(payload.sessionId, "sessionId", event),
-          run_id: this.#string(payload.runId),
-          role: this.#requiredString(payload.role, "role", event),
-          content: this.#requiredJson(payload.content, "content", event),
-          metadata: this.#json(payload.metadata),
-          created_at: this.#requiredString(payload.createdAt, "createdAt", event)
+          sessionId: this.#requiredString(payload.sessionId, "sessionId", event),
+          ...(this.#string(payload.runId) ? { runId: this.#string(payload.runId)! } : {}),
+          role: this.#requiredString(payload.role, "role", event) as Message["role"],
+          content: payload.content as Message["content"],
+          ...(payload.metadata !== undefined ? { metadata: payload.metadata as Record<string, unknown> } : {}),
+          createdAt: this.#requiredString(payload.createdAt, "createdAt", event)
         });
         return;
       case "run":
-        this.#upsertRow(db, "runs", "id", {
+        this.#upsertRun(db, {
           id: this.#string(payload.id) ?? event.entityId,
-          workspace_id: this.#string(payload.workspaceId) ?? event.workspaceId,
-          session_id: this.#string(payload.sessionId),
-          initiator_ref: this.#string(payload.initiatorRef),
-          trigger_type: this.#requiredString(payload.triggerType, "triggerType", event),
-          trigger_ref: this.#string(payload.triggerRef),
-          agent_name: this.#string(payload.agentName),
-          effective_agent_name: this.#requiredString(payload.effectiveAgentName, "effectiveAgentName", event),
-          switch_count: this.#integer(payload.switchCount),
-          status: this.#requiredString(payload.status, "status", event),
-          cancel_requested_at: this.#string(payload.cancelRequestedAt),
-          started_at: this.#string(payload.startedAt),
-          ended_at: this.#string(payload.endedAt),
-          error_code: this.#string(payload.errorCode),
-          error_message: this.#string(payload.errorMessage),
-          metadata: this.#json(payload.metadata),
-          created_at: this.#requiredString(payload.createdAt, "createdAt", event)
+          workspaceId: this.#string(payload.workspaceId) ?? event.workspaceId,
+          ...(this.#string(payload.sessionId) ? { sessionId: this.#string(payload.sessionId)! } : {}),
+          ...(this.#string(payload.parentRunId) ? { parentRunId: this.#string(payload.parentRunId)! } : {}),
+          ...(this.#string(payload.initiatorRef) ? { initiatorRef: this.#string(payload.initiatorRef)! } : {}),
+          triggerType: this.#requiredString(payload.triggerType, "triggerType", event),
+          ...(this.#string(payload.triggerRef) ? { triggerRef: this.#string(payload.triggerRef)! } : {}),
+          ...(this.#string(payload.agentName) ? { agentName: this.#string(payload.agentName)! } : {}),
+          effectiveAgentName: this.#requiredString(payload.effectiveAgentName, "effectiveAgentName", event),
+          ...(this.#integer(payload.switchCount) !== null ? { switchCount: this.#integer(payload.switchCount)! } : {}),
+          status: this.#requiredString(payload.status, "status", event) as Run["status"],
+          ...(this.#string(payload.cancelRequestedAt) ? { cancelRequestedAt: this.#string(payload.cancelRequestedAt)! } : {}),
+          ...(this.#string(payload.startedAt) ? { startedAt: this.#string(payload.startedAt)! } : {}),
+          ...(this.#string(payload.heartbeatAt) ? { heartbeatAt: this.#string(payload.heartbeatAt)! } : {}),
+          ...(this.#string(payload.endedAt) ? { endedAt: this.#string(payload.endedAt)! } : {}),
+          ...(this.#string(payload.errorCode) ? { errorCode: this.#string(payload.errorCode)! } : {}),
+          ...(this.#string(payload.errorMessage) ? { errorMessage: this.#string(payload.errorMessage)! } : {}),
+          ...(payload.metadata !== undefined ? { metadata: payload.metadata as Record<string, unknown> } : {}),
+          createdAt: this.#requiredString(payload.createdAt, "createdAt", event)
         });
         return;
       case "run_step":
-        this.#upsertRow(db, "run_steps", "id", {
+        this.#upsertRunStep(db, {
           id: this.#string(payload.id) ?? event.entityId,
-          run_id: this.#requiredString(payload.runId, "runId", event),
+          runId: this.#requiredString(payload.runId, "runId", event),
           seq: this.#requiredInteger(payload.seq, "seq", event),
-          step_type: this.#requiredString(payload.stepType, "stepType", event),
-          name: this.#string(payload.name),
-          agent_name: this.#string(payload.agentName),
-          status: this.#requiredString(payload.status, "status", event),
-          input: this.#json(payload.input),
-          output: this.#json(payload.output),
-          started_at: this.#string(payload.startedAt),
-          ended_at: this.#string(payload.endedAt)
+          stepType: this.#requiredString(payload.stepType, "stepType", event),
+          ...(this.#string(payload.name) ? { name: this.#string(payload.name)! } : {}),
+          ...(this.#string(payload.agentName) ? { agentName: this.#string(payload.agentName)! } : {}),
+          status: this.#requiredString(payload.status, "status", event) as RunStep["status"],
+          ...(payload.input !== undefined ? { input: payload.input } : {}),
+          ...(payload.output !== undefined ? { output: payload.output } : {}),
+          ...(this.#string(payload.startedAt) ? { startedAt: this.#string(payload.startedAt)! } : {}),
+          ...(this.#string(payload.endedAt) ? { endedAt: this.#string(payload.endedAt)! } : {})
         });
         return;
       case "tool_call":
-        this.#upsertRow(db, "tool_calls", "id", {
+        this.#upsertToolCall(db, {
           id: this.#string(payload.id) ?? event.entityId,
-          run_id: this.#requiredString(payload.runId, "runId", event),
-          step_id: this.#string(payload.stepId),
-          source_type: this.#requiredString(payload.sourceType, "sourceType", event),
-          tool_name: this.#requiredString(payload.toolName, "toolName", event),
-          request: this.#json(payload.request),
-          response: this.#json(payload.response),
-          status: this.#requiredString(payload.status, "status", event),
-          duration_ms: this.#integer(payload.durationMs),
-          started_at: this.#requiredString(payload.startedAt, "startedAt", event),
-          ended_at: this.#requiredString(payload.endedAt, "endedAt", event)
+          runId: this.#requiredString(payload.runId, "runId", event),
+          ...(this.#string(payload.stepId) ? { stepId: this.#string(payload.stepId)! } : {}),
+          sourceType: this.#requiredString(payload.sourceType, "sourceType", event) as ToolCallAuditRecord["sourceType"],
+          toolName: this.#requiredString(payload.toolName, "toolName", event),
+          ...(payload.request !== undefined ? { request: payload.request as Record<string, unknown> } : {}),
+          ...(payload.response !== undefined ? { response: payload.response as Record<string, unknown> } : {}),
+          status: this.#requiredString(payload.status, "status", event) as ToolCallAuditRecord["status"],
+          ...(this.#integer(payload.durationMs) !== null ? { durationMs: this.#integer(payload.durationMs)! } : {}),
+          startedAt: this.#requiredString(payload.startedAt, "startedAt", event),
+          endedAt: this.#requiredString(payload.endedAt, "endedAt", event)
         });
         return;
       case "hook_run":
-        this.#upsertRow(db, "hook_runs", "id", {
+        this.#upsertHookRun(db, {
           id: this.#string(payload.id) ?? event.entityId,
-          run_id: this.#requiredString(payload.runId, "runId", event),
-          hook_name: this.#requiredString(payload.hookName, "hookName", event),
-          event_name: this.#requiredString(payload.eventName, "eventName", event),
-          capabilities: this.#requiredJson(payload.capabilities, "capabilities", event),
-          patch: this.#json(payload.patch),
-          status: this.#requiredString(payload.status, "status", event),
-          started_at: this.#requiredString(payload.startedAt, "startedAt", event),
-          ended_at: this.#requiredString(payload.endedAt, "endedAt", event),
-          error_message: this.#string(payload.errorMessage)
+          runId: this.#requiredString(payload.runId, "runId", event),
+          hookName: this.#requiredString(payload.hookName, "hookName", event),
+          eventName: this.#requiredString(payload.eventName, "eventName", event),
+          capabilities: payload.capabilities as string[],
+          ...(payload.patch !== undefined ? { patch: payload.patch as Record<string, unknown> } : {}),
+          status: this.#requiredString(payload.status, "status", event) as HookRunAuditRecord["status"],
+          startedAt: this.#requiredString(payload.startedAt, "startedAt", event),
+          endedAt: this.#requiredString(payload.endedAt, "endedAt", event),
+          ...(this.#string(payload.errorMessage) ? { errorMessage: this.#string(payload.errorMessage)! } : {})
         });
         return;
       case "artifact":
-        this.#upsertRow(db, "artifacts", "id", {
+        this.#upsertArtifact(db, {
           id: this.#string(payload.id) ?? event.entityId,
-          run_id: this.#requiredString(payload.runId, "runId", event),
+          runId: this.#requiredString(payload.runId, "runId", event),
           type: this.#requiredString(payload.type, "type", event),
-          path: this.#string(payload.path),
-          content_ref: this.#string(payload.contentRef),
-          metadata: this.#json(payload.metadata),
-          created_at: this.#requiredString(payload.createdAt, "createdAt", event)
+          ...(this.#string(payload.path) ? { path: this.#string(payload.path)! } : {}),
+          ...(this.#string(payload.contentRef) ? { contentRef: this.#string(payload.contentRef)! } : {}),
+          ...(payload.metadata !== undefined ? { metadata: payload.metadata as Record<string, unknown> } : {}),
+          createdAt: this.#requiredString(payload.createdAt, "createdAt", event)
         });
         return;
       default:
         return;
     }
+  }
+
+  #upsertSession(db: DatabaseSync, session: Session): void {
+    this.#upsertRow(db, "sessions", "id", {
+      id: session.id,
+      workspace_id: session.workspaceId,
+      parent_session_id: session.parentSessionId ?? null,
+      subject_ref: session.subjectRef,
+      model_ref: session.modelRef ?? null,
+      agent_name: session.agentName ?? null,
+      active_agent_name: session.activeAgentName,
+      title: session.title ?? null,
+      status: session.status,
+      last_run_at: session.lastRunAt ?? null,
+      created_at: session.createdAt,
+      updated_at: session.updatedAt
+    });
+  }
+
+  #upsertMessage(db: DatabaseSync, message: Message): void {
+    this.#upsertRow(db, "messages", "id", {
+      id: message.id,
+      session_id: message.sessionId,
+      run_id: message.runId ?? null,
+      role: message.role,
+      content: JSON.stringify(message.content),
+      metadata: this.#json(message.metadata),
+      created_at: message.createdAt
+    });
+  }
+
+  #upsertRuntimeMessage(db: DatabaseSync, message: RuntimeMessage): void {
+    this.#upsertRow(db, "runtime_messages", "id", {
+      id: message.id,
+      session_id: message.sessionId,
+      run_id: message.runId ?? null,
+      role: message.role,
+      kind: message.kind,
+      content: JSON.stringify(message.content),
+      metadata: this.#json(message.metadata),
+      created_at: message.createdAt
+    });
+  }
+
+  #upsertRun(db: DatabaseSync, run: Run): void {
+    this.#upsertRow(db, "runs", "id", {
+      id: run.id,
+      workspace_id: run.workspaceId,
+      session_id: run.sessionId ?? null,
+      parent_run_id: run.parentRunId ?? null,
+      initiator_ref: run.initiatorRef ?? null,
+      trigger_type: run.triggerType,
+      trigger_ref: run.triggerRef ?? null,
+      agent_name: run.agentName ?? null,
+      effective_agent_name: run.effectiveAgentName,
+      switch_count: run.switchCount ?? null,
+      status: run.status,
+      cancel_requested_at: run.cancelRequestedAt ?? null,
+      started_at: run.startedAt ?? null,
+      heartbeat_at: run.heartbeatAt ?? null,
+      ended_at: run.endedAt ?? null,
+      error_code: run.errorCode ?? null,
+      error_message: run.errorMessage ?? null,
+      metadata: this.#json(run.metadata),
+      created_at: run.createdAt
+    });
+  }
+
+  #upsertRunStep(db: DatabaseSync, step: RunStep): void {
+    this.#upsertRow(db, "run_steps", "id", {
+      id: step.id,
+      run_id: step.runId,
+      seq: step.seq,
+      step_type: step.stepType,
+      name: step.name ?? null,
+      agent_name: step.agentName ?? null,
+      status: step.status,
+      input: this.#json(step.input),
+      output: this.#json(step.output),
+      started_at: step.startedAt ?? null,
+      ended_at: step.endedAt ?? null
+    });
+  }
+
+  #upsertToolCall(db: DatabaseSync, toolCall: ToolCallAuditRecord): void {
+    this.#upsertRow(db, "tool_calls", "id", {
+      id: toolCall.id,
+      run_id: toolCall.runId,
+      step_id: toolCall.stepId ?? null,
+      source_type: toolCall.sourceType,
+      tool_name: toolCall.toolName,
+      request: this.#json(toolCall.request),
+      response: this.#json(toolCall.response),
+      status: toolCall.status,
+      duration_ms: toolCall.durationMs ?? null,
+      started_at: toolCall.startedAt,
+      ended_at: toolCall.endedAt
+    });
+  }
+
+  #upsertHookRun(db: DatabaseSync, hookRun: HookRunAuditRecord): void {
+    this.#upsertRow(db, "hook_runs", "id", {
+      id: hookRun.id,
+      run_id: hookRun.runId,
+      hook_name: hookRun.hookName,
+      event_name: hookRun.eventName,
+      capabilities: JSON.stringify(hookRun.capabilities),
+      patch: this.#json(hookRun.patch),
+      status: hookRun.status,
+      started_at: hookRun.startedAt,
+      ended_at: hookRun.endedAt,
+      error_message: hookRun.errorMessage ?? null
+    });
+  }
+
+  #upsertArtifact(db: DatabaseSync, artifact: ArtifactRecord): void {
+    this.#upsertRow(db, "artifacts", "id", {
+      id: artifact.id,
+      run_id: artifact.runId,
+      type: artifact.type,
+      path: artifact.path ?? null,
+      content_ref: artifact.contentRef ?? null,
+      metadata: this.#json(artifact.metadata),
+      created_at: artifact.createdAt
+    });
   }
 
   #deleteMirrorRow(db: DatabaseSync, event: HistoryEventRecord): void {
@@ -690,5 +1013,106 @@ export class HistoryMirrorSyncer {
 
   #errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : "Unknown history mirror error.";
+  }
+
+  async #refreshRuntimeMessagesIfSupported(db: DatabaseSync, workspaceId: string): Promise<void> {
+    if (!this.#snapshotSource?.readWorkspaceRuntimeMessages) {
+      return;
+    }
+
+    const runtimeMessages = await this.#snapshotSource.readWorkspaceRuntimeMessages(workspaceId);
+    this.#runInTransaction(db, () => {
+      db.exec("delete from runtime_messages");
+      for (const runtimeMessage of runtimeMessages) {
+        this.#upsertRuntimeMessage(db, runtimeMessage);
+      }
+    });
+  }
+}
+
+export class HistoryEventCleaner {
+  readonly #workspaceRepository: WorkspaceRepository;
+  readonly #historyEventRepository: HistoryEventMaintenanceRepository;
+  readonly #retentionMs: number;
+  readonly #pollIntervalMs: number;
+  readonly #logger: HistoryMirrorLogger;
+  #activeOperation: Promise<void> | undefined;
+  #timer: NodeJS.Timeout | undefined;
+
+  constructor(options: HistoryEventCleanerOptions) {
+    this.#workspaceRepository = options.workspaceRepository;
+    this.#historyEventRepository = options.historyEventRepository;
+    this.#retentionMs = Math.max(60_000, options.retentionMs ?? 7 * 24 * 60 * 60 * 1000);
+    this.#pollIntervalMs = Math.max(60_000, options.pollIntervalMs ?? 60 * 60 * 1000);
+    this.#logger = options.logger ?? {};
+  }
+
+  start(): void {
+    if (this.#timer) {
+      return;
+    }
+
+    this.#timer = setInterval(() => {
+      void this.cleanupOnce();
+    }, this.#pollIntervalMs);
+    this.#timer.unref?.();
+    void this.cleanupOnce();
+  }
+
+  async close(): Promise<void> {
+    if (this.#timer) {
+      clearInterval(this.#timer);
+      this.#timer = undefined;
+    }
+
+    if (this.#activeOperation) {
+      try {
+        await this.#activeOperation;
+      } catch {
+        // Ignore cleanup failures during shutdown.
+      }
+    }
+  }
+
+  async cleanupOnce(): Promise<void> {
+    if (this.#activeOperation) {
+      return this.#activeOperation;
+    }
+
+    const task = (async () => {
+      const occurredBefore = new Date(Date.now() - this.#retentionMs).toISOString();
+      let cursor: string | undefined;
+      do {
+        const workspaces = await this.#workspaceRepository.list(100, cursor);
+        for (const workspace of workspaces) {
+          if (workspace.kind !== "project" || workspace.historyMirrorEnabled === false) {
+            continue;
+          }
+
+          const status = await inspectHistoryMirrorStatus(workspace);
+          if (!status.lastEventId || status.state === "missing" || status.state === "unsupported") {
+            continue;
+          }
+
+          const deleted = await this.#historyEventRepository.pruneByWorkspace(workspace.id, status.lastEventId, occurredBefore);
+          if (deleted > 0) {
+            this.#logger.info?.(
+              `Pruned ${deleted} history events for workspace ${workspace.id} up to event ${status.lastEventId}.`
+            );
+          }
+        }
+
+        cursor = workspaces.length === 100 ? String((cursor ? Number.parseInt(cursor, 10) : 0) + 100) : undefined;
+      } while (cursor);
+    })();
+
+    this.#activeOperation = task;
+    try {
+      await task;
+    } finally {
+      if (this.#activeOperation === task) {
+        this.#activeOperation = undefined;
+      }
+    }
   }
 }

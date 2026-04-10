@@ -421,6 +421,53 @@ function StorageHistoryEventRowDetail(props: { row: Record<string, unknown> }) {
   );
 }
 
+function StorageArchiveRowDetail(props: { row: Record<string, unknown> }) {
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge>{storageString(props.row, "scope_type")}</Badge>
+        {storageOptionalString(props.row, "archive_date") ? <Badge>{storageString(props.row, "archive_date")}</Badge> : null}
+      </div>
+
+      <StorageDetailFacts
+        items={[
+          { label: "Archive ID", value: storageString(props.row, "id") },
+          { label: "Workspace ID", value: storageString(props.row, "workspace_id") },
+          { label: "Scope ID", value: storageString(props.row, "scope_id") },
+          { label: "Archived", value: storageString(props.row, "archived_at") },
+          { label: "Deleted", value: storageString(props.row, "deleted_at") },
+          { label: "Timezone", value: storageString(props.row, "timezone") }
+        ]}
+      />
+
+      <StorageDetailSection title="Workspace Snapshot">
+        <StorageDetailJson value={props.row.workspace ?? {}} prettyJson={prettyJson} maxHeightClassName="max-h-40" />
+      </StorageDetailSection>
+
+      <StorageDetailSection title="Archived Payloads">
+        <StorageDetailJson
+          value={{
+            sessions: props.row.sessions ?? [],
+            runs: props.row.runs ?? [],
+            messages: props.row.messages ?? [],
+            runtimeMessages: props.row.runtime_messages ?? [],
+            runSteps: props.row.run_steps ?? [],
+            toolCalls: props.row.tool_calls ?? [],
+            hookRuns: props.row.hook_runs ?? [],
+            artifacts: props.row.artifacts ?? []
+          }}
+          prettyJson={prettyJson}
+          maxHeightClassName="max-h-48"
+        />
+      </StorageDetailSection>
+
+      <StorageDetailSection title="Raw Row">
+        <StorageDetailJson value={props.row} prettyJson={prettyJson} maxHeightClassName="max-h-32" />
+      </StorageDetailSection>
+    </div>
+  );
+}
+
 export function getStoragePostgresDetailTitle(table: StoragePostgresTableName) {
   switch (table) {
     case "workspaces":
@@ -443,6 +490,8 @@ export function getStoragePostgresDetailTitle(table: StoragePostgresTableName) {
       return "Artifact Detail";
     case "history_events":
       return "History Event Detail";
+    case "archives":
+      return "Archive Detail";
     default:
       return "Row Detail";
   }
@@ -470,6 +519,8 @@ export function renderStoragePostgresRowDetail(table: StoragePostgresTableName, 
       return <StorageArtifactRowDetail row={row} />;
     case "history_events":
       return <StorageHistoryEventRowDetail row={row} />;
+    case "archives":
+      return <StorageArchiveRowDetail row={row} />;
     default:
       return <StoragePlainRowDetail row={row} prettyJson={prettyJson} />;
   }

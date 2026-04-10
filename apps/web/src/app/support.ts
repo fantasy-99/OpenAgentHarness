@@ -265,7 +265,8 @@ const storagePostgresTables: StoragePostgresTableName[] = [
   "tool_calls",
   "hook_runs",
   "artifacts",
-  "history_events"
+  "history_events",
+  "archives"
 ];
 
 function storageTablePreviewLimit(table: StoragePostgresTableName) {
@@ -276,6 +277,7 @@ function storageTablePreviewLimit(table: StoragePostgresTableName) {
     case "messages":
     case "tool_calls":
     case "hook_runs":
+    case "archives":
       return 25;
     default:
       return 50;

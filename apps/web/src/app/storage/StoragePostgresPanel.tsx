@@ -44,6 +44,24 @@ export function StoragePostgresPanel(props: {
                 <StorageToolbarMeta label="order" value={props.tablePage.orderBy} />
                 <StorageToolbarMeta label="offset" value={props.tablePage.offset} />
                 <StorageToolbarMeta label="limit" value={props.tablePage.limit} />
+                {props.overview?.postgres.historyEvents ? (
+                  <>
+                    <StorageToolbarMeta
+                      label="hist keep"
+                      value={`${props.overview.postgres.historyEvents.retentionDays}d`}
+                    />
+                    <StorageToolbarMeta
+                      label="hist clean"
+                      value={props.overview.postgres.historyEvents.cleanupEnabled ? "on" : "off"}
+                    />
+                  </>
+                ) : null}
+                {props.overview?.postgres.archives ? (
+                  <>
+                    <StorageToolbarMeta label="arch pend" value={props.overview.postgres.archives.pendingExports} />
+                    <StorageToolbarMeta label="arch exp" value={props.overview.postgres.archives.exportedRows} />
+                  </>
+                ) : null}
               </>
             }
             actions={
@@ -78,6 +96,12 @@ export function StoragePostgresPanel(props: {
               <>
                 <Badge variant="outline">{props.tablePage.columns.length} cols</Badge>
                 <Badge variant="outline">{props.tablePage.rows.length} rows</Badge>
+                {props.tablePage.table === "history_events" && props.overview?.postgres.historyEvents?.oldestOccurredAt ? (
+                  <Badge variant="outline">{`oldest ${props.overview.postgres.historyEvents.oldestOccurredAt}`}</Badge>
+                ) : null}
+                {props.tablePage.table === "archives" && props.overview?.postgres.archives?.oldestPendingArchiveDate ? (
+                  <Badge variant="outline">{`pending since ${props.overview.postgres.archives.oldestPendingArchiveDate}`}</Badge>
+                ) : null}
               </>
             }
             previewContent={

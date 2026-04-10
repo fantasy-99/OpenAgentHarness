@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { RuntimeService } from "@oah/runtime-core";
-import type { HookRunAuditRecord, ToolCallAuditRecord } from "@oah/runtime-core";
+import type { HookRunAuditRecord, ToolCallAuditRecord, WorkspaceArchiveRecord } from "@oah/runtime-core";
 import { createMemoryRuntimePersistence } from "@oah/storage-memory";
 import type { Message } from "@oah/api-contracts";
 
@@ -266,12 +266,68 @@ describe("runtime service", () => {
 
   it("deletes workspace records and cascades in-memory session data", async () => {
     let deletedWorkspaceRoot = "";
+    const archivedWorkspaces: WorkspaceArchiveRecord[] = [];
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
     const runtimeService = new RuntimeService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence,
+      workspaceArchiveRepository: {
+        async archiveWorkspace(input) {
+          const archived: WorkspaceArchiveRecord = {
+            id: `archive_${input.workspace.id}`,
+            workspaceId: input.workspace.id,
+            scopeType: "workspace",
+            scopeId: input.workspace.id,
+            archiveDate: input.archiveDate,
+            archivedAt: input.archivedAt,
+            deletedAt: input.deletedAt,
+            timezone: input.timezone,
+            workspace: input.workspace,
+            sessions: [],
+            runs: [],
+            messages: [],
+            runtimeMessages: [],
+            runSteps: [],
+            toolCalls: [],
+            hookRuns: [],
+            artifacts: []
+          };
+          archivedWorkspaces.push(archived);
+          return archived;
+        },
+        async archiveSessionTree(input) {
+          const archived: WorkspaceArchiveRecord = {
+            id: `archive_${input.rootSessionId}`,
+            workspaceId: input.workspace.id,
+            scopeType: "session",
+            scopeId: input.rootSessionId,
+            archiveDate: input.archiveDate,
+            archivedAt: input.archivedAt,
+            deletedAt: input.deletedAt,
+            timezone: input.timezone,
+            workspace: input.workspace,
+            sessions: [],
+            runs: [],
+            messages: [],
+            runtimeMessages: [],
+            runSteps: [],
+            toolCalls: [],
+            hookRuns: [],
+            artifacts: []
+          };
+          archivedWorkspaces.push(archived);
+          return archived;
+        },
+        async listPendingArchiveDates() {
+          return [];
+        },
+        async listByArchiveDate() {
+          return [];
+        },
+        async markExported() {}
+      },
       workspaceDeletionHandler: {
         async deleteWorkspace(workspace) {
           deletedWorkspaceRoot = workspace.rootPath;
@@ -330,6 +386,14 @@ describe("runtime service", () => {
     await runtimeService.deleteWorkspace(workspace.id);
 
     expect(deletedWorkspaceRoot).toBe("/tmp/workspace-delete-demo");
+    expect(archivedWorkspaces).toHaveLength(1);
+    expect(archivedWorkspaces[0]).toMatchObject({
+      workspaceId: workspace.id,
+      workspace: {
+        id: workspace.id,
+        rootPath: "/tmp/workspace-delete-demo"
+      }
+    });
     await expect(runtimeService.getWorkspace(workspace.id)).rejects.toMatchObject({
       code: "workspace_not_found"
     });
@@ -341,10 +405,73 @@ describe("runtime service", () => {
   it("deletes child sessions when removing a parent session", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
+    const archivedSessionTrees: WorkspaceArchiveRecord[] = [];
     const runtimeService = new RuntimeService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence,
+      workspaceArchiveRepository: {
+        async archiveWorkspace(input) {
+          const archived: WorkspaceArchiveRecord = {
+            id: `archive_${input.workspace.id}`,
+            workspaceId: input.workspace.id,
+            scopeType: "workspace",
+            scopeId: input.workspace.id,
+            archiveDate: input.archiveDate,
+            archivedAt: input.archivedAt,
+            deletedAt: input.deletedAt,
+            timezone: input.timezone,
+            workspace: input.workspace,
+            sessions: [],
+            runs: [],
+            messages: [],
+            runtimeMessages: [],
+            runSteps: [],
+            toolCalls: [],
+            hookRuns: [],
+            artifacts: []
+          };
+          return archived;
+        },
+        async archiveSessionTree(input) {
+          const archived: WorkspaceArchiveRecord = {
+            id: `archive_${input.rootSessionId}`,
+            workspaceId: input.workspace.id,
+            scopeType: "session",
+            scopeId: input.rootSessionId,
+            archiveDate: input.archiveDate,
+            archivedAt: input.archivedAt,
+            deletedAt: input.deletedAt,
+            timezone: input.timezone,
+            workspace: input.workspace,
+            sessions: input.sessionIds.map((id) => ({
+              id,
+              workspaceId: input.workspace.id,
+              subjectRef: "dev:test",
+              activeAgentName: "default",
+              status: "active",
+              createdAt: "2026-04-07T00:00:00.000Z",
+              updatedAt: "2026-04-07T00:00:00.000Z"
+            })),
+            runs: [],
+            messages: [],
+            runtimeMessages: [],
+            runSteps: [],
+            toolCalls: [],
+            hookRuns: [],
+            artifacts: []
+          };
+          archivedSessionTrees.push(archived);
+          return archived;
+        },
+        async listPendingArchiveDates() {
+          return [];
+        },
+        async listByArchiveDate() {
+          return [];
+        },
+        async markExported() {}
+      },
       workspaceInitializer: {
         async initialize(input) {
           return {
@@ -432,6 +559,17 @@ describe("runtime service", () => {
 
     await runtimeService.deleteSession("ses-parent");
 
+    expect(archivedSessionTrees).toHaveLength(1);
+    expect(archivedSessionTrees[0]).toMatchObject({
+      workspaceId: workspace.id,
+      scopeType: "session",
+      scopeId: "ses-parent"
+    });
+    expect(archivedSessionTrees[0]?.sessions.map((entry) => entry.id).sort()).toEqual([
+      "ses-child",
+      "ses-grandchild",
+      "ses-parent"
+    ]);
     await expect(runtimeService.getSession("ses-parent")).rejects.toMatchObject({ code: "session_not_found" });
     await expect(runtimeService.getSession("ses-child")).rejects.toMatchObject({ code: "session_not_found" });
     await expect(runtimeService.getSession("ses-grandchild")).rejects.toMatchObject({ code: "session_not_found" });

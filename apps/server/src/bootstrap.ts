@@ -50,9 +50,10 @@ import {
   reconcileDiscoveredWorkspaces,
   type PlatformAgentRegistry
 } from "./bootstrap/workspace-registry.js";
-import { HistoryMirrorSyncer, inspectHistoryMirrorStatus } from "./history-mirror.js";
+import { HistoryEventCleaner, HistoryMirrorSyncer, inspectHistoryMirrorStatus } from "./history-mirror.js";
 import { createBuiltInPlatformAgents } from "./platform-agents.js";
 import { createStorageAdmin, type StorageAdmin } from "./storage-admin.js";
+import { WorkspaceArchiveExporter } from "./workspace-archive-export.js";
 
 export {
   buildSingleWorkspaceConfig,
@@ -269,7 +270,31 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     redisUrl: config.storage.redis_url,
     redisAvailable: redisConfigured,
     redisEventBusEnabled: Boolean(redisBus),
-    redisRunQueueEnabled: Boolean(redisRunQueue)
+    redisRunQueueEnabled: Boolean(redisRunQueue),
+    historyEventCleanupEnabled:
+      primaryStorageMode === "postgres" &&
+      shouldRunHistoryMirrorSync({
+        processKind,
+        startWorker,
+        hasRedisRunQueue: Boolean(redisRunQueue)
+      }) &&
+      "historyEventRepository" in persistence &&
+      persistence.historyEventRepository &&
+      "pruneByWorkspace" in persistence.historyEventRepository &&
+      typeof persistence.historyEventRepository.pruneByWorkspace === "function",
+    historyEventRetentionDays: (() => {
+      const retentionDays = Number.parseInt(process.env.OAH_HISTORY_EVENT_RETENTION_DAYS ?? "7", 10);
+      return Number.isFinite(retentionDays) && retentionDays > 0 ? retentionDays : 7;
+    })(),
+    archiveExportEnabled:
+      primaryStorageMode === "postgres" &&
+      shouldRunHistoryMirrorSync({
+        processKind,
+        startWorker,
+        hasRedisRunQueue: Boolean(redisRunQueue)
+      }) &&
+      "workspaceArchiveRepository" in persistence &&
+      Boolean(persistence.workspaceArchiveRepository)
   });
   const runtimeProcess = describeRuntimeProcess({
     processKind,
@@ -556,6 +581,9 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       ? new HistoryMirrorSyncer({
           workspaceRepository,
           historyEventRepository: persistence.historyEventRepository,
+          ...("historyMirrorSnapshotSource" in persistence && persistence.historyMirrorSnapshotSource
+            ? { snapshotSource: persistence.historyMirrorSnapshotSource }
+            : {}),
           logger: {
             warn(message, error) {
               console.warn(message, error);
@@ -567,6 +595,67 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         })
       : undefined;
   historyMirrorSyncer?.start();
+  const historyEventCleaner =
+    primaryStorageMode === "postgres" &&
+    shouldRunHistoryMirrorSync({
+      processKind,
+      startWorker,
+      hasRedisRunQueue: Boolean(redisRunQueue)
+    }) &&
+    "historyEventRepository" in persistence &&
+    persistence.historyEventRepository &&
+    "pruneByWorkspace" in persistence.historyEventRepository &&
+    typeof persistence.historyEventRepository.pruneByWorkspace === "function"
+      ? (() => {
+          const retentionDays = Number.parseInt(process.env.OAH_HISTORY_EVENT_RETENTION_DAYS ?? "7", 10);
+          const retentionMs =
+            Number.isFinite(retentionDays) && retentionDays > 0 ? retentionDays * 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000;
+
+          return new HistoryEventCleaner({
+            workspaceRepository,
+            historyEventRepository: persistence.historyEventRepository,
+            retentionMs,
+            logger: {
+              info(message) {
+                console.info(message);
+              },
+              warn(message, error) {
+                console.warn(message, error);
+              },
+              error(message, error) {
+                console.error(message, error);
+              }
+            }
+          });
+        })()
+      : undefined;
+  historyEventCleaner?.start();
+  const workspaceArchiveExporter =
+    primaryStorageMode === "postgres" &&
+    shouldRunHistoryMirrorSync({
+      processKind,
+      startWorker,
+      hasRedisRunQueue: Boolean(redisRunQueue)
+    }) &&
+    "workspaceArchiveRepository" in persistence &&
+    persistence.workspaceArchiveRepository
+      ? new WorkspaceArchiveExporter({
+          repository: persistence.workspaceArchiveRepository,
+          exportRoot: path.join(config.paths.workspace_dir, ".openharness", "archives"),
+          logger: {
+            info(message) {
+              console.info(message);
+            },
+            warn(message, error) {
+              console.warn(message, error);
+            },
+            error(message, error) {
+              console.error(message, error);
+            }
+          }
+        })
+      : undefined;
+  workspaceArchiveExporter?.start();
 
   const closePersistence =
     "close" in persistence && typeof persistence.close === "function" ? () => persistence.close() : async () => undefined;
@@ -770,6 +859,8 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     async close() {
       await Promise.all([
         historyMirrorSyncer?.close() ?? Promise.resolve(),
+        historyEventCleaner?.close() ?? Promise.resolve(),
+        workspaceArchiveExporter?.close() ?? Promise.resolve(),
         redisRunWorker?.close() ?? Promise.resolve(),
         storageAdmin.close(),
         closePersistence(),

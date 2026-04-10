@@ -56,6 +56,10 @@ const POSTGRES_TABLE_CONFIG = {
   history_events: {
     orderBy: "id desc",
     description: "History mirror event source for workspace mirror sync."
+  },
+  archives: {
+    orderBy: "archived_at desc, id asc",
+    description: "Deletion archive buffer before daily SQLite export."
   }
 } satisfies Record<StoragePostgresTableName, { orderBy: string; description: string }>;
 
@@ -100,6 +104,9 @@ const POSTGRES_TABLE_FILTER_COLUMNS: Record<
     runId: "run_id"
   },
   history_events: {
+    workspaceId: "workspace_id"
+  },
+  archives: {
     workspaceId: "workspace_id"
   }
 };
@@ -185,6 +192,9 @@ export function createStorageAdmin(options: {
   redisAvailable: boolean;
   redisEventBusEnabled: boolean;
   redisRunQueueEnabled: boolean;
+  historyEventCleanupEnabled?: boolean | undefined;
+  historyEventRetentionDays?: number | undefined;
+  archiveExportEnabled?: boolean | undefined;
   keyPrefix?: string | undefined;
 }): StorageAdmin {
   const keyPrefix = options.keyPrefix ?? "oah";
@@ -248,6 +258,22 @@ export function createStorageAdmin(options: {
                   description: POSTGRES_TABLE_CONFIG[tableKey].description
                 };
               })
+            ),
+            postgresPool.query<{ count: string; oldestOccurredAt: string | null; newestOccurredAt: string | null }>(
+              `select
+                 count(*)::text as count,
+                 min(occurred_at)::text as "oldestOccurredAt",
+                 max(occurred_at)::text as "newestOccurredAt"
+               from history_events`
+            ),
+            postgresPool.query<{ rowCount: string; pendingExports: string; exportedRows: string; oldestPendingArchiveDate: string | null; newestExportedAt: string | null }>(
+              `select
+                 count(*)::text as "rowCount",
+                 count(*) filter (where exported_at is null)::text as "pendingExports",
+                 count(*) filter (where exported_at is not null)::text as "exportedRows",
+                 min(archive_date) filter (where exported_at is null) as "oldestPendingArchiveDate",
+                 max(exported_at)::text as "newestExportedAt"
+               from archives`
             )
           ])
         : undefined;
@@ -264,7 +290,7 @@ export function createStorageAdmin(options: {
             ])
           : undefined;
 
-      const [databaseResult, tableSummaries] = postgresSummary ?? [];
+      const [databaseResult, tableSummaries, historyEventStats, archiveStats] = postgresSummary ?? [];
       const [dbSize, readyQueueLength, sessionQueueKeys = [], sessionLockKeys = [], eventBufferKeys = []] = redisSummary ?? [];
       const readyQueue = redisSummary
         ? {
@@ -279,7 +305,32 @@ export function createStorageAdmin(options: {
           available: Boolean(postgresSummary),
           primaryStorage: postgresPrimary,
           ...(databaseResult?.rows[0]?.database ? { database: databaseResult.rows[0].database } : {}),
-          tables: tableSummaries ?? []
+          tables: tableSummaries ?? [],
+          ...(historyEventStats?.rows[0]
+            ? {
+                historyEvents: {
+                  cleanupEnabled: options.historyEventCleanupEnabled ?? false,
+                  retentionDays: Math.max(1, options.historyEventRetentionDays ?? 7),
+                  rowCount: Number.parseInt(historyEventStats.rows[0].count ?? "0", 10),
+                  ...(historyEventStats.rows[0].oldestOccurredAt ? { oldestOccurredAt: historyEventStats.rows[0].oldestOccurredAt } : {}),
+                  ...(historyEventStats.rows[0].newestOccurredAt ? { newestOccurredAt: historyEventStats.rows[0].newestOccurredAt } : {})
+                }
+              }
+            : {}),
+          ...(archiveStats?.rows[0]
+            ? {
+                archives: {
+                  exportEnabled: options.archiveExportEnabled ?? false,
+                  rowCount: Number.parseInt(archiveStats.rows[0].rowCount ?? "0", 10),
+                  pendingExports: Number.parseInt(archiveStats.rows[0].pendingExports ?? "0", 10),
+                  exportedRows: Number.parseInt(archiveStats.rows[0].exportedRows ?? "0", 10),
+                  ...(archiveStats.rows[0].oldestPendingArchiveDate
+                    ? { oldestPendingArchiveDate: archiveStats.rows[0].oldestPendingArchiveDate }
+                    : {}),
+                  ...(archiveStats.rows[0].newestExportedAt ? { newestExportedAt: archiveStats.rows[0].newestExportedAt } : {})
+                }
+              }
+            : {})
         },
         redis: {
           configured: Boolean(options.redisUrl),

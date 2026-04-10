@@ -24,6 +24,8 @@ import type {
   ToolCallAuditRecord,
   ToolCallAuditRepository,
   WorkspaceRecord,
+  WorkspaceArchiveRecord,
+  WorkspaceArchiveRepository,
   WorkspaceRepository,
   SessionRepository,
   MessageRepository,
@@ -45,6 +47,18 @@ import {
 
 interface SqlQueryable {
   query(text: string, values?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }>;
+}
+
+export interface PostgresHistoryMirrorSnapshot {
+  watermarkEventId: number;
+  sessions: Session[];
+  messages: Message[];
+  runtimeMessages: RuntimeMessage[];
+  runs: Run[];
+  runSteps: RunStep[];
+  toolCalls: ToolCallAuditRecord[];
+  hookRuns: HookRunAuditRecord[];
+  artifacts: ArtifactRecord[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -270,6 +284,28 @@ const historyEvents = pgTable("history_events", {
   occurredAt: timestamp("occurred_at", { withTimezone: true, mode: "string" }).notNull()
 });
 
+const archives = pgTable("archives", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull(),
+  scopeType: text("scope_type").notNull(),
+  scopeId: text("scope_id").notNull(),
+  archiveDate: text("archive_date").notNull(),
+  archivedAt: timestamp("archived_at", { withTimezone: true, mode: "string" }).notNull(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true, mode: "string" }).notNull(),
+  timezone: text("timezone").notNull(),
+  exportedAt: timestamp("exported_at", { withTimezone: true, mode: "string" }),
+  exportPath: text("export_path"),
+  workspace: jsonb("workspace").$type<WorkspaceArchiveRecord["workspace"]>().notNull(),
+  sessions: jsonb("sessions").$type<WorkspaceArchiveRecord["sessions"]>().notNull(),
+  runs: jsonb("runs").$type<WorkspaceArchiveRecord["runs"]>().notNull(),
+  messages: jsonb("messages").$type<WorkspaceArchiveRecord["messages"]>().notNull(),
+  runtimeMessages: jsonb("runtime_messages").$type<WorkspaceArchiveRecord["runtimeMessages"]>().notNull(),
+  runSteps: jsonb("run_steps").$type<WorkspaceArchiveRecord["runSteps"]>().notNull(),
+  toolCalls: jsonb("tool_calls").$type<WorkspaceArchiveRecord["toolCalls"]>().notNull(),
+  hookRuns: jsonb("hook_runs").$type<WorkspaceArchiveRecord["hookRuns"]>().notNull(),
+  artifacts: jsonb("artifacts").$type<WorkspaceArchiveRecord["artifacts"]>().notNull()
+});
+
 type OahDatabase = NodePgDatabase<{
   workspaces: typeof workspaces;
   sessions: typeof sessions;
@@ -282,6 +318,7 @@ type OahDatabase = NodePgDatabase<{
   hookRuns: typeof hookRuns;
   artifacts: typeof artifacts;
   historyEvents: typeof historyEvents;
+  archives: typeof archives;
 }>;
 
 type OahTransaction = Parameters<Parameters<OahDatabase["transaction"]>[0]>[0];
@@ -637,6 +674,54 @@ function toHistoryEventRecord(row: typeof historyEvents.$inferSelect): HistoryEv
     op: row.op as HistoryEventOperation,
     payload: row.payload,
     occurredAt: normalizeTimestamp(row.occurredAt) ?? row.occurredAt
+  };
+}
+
+function buildWorkspaceArchiveRow(input: WorkspaceArchiveRecord) {
+  return {
+    id: input.id,
+    workspaceId: input.workspaceId,
+    scopeType: input.scopeType,
+    scopeId: input.scopeId,
+    archiveDate: input.archiveDate,
+    archivedAt: input.archivedAt,
+    deletedAt: input.deletedAt,
+    timezone: input.timezone,
+    exportedAt: input.exportedAt ?? null,
+    exportPath: input.exportPath ?? null,
+    workspace: input.workspace,
+    sessions: input.sessions,
+    runs: input.runs,
+    messages: input.messages,
+    runtimeMessages: input.runtimeMessages,
+    runSteps: input.runSteps,
+    toolCalls: input.toolCalls,
+    hookRuns: input.hookRuns,
+    artifacts: input.artifacts
+  };
+}
+
+function toWorkspaceArchiveRecord(row: typeof archives.$inferSelect): WorkspaceArchiveRecord {
+  return {
+    id: row.id,
+    workspaceId: row.workspaceId,
+    scopeType: row.scopeType as WorkspaceArchiveRecord["scopeType"],
+    scopeId: row.scopeId,
+    archiveDate: row.archiveDate,
+    archivedAt: normalizeTimestamp(row.archivedAt) ?? row.archivedAt,
+    deletedAt: normalizeTimestamp(row.deletedAt) ?? row.deletedAt,
+    timezone: row.timezone,
+    ...(row.exportedAt ? { exportedAt: normalizeTimestamp(row.exportedAt) ?? row.exportedAt } : {}),
+    ...(row.exportPath ? { exportPath: row.exportPath } : {}),
+    workspace: row.workspace,
+    sessions: row.sessions,
+    runs: row.runs,
+    messages: row.messages,
+    runtimeMessages: row.runtimeMessages,
+    runSteps: row.runSteps,
+    toolCalls: row.toolCalls,
+    hookRuns: row.hookRuns,
+    artifacts: row.artifacts
   };
 }
 
@@ -1161,12 +1246,334 @@ class PostgresHistoryEventRepository implements HistoryEventRepository {
 
     return rows.map(toHistoryEventRecord);
   }
+
+  async pruneByWorkspace(workspaceId: string, maxEventId: number, occurredBefore: string): Promise<number> {
+    if (maxEventId <= 0) {
+      return 0;
+    }
+
+    const rows = await this.db
+      .delete(historyEvents)
+      .where(and(eq(historyEvents.workspaceId, workspaceId), sql`${historyEvents.id} <= ${maxEventId}`, sql`${historyEvents.occurredAt} < ${occurredBefore}`))
+      .returning({ id: historyEvents.id });
+
+    return rows.length;
+  }
+}
+
+class PostgresHistoryMirrorSnapshotSource {
+  constructor(private readonly db: OahDatabase) {}
+
+  async readWorkspaceSnapshot(workspaceId: string): Promise<PostgresHistoryMirrorSnapshot> {
+    return this.db.transaction(async (tx) => {
+      const watermarkRows = await tx
+        .select({
+          maxId: sql<number>`coalesce(max(${historyEvents.id}), 0)`
+        })
+        .from(historyEvents)
+        .where(eq(historyEvents.workspaceId, workspaceId));
+      const watermarkEventId = nonNull(watermarkRows[0]?.maxId, 0);
+
+      const snapshotSessions = (
+        await tx.select().from(sessions).where(eq(sessions.workspaceId, workspaceId)).orderBy(desc(sessions.updatedAt), desc(sessions.createdAt), asc(sessions.id))
+      ).map(toSession);
+      const sessionIds = snapshotSessions.map((session) => session.id);
+
+      const snapshotMessages =
+        sessionIds.length > 0
+          ? (
+              await tx
+                .select()
+                .from(messages)
+                .where(inArray(messages.sessionId, sessionIds))
+                .orderBy(asc(messages.createdAt), asc(messages.id))
+            ).map(toMessage)
+          : [];
+
+      const snapshotRuntimeMessages =
+        sessionIds.length > 0
+          ? (
+              await tx
+                .select()
+                .from(runtimeMessages)
+                .where(inArray(runtimeMessages.sessionId, sessionIds))
+                .orderBy(asc(runtimeMessages.createdAt), asc(runtimeMessages.id))
+            ).map(toRuntimeMessageRecord)
+          : [];
+
+      const snapshotRuns = (
+        await tx.select().from(runs).where(eq(runs.workspaceId, workspaceId)).orderBy(desc(runs.createdAt), desc(runs.id))
+      ).map(toRun);
+      const runIds = snapshotRuns.map((run) => run.id);
+
+      const snapshotRunSteps =
+        runIds.length > 0
+          ? (await tx.select().from(runSteps).where(inArray(runSteps.runId, runIds)).orderBy(asc(runSteps.runId), asc(runSteps.seq))).map(toRunStep)
+          : [];
+
+      const snapshotToolCalls =
+        runIds.length > 0
+          ? (
+              await tx
+                .select()
+                .from(toolCalls)
+                .where(inArray(toolCalls.runId, runIds))
+                .orderBy(asc(toolCalls.runId), asc(toolCalls.startedAt), asc(toolCalls.id))
+            ).map(toToolCallAuditRecord)
+          : [];
+
+      const snapshotHookRuns =
+        runIds.length > 0
+          ? (
+              await tx
+                .select()
+                .from(hookRuns)
+                .where(inArray(hookRuns.runId, runIds))
+                .orderBy(asc(hookRuns.runId), asc(hookRuns.startedAt), asc(hookRuns.id))
+            ).map(toHookRunAuditRecord)
+          : [];
+
+      const snapshotArtifacts =
+        runIds.length > 0
+          ? (
+              await tx
+                .select()
+                .from(artifacts)
+                .where(inArray(artifacts.runId, runIds))
+                .orderBy(asc(artifacts.runId), asc(artifacts.createdAt), asc(artifacts.id))
+            ).map(toArtifactRecord)
+          : [];
+
+      return {
+        watermarkEventId,
+        sessions: snapshotSessions,
+        messages: snapshotMessages,
+        runtimeMessages: snapshotRuntimeMessages,
+        runs: snapshotRuns,
+        runSteps: snapshotRunSteps,
+        toolCalls: snapshotToolCalls,
+        hookRuns: snapshotHookRuns,
+        artifacts: snapshotArtifacts
+      };
+    });
+  }
+
+  async readWorkspaceRuntimeMessages(workspaceId: string): Promise<RuntimeMessage[]> {
+    const snapshot = await this.readWorkspaceSnapshot(workspaceId);
+    return snapshot.runtimeMessages;
+  }
+}
+
+class PostgresWorkspaceArchiveRepository implements WorkspaceArchiveRepository {
+  constructor(private readonly db: OahDatabase) {}
+
+  async #buildArchive(
+    tx: OahTransaction,
+    input: {
+      workspace: WorkspaceRecord;
+      scopeType: WorkspaceArchiveRecord["scopeType"];
+      scopeId: string;
+      archiveDate: string;
+      archivedAt: string;
+      deletedAt: string;
+      timezone: string;
+      sessionIds?: string[] | undefined;
+    }
+  ): Promise<WorkspaceArchiveRecord> {
+    const sessionsForArchive = (
+      input.sessionIds && input.sessionIds.length > 0
+        ? await tx
+            .select()
+            .from(sessions)
+            .where(inArray(sessions.id, input.sessionIds))
+            .orderBy(desc(sessions.createdAt), asc(sessions.id))
+        : await tx.select().from(sessions).where(eq(sessions.workspaceId, input.workspace.id)).orderBy(desc(sessions.createdAt), asc(sessions.id))
+    ).map(toSession);
+    const sessionIds = sessionsForArchive.map((session) => session.id);
+
+    const runsForArchive = (
+      input.sessionIds && input.sessionIds.length > 0
+        ? sessionIds.length > 0
+          ? await tx.select().from(runs).where(inArray(runs.sessionId, sessionIds)).orderBy(desc(runs.createdAt), asc(runs.id))
+          : []
+        : await tx.select().from(runs).where(eq(runs.workspaceId, input.workspace.id)).orderBy(desc(runs.createdAt), asc(runs.id))
+    ).map(toRun);
+    const runIds = runsForArchive.map((run) => run.id);
+
+    const messagesForArchive =
+      sessionIds.length > 0
+        ? (
+            await tx
+              .select()
+              .from(messages)
+              .where(inArray(messages.sessionId, sessionIds))
+              .orderBy(desc(messages.createdAt), asc(messages.id))
+          ).map(toMessage)
+        : [];
+
+    const runtimeMessagesForArchive =
+      sessionIds.length > 0
+        ? (
+            await tx
+              .select()
+              .from(runtimeMessages)
+              .where(inArray(runtimeMessages.sessionId, sessionIds))
+              .orderBy(desc(runtimeMessages.createdAt), asc(runtimeMessages.id))
+          ).map(toRuntimeMessageRecord)
+        : [];
+
+    const runStepsForArchive =
+      runIds.length > 0
+        ? (
+            await tx
+              .select()
+              .from(runSteps)
+              .where(inArray(runSteps.runId, runIds))
+              .orderBy(desc(runSteps.startedAt), desc(runSteps.endedAt), desc(runSteps.seq), asc(runSteps.id))
+          ).map(toRunStep)
+        : [];
+
+    const toolCallsForArchive =
+      runIds.length > 0
+        ? (
+            await tx
+              .select()
+              .from(toolCalls)
+              .where(inArray(toolCalls.runId, runIds))
+              .orderBy(desc(toolCalls.startedAt), asc(toolCalls.id))
+          ).map(toToolCallAuditRecord)
+        : [];
+
+    const hookRunsForArchive =
+      runIds.length > 0
+        ? (
+            await tx
+              .select()
+              .from(hookRuns)
+              .where(inArray(hookRuns.runId, runIds))
+              .orderBy(desc(hookRuns.startedAt), asc(hookRuns.id))
+          ).map(toHookRunAuditRecord)
+        : [];
+
+    const artifactsForArchive =
+      runIds.length > 0
+        ? (
+            await tx
+              .select()
+              .from(artifacts)
+              .where(inArray(artifacts.runId, runIds))
+              .orderBy(desc(artifacts.createdAt), asc(artifacts.id))
+          ).map(toArtifactRecord)
+        : [];
+
+    return {
+      id: createId("warc"),
+      workspaceId: input.workspace.id,
+      scopeType: input.scopeType,
+      scopeId: input.scopeId,
+      archiveDate: input.archiveDate,
+      archivedAt: input.archivedAt,
+      deletedAt: input.deletedAt,
+      timezone: input.timezone,
+      workspace: input.workspace,
+      sessions: sessionsForArchive,
+      runs: runsForArchive,
+      messages: messagesForArchive,
+      runtimeMessages: runtimeMessagesForArchive,
+      runSteps: runStepsForArchive,
+      toolCalls: toolCallsForArchive,
+      hookRuns: hookRunsForArchive,
+      artifacts: artifactsForArchive
+    };
+  }
+
+  async archiveWorkspace(input: {
+    workspace: WorkspaceRecord;
+    archiveDate: string;
+    archivedAt: string;
+    deletedAt: string;
+    timezone: string;
+  }): Promise<WorkspaceArchiveRecord> {
+    return this.db.transaction(async (tx) => {
+      const archive = await this.#buildArchive(tx, {
+        ...input,
+        scopeType: "workspace",
+        scopeId: input.workspace.id
+      });
+
+      const [row] = await tx.insert(archives).values(buildWorkspaceArchiveRow(archive)).returning();
+      return toWorkspaceArchiveRecord(expectRow(row, `workspace archive ${archive.id}`));
+    });
+  }
+
+  async archiveSessionTree(input: {
+    workspace: WorkspaceRecord;
+    rootSessionId: string;
+    sessionIds: string[];
+    archiveDate: string;
+    archivedAt: string;
+    deletedAt: string;
+    timezone: string;
+  }): Promise<WorkspaceArchiveRecord> {
+    return this.db.transaction(async (tx) => {
+      const archive = await this.#buildArchive(tx, {
+        workspace: input.workspace,
+        scopeType: "session",
+        scopeId: input.rootSessionId,
+        sessionIds: input.sessionIds,
+        archiveDate: input.archiveDate,
+        archivedAt: input.archivedAt,
+        deletedAt: input.deletedAt,
+        timezone: input.timezone
+      });
+
+      const [row] = await tx.insert(archives).values(buildWorkspaceArchiveRow(archive)).returning();
+      return toWorkspaceArchiveRecord(expectRow(row, `session archive ${archive.id}`));
+    });
+  }
+
+  async listPendingArchiveDates(beforeArchiveDate: string, limit: number): Promise<string[]> {
+    const rows = await this.db
+      .selectDistinct({ archiveDate: archives.archiveDate })
+      .from(archives)
+      .where(and(sql`${archives.exportedAt} is null`, sql`${archives.archiveDate} < ${beforeArchiveDate}`))
+      .orderBy(asc(archives.archiveDate))
+      .limit(limit);
+
+    return rows.map((row) => row.archiveDate);
+  }
+
+  async listByArchiveDate(archiveDate: string): Promise<WorkspaceArchiveRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(archives)
+      .where(eq(archives.archiveDate, archiveDate))
+      .orderBy(asc(archives.archivedAt), asc(archives.id));
+
+    return rows.map(toWorkspaceArchiveRecord);
+  }
+
+  async markExported(ids: string[], input: { exportedAt: string; exportPath: string }): Promise<void> {
+    if (ids.length === 0) {
+      return;
+    }
+
+    await this.db
+      .update(archives)
+      .set({
+        exportedAt: input.exportedAt,
+        exportPath: input.exportPath
+      })
+      .where(inArray(archives.id, ids));
+  }
 }
 
 export interface PostgresRuntimePersistence {
   pool: Pool;
   db: OahDatabase;
   workspaceRepository: PostgresWorkspaceRepository;
+  workspaceArchiveRepository: PostgresWorkspaceArchiveRepository;
+  historyMirrorSnapshotSource: PostgresHistoryMirrorSnapshotSource;
   sessionRepository: PostgresSessionRepository;
   messageRepository: PostgresMessageRepository;
   runtimeMessageRepository: PostgresRuntimeMessageRepository;
@@ -1347,6 +1754,57 @@ const schemaStatements = [
   )`,
   `create index if not exists history_events_workspace_id_idx on history_events (workspace_id, id)`,
   `create index if not exists history_events_workspace_occurred_idx on history_events (workspace_id, occurred_at desc)`,
+  `do $$
+  begin
+    if to_regclass('public.archives') is null and to_regclass('public.workspace_archives') is not null then
+      alter table workspace_archives rename to archives;
+    end if;
+  end
+  $$`,
+  `do $$
+  begin
+    if to_regclass('public.workspace_archives_workspace_id_idx') is not null and to_regclass('public.archives_workspace_id_idx') is null then
+      alter index workspace_archives_workspace_id_idx rename to archives_workspace_id_idx;
+    end if;
+    if to_regclass('public.workspace_archives_archive_date_idx') is not null and to_regclass('public.archives_archive_date_idx') is null then
+      alter index workspace_archives_archive_date_idx rename to archives_archive_date_idx;
+    end if;
+    if to_regclass('public.workspace_archives_exported_idx') is not null and to_regclass('public.archives_exported_idx') is null then
+      alter index workspace_archives_exported_idx rename to archives_exported_idx;
+    end if;
+  end
+  $$`,
+  `create table if not exists archives (
+    id text primary key,
+    workspace_id text not null,
+    scope_type text not null,
+    scope_id text not null,
+    archive_date text not null,
+    archived_at timestamptz not null,
+    deleted_at timestamptz not null,
+    timezone text not null,
+    exported_at timestamptz,
+    export_path text,
+    workspace jsonb not null,
+    sessions jsonb not null,
+    runs jsonb not null,
+    messages jsonb not null,
+    runtime_messages jsonb not null,
+    run_steps jsonb not null,
+    tool_calls jsonb not null,
+    hook_runs jsonb not null,
+    artifacts jsonb not null
+  )`,
+  `alter table archives add column if not exists scope_type text`,
+  `alter table archives add column if not exists scope_id text`,
+  `update archives set scope_type = 'workspace' where scope_type is null`,
+  `update archives set scope_id = workspace_id where scope_id is null`,
+  `alter table archives alter column scope_type set not null`,
+  `alter table archives alter column scope_id set not null`,
+  `create index if not exists archives_workspace_id_idx on archives (workspace_id, archived_at desc)`,
+  `create index if not exists archives_scope_idx on archives (scope_type, scope_id, archived_at desc)`,
+  `create index if not exists archives_archive_date_idx on archives (archive_date asc, archived_at asc)`,
+  `create index if not exists archives_exported_idx on archives (exported_at asc nulls first, archive_date asc)`,
   `create table if not exists session_events (
     id text primary key,
     cursor integer not null,
@@ -1550,7 +2008,8 @@ export async function createPostgresRuntimePersistence(
       toolCalls,
       hookRuns,
       artifacts,
-      historyEvents
+      historyEvents,
+      archives
     }
   });
 
@@ -1558,6 +2017,8 @@ export async function createPostgresRuntimePersistence(
     pool,
     db,
     workspaceRepository: new PostgresWorkspaceRepository(db),
+    workspaceArchiveRepository: new PostgresWorkspaceArchiveRepository(db),
+    historyMirrorSnapshotSource: new PostgresHistoryMirrorSnapshotSource(db),
     sessionRepository: new PostgresSessionRepository(db),
     messageRepository: new PostgresMessageRepository(db),
     runtimeMessageRepository: new PostgresRuntimeMessageRepository(db),
@@ -1577,7 +2038,9 @@ export async function createPostgresRuntimePersistence(
 }
 
 export type {
+  PostgresHistoryMirrorSnapshotSource,
   PostgresWorkspaceRepository,
+  PostgresWorkspaceArchiveRepository,
   PostgresSessionRepository,
   PostgresMessageRepository,
   PostgresRuntimeMessageRepository,

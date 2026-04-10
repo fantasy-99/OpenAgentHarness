@@ -8,7 +8,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { HistoryEventRecord } from "@oah/runtime-core";
 import { createMemoryRuntimePersistence } from "@oah/storage-memory";
 
-import { HistoryMirrorSyncer, historyMirrorDbPath, inspectHistoryMirrorStatus } from "../apps/server/src/history-mirror.ts";
+import {
+  HistoryEventCleaner,
+  HistoryMirrorSyncer,
+  historyMirrorDbPath,
+  inspectHistoryMirrorStatus
+} from "../apps/server/src/history-mirror.ts";
 
 const tempRoots: string[] = [];
 
@@ -193,6 +198,9 @@ describe("history mirror syncer", () => {
     await syncer.close();
 
     const db = new DatabaseSync(historyMirrorDbPath(workspaceRoot));
+    const workspaceRow = db.prepare("select name, root_path as rootPath from workspaces where id = ?").get("ws_history_enabled") as
+      | { name: string; rootPath: string }
+      | undefined;
     const sessionRow = db.prepare("select workspace_id as workspaceId, subject_ref as subjectRef from sessions where id = ?").get(
       "ses_1"
     ) as { workspaceId: string; subjectRef: string } | undefined;
@@ -211,6 +219,10 @@ describe("history mirror syncer", () => {
       .get("ws_history_enabled") as { lastEventId: number; status: string; errorMessage: string | null } | undefined;
     db.close();
 
+    expect(workspaceRow).toEqual({
+      name: "history-enabled",
+      rootPath: workspaceRoot
+    });
     expect(sessionRow).toEqual({
       workspaceId: "ws_history_enabled",
       subjectRef: "dev:test"
@@ -530,5 +542,252 @@ describe("history mirror syncer", () => {
       id: "ses_rebuilt",
       subjectRef: "dev:test"
     });
+  });
+
+  it("rebuilds a corrupted local history.db mirror from a primary snapshot before replaying tail history events", async () => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), "oah-history-mirror-snapshot-"));
+    tempRoots.push(workspaceRoot);
+
+    const persistence = createMemoryRuntimePersistence();
+    const workspace = await persistence.workspaceRepository.upsert({
+      id: "ws_history_snapshot",
+      name: "history-snapshot",
+      rootPath: workspaceRoot,
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: true,
+      settings: {
+        historyMirrorEnabled: true,
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {},
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "ws_history_snapshot",
+        agents: [],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const dbPath = historyMirrorDbPath(workspaceRoot);
+    await mkdir(path.dirname(dbPath), { recursive: true });
+    await writeFile(dbPath, "not-a-sqlite-database", "utf8");
+
+    const syncer = new HistoryMirrorSyncer({
+      workspaceRepository: persistence.workspaceRepository,
+      historyEventRepository: {
+        async append() {
+          throw new Error("append should not be called in sync tests");
+        },
+        async listByWorkspaceId(workspaceId, limit, afterId) {
+          return [
+            {
+              id: 5,
+              workspaceId,
+              entityType: "message",
+              entityId: "msg_tail",
+              op: "upsert",
+              payload: {
+                id: "msg_tail",
+                sessionId: "ses_snap",
+                runId: "run_snap",
+                role: "assistant",
+                content: "tail event",
+                createdAt: "2026-04-01T00:00:02.000Z"
+              },
+              occurredAt: "2026-04-01T00:00:02.000Z"
+            }
+          ].filter((event) => afterId === undefined || event.id > afterId).slice(0, limit);
+        }
+      },
+      snapshotSource: {
+        async readWorkspaceSnapshot(workspaceId) {
+          return {
+            watermarkEventId: 4,
+            sessions: [
+              {
+                id: "ses_snap",
+                workspaceId,
+                subjectRef: "dev:test",
+                activeAgentName: "builder",
+                status: "active",
+                createdAt: "2026-04-01T00:00:00.000Z",
+                updatedAt: "2026-04-01T00:00:00.000Z"
+              }
+            ],
+            messages: [],
+            runtimeMessages: [
+              {
+                id: "rtm_snap",
+                sessionId: "ses_snap",
+                runId: "run_snap",
+                role: "assistant",
+                kind: "tool-call",
+                content: [{ type: "tool-call", toolCallId: "call_1", toolName: "Read", input: { path: "README.md" } }],
+                createdAt: "2026-04-01T00:00:01.500Z"
+              }
+            ],
+            runs: [
+              {
+                id: "run_snap",
+                workspaceId,
+                sessionId: "ses_snap",
+                triggerType: "message",
+                effectiveAgentName: "builder",
+                status: "completed",
+                createdAt: "2026-04-01T00:00:01.000Z"
+              }
+            ],
+            runSteps: [],
+            toolCalls: [],
+            hookRuns: [],
+            artifacts: []
+          };
+        },
+        async readWorkspaceRuntimeMessages() {
+          return [
+            {
+              id: "rtm_snap",
+              sessionId: "ses_snap",
+              runId: "run_snap",
+              role: "assistant",
+              kind: "tool-call",
+              content: [{ type: "tool-call", toolCallId: "call_1", toolName: "Read", input: { path: "README.md" } }],
+              createdAt: "2026-04-01T00:00:01.500Z"
+            }
+          ];
+        }
+      }
+    });
+
+    const status = await syncer.rebuildWorkspace(workspace);
+    await syncer.close();
+
+    const db = new DatabaseSync(dbPath);
+    const sessionRow = db
+      .prepare("select id, subject_ref as subjectRef from sessions where id = ?")
+      .get("ses_snap") as { id: string; subjectRef: string } | undefined;
+    const messageRow = db
+      .prepare("select id, content from messages where id = ?")
+      .get("msg_tail") as { id: string; content: string } | undefined;
+    const runtimeMessageRow = db
+      .prepare("select id, kind, content from runtime_messages where id = ?")
+      .get("rtm_snap") as { id: string; kind: string; content: string } | undefined;
+    db.close();
+
+    expect(status).toMatchObject({
+      workspaceId: "ws_history_snapshot",
+      enabled: true,
+      state: "idle",
+      lastEventId: 5
+    });
+    expect(sessionRow).toEqual({
+      id: "ses_snap",
+      subjectRef: "dev:test"
+    });
+    expect(messageRow?.id).toBe("msg_tail");
+    expect(messageRow?.content).toContain("tail event");
+    expect(runtimeMessageRow).toMatchObject({
+      id: "rtm_snap",
+      kind: "tool-call"
+    });
+    expect(runtimeMessageRow?.content).toContain("\"toolName\":\"Read\"");
+  });
+
+  it("prunes mirrored history events older than the retention window", async () => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), "oah-history-prune-"));
+    tempRoots.push(workspaceRoot);
+
+    const persistence = createMemoryRuntimePersistence();
+    await persistence.workspaceRepository.upsert({
+      id: "ws_history_prune",
+      name: "history-prune",
+      rootPath: workspaceRoot,
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: true,
+      settings: {
+        historyMirrorEnabled: true,
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {},
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "ws_history_prune",
+        agents: [],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const dbPath = historyMirrorDbPath(workspaceRoot);
+    await mkdir(path.dirname(dbPath), { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    db.exec(`
+      create table if not exists mirror_state (
+        workspace_id text primary key,
+        last_event_id integer not null,
+        last_synced_at text not null,
+        status text not null,
+        error_message text
+      )
+    `);
+    db.prepare(
+      "insert into mirror_state (workspace_id, last_event_id, last_synced_at, status, error_message) values (?, ?, ?, ?, ?)"
+    ).run("ws_history_prune", 42, "2026-04-01T00:00:00.000Z", "idle", null);
+    db.close();
+
+    const pruneCalls: Array<{ workspaceId: string; maxEventId: number; occurredBefore: string }> = [];
+    const cleaner = new HistoryEventCleaner({
+      workspaceRepository: persistence.workspaceRepository,
+      historyEventRepository: {
+        async append() {
+          throw new Error("append should not be called in cleanup tests");
+        },
+        async listByWorkspaceId() {
+          return [];
+        },
+        async pruneByWorkspace(workspaceId, maxEventId, occurredBefore) {
+          pruneCalls.push({ workspaceId, maxEventId, occurredBefore });
+          return 3;
+        }
+      },
+      retentionMs: 60_000
+    });
+
+    await cleaner.cleanupOnce();
+    await cleaner.close();
+
+    expect(pruneCalls).toHaveLength(1);
+    expect(pruneCalls[0]).toMatchObject({
+      workspaceId: "ws_history_prune",
+      maxEventId: 42
+    });
+    expect(pruneCalls[0]?.occurredBefore).toMatch(/T/);
   });
 });
