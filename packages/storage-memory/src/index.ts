@@ -51,6 +51,8 @@ export class InMemoryWorkspaceRepository implements WorkspaceRepository {
 export class InMemorySessionRepository implements SessionRepository {
   readonly #items = new Map<string, Session>();
 
+  constructor(private readonly onDelete?: (sessionId: string) => Promise<void>) {}
+
   async create(input: Session): Promise<Session> {
     this.#items.set(input.id, input);
     return input;
@@ -78,19 +80,25 @@ export class InMemorySessionRepository implements SessionRepository {
   }
 
   async delete(id: string): Promise<void> {
+    if (!this.#items.has(id)) {
+      return;
+    }
+
+    await this.onDelete?.(id);
     this.#items.delete(id);
   }
 
-  deleteByWorkspaceId(workspaceId: string): string[] {
+  async deleteByWorkspaceId(workspaceId: string): Promise<string[]> {
     const deletedSessionIds: string[] = [];
 
-    for (const [sessionId, session] of this.#items.entries()) {
-      if (session.workspaceId !== workspaceId) {
-        continue;
+    for (const session of this.#items.values()) {
+      if (session.workspaceId === workspaceId) {
+        deletedSessionIds.push(session.id);
       }
+    }
 
-      deletedSessionIds.push(sessionId);
-      this.#items.delete(sessionId);
+    for (const sessionId of deletedSessionIds) {
+      await this.delete(sessionId);
     }
 
     return deletedSessionIds;
@@ -204,6 +212,22 @@ export class InMemoryRunRepository implements RunRepository {
       .slice(0, Math.max(1, limit));
   }
 
+  deleteBySessionIds(sessionIds: string[]): string[] {
+    const sessionIdSet = new Set(sessionIds);
+    const deletedRunIds: string[] = [];
+
+    for (const [runId, run] of this.#items.entries()) {
+      if (!run.sessionId || !sessionIdSet.has(run.sessionId)) {
+        continue;
+      }
+
+      deletedRunIds.push(runId);
+      this.#items.delete(runId);
+    }
+
+    return deletedRunIds;
+  }
+
   deleteByWorkspaceId(workspaceId: string): string[] {
     const deletedRunIds: string[] = [];
 
@@ -263,18 +287,21 @@ export class InMemoryRunStepRepository implements RunStepRepository {
 export class InMemorySessionEventStore implements SessionEventStore {
   readonly #eventsBySession = new Map<string, SessionEvent[]>();
   readonly #listeners = new Map<string, Set<(event: SessionEvent) => void>>();
+  readonly #nextCursorBySession = new Map<string, number>();
 
   async append(input: Omit<SessionEvent, "id" | "cursor" | "createdAt">): Promise<SessionEvent> {
     const currentEvents = this.#eventsBySession.get(input.sessionId) ?? [];
+    const nextCursor = this.#nextCursorBySession.get(input.sessionId) ?? 0;
     const event: SessionEvent = {
       ...input,
       id: createId("evt"),
-      cursor: String(currentEvents.length),
+      cursor: String(nextCursor),
       createdAt: nowIso()
     };
 
     currentEvents.push(event);
     this.#eventsBySession.set(input.sessionId, currentEvents);
+    this.#nextCursorBySession.set(input.sessionId, nextCursor + 1);
 
     for (const listener of this.#listeners.get(input.sessionId) ?? []) {
       listener(event);
@@ -284,11 +311,14 @@ export class InMemorySessionEventStore implements SessionEventStore {
   }
 
   async listSince(sessionId: string, cursor?: string, runId?: string): Promise<SessionEvent[]> {
-    const start = cursor ? Number.parseInt(cursor, 10) : -1;
-    const normalizedStart = Number.isFinite(start) && start >= -1 ? start + 1 : 0;
+    const parsedCursor = cursor ? Number.parseInt(cursor, 10) : -1;
+    const normalizedCursor = Number.isFinite(parsedCursor) && parsedCursor >= -1 ? parsedCursor : -1;
     const events = this.#eventsBySession.get(sessionId) ?? [];
 
-    return events.filter((event, index) => index >= normalizedStart && (!runId || event.runId === runId));
+    return events.filter((event) => {
+      const eventCursor = Number.parseInt(event.cursor, 10);
+      return Number.isFinite(eventCursor) && eventCursor > normalizedCursor && (!runId || event.runId === runId);
+    });
   }
 
   async deleteById(eventId: string): Promise<void> {
@@ -323,6 +353,7 @@ export class InMemorySessionEventStore implements SessionEventStore {
     for (const sessionId of sessionIds) {
       this.#eventsBySession.delete(sessionId);
       this.#listeners.delete(sessionId);
+      this.#nextCursorBySession.delete(sessionId);
     }
   }
 }
@@ -338,19 +369,22 @@ export interface MemoryRuntimePersistence {
 }
 
 export function createMemoryRuntimePersistence(): MemoryRuntimePersistence {
-  const sessionRepository = new InMemorySessionRepository();
   const messageRepository = new InMemoryMessageRepository();
   const runtimeMessageRepository = new InMemoryRuntimeMessageRepository();
   const runRepository = new InMemoryRunRepository();
   const runStepRepository = new InMemoryRunStepRepository();
   const sessionEventStore = new InMemorySessionEventStore();
+  const deleteSessionArtifacts = async (sessionId: string) => {
+    const deletedRunIds = runRepository.deleteBySessionIds([sessionId]);
+    sessionEventStore.deleteBySessionIds([sessionId]);
+    messageRepository.deleteBySessionIds([sessionId]);
+    runtimeMessageRepository.deleteBySessionIds([sessionId]);
+    runStepRepository.deleteByRunIds(deletedRunIds);
+  };
+  const sessionRepository = new InMemorySessionRepository(deleteSessionArtifacts);
   const workspaceRepository = new InMemoryWorkspaceRepository(async (workspaceId) => {
-    const deletedSessionIds = sessionRepository.deleteByWorkspaceId(workspaceId);
+    await sessionRepository.deleteByWorkspaceId(workspaceId);
     const deletedRunIds = runRepository.deleteByWorkspaceId(workspaceId);
-
-    sessionEventStore.deleteBySessionIds(deletedSessionIds);
-    messageRepository.deleteBySessionIds(deletedSessionIds);
-    runtimeMessageRepository.deleteBySessionIds(deletedSessionIds);
     runStepRepository.deleteByRunIds(deletedRunIds);
   });
 

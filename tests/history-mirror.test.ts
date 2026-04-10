@@ -383,6 +383,76 @@ describe("history mirror syncer", () => {
     await expect(access(historyMirrorDbPath(workspaceRoot))).rejects.toBeDefined();
   });
 
+  it("reports disabled state for project workspaces with history mirror turned off", async () => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), "oah-history-mirror-disabled-"));
+    tempRoots.push(workspaceRoot);
+
+    const workspace = {
+      id: "ws_history_disabled_project",
+      name: "history-disabled-project",
+      rootPath: workspaceRoot,
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project" as const,
+      readOnly: false,
+      historyMirrorEnabled: false,
+      settings: {
+        historyMirrorEnabled: false,
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {},
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "ws_history_disabled_project",
+        agents: [],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    };
+
+    await expect(inspectHistoryMirrorStatus(workspace)).resolves.toMatchObject({
+      workspaceId: "ws_history_disabled_project",
+      supported: true,
+      enabled: false,
+      state: "disabled",
+      dbPath: historyMirrorDbPath(workspaceRoot)
+    });
+
+    const persistence = createMemoryRuntimePersistence();
+    await persistence.workspaceRepository.upsert(workspace);
+    const syncer = new HistoryMirrorSyncer({
+      workspaceRepository: persistence.workspaceRepository,
+      historyEventRepository: {
+        async append() {
+          throw new Error("append should not be called in sync tests");
+        },
+        async listByWorkspaceId() {
+          return [];
+        }
+      }
+    });
+
+    await expect(syncer.rebuildWorkspace(workspace)).resolves.toMatchObject({
+      workspaceId: "ws_history_disabled_project",
+      supported: true,
+      enabled: false,
+      state: "disabled"
+    });
+    await syncer.close();
+
+    await expect(access(historyMirrorDbPath(workspaceRoot))).rejects.toBeDefined();
+  });
+
   it("skips workspaces whose root path is unavailable on this machine", async () => {
     const tempRoot = await mkdtemp(path.join(tmpdir(), "oah-history-mirror-bad-root-"));
     tempRoots.push(tempRoot);

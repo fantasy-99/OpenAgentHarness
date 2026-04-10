@@ -690,8 +690,8 @@ class SQLiteWorkspaceRepository implements WorkspaceRepository {
   }
 
   async upsert(input: WorkspaceRecord): Promise<WorkspaceRecord> {
-    this.#items.set(input.id, input);
     await this.#onUpsert(input);
+    this.#items.set(input.id, input);
     return input;
   }
 
@@ -707,8 +707,8 @@ class SQLiteWorkspaceRepository implements WorkspaceRepository {
   }
 
   async delete(id: string): Promise<void> {
-    this.#items.delete(id);
     await this.#onDelete(id);
+    this.#items.delete(id);
   }
 }
 
@@ -1074,12 +1074,74 @@ class SQLiteSessionRepository implements SessionRepository {
   }
 
   async delete(id: string): Promise<void> {
-    const handle = await this.#coordinator.getSessionHandle(id);
+    const workspaceId = await this.#coordinator.getWorkspaceIdForSession(id);
+    const handle = await this.#coordinator.getWorkspaceHandle(workspaceId);
     runInTransaction(handle.db, () => {
+      const sessionRunRows = coerceRows<IdRow>(handle.db.prepare("select id from runs where session_id = ?").all(id));
+      const runIds = sessionRunRows.map((row) => row.id);
+      const sessionMessageRows = coerceRows<IdRow>(handle.db.prepare("select id from messages where session_id = ?").all(id));
+      const runStepRows =
+        runIds.length > 0
+          ? coerceRows<IdRow>(
+              handle.db
+                .prepare(`select id from run_steps where run_id in (${runIds.map(() => "?").join(", ")})`)
+                .all(...runIds)
+            )
+          : [];
+      const toolCallRows =
+        runIds.length > 0
+          ? coerceRows<IdRow>(
+              handle.db
+                .prepare(`select id from tool_calls where run_id in (${runIds.map(() => "?").join(", ")})`)
+                .all(...runIds)
+            )
+          : [];
+      const hookRunRows =
+        runIds.length > 0
+          ? coerceRows<IdRow>(
+              handle.db
+                .prepare(`select id from hook_runs where run_id in (${runIds.map(() => "?").join(", ")})`)
+                .all(...runIds)
+            )
+          : [];
+      const artifactRows =
+        runIds.length > 0
+          ? coerceRows<IdRow>(
+              handle.db
+                .prepare(`select id from artifacts where run_id in (${runIds.map(() => "?").join(", ")})`)
+                .all(...runIds)
+            )
+          : [];
+
+      if (runIds.length > 0) {
+        handle.db.prepare(`delete from run_steps where run_id in (${runIds.map(() => "?").join(", ")})`).run(...runIds);
+        handle.db.prepare(`delete from tool_calls where run_id in (${runIds.map(() => "?").join(", ")})`).run(...runIds);
+        handle.db.prepare(`delete from hook_runs where run_id in (${runIds.map(() => "?").join(", ")})`).run(...runIds);
+        handle.db.prepare(`delete from artifacts where run_id in (${runIds.map(() => "?").join(", ")})`).run(...runIds);
+        handle.db.prepare(`delete from runs where id in (${runIds.map(() => "?").join(", ")})`).run(...runIds);
+      }
+
+      handle.db.prepare("delete from runtime_messages where session_id = ?").run(id);
+      handle.db.prepare("delete from session_events where session_id = ?").run(id);
       handle.db.prepare("delete from messages where session_id = ?").run(id);
       handle.db.prepare("delete from sessions where id = ?").run(id);
+
+      appendHistoryDeleteEvents(
+        handle.db,
+        workspaceId,
+        [
+          ...artifactRows.map((row) => ({ entityType: "artifact" as const, entityId: row.id })),
+          ...hookRunRows.map((row) => ({ entityType: "hook_run" as const, entityId: row.id })),
+          ...toolCallRows.map((row) => ({ entityType: "tool_call" as const, entityId: row.id })),
+          ...runStepRows.map((row) => ({ entityType: "run_step" as const, entityId: row.id })),
+          ...sessionRunRows.map((row) => ({ entityType: "run" as const, entityId: row.id })),
+          ...sessionMessageRows.map((row) => ({ entityType: "message" as const, entityId: row.id })),
+          { entityType: "session", entityId: id }
+        ],
+        nowIso()
+      );
     });
-    this.#coordinator.forgetSession(id);
+    this.#coordinator.reindexWorkspace(handle.db, workspaceId);
   }
 }
 
@@ -1663,6 +1725,24 @@ function appendHistoryEvent(db: DatabaseSync, input: Omit<HistoryEventRecord, "i
     serializeJson(input.payload),
     input.occurredAt
   );
+}
+
+function appendHistoryDeleteEvents(
+  db: DatabaseSync,
+  workspaceId: string,
+  entities: Array<{ entityType: HistoryEventRecord["entityType"]; entityId: string }>,
+  occurredAt: string
+): void {
+  for (const entity of entities) {
+    appendHistoryEvent(db, {
+      workspaceId,
+      entityType: entity.entityType,
+      entityId: entity.entityId,
+      op: "delete",
+      payload: {},
+      occurredAt
+    });
+  }
 }
 
 export interface SQLiteRuntimePersistence {

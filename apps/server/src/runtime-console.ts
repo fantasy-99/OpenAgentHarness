@@ -1,4 +1,5 @@
 import path from "node:path";
+import { stat } from "node:fs/promises";
 import { mkdir } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 
@@ -257,6 +258,14 @@ async function appendPersistedSessionEventToHistoryDb(workspace: WorkspaceRecord
   }
 }
 
+async function isLocalWorkspaceHistoryWritable(workspace: WorkspaceRecord): Promise<boolean> {
+  try {
+    return (await stat(workspace.rootPath)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 async function resolveLocalWorkspaceForEvent(
   sessionRepository: SessionRepository,
   workspaceRepository: WorkspaceRepository,
@@ -279,15 +288,26 @@ export class DualWriteSessionEventStore implements SessionEventStore {
   readonly #primary: SessionEventStore;
   readonly #sessionRepository: SessionRepository;
   readonly #workspaceRepository: WorkspaceRepository;
+  readonly #logger:
+    | {
+        warn?(message: string, error?: unknown): void;
+      }
+    | undefined;
 
   constructor(options: {
     primary: SessionEventStore;
     sessionRepository: SessionRepository;
     workspaceRepository: WorkspaceRepository;
+    logger?:
+      | {
+          warn?(message: string, error?: unknown): void;
+        }
+      | undefined;
   }) {
     this.#primary = options.primary;
     this.#sessionRepository = options.sessionRepository;
     this.#workspaceRepository = options.workspaceRepository;
+    this.#logger = options.logger;
   }
 
   async append(input: Omit<SessionEvent, "id" | "cursor" | "createdAt">): Promise<SessionEvent> {
@@ -298,28 +318,20 @@ export class DualWriteSessionEventStore implements SessionEventStore {
       return event;
     }
 
+    if (!(await isLocalWorkspaceHistoryWritable(workspace))) {
+      return event;
+    }
+
     try {
       await appendPersistedSessionEventToHistoryDb(workspace, event);
-      return event;
     } catch (error) {
-      try {
-        await this.#primary.deleteById(event.id);
-      } catch (rollbackError) {
-        throw new Error(
-          `Failed to mirror session event ${event.id} to ${workspace.id} history.db and failed to roll back the central append.`,
-          {
-            cause: {
-              localWriteError: error,
-              rollbackError
-            }
-          }
-        );
-      }
-
-      throw new Error(`Failed to mirror session event ${event.id} to ${workspace.id} history.db.`, {
-        cause: error
-      });
+      this.#logger?.warn?.(
+        `Failed to mirror session event ${event.id} to ${workspace.id} history.db; continuing with central event only.`,
+        error
+      );
     }
+
+    return event;
   }
 
   async deleteById(eventId: string): Promise<void> {

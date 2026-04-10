@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -9,6 +9,7 @@ import { buildWorkspaceId } from "@oah/config";
 
 import {
   bootstrapRuntime,
+  cleanupWorkspaceLocalArtifacts,
   findManagedWorkspaceIdsToDelete,
   reconcileDiscoveredWorkspaces
 } from "../apps/server/src/bootstrap.ts";
@@ -75,6 +76,159 @@ function seedLegacyMirrorDatabase(dbPath: string, workspaceId: string): void {
 }
 
 describe("bootstrap single workspace mode", () => {
+  it("cleans local workspace artifacts for deleted workspaces without always deleting the root", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-workspace-cleanup-"));
+    tempDirs.push(tempDir);
+
+    const workspaceDir = path.join(tempDir, "workspaces");
+    const chatDir = path.join(tempDir, "chat-workspaces");
+    const shadowRoot = path.join(workspaceDir, ".openharness", "data", "workspace-state");
+    const externalProjectRoot = path.join(tempDir, "external-project");
+    const managedChatRoot = path.join(chatDir, "chat-demo");
+    const externalProjectDbPath = path.join(externalProjectRoot, ".openharness", "data", "history.db");
+    const shadowDbPath = path.join(shadowRoot, "ws_chat_external", "history.db");
+
+    await Promise.all([
+      mkdir(path.dirname(externalProjectDbPath), { recursive: true }),
+      mkdir(path.dirname(shadowDbPath), { recursive: true }),
+      mkdir(managedChatRoot, { recursive: true })
+    ]);
+    await Promise.all([
+      writeFile(externalProjectDbPath, "project-db", "utf8"),
+      writeFile(shadowDbPath, "chat-db", "utf8"),
+      writeFile(path.join(managedChatRoot, "note.txt"), "chat-root", "utf8")
+    ]);
+
+    const projectCleanup = await cleanupWorkspaceLocalArtifacts({
+      workspace: {
+        id: "ws_external_project",
+        name: "external-project",
+        rootPath: externalProjectRoot,
+        executionPolicy: "local",
+        status: "active",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        kind: "project",
+        readOnly: false,
+        historyMirrorEnabled: true,
+        settings: {
+          defaultAgent: "assistant",
+          skillDirs: []
+        },
+        defaultAgent: "assistant",
+        workspaceModels: {},
+        agents: {},
+        actions: {},
+        skills: {},
+        toolServers: {},
+        hooks: {},
+        catalog: {
+          workspaceId: "ws_external_project",
+          agents: [],
+          models: [],
+          actions: [],
+          skills: [],
+          tools: [],
+          hooks: [],
+          nativeTools: []
+        }
+      },
+      paths: {
+        workspace_dir: workspaceDir,
+        chat_dir: chatDir
+      },
+      sqliteShadowRoot: shadowRoot
+    });
+    const chatShadowCleanup = await cleanupWorkspaceLocalArtifacts({
+      workspace: {
+        id: "ws_chat_external",
+        name: "chat-external",
+        rootPath: path.join(tempDir, "external-chat"),
+        executionPolicy: "local",
+        status: "active",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        kind: "chat",
+        readOnly: true,
+        historyMirrorEnabled: false,
+        settings: {
+          defaultAgent: "assistant",
+          skillDirs: []
+        },
+        defaultAgent: "assistant",
+        workspaceModels: {},
+        agents: {},
+        actions: {},
+        skills: {},
+        toolServers: {},
+        hooks: {},
+        catalog: {
+          workspaceId: "ws_chat_external",
+          agents: [],
+          models: [],
+          actions: [],
+          skills: [],
+          tools: [],
+          hooks: [],
+          nativeTools: []
+        }
+      },
+      paths: {
+        workspace_dir: workspaceDir,
+        chat_dir: chatDir
+      },
+      sqliteShadowRoot: shadowRoot
+    });
+    const managedChatCleanup = await cleanupWorkspaceLocalArtifacts({
+      workspace: {
+        id: "ws_chat_managed",
+        name: "chat-managed",
+        rootPath: managedChatRoot,
+        executionPolicy: "local",
+        status: "active",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        kind: "chat",
+        readOnly: false,
+        historyMirrorEnabled: false,
+        settings: {
+          defaultAgent: "assistant",
+          skillDirs: []
+        },
+        defaultAgent: "assistant",
+        workspaceModels: {},
+        agents: {},
+        actions: {},
+        skills: {},
+        toolServers: {},
+        hooks: {},
+        catalog: {
+          workspaceId: "ws_chat_managed",
+          agents: [],
+          models: [],
+          actions: [],
+          skills: [],
+          tools: [],
+          hooks: [],
+          nativeTools: []
+        }
+      },
+      paths: {
+        workspace_dir: workspaceDir,
+        chat_dir: chatDir
+      },
+      sqliteShadowRoot: shadowRoot
+    });
+
+    expect(projectCleanup.mode).toBe("history_db");
+    expect(chatShadowCleanup.mode).toBe("shadow_history_db");
+    expect(managedChatCleanup.mode).toBe("workspace_root");
+    await expect(access(externalProjectRoot)).resolves.toBeUndefined();
+    await expect(access(externalProjectDbPath)).rejects.toBeDefined();
+    await expect(access(shadowDbPath)).rejects.toBeDefined();
+    await expect(access(managedChatRoot)).rejects.toBeDefined();
+  });
+
   it("reuses persisted workspace ids for rediscovered roots", async () => {
     const discovered = {
       id: buildWorkspaceId("project", "repo", "/tmp/repo"),
@@ -843,4 +997,125 @@ llm:
       await runtimeB.close();
     }
   });
+
+  it("reloads platform models from model_dir and refreshes workspace catalogs", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-platform-model-reload-"));
+    tempDirs.push(tempDir);
+
+    const workspaceDir = path.join(tempDir, "workspaces");
+    const chatDir = path.join(tempDir, "chat");
+    const templatesDir = path.join(tempDir, "templates");
+    const modelsDir = path.join(tempDir, "models");
+    const toolsDir = path.join(tempDir, "tools");
+    const skillsDir = path.join(tempDir, "skills");
+    const workspaceRoot = path.join(workspaceDir, "demo-project");
+    const configPath = path.join(tempDir, "server.yaml");
+    const workspaceId = buildWorkspaceId("project", "demo-project", workspaceRoot);
+
+    await Promise.all([
+      mkdir(workspaceDir, { recursive: true }),
+      mkdir(chatDir, { recursive: true }),
+      mkdir(templatesDir, { recursive: true }),
+      mkdir(modelsDir, { recursive: true }),
+      mkdir(toolsDir, { recursive: true }),
+      mkdir(skillsDir, { recursive: true }),
+      mkdir(path.join(workspaceRoot, ".openharness"), { recursive: true })
+    ]);
+
+    await writeFile(path.join(workspaceRoot, ".openharness", "settings.yaml"), "default_agent: assistant\n", "utf8");
+    await writeFile(
+      path.join(modelsDir, "openai.yaml"),
+      `
+openai-default:
+  provider: openai
+  name: gpt-4o-mini
+`,
+      "utf8"
+    );
+    await writeFile(
+      configPath,
+      `
+server:
+  host: 127.0.0.1
+  port: 8787
+storage: {}
+paths:
+  workspace_dir: ./workspaces
+  chat_dir: ./chat
+  template_dir: ./templates
+  model_dir: ./models
+  tool_dir: ./tools
+  skill_dir: ./skills
+llm:
+  default_model: openai-default
+`,
+      "utf8"
+    );
+
+    const runtime = await bootstrapRuntime({
+      argv: ["--config", configPath],
+      startWorker: false,
+      processKind: "api"
+    });
+
+    try {
+      await expect(runtime.listPlatformModels!()).resolves.toEqual([
+        expect.objectContaining({
+          id: "openai-default",
+          modelName: "gpt-4o-mini"
+        })
+      ]);
+
+      await writeFile(
+        path.join(modelsDir, "openai.yaml"),
+        `
+openai-default:
+  provider: openai
+  name: gpt-4.1-mini
+
+compat-fast:
+  provider: openai-compatible
+  name: qwen-max
+  url: https://example.test/v1
+`,
+        "utf8"
+      );
+
+      await waitFor(async () => {
+        const items = await runtime.listPlatformModels!();
+        const workspace = await runtime.runtimeService.getWorkspaceRecord(workspaceId);
+        return (
+          items.some((item) => item.id === "compat-fast" && item.modelName === "qwen-max") &&
+          items.some((item) => item.id === "openai-default" && item.modelName === "gpt-4.1-mini") &&
+          workspace.catalog.models.some((model) => model.ref === "platform/compat-fast" && model.modelName === "qwen-max") &&
+          workspace.catalog.models.some((model) => model.ref === "platform/openai-default" && model.modelName === "gpt-4.1-mini")
+        );
+      }, 8_000);
+
+      const refreshedWorkspace = await runtime.runtimeService.getWorkspaceRecord(workspaceId);
+      expect(refreshedWorkspace.catalog.models).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            ref: "platform/openai-default",
+            modelName: "gpt-4.1-mini"
+          }),
+          expect.objectContaining({
+            ref: "platform/compat-fast",
+            modelName: "qwen-max"
+          })
+        ])
+      );
+
+      await expect(runtime.getPlatformModelSnapshot!()).resolves.toMatchObject({
+        revision: 1,
+        items: expect.arrayContaining([
+          expect.objectContaining({
+            id: "compat-fast"
+          })
+        ])
+      });
+    } finally {
+      await runtime.close();
+    }
+  }, 15_000);
 });

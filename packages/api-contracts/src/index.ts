@@ -452,6 +452,11 @@ export const platformModelListSchema = z.object({
   items: z.array(platformModelSchema)
 });
 
+export const platformModelSnapshotSchema = z.object({
+  revision: z.number().int().min(0),
+  items: z.array(platformModelSchema)
+});
+
 export const storagePostgresTableNameSchema = z.enum([
   "workspaces",
   "sessions",
@@ -865,6 +870,7 @@ export type WorkspaceTemplate = z.infer<typeof workspaceTemplateSchema>;
 export type WorkspaceTemplateList = z.infer<typeof workspaceTemplateListSchema>;
 export type PlatformModel = z.infer<typeof platformModelSchema>;
 export type PlatformModelList = z.infer<typeof platformModelListSchema>;
+export type PlatformModelSnapshot = z.infer<typeof platformModelSnapshotSchema>;
 export type StoragePostgresTableName = z.infer<typeof storagePostgresTableNameSchema>;
 export type StoragePostgresTableSummary = z.infer<typeof storagePostgresTableSummarySchema>;
 export type StorageRedisKeySummary = z.infer<typeof storageRedisKeySummarySchema>;

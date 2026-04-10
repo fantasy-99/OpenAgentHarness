@@ -123,6 +123,11 @@ interface PlatformModelListResponse {
   items: PlatformModelRecord[];
 }
 
+interface PlatformModelSnapshotResponse {
+  revision: number;
+  items: PlatformModelRecord[];
+}
+
 type InspectorTab = "overview" | "timeline" | "workspace";
 type MainViewMode = "conversation" | "inspector";
 type SurfaceMode = "runtime" | "storage" | "provider";
@@ -1490,6 +1495,7 @@ export type {
   ReadinessReportResponse,
   ModelProviderListResponse,
   PlatformModelListResponse,
+  PlatformModelSnapshotResponse,
   InspectorTab,
   MainViewMode,
   SurfaceMode,

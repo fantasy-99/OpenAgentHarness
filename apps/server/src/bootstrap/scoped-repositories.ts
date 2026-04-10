@@ -34,13 +34,15 @@ export class ScopedWorkspaceRepository implements WorkspaceRepository {
   ) {}
 
   async create(input: WorkspaceRecord): Promise<WorkspaceRecord> {
+    const created = await this.inner.create(input);
     this.visibleWorkspaceIds.add(input.id);
-    return this.inner.create(input);
+    return created;
   }
 
   async upsert(input: WorkspaceRecord): Promise<WorkspaceRecord> {
+    const upserted = await this.inner.upsert(input);
     this.visibleWorkspaceIds.add(input.id);
-    return this.inner.upsert(input);
+    return upserted;
   }
 
   async getById(id: string): Promise<WorkspaceRecord | null> {
@@ -56,8 +58,8 @@ export class ScopedWorkspaceRepository implements WorkspaceRepository {
   }
 
   async delete(id: string): Promise<void> {
-    this.visibleWorkspaceIds.delete(id);
     await this.inner.delete(id);
+    this.visibleWorkspaceIds.delete(id);
   }
 }
 

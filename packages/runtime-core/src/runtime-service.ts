@@ -42,7 +42,10 @@ import { ToolAuditService } from "./runtime/tool-audit.js";
 import { ToolExecutionService } from "./runtime/tool-execution.js";
 import { ToolMessageService } from "./runtime/tool-messages.js";
 import { RunStepService } from "./runtime/run-steps.js";
-import { buildSessionRuntimeMessages } from "./runtime/runtime-messages.js";
+import {
+  buildSessionRuntimeMessages,
+  doesSessionEventAffectRuntimeMessages
+} from "./runtime/runtime-messages.js";
 import {
   RuntimeMessageProjector,
   type TranscriptMessage
@@ -1001,7 +1004,7 @@ export class RuntimeService {
 
   async #appendEvent(input: Omit<SessionEvent, "id" | "cursor" | "createdAt">): Promise<SessionEvent> {
     const event = await this.#sessionEventStore.append(input);
-    if (input.event !== "message.delta") {
+    if (doesSessionEventAffectRuntimeMessages(event)) {
       await this.#scheduleRuntimeMessageSync(input.sessionId);
     }
     return event;
@@ -1016,14 +1019,19 @@ export class RuntimeService {
     const next = previous
       .catch(() => undefined)
       .then(async () => {
-        const [messages, events] = await Promise.all([
+        const [messages, events, storedRuntimeMessages] = await Promise.all([
           this.#messageRepository.listBySessionId(sessionId),
-          this.#sessionEventStore.listSince(sessionId)
+          this.#sessionEventStore.listSince(sessionId),
+          this.#runtimeMessageRepository?.listBySessionId(sessionId) ?? Promise.resolve([])
         ]);
         const runtimeMessages = buildSessionRuntimeMessages({
           messages,
           events
         });
+        if (this.#runtimeMessagesEqual(storedRuntimeMessages, runtimeMessages)) {
+          return;
+        }
+
         await this.#runtimeMessageRepository?.replaceBySessionId(sessionId, runtimeMessages);
       })
       .finally(() => {
@@ -1497,6 +1505,30 @@ export class RuntimeService {
     return buildSessionRuntimeMessages({
       messages,
       events
+    });
+  }
+
+  #runtimeMessagesEqual(left: RuntimeMessage[], right: RuntimeMessage[]): boolean {
+    if (left.length !== right.length) {
+      return false;
+    }
+
+    return left.every((message, index) => {
+      const candidate = right[index];
+      if (!candidate) {
+        return false;
+      }
+
+      return (
+        message.id === candidate.id &&
+        message.sessionId === candidate.sessionId &&
+        message.runId === candidate.runId &&
+        message.role === candidate.role &&
+        message.kind === candidate.kind &&
+        message.createdAt === candidate.createdAt &&
+        JSON.stringify(message.content) === JSON.stringify(candidate.content) &&
+        JSON.stringify(message.metadata ?? null) === JSON.stringify(candidate.metadata ?? null)
+      );
     });
   }
 

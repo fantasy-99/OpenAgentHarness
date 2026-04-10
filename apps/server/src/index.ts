@@ -20,6 +20,10 @@ async function main() {
     storageAdmin: runtime.storageAdmin,
     appendRuntimeLog: runtime.appendRuntimeLog,
     ...(runtime.listPlatformModels ? { listPlatformModels: runtime.listPlatformModels } : {}),
+    ...(runtime.getPlatformModelSnapshot ? { getPlatformModelSnapshot: runtime.getPlatformModelSnapshot } : {}),
+    ...(runtime.subscribePlatformModelSnapshot
+      ? { subscribePlatformModelSnapshot: runtime.subscribePlatformModelSnapshot }
+      : {}),
     ...(runtime.listWorkspaceTemplates ? { listWorkspaceTemplates: runtime.listWorkspaceTemplates } : {}),
     ...(runtime.importWorkspace ? { importWorkspace: runtime.importWorkspace } : {})
   });

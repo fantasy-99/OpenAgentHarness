@@ -16,6 +16,15 @@ import type { SessionEvent } from "@oah/runtime-core";
 import { createParamsSchema, toCallerContext, writeSseEvent } from "../context.js";
 import type { AppDependencies } from "../types.js";
 
+function parseEventCursor(value: string | undefined): number {
+  if (!value) {
+    return -1;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : -1;
+}
+
 export function registerSessionRoutes(app: FastifyInstance, dependencies: AppDependencies): void {
   app.get("/api/v1/sessions/:sessionId", async (request, reply) => {
     const params = createParamsSchema("sessionId").parse(request.params);
@@ -85,22 +94,64 @@ export function registerSessionRoutes(app: FastifyInstance, dependencies: AppDep
       reply.raw.flushHeaders?.();
       reply.raw.write(": connected\n\n");
 
-      const backlog = await dependencies.runtimeService.listSessionEvents(params.sessionId, query.cursor, query.runId);
-      for (const event of backlog) {
+      const seenEventIds = new Set<string>();
+      const seenOrder: string[] = [];
+      const pendingEvents: SessionEvent[] = [];
+      const initialCursor = parseEventCursor(query.cursor);
+      let liveStreaming = false;
+
+      const rememberEvent = (eventId: string) => {
+        seenEventIds.add(eventId);
+        seenOrder.push(eventId);
+        if (seenOrder.length > 2048) {
+          const oldestEventId = seenOrder.shift();
+          if (oldestEventId) {
+            seenEventIds.delete(oldestEventId);
+          }
+        }
+      };
+
+      const shouldForward = (event: SessionEvent): boolean => {
+        if (query.runId && event.runId !== query.runId) {
+          return false;
+        }
+
+        if (parseEventCursor(event.cursor) <= initialCursor || seenEventIds.has(event.id)) {
+          return false;
+        }
+
+        return true;
+      };
+
+      const forwardEvent = (event: SessionEvent) => {
+        if (!shouldForward(event)) {
+          return;
+        }
+
+        rememberEvent(event.id);
         writeSseEvent(reply, event.event, event.data, event.cursor);
-      }
+      };
 
       const unsubscribe = dependencies.runtimeService.subscribeSessionEvents(params.sessionId, (event: SessionEvent) => {
-        if (query.runId && event.runId !== query.runId) {
+        if (!liveStreaming) {
+          pendingEvents.push(event);
           return;
         }
 
-        if (query.cursor && Number.parseInt(event.cursor, 10) <= Number.parseInt(query.cursor, 10)) {
-          return;
-        }
-
-        writeSseEvent(reply, event.event, event.data, event.cursor);
+        forwardEvent(event);
       });
+
+      const backlog = await dependencies.runtimeService.listSessionEvents(params.sessionId, query.cursor, query.runId);
+      for (const event of backlog) {
+        forwardEvent(event);
+      }
+
+      pendingEvents
+        .sort((left, right) => parseEventCursor(left.cursor) - parseEventCursor(right.cursor))
+        .forEach((event) => {
+          forwardEvent(event);
+        });
+      liveStreaming = true;
 
       request.raw.on("close", () => {
         unsubscribe();

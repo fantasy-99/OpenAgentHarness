@@ -282,6 +282,17 @@ export class AiSdkModelGateway implements ModelGateway {
     this.#logger = options.logger;
   }
 
+  clearModelCache(modelNames?: string[]): void {
+    if (!modelNames || modelNames.length === 0) {
+      this.#clients.clear();
+      return;
+    }
+
+    for (const modelName of modelNames) {
+      this.#clients.delete(this.#canonicalModelName(modelName));
+    }
+  }
+
   async generate(input: GenerateModelInput, options?: { signal?: AbortSignal }): Promise<ModelGenerateResponse> {
     const modelName = input.model ?? this.#defaultModelName;
     const model = this.#resolveModel(modelName, input.modelDefinition);

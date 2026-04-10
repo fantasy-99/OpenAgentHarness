@@ -206,7 +206,7 @@ export class AgentCoordinationService {
     const resolvedTargetAgentName =
       input.targetAgentName ?? resumedSession?.activeAgentName ?? resumedSession?.agentName;
     if (!resolvedTargetAgentName) {
-      throw new AppError(400, "agent_type_required", "SubAgent requires subagent_type or a resumable task_id.");
+      throw new AppError(400, "agent_type_required", "SubAgent requires subagent_name or a resumable task_id.");
     }
 
     const allowedTargets = input.workspace.agents[input.currentAgentName]?.subagents ?? [];
@@ -555,7 +555,7 @@ export class AgentCoordinationService {
         ["task_id", summary.run.sessionId],
         ["run_id", summary.run.id],
         ["status", summary.run.status],
-        ["subagent_type", summary.run.effectiveAgentName]
+        ["subagent_name", summary.run.effectiveAgentName]
       ],
       [
         ...(summary.outputContent

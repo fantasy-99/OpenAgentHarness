@@ -165,6 +165,20 @@ function readSessionEventMessageId(event: SessionEvent): string | undefined {
   return typeof event.data.messageId === "string" ? event.data.messageId : undefined;
 }
 
+export function doesSessionEventAffectRuntimeMessages(event: SessionEvent): boolean {
+  return (
+    event.event === "run.queued" ||
+    event.event === "message.completed" ||
+    event.event === "run.completed" ||
+    event.event === "run.failed" ||
+    event.event === "run.cancelled"
+  );
+}
+
+export function filterSessionEventsForRuntimeMessages(events: SessionEvent[]): SessionEvent[] {
+  return events.filter((event) => doesSessionEventAffectRuntimeMessages(event) || event.event === "message.delta");
+}
+
 function contentText(content: Message["content"]): string {
   if (typeof content === "string") {
     return content;
@@ -382,7 +396,9 @@ export function buildSessionRuntimeMessages(params: {
 
     return left.id.localeCompare(right.id);
   });
-  const orderedEvents = [...params.events].sort((left, right) => readSessionEventCursorValue(left) - readSessionEventCursorValue(right));
+  const orderedEvents = [...filterSessionEventsForRuntimeMessages(params.events)].sort(
+    (left, right) => readSessionEventCursorValue(left) - readSessionEventCursorValue(right)
+  );
   const eventsByRunId = new Map<string, SessionEvent[]>();
   const messagesByRunId = new Map<string, Message[]>();
 

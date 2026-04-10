@@ -802,7 +802,7 @@ export function AppSidebar(props: SidebarProps) {
             />
             <div className="space-y-1">
               <Select
-                value={props.workspaceDraft.template.trim() || undefined}
+                {...(props.workspaceDraft.template.trim() ? { value: props.workspaceDraft.template.trim() } : {})}
                 onValueChange={(value) => props.setWorkspaceDraft((current) => ({ ...current, template: value }))}
               >
                 <SelectTrigger className="h-10 w-full rounded-xl border-black/10 bg-white/68 text-sm shadow-none" aria-label="Workspace template">

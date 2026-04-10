@@ -15,6 +15,19 @@ import { HistoryMirrorSyncer, historyMirrorDbPath } from "../apps/server/src/his
 import type { StorageAdmin } from "../apps/server/src/storage-admin.ts";
 import { FakeModelGateway } from "./helpers/fake-model-gateway";
 
+interface PlatformModelSnapshot {
+  revision: number;
+  items: Array<{
+    id: string;
+    provider: string;
+    modelName: string;
+    url?: string;
+    hasKey: boolean;
+    metadata?: Record<string, unknown>;
+    isDefault: boolean;
+  }>;
+}
+
 async function waitFor(check: () => Promise<boolean> | boolean, timeoutMs = 5_000): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -182,6 +195,8 @@ async function createStartedAppWithRuntimeService(
         isDefault: boolean;
       }>
     >;
+    getPlatformModelSnapshot?: () => Promise<PlatformModelSnapshot>;
+    subscribePlatformModelSnapshot?: (listener: (snapshot: PlatformModelSnapshot) => void) => (() => void);
     importWorkspace?: (input: {
       rootPath: string;
       kind?: "project" | "chat";
@@ -200,6 +215,10 @@ async function createStartedAppWithRuntimeService(
     logger: false,
     listWorkspaceTemplates: async () => [{ name: "workspace" }],
     ...(options?.listPlatformModels ? { listPlatformModels: options.listPlatformModels } : {}),
+    ...(options?.getPlatformModelSnapshot ? { getPlatformModelSnapshot: options.getPlatformModelSnapshot } : {}),
+    ...(options?.subscribePlatformModelSnapshot
+      ? { subscribePlatformModelSnapshot: options.subscribePlatformModelSnapshot }
+      : {}),
     ...(options?.workspaceMode ? { workspaceMode: options.workspaceMode } : {}),
     ...(options?.resolveCallerContext ? { resolveCallerContext: options.resolveCallerContext } : {}),
     ...(options?.storageAdmin ? { storageAdmin: options.storageAdmin } : {}),
@@ -446,6 +465,106 @@ describe("http api", () => {
         }
       ]
     });
+  });
+
+  it("streams platform model snapshots over SSE", async () => {
+    let revision = 0;
+    let currentSnapshot: PlatformModelSnapshot = {
+      revision,
+      items: [
+        {
+          id: "openai-default",
+          provider: "openai",
+          modelName: "gpt-5",
+          hasKey: true,
+          isDefault: true
+        }
+      ]
+    };
+    const listeners = new Set<(snapshot: PlatformModelSnapshot) => void>();
+
+    activeApp = await createStartedAppWithRuntimeService(
+      new RuntimeService({
+        defaultModel: "openai-default",
+        modelGateway: new FakeModelGateway(20),
+        ...createMemoryRuntimePersistence()
+      }),
+      new FakeModelGateway(20),
+      {
+        listPlatformModels: async () => currentSnapshot.items,
+        getPlatformModelSnapshot: async () => currentSnapshot,
+        subscribePlatformModelSnapshot(listener) {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        }
+      }
+    );
+
+    const response = await fetch(`${activeApp.baseUrl}/api/v1/platform-models/events`);
+    expect(response.status).toBe(200);
+
+    const framesPromise = readSseFrames(response, (events) => events.length >= 2);
+    await waitFor(() => listeners.size === 1);
+
+    revision += 1;
+    currentSnapshot = {
+      revision,
+      items: [
+        ...currentSnapshot.items,
+        {
+          id: "compat-fast",
+          provider: "openai-compatible",
+          modelName: "qwen-max",
+          url: "https://example.test/v1",
+          hasKey: false,
+          isDefault: false
+        }
+      ]
+    };
+    listeners.forEach((listener) => listener(currentSnapshot));
+
+    await expect(framesPromise).resolves.toEqual([
+      {
+        event: "platform-models.snapshot",
+        data: {
+          revision: 0,
+          items: [
+            {
+              id: "openai-default",
+              provider: "openai",
+              modelName: "gpt-5",
+              hasKey: true,
+              isDefault: true
+            }
+          ]
+        }
+      },
+      {
+        event: "platform-models.updated",
+        data: {
+          revision: 1,
+          items: [
+            {
+              id: "openai-default",
+              provider: "openai",
+              modelName: "gpt-5",
+              hasKey: true,
+              isDefault: true
+            },
+            {
+              id: "compat-fast",
+              provider: "openai-compatible",
+              modelName: "qwen-max",
+              url: "https://example.test/v1",
+              hasKey: false,
+              isDefault: false
+            }
+          ]
+        }
+      }
+    ]);
   });
 
   it("exposes storage admin endpoints", async () => {

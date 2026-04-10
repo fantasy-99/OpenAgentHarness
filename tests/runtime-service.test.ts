@@ -615,6 +615,94 @@ describe("runtime service", () => {
     expect(runCompleted).toEqual([first.runId, second.runId]);
   });
 
+  it("skips redundant runtime message rewrites when later events do not change the projection", async () => {
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    let replaceCalls = 0;
+    const runtimeMessageRepository = {
+      async replaceBySessionId(sessionId: string, messages: Awaited<ReturnType<typeof persistence.runtimeMessageRepository.listBySessionId>>) {
+        replaceCalls += 1;
+        await persistence.runtimeMessageRepository.replaceBySessionId(sessionId, messages);
+      },
+      listBySessionId(sessionId: string) {
+        return persistence.runtimeMessageRepository.listBySessionId(sessionId);
+      }
+    };
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence,
+      runtimeMessageRepository,
+      workspaceInitializer: {
+        async initialize(input) {
+          return {
+            rootPath: input.rootPath,
+            settings: {
+              defaultAgent: "default",
+              skillDirs: []
+            },
+            defaultAgent: "default",
+            workspaceModels: {},
+            agents: {},
+            actions: {},
+            skills: {},
+            toolServers: {},
+            hooks: {},
+            catalog: {
+              workspaceId: "template",
+              agents: [],
+              models: [],
+              actions: [],
+              skills: [],
+              tools: [],
+              hooks: [],
+              nativeTools: []
+            }
+          };
+        }
+      }
+    });
+
+    const workspace = await runtimeService.createWorkspace({
+      input: {
+        name: "runtime-message-sync",
+        template: "workspace",
+        rootPath: "/tmp/runtime-message-sync",
+        executionPolicy: "local"
+      }
+    });
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "test",
+      scopes: [],
+      workspaceAccess: []
+    };
+    const session = await runtimeService.createSession({
+      workspaceId: workspace.id,
+      caller,
+      input: {}
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "hello" }
+    });
+
+    await waitFor(async () => {
+      const events = await runtimeService.listSessionEvents(session.id, undefined, accepted.runId);
+      return events.some((event) => event.event === "run.completed");
+    });
+
+    expect(replaceCalls).toBe(2);
+    await expect(persistence.runtimeMessageRepository.listBySessionId(session.id)).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "user" }),
+        expect.objectContaining({ role: "assistant" })
+      ])
+    );
+  });
+
   it("persists AI SDK step request, response, and provider metadata snapshots", async () => {
     const { runtimeService, workspace, gateway } = await createRuntime();
     gateway.streamScenarioFactory = () => ({
@@ -1903,7 +1991,7 @@ describe("runtime service", () => {
             input: {
               description: "Gather repo facts",
               prompt: "Inspect the repository and summarize the key facts.",
-              subagent_type: "researcher"
+              subagent_name: "researcher"
             },
             toolCallId: "call_agent"
           }
@@ -2050,7 +2138,7 @@ describe("runtime service", () => {
     });
     expect(childInvocation?.model).toBe("planner-model");
     expect(messageText(agentToolMessage)).toContain("completed: true");
-    expect(messageText(agentToolMessage)).toContain("subagent_type: researcher");
+    expect(messageText(agentToolMessage)).toContain("subagent_name: researcher");
     expect(messageText(agentToolMessage)).toContain("task_id:");
     expect(messageText(agentToolMessage)).toContain(`task_id: ${childRun.sessionId}`);
     expect(messageText(agentToolMessage)).toContain(`run_id: ${childRun.id}`);
@@ -2095,7 +2183,7 @@ describe("runtime service", () => {
             input: {
               description: "Gather repo facts",
               prompt: "Inspect the repository and summarize the key facts.",
-              subagent_type: "researcher"
+              subagent_name: "researcher"
             },
             toolCallId: "call_agent"
           }
@@ -2465,7 +2553,7 @@ describe("runtime service", () => {
             input: {
               description: "Research in background",
               prompt: "Collect the repository facts and report back.",
-              subagent_type: "researcher"
+              subagent_name: "researcher"
             },
             toolCallId: "call_agent_background"
           }
@@ -2575,7 +2663,7 @@ describe("runtime service", () => {
     const backgroundMessage = messages.items.find((message) => message.role === "tool" && messageToolName(message) === "SubAgent");
 
     expect(messageText(backgroundMessage)).toContain("started: true");
-    expect(messageText(backgroundMessage)).toContain("subagent_type: researcher");
+    expect(messageText(backgroundMessage)).toContain("subagent_name: researcher");
     expect(messageText(backgroundMessage)).toContain("description: Research in background");
     expect(messageText(backgroundMessage)).toContain("task_id:");
   });
@@ -2704,7 +2792,7 @@ describe("runtime service", () => {
               input: {
                 description: "Resume repo research",
                 prompt: "Continue the same repository investigation and report only new findings.",
-                subagent_type: "researcher",
+                subagent_name: "researcher",
                 task_id: "TASK_ID_PLACEHOLDER"
               },
               toolCallId: "call_resume_agent"
@@ -2721,7 +2809,7 @@ describe("runtime service", () => {
             input: {
               description: "Start repo research",
               prompt: "Inspect the repository and report the first pass findings.",
-              subagent_type: "researcher",
+              subagent_name: "researcher",
               run_in_background: true
             },
             toolCallId: "call_start_agent"
@@ -2864,7 +2952,7 @@ describe("runtime service", () => {
             input: {
               description: "Resume repo research",
               prompt: "Continue the same repository investigation and report only new findings.",
-              subagent_type: "researcher",
+              subagent_name: "researcher",
               task_id: taskId
             },
             toolCallId: "call_resume_agent"
@@ -3024,7 +3112,7 @@ describe("runtime service", () => {
     });
   });
 
-  it("rejects resuming a subagent task with a mismatched subagent_type", async () => {
+  it("rejects resuming a subagent task with a mismatched subagent_name", async () => {
     const gateway = new FakeModelGateway();
     gateway.streamScenarioFactory = (input) => {
       const systemMessages = input.messages?.filter((message) => message.role === "system").map((message) => message.content) ?? [];
@@ -3043,7 +3131,7 @@ describe("runtime service", () => {
             input: {
               description: "Start research",
               prompt: "Inspect the repository.",
-              subagent_type: "researcher",
+              subagent_name: "researcher",
               run_in_background: true
             },
             toolCallId: "call_start_research"
@@ -3177,7 +3265,7 @@ describe("runtime service", () => {
           input: {
             description: "Resume as reviewer",
             prompt: "Continue the previous task, but as reviewer.",
-            subagent_type: "reviewer",
+            subagent_name: "reviewer",
             task_id: taskId
           },
           toolCallId: "call_mismatch_resume"

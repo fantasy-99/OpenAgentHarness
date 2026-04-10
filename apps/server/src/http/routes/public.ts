@@ -21,7 +21,7 @@ import {
 import { SUPPORTED_MODEL_PROVIDERS } from "@oah/model-gateway";
 import { AppError } from "@oah/runtime-core";
 
-import { createParamsSchema } from "../context.js";
+import { createParamsSchema, writeSseEvent } from "../context.js";
 import {
   buildApiIndex,
   buildDeveloperDocsHtml,
@@ -107,6 +107,45 @@ export function registerPublicRoutes(app: FastifyInstance, dependencies: AppDepe
       })
     );
   });
+
+  app.get(
+    "/api/v1/platform-models/events",
+    {
+      logLevel: "warn"
+    },
+    async (request, reply) => {
+      if (!dependencies.getPlatformModelSnapshot || !dependencies.subscribePlatformModelSnapshot) {
+        throw new AppError(404, "platform_models_unavailable", "Platform model live updates are not available.");
+      }
+
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no"
+      });
+      reply.raw.flushHeaders?.();
+      reply.raw.write(": connected\n\n");
+
+      const sendSnapshot = (
+        event: "platform-models.snapshot" | "platform-models.updated",
+        snapshot: Awaited<ReturnType<NonNullable<typeof dependencies.getPlatformModelSnapshot>>>
+      ) => {
+        writeSseEvent(reply, event, snapshot as Record<string, unknown>);
+      };
+
+      sendSnapshot("platform-models.snapshot", await dependencies.getPlatformModelSnapshot());
+      const unsubscribe = dependencies.subscribePlatformModelSnapshot((snapshot) => {
+        sendSnapshot("platform-models.updated", snapshot);
+      });
+
+      request.raw.on("close", () => {
+        unsubscribe();
+        reply.raw.end();
+      });
+    }
+  );
 
   app.get("/api/v1/storage/overview", async (_request, reply) => {
     if (!dependencies.storageAdmin) {

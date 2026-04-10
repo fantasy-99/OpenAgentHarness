@@ -97,7 +97,7 @@ describe("runtime console", () => {
     expect((events[0]?.data as { details?: Record<string, unknown> }).details?.token).toBe("[redacted]");
   });
 
-  it("writes project session events to local history.db and rolls back the central event on local failure", async () => {
+  it("writes project session events to local history.db and falls back to central-only events when local mirroring is unavailable", async () => {
     const persistence = createMemoryRuntimePersistence();
     const rootPath = await mkdtemp(path.join(tmpdir(), "oah-console-project-"));
     const workspace = await persistence.workspaceRepository.upsert({
@@ -182,16 +182,19 @@ describe("runtime console", () => {
       workspaceId: failingWorkspace.id
     });
 
-    await expect(
-      store.append({
-        sessionId: failingSession.id,
-        runId: "run_broken",
-        event: "run.failed",
-        data: { errorMessage: "boom" }
-      })
-    ).rejects.toThrow(/Failed to mirror session event/);
+    const brokenEvent = await store.append({
+      sessionId: failingSession.id,
+      runId: "run_broken",
+      event: "run.failed",
+      data: { errorMessage: "boom" }
+    });
 
-    await expect(persistence.sessionEventStore.listSince(failingSession.id)).resolves.toEqual([]);
+    await expect(persistence.sessionEventStore.listSince(failingSession.id)).resolves.toEqual([
+      expect.objectContaining({
+        id: brokenEvent.id,
+        event: "run.failed"
+      })
+    ]);
   });
 
   it("bridges runtime logger entries into runtime.log session events", async () => {

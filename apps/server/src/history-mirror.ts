@@ -263,6 +263,16 @@ export async function inspectHistoryMirrorStatus(workspace: WorkspaceRecord): Pr
     };
   }
 
+  if (workspace.historyMirrorEnabled === false) {
+    return {
+      workspaceId: workspace.id,
+      supported: true,
+      enabled: false,
+      dbPath,
+      state: "disabled"
+    };
+  }
+
   if (!(await pathExists(dbPath))) {
     return {
       workspaceId: workspace.id,
@@ -396,11 +406,11 @@ export class HistoryMirrorSyncer {
   }
 
   async rebuildWorkspace(workspace: WorkspaceRecord): Promise<HistoryMirrorStatus> {
-    await this.#runExclusive(async () => {
-      if (workspace.kind !== "project") {
-        return;
-      }
+    if (workspace.kind !== "project" || workspace.historyMirrorEnabled === false) {
+      return inspectHistoryMirrorStatus(workspace);
+    }
 
+    await this.#runExclusive(async () => {
       const dbPath = historyMirrorDbPath(workspace.rootPath);
       this.#closeMirrorDatabase(workspace.id);
       await Promise.all([
@@ -702,7 +712,7 @@ export class HistoryMirrorSyncer {
           ...(this.#string(payload.lastRunAt) ? { lastRunAt: this.#string(payload.lastRunAt)! } : {}),
           createdAt: this.#requiredString(payload.createdAt, "createdAt", event),
           updatedAt: this.#requiredString(payload.updatedAt, "updatedAt", event)
-        });
+        } as Session);
         return;
       case "message":
         this.#upsertMessage(db, {
@@ -713,7 +723,7 @@ export class HistoryMirrorSyncer {
           content: payload.content as Message["content"],
           ...(payload.metadata !== undefined ? { metadata: payload.metadata as Record<string, unknown> } : {}),
           createdAt: this.#requiredString(payload.createdAt, "createdAt", event)
-        });
+        } as Message);
         return;
       case "run":
         this.#upsertRun(db, {
@@ -736,7 +746,7 @@ export class HistoryMirrorSyncer {
           ...(this.#string(payload.errorMessage) ? { errorMessage: this.#string(payload.errorMessage)! } : {}),
           ...(payload.metadata !== undefined ? { metadata: payload.metadata as Record<string, unknown> } : {}),
           createdAt: this.#requiredString(payload.createdAt, "createdAt", event)
-        });
+        } as Run);
         return;
       case "run_step":
         this.#upsertRunStep(db, {
@@ -751,7 +761,7 @@ export class HistoryMirrorSyncer {
           ...(payload.output !== undefined ? { output: payload.output } : {}),
           ...(this.#string(payload.startedAt) ? { startedAt: this.#string(payload.startedAt)! } : {}),
           ...(this.#string(payload.endedAt) ? { endedAt: this.#string(payload.endedAt)! } : {})
-        });
+        } as RunStep);
         return;
       case "tool_call":
         this.#upsertToolCall(db, {

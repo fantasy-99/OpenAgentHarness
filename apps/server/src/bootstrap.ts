@@ -16,7 +16,7 @@ import { AppError, RuntimeService, createId, parseCursor } from "@oah/runtime-co
 import type { RuntimeLogger, WorkspaceRecord } from "@oah/runtime-core";
 import { AiSdkModelGateway } from "@oah/model-gateway";
 import { createPostgresRuntimePersistence } from "@oah/storage-postgres";
-import { createSQLiteRuntimePersistence } from "@oah/storage-sqlite";
+import { createSQLiteRuntimePersistence, sqliteWorkspaceHistoryDbPath } from "@oah/storage-sqlite";
 import {
   FanoutSessionEventStore,
   RedisRunWorker,
@@ -100,6 +100,10 @@ export interface BootstrappedRuntime {
       isDefault: boolean;
     }>
   >;
+  getPlatformModelSnapshot?: () => Promise<PlatformModelSnapshot>;
+  subscribePlatformModelSnapshot?: (
+    listener: (snapshot: PlatformModelSnapshot) => void
+  ) => (() => void);
   importWorkspace?: (input: {
     rootPath: string;
     kind?: "project" | "chat";
@@ -158,6 +162,13 @@ export interface BootstrappedRuntime {
   close(): Promise<void>;
 }
 
+export interface WorkspaceLocalArtifactCleanupStatus {
+  workspaceId: string;
+  rootPath: string;
+  mode: "workspace_root" | "history_db" | "shadow_history_db" | "none";
+  removedPaths: string[];
+}
+
 async function fileExists(targetPath: string): Promise<boolean> {
   try {
     await access(targetPath);
@@ -169,6 +180,90 @@ async function fileExists(targetPath: string): Promise<boolean> {
 
 function isTruthyEnvValue(value: string | undefined): boolean {
   return value !== undefined && /^(1|true|yes|on)$/iu.test(value.trim());
+}
+
+type PlatformModelRegistry = Awaited<ReturnType<typeof loadPlatformModels>>;
+interface PlatformModelSnapshot {
+  revision: number;
+  items: ReturnType<typeof toPlatformModelItems>;
+}
+
+function toPlatformModelItems(models: PlatformModelRegistry, defaultModel: string) {
+  return Object.entries(models).map(([id, definition]) => ({
+    id,
+    provider: definition.provider,
+    modelName: definition.name,
+    ...(definition.url ? { url: definition.url } : {}),
+    hasKey: Boolean(definition.key),
+    ...(definition.metadata ? { metadata: definition.metadata } : {}),
+    isDefault: defaultModel === id
+  }));
+}
+
+function replacePlatformModels(target: PlatformModelRegistry, next: PlatformModelRegistry): void {
+  for (const modelName of Object.keys(target)) {
+    if (!(modelName in next)) {
+      delete target[modelName];
+    }
+  }
+
+  for (const [modelName, definition] of Object.entries(next)) {
+    target[modelName] = definition;
+  }
+}
+
+function serializePlatformModels(models: PlatformModelRegistry): string {
+  return JSON.stringify(
+    Object.entries(models)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, definition]) => [name, definition])
+  );
+}
+
+export async function cleanupWorkspaceLocalArtifacts(input: {
+  workspace: WorkspaceRecord;
+  paths: Pick<ServerConfig["paths"], "workspace_dir" | "chat_dir">;
+  sqliteShadowRoot: string;
+}): Promise<WorkspaceLocalArtifactCleanupStatus> {
+  const managedRootDir = input.workspace.kind === "chat" ? input.paths.chat_dir : input.paths.workspace_dir;
+  if (isManagedWorkspaceRoot(input.workspace.rootPath, managedRootDir)) {
+    await rm(input.workspace.rootPath, {
+      recursive: true,
+      force: true
+    });
+    return {
+      workspaceId: input.workspace.id,
+      rootPath: input.workspace.rootPath,
+      mode: "workspace_root",
+      removedPaths: [input.workspace.rootPath]
+    };
+  }
+
+  const dbPath = sqliteWorkspaceHistoryDbPath(input.workspace, {
+    shadowRoot: input.sqliteShadowRoot
+  });
+  await Promise.all([
+    rm(dbPath, { force: true }),
+    rm(`${dbPath}-shm`, { force: true }),
+    rm(`${dbPath}-wal`, { force: true })
+  ]);
+
+  if (dbPath.startsWith(`${input.sqliteShadowRoot}${path.sep}`) || dbPath === input.sqliteShadowRoot) {
+    await rm(path.dirname(dbPath), {
+      recursive: true,
+      force: true
+    });
+  }
+
+  return {
+    workspaceId: input.workspace.id,
+    rootPath: input.workspace.rootPath,
+    mode:
+      dbPath.startsWith(`${input.sqliteShadowRoot}${path.sep}`) || dbPath === input.sqliteShadowRoot
+        ? "shadow_history_db"
+        : "history_db",
+    removedPaths: [dbPath, `${dbPath}-shm`, `${dbPath}-wal`]
+  };
 }
 
 export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<BootstrappedRuntime> {
@@ -230,6 +325,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
           }
         } as Parameters<typeof discoverWorkspaces>[0]);
   const postgresConfigured = Boolean(config.storage.postgres_url && config.storage.postgres_url.trim().length > 0);
+  const sqliteShadowRoot = path.join(config.paths.workspace_dir, ".openharness", "data", "workspace-state");
   const persistence = postgresConfigured
     ? await createPostgresRuntimePersistence({
         connectionString: config.storage.postgres_url
@@ -239,7 +335,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         );
       })
     : await createSQLiteRuntimePersistence({
-        shadowRoot: path.join(config.paths.workspace_dir, ".openharness", "data", "workspace-state")
+        shadowRoot: sqliteShadowRoot
       });
   const primaryStorageMode = "driver" in persistence && persistence.driver === "sqlite" ? "sqlite" : "postgres";
   const redisBus =
@@ -327,7 +423,12 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       ? new DualWriteSessionEventStore({
           primary: persistence.sessionEventStore,
           sessionRepository,
-          workspaceRepository
+          workspaceRepository,
+          logger: {
+            warn(message, error) {
+              console.warn(message, error);
+            }
+          }
         })
       : persistence.sessionEventStore;
   const sessionEventStore = redisBus
@@ -344,6 +445,22 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     models,
     logger: runtimeDebugLogger
   });
+  let platformModelRevision = 0;
+  const platformModelSnapshotListeners = new Set<(snapshot: PlatformModelSnapshot) => void>();
+  const getPlatformModelSnapshot = async (): Promise<PlatformModelSnapshot> => ({
+    revision: platformModelRevision,
+    items: toPlatformModelItems(models, config.llm.default_model)
+  });
+  const publishPlatformModelSnapshot = async (): Promise<void> => {
+    if (platformModelSnapshotListeners.size === 0) {
+      return;
+    }
+
+    const snapshot = await getPlatformModelSnapshot();
+    for (const listener of platformModelSnapshotListeners) {
+      listener(snapshot);
+    }
+  };
   let workspaceRegistrySyncPromise: Promise<void> | undefined;
   let lastWorkspaceRegistrySyncAt = 0;
   let workspaceRegistryPollTimer: NodeJS.Timeout | undefined;
@@ -351,6 +468,10 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   const rootWorkspaceWatcher =
     singleWorkspace === undefined ? openFsWatcher(config.paths.workspace_dir, scheduleWorkspaceRegistrySync) : undefined;
   let workspaceSyncTimer: NodeJS.Timeout | undefined;
+  let platformModelsReloadPromise: Promise<void> | undefined;
+  let lastPlatformModelsReloadAt = 0;
+  let platformModelsPollTimer: NodeJS.Timeout | undefined;
+  let platformModelsReloadTimer: NodeJS.Timeout | undefined;
 
   reconciledWorkspaces.forEach((workspace) => {
     visibleWorkspaceIds.add(workspace.id);
@@ -385,8 +506,21 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
             );
             const latestDiscoveredWorkspaces = [...latestProjectWorkspaces, ...staticWorkspaces];
             const staleWorkspaceIds = findManagedWorkspaceIdsToDelete(latestDiscoveredWorkspaces, persistedWorkspaces, config.paths);
+            const staleWorkspaces = persistedWorkspaces.filter((workspace) => staleWorkspaceIds.includes(workspace.id));
 
-            await Promise.all(staleWorkspaceIds.map(async (workspaceId) => persistence.workspaceRepository.delete(workspaceId)));
+            await Promise.all(
+              staleWorkspaces.map(async (workspace) => {
+                const cleanup = await cleanupWorkspaceLocalArtifacts({
+                  workspace,
+                  paths: config.paths,
+                  sqliteShadowRoot
+                });
+                console.info(
+                  `[oah-bootstrap] Cleaned local artifacts for stale workspace ${workspace.id} (${cleanup.mode}): ${cleanup.removedPaths.join(", ")}`
+                );
+                await persistence.workspaceRepository.delete(workspace.id);
+              })
+            );
 
             const latestPersistedWorkspaces =
               staleWorkspaceIds.length > 0 ? await listAllWorkspaces(persistence.workspaceRepository) : persistedWorkspaces;
@@ -460,6 +594,95 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     }, 150);
     workspaceSyncTimer.unref?.();
   }
+
+  async function refreshWorkspaceDefinitionsForPlatformModels(): Promise<void> {
+    const currentWorkspaces = await listAllWorkspaces(persistence.workspaceRepository);
+    const refreshedWorkspaces = await Promise.all(
+      currentWorkspaces.map(async (workspace) => {
+        try {
+          const discovered = await discoverWorkspace(workspace.rootPath, workspace.kind, {
+            platformModels: models,
+            platformAgents,
+            platformSkillDir: config.paths.skill_dir,
+            platformToolDir: toolDir
+          } as Parameters<typeof discoverWorkspace>[2]);
+
+          return {
+            ...discovered,
+            id: workspace.id,
+            name: workspace.name,
+            executionPolicy: workspace.executionPolicy,
+            status: workspace.status,
+            createdAt: workspace.createdAt,
+            updatedAt: workspace.updatedAt,
+            historyMirrorEnabled: workspace.historyMirrorEnabled,
+            ...(workspace.externalRef ? { externalRef: workspace.externalRef } : {})
+          };
+        } catch (error) {
+          console.warn(`[oah-bootstrap] Failed to refresh workspace ${workspace.id} after platform model reload.`, error);
+          return workspace;
+        }
+      })
+    );
+
+    await Promise.all(refreshedWorkspaces.map(async (workspace) => persistence.workspaceRepository.upsert(workspace)));
+    visibleWorkspaceIds.clear();
+    refreshedWorkspaces.forEach((workspace) => {
+      visibleWorkspaceIds.add(workspace.id);
+    });
+    updateWatchedProjectRoots(refreshedWorkspaces);
+  }
+
+  async function reloadPlatformModels(): Promise<void> {
+    const now = Date.now();
+    if (platformModelsReloadPromise) {
+      return platformModelsReloadPromise;
+    }
+    if (now - lastPlatformModelsReloadAt < 200) {
+      return;
+    }
+
+    platformModelsReloadPromise = (async () => {
+      const currentSnapshot = serializePlatformModels(models);
+      const nextModels = await loadPlatformModels(modelDir, {
+        onError: ({ filePath, error }: { filePath: string; error: unknown }) => {
+          logModelLoadError(filePath, error);
+        }
+      });
+      const nextSnapshot = serializePlatformModels(nextModels);
+      lastPlatformModelsReloadAt = Date.now();
+
+      if (currentSnapshot === nextSnapshot) {
+        return;
+      }
+
+      replacePlatformModels(models, nextModels);
+      (modelGateway as AiSdkModelGateway & { clearModelCache?: () => void }).clearModelCache?.();
+      await refreshWorkspaceDefinitionsForPlatformModels();
+      platformModelRevision += 1;
+      await publishPlatformModelSnapshot();
+    })()
+      .catch((error) => {
+        console.warn("Platform model reload failed.", error);
+      })
+      .finally(() => {
+        platformModelsReloadPromise = undefined;
+      });
+
+    return platformModelsReloadPromise;
+  }
+
+  function schedulePlatformModelsReload(): void {
+    if (platformModelsReloadTimer) {
+      clearTimeout(platformModelsReloadTimer);
+    }
+
+    platformModelsReloadTimer = setTimeout(() => {
+      platformModelsReloadTimer = undefined;
+      void reloadPlatformModels();
+    }, 150);
+    platformModelsReloadTimer.unref?.();
+  }
   const workspaceMode =
     singleWorkspace !== undefined
       ? {
@@ -481,6 +704,11 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     }, 2_000);
     workspaceRegistryPollTimer.unref?.();
   }
+  const platformModelsWatcher = openFsWatcher(modelDir, schedulePlatformModelsReload);
+  platformModelsPollTimer = setInterval(() => {
+    void reloadPlatformModels();
+  }, 2_000);
+  platformModelsPollTimer.unref?.();
   const runtimeService = new RuntimeService({
     defaultModel: config.llm.default_model,
     modelGateway,
@@ -496,18 +724,14 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       ? {
           workspaceDeletionHandler: {
             async deleteWorkspace(workspace) {
-              if (workspace.kind !== "project") {
-                return;
-              }
-
-              if (!isManagedWorkspaceRoot(workspace.rootPath, config.paths.workspace_dir)) {
-                return;
-              }
-
-              await rm(workspace.rootPath, {
-                recursive: true,
-                force: true
+              const cleanup = await cleanupWorkspaceLocalArtifacts({
+                workspace,
+                paths: config.paths,
+                sqliteShadowRoot
               });
+              console.info(
+                `[oah-bootstrap] Cleaned local artifacts for deleted workspace ${workspace.id} (${cleanup.mode}): ${cleanup.removedPaths.join(", ")}`
+              );
             }
           }
         }
@@ -728,7 +952,9 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       cursor = page.length === 100 ? String((cursor ? Number.parseInt(cursor, 10) : 0) + 100) : undefined;
     } while (cursor);
 
-    const enabledWorkspaces = workspaces.filter((workspace) => workspace.kind === "project");
+    const enabledWorkspaces = workspaces.filter(
+      (workspace) => workspace.kind === "project" && workspace.historyMirrorEnabled !== false
+    );
 
     if (enabledWorkspaces.length === 0) {
       return {
@@ -763,16 +989,14 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     modelGateway,
     process: runtimeProcess,
     workspaceMode,
-    listPlatformModels: async () =>
-      Object.entries(models).map(([id, definition]) => ({
-        id,
-        provider: definition.provider,
-        modelName: definition.name,
-        ...(definition.url ? { url: definition.url } : {}),
-        hasKey: Boolean(definition.key),
-        ...(definition.metadata ? { metadata: definition.metadata } : {}),
-        isDefault: config.llm.default_model === id
-      })),
+    listPlatformModels: async () => toPlatformModelItems(models, config.llm.default_model),
+    getPlatformModelSnapshot,
+    subscribePlatformModelSnapshot(listener) {
+      platformModelSnapshotListeners.add(listener);
+      return () => {
+        platformModelSnapshotListeners.delete(listener);
+      };
+    },
     ...(singleWorkspace === undefined
       ? {
           listWorkspaceTemplates: () => listWorkspaceTemplates(config.paths.template_dir),
@@ -870,10 +1094,17 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       if (workspaceSyncTimer) {
         clearTimeout(workspaceSyncTimer);
       }
+      if (platformModelsReloadTimer) {
+        clearTimeout(platformModelsReloadTimer);
+      }
       if (workspaceRegistryPollTimer) {
         clearInterval(workspaceRegistryPollTimer);
       }
+      if (platformModelsPollTimer) {
+        clearInterval(platformModelsPollTimer);
+      }
       rootWorkspaceWatcher?.close();
+      platformModelsWatcher?.close();
       for (const watcher of watchedProjectRoots.values()) {
         watcher.close();
       }

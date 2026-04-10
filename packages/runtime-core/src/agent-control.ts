@@ -71,14 +71,14 @@ export function buildAvailableSubagentsMessage(
     .join("\n");
 
   return [
-    "## Available Agent Types",
+    "## Available Subagents",
     "",
     `<available_agents current_agent="${escapeXml(currentAgentName)}">`,
     entries,
     "</available_agents>",
     "",
-    "Use `SubAgent` to launch one of the allowed agent types for complex or multi-step work.",
-    "Pass `subagent_type` to choose the agent, a short `description`, and a focused `prompt` with the task context.",
+    "Use `SubAgent` to launch one of the allowed subagents for complex or multi-step work.",
+    "Pass `subagent_name` to choose the agent, a short `description`, and a focused `prompt` with the task context.",
     "Pass `task_id` to continue a previously launched subagent session instead of starting a fresh one.",
     "Set `run_in_background` to true when you want the launched agent to continue in the background."
   ].join("\n");
@@ -106,14 +106,14 @@ export function createSubAgentTool(
   const inputSchema = z.object({
     description: z.string().min(1).describe("A short 3-5 word description of the task."),
     prompt: z.string().min(1).describe("The task for the agent to perform, including needed context."),
-    subagent_type: z.string().min(1).optional().describe("The allowed agent type to use for this task."),
+    subagent_name: z.string().min(1).optional().describe("The allowed subagent name to use for this task."),
     task_id: z
       .string()
       .min(1)
       .optional()
       .describe("Reuse a previous subagent session by task_id instead of creating a fresh one."),
     run_in_background: z.boolean().optional().describe("Set to true to run this agent in the background.")
-  });
+  }).strict();
 
   return {
     SubAgent: {
@@ -123,7 +123,7 @@ export function createSubAgentTool(
         const {
           description,
           prompt,
-          subagent_type: subagentType,
+          subagent_name: subagentName,
           task_id: taskId,
           run_in_background: runInBackground
         } = inputSchema.parse(rawInput);
@@ -131,7 +131,7 @@ export function createSubAgentTool(
         const currentAgent = getCurrentAgent();
         const agents = getAgents();
         const allowedTargets = currentAgent?.subagents ?? [];
-        const targetAgentName = subagentType ?? (!taskId && allowedTargets.length === 1 ? allowedTargets[0] : undefined);
+        const targetAgentName = subagentName ?? (!taskId && allowedTargets.length === 1 ? allowedTargets[0] : undefined);
         const targetAgent = targetAgentName ? agents[targetAgentName] : undefined;
 
         if (!targetAgentName && !taskId) {
@@ -140,7 +140,7 @@ export function createSubAgentTool(
             "agent_type_required",
             allowedTargets.length === 0
               ? `Agent ${currentAgentName} does not have any available subagents.`
-              : `Agent requires subagent_type. Available agent types: ${allowedTargets.join(", ")}`
+              : `Agent requires subagent_name. Available subagents: ${allowedTargets.join(", ")}`
           );
         }
 
@@ -181,7 +181,7 @@ export function createSubAgentTool(
         if (shouldRunInBackground) {
           return formatToolOutput([
             ["started", true],
-            ["subagent_type", accepted.targetAgentName],
+            ["subagent_name", accepted.targetAgentName],
             ["description", description],
             ["task_id", accepted.childSessionId]
           ]);
@@ -195,7 +195,7 @@ export function createSubAgentTool(
         return formatToolOutput(
           [
             ["completed", true],
-            ["subagent_type", accepted.targetAgentName],
+            ["subagent_name", accepted.targetAgentName],
             ["description", description],
             ["task_id", accepted.childSessionId]
           ],

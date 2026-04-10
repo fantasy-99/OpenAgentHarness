@@ -754,6 +754,24 @@ async function appendHistoryEventRecord(
   return toHistoryEventRecord(expectRow(row, `history event ${input.entityType}:${input.entityId}`));
 }
 
+async function appendHistoryDeleteEvents(
+  db: OahExecutor,
+  workspaceId: string,
+  entities: Array<{ entityType: HistoryEventEntityType; entityId: string }>,
+  occurredAt: string
+): Promise<void> {
+  for (const entity of entities) {
+    await appendHistoryEventRecord(db, {
+      workspaceId,
+      entityType: entity.entityType,
+      entityId: entity.entityId,
+      op: "delete",
+      payload: {},
+      occurredAt
+    });
+  }
+}
+
 class PostgresWorkspaceRepository implements WorkspaceRepository {
   constructor(private readonly db: OahDatabase) {}
 
@@ -876,8 +894,42 @@ class PostgresSessionRepository implements SessionRepository {
   }
 
   async delete(id: string): Promise<void> {
-    await this.db.delete(messages).where(eq(messages.sessionId, id));
-    await this.db.delete(sessions).where(eq(sessions.id, id));
+    await this.db.transaction(async (tx) => {
+      const [sessionRow] = await tx.select().from(sessions).where(eq(sessions.id, id)).limit(1);
+      if (!sessionRow) {
+        return;
+      }
+
+      const workspaceId = sessionRow.workspaceId;
+      const sessionRunRows = await tx.select({ id: runs.id }).from(runs).where(eq(runs.sessionId, id));
+      const runIds = sessionRunRows.map((row) => row.id);
+      const [sessionMessageRows, runStepRows, toolCallRows, hookRunRows, artifactRows] = await Promise.all([
+        tx.select({ id: messages.id }).from(messages).where(eq(messages.sessionId, id)),
+        runIds.length > 0 ? tx.select({ id: runSteps.id }).from(runSteps).where(inArray(runSteps.runId, runIds)) : Promise.resolve([]),
+        runIds.length > 0 ? tx.select({ id: toolCalls.id }).from(toolCalls).where(inArray(toolCalls.runId, runIds)) : Promise.resolve([]),
+        runIds.length > 0 ? tx.select({ id: hookRuns.id }).from(hookRuns).where(inArray(hookRuns.runId, runIds)) : Promise.resolve([]),
+        runIds.length > 0 ? tx.select({ id: artifacts.id }).from(artifacts).where(inArray(artifacts.runId, runIds)) : Promise.resolve([])
+      ]);
+
+      await tx.delete(messages).where(eq(messages.sessionId, id));
+      await tx.delete(sessions).where(eq(sessions.id, id));
+
+      const occurredAt = nowIso();
+      await appendHistoryDeleteEvents(
+        tx,
+        workspaceId,
+        [
+          ...artifactRows.map((row) => ({ entityType: "artifact" as const, entityId: row.id })),
+          ...hookRunRows.map((row) => ({ entityType: "hook_run" as const, entityId: row.id })),
+          ...toolCallRows.map((row) => ({ entityType: "tool_call" as const, entityId: row.id })),
+          ...runStepRows.map((row) => ({ entityType: "run_step" as const, entityId: row.id })),
+          ...sessionRunRows.map((row) => ({ entityType: "run" as const, entityId: row.id })),
+          ...sessionMessageRows.map((row) => ({ entityType: "message" as const, entityId: row.id })),
+          { entityType: "session", entityId: id }
+        ],
+        occurredAt
+      );
+    });
   }
 }
 

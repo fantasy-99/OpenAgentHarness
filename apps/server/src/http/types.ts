@@ -97,6 +97,30 @@ export interface AppDependencies {
       isDefault: boolean;
     }>
   >) | undefined;
+  getPlatformModelSnapshot?: (() => Promise<{
+    revision: number;
+    items: Array<{
+      id: string;
+      provider: string;
+      modelName: string;
+      url?: string;
+      hasKey: boolean;
+      metadata?: Record<string, unknown>;
+      isDefault: boolean;
+    }>;
+  }>) | undefined;
+  subscribePlatformModelSnapshot?: ((listener: (snapshot: {
+    revision: number;
+    items: Array<{
+      id: string;
+      provider: string;
+      modelName: string;
+      url?: string;
+      hasKey: boolean;
+      metadata?: Record<string, unknown>;
+      isDefault: boolean;
+    }>;
+  }) => void) => (() => void)) | undefined;
   importWorkspace?: (input: {
     rootPath: string;
     kind?: "project" | "chat";

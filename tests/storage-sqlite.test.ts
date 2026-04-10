@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -389,6 +389,27 @@ function seedCurrentSchemaWithLegacyPayloads(dbPath: string, workspaceId: string
 }
 
 describe("storage sqlite", () => {
+  it("does not retain a workspace in memory when SQLite upsert fails", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "oah-sqlite-upsert-fail-"));
+    tempDirs.push(tempRoot);
+    const shadowRootFile = path.join(tempRoot, "shadow-root-file");
+    await writeFile(shadowRootFile, "blocked", "utf8");
+
+    const persistence = await createSQLiteRuntimePersistence({ shadowRoot: shadowRootFile });
+    const workspace = createWorkspace({
+      id: "ws_upsert_fail",
+      kind: "chat",
+      rootPath: "/tmp/ws-upsert-fail"
+    });
+
+    await expect(persistence.workspaceRepository.upsert(workspace)).rejects.toBeInstanceOf(Error);
+
+    await expect(persistence.workspaceRepository.getById(workspace.id)).resolves.toBeNull();
+    await expect(persistence.workspaceRepository.list(20)).resolves.toEqual([]);
+
+    await persistence.close();
+  });
+
   it("persists runtime data in a workspace history.db across restarts", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-sqlite-project-"));
     tempDirs.push(tempDir);
@@ -471,6 +492,154 @@ describe("storage sqlite", () => {
     ]);
     expect(await exists(path.join(workspaceRoot, ".openharness", "data", "history.db"))).toBe(true);
     await persistenceB.close();
+  });
+
+  it("deletes session-scoped runtime data and records mirror delete events", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-sqlite-delete-session-"));
+    tempDirs.push(tempDir);
+
+    const workspaceRoot = path.join(tempDir, "workspace");
+    const shadowRoot = path.join(tempDir, "shadow");
+    await mkdir(workspaceRoot, { recursive: true });
+
+    const workspace = createWorkspace({
+      id: "ws_delete_session",
+      rootPath: workspaceRoot
+    });
+
+    const persistence = await createSQLiteRuntimePersistence({ shadowRoot });
+    await persistence.workspaceRepository.upsert(workspace);
+
+    const session = {
+      id: "ses_delete",
+      workspaceId: workspace.id,
+      subjectRef: "dev:test",
+      activeAgentName: "assistant",
+      status: "active" as const,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    };
+    const run = {
+      id: "run_delete",
+      workspaceId: workspace.id,
+      sessionId: session.id,
+      triggerType: "message" as const,
+      effectiveAgentName: "assistant",
+      status: "completed" as const,
+      createdAt: "2026-01-01T00:00:01.000Z"
+    };
+    const message = {
+      id: "msg_delete",
+      sessionId: session.id,
+      runId: run.id,
+      role: "user" as const,
+      content: "delete me",
+      createdAt: "2026-01-01T00:00:02.000Z"
+    };
+    const step = {
+      id: "step_delete",
+      runId: run.id,
+      seq: 1,
+      stepType: "model_call" as const,
+      status: "completed" as const,
+      createdAt: "2026-01-01T00:00:03.000Z"
+    };
+    const toolCall = {
+      id: "tool_delete",
+      runId: run.id,
+      sourceType: "tool" as const,
+      toolName: "Read",
+      status: "completed" as const,
+      startedAt: "2026-01-01T00:00:04.000Z",
+      endedAt: "2026-01-01T00:00:04.500Z"
+    };
+    const hookRun = {
+      id: "hook_delete",
+      runId: run.id,
+      hookName: "before_model_call",
+      eventName: "before_model_call",
+      capabilities: {},
+      status: "completed" as const,
+      startedAt: "2026-01-01T00:00:05.000Z",
+      endedAt: "2026-01-01T00:00:05.500Z"
+    };
+    const artifact = {
+      id: "artifact_delete",
+      runId: run.id,
+      type: "file",
+      createdAt: "2026-01-01T00:00:06.000Z"
+    };
+
+    await persistence.sessionRepository.create(session);
+    await persistence.runRepository.create(run);
+    await persistence.messageRepository.create(message);
+    await persistence.runStepRepository.create(step);
+    await persistence.toolCallAuditRepository.create(toolCall);
+    await persistence.hookRunAuditRepository.create(hookRun);
+    await persistence.artifactRepository.create(artifact);
+    await persistence.runtimeMessageRepository.replaceBySessionId(session.id, [
+      {
+        id: "rtm_delete",
+        sessionId: session.id,
+        runId: run.id,
+        role: "assistant",
+        kind: "assistant_text",
+        content: "derived row",
+        createdAt: "2026-01-01T00:00:06.500Z"
+      }
+    ]);
+    await persistence.sessionEventStore.append({
+      sessionId: session.id,
+      runId: run.id,
+      event: "run.completed",
+      data: {
+        runId: run.id
+      }
+    });
+
+    await persistence.sessionRepository.delete(session.id);
+
+    await expect(persistence.sessionRepository.getById(session.id)).resolves.toBeNull();
+    await expect(persistence.runRepository.getById(run.id)).resolves.toBeNull();
+
+    const historyEvents = await persistence.historyEventRepository.listByWorkspaceId(workspace.id, 50);
+    expect(
+      historyEvents
+        .filter((event) => event.op === "delete")
+        .map((event) => `${event.entityType}:${event.entityId}`)
+    ).toEqual(
+      expect.arrayContaining([
+        "artifact:artifact_delete",
+        "hook_run:hook_delete",
+        "tool_call:tool_delete",
+        "run_step:step_delete",
+        "run:run_delete",
+        "message:msg_delete",
+        "session:ses_delete"
+      ])
+    );
+
+    const db = new DatabaseSync(path.join(workspaceRoot, ".openharness", "data", "history.db"));
+    try {
+      for (const tableName of [
+        "sessions",
+        "messages",
+        "runtime_messages",
+        "runs",
+        "run_steps",
+        "tool_calls",
+        "hook_runs",
+        "artifacts",
+        "session_events"
+      ]) {
+        const row = db.prepare(`select count(*) as count from ${tableName}`).get() as { count: number };
+        expect(row.count).toBe(0);
+      }
+    } finally {
+      db.close();
+    }
+
+    await persistence.close();
   });
 
   it("stores read-only chat workspace data under the shadow root", async () => {

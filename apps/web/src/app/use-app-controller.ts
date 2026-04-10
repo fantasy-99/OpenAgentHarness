@@ -46,6 +46,7 @@ import {
   type ReadinessReportResponse,
   type RuntimeConsoleEntry,
   type SurfaceMode,
+  type PlatformModelSnapshotResponse,
   type SseFrame
 } from "./support";
 import { buildAiSdkLikeRequest, buildAiSdkLikeStoredMessages } from "./primitives";
@@ -148,11 +149,13 @@ export function useAppController() {
 
   const deferredEvents = useDeferredValue(events);
   const streamAbortRef = useRef<AbortController | null>(null);
+  const platformModelStreamAbortRef = useRef<AbortController | null>(null);
   const lastCursorRef = useRef<string | undefined>(undefined);
   const messageRefreshTimerRef = useRef<number | undefined>(undefined);
   const runRefreshTimerRef = useRef<number | undefined>(undefined);
   const workspaceIndexRefreshTimerRef = useRef<number | undefined>(undefined);
   const runPollingTimerRef = useRef<number | undefined>(undefined);
+  const platformModelReconnectTimerRef = useRef<number | undefined>(undefined);
   const sessionAgentSwitchRef = useRef<{ sessionId: string; promise: Promise<boolean> } | null>(null);
   const sessionAgentSwitchSeqRef = useRef(0);
   const sessionModelUpdateRef = useRef<{ sessionId: string; promise: Promise<boolean> } | null>(null);
@@ -482,6 +485,15 @@ export function useAppController() {
       }
     }
   }
+
+  const handlePlatformModelSnapshot = useEffectEvent((snapshot: PlatformModelSnapshotResponse, quiet = false) => {
+    startTransition(() => {
+      setPlatformModels(snapshot.items);
+    });
+    if (!quiet) {
+      setActivity(`平台模型已热更新，当前 ${snapshot.items.length} 个`);
+    }
+  });
 
   async function refreshMessages(quiet = false) {
     if (!sessionId.trim()) {
@@ -1197,10 +1209,12 @@ export function useAppController() {
   useEffect(() => {
     return () => {
       streamAbortRef.current?.abort();
+      platformModelStreamAbortRef.current?.abort();
       window.clearTimeout(messageRefreshTimerRef.current);
       window.clearTimeout(runRefreshTimerRef.current);
       window.clearTimeout(workspaceIndexRefreshTimerRef.current);
       window.clearTimeout(runPollingTimerRef.current);
+      window.clearTimeout(platformModelReconnectTimerRef.current);
     };
   }, []);
 
@@ -1228,6 +1242,85 @@ export function useAppController() {
     void refreshModelProviders(true);
     void refreshPlatformModels(true);
   }, [connection.baseUrl, connection.token, sessionId, workspaceId]);
+
+  useEffect(() => {
+    platformModelStreamAbortRef.current?.abort();
+    window.clearTimeout(platformModelReconnectTimerRef.current);
+
+    let cancelled = false;
+
+    const connect = () => {
+      if (cancelled) {
+        return;
+      }
+
+      const controller = new AbortController();
+      platformModelStreamAbortRef.current = controller;
+
+      void (async () => {
+        try {
+          const headers = new Headers();
+          const token = connection.token.trim();
+          if (token) {
+            headers.set("authorization", `Bearer ${token}`);
+          }
+
+          const response = await fetch(buildUrl(connection.baseUrl, "/api/v1/platform-models/events"), {
+            signal: controller.signal,
+            headers
+          });
+
+          if (response.status === 404 || response.status === 501) {
+            return;
+          }
+
+          if (!response.ok) {
+            throw new Error(`${response.status} ${response.statusText}`);
+          }
+
+          await consumeSse(
+            response,
+            (frame) => {
+              const revision = frame.data.revision;
+              const items = frame.data.items;
+              if (typeof revision !== "number" || !Array.isArray(items)) {
+                return;
+              }
+
+              handlePlatformModelSnapshot(
+                {
+                  revision,
+                  items: items as PlatformModelRecord[]
+                },
+                frame.event === "platform-models.snapshot"
+              );
+            },
+            controller.signal
+          );
+        } catch (error) {
+          if (controller.signal.aborted || cancelled) {
+            return;
+          }
+
+          if (isNotFoundError(error)) {
+            return;
+          }
+        }
+
+        if (!controller.signal.aborted && !cancelled) {
+          platformModelReconnectTimerRef.current = window.setTimeout(connect, 1_500);
+        }
+      })();
+    };
+
+    connect();
+
+    return () => {
+      cancelled = true;
+      platformModelStreamAbortRef.current?.abort();
+      window.clearTimeout(platformModelReconnectTimerRef.current);
+    };
+  }, [connection.baseUrl, connection.token]);
 
   useEffect(() => {
     if (sessionId.trim()) {
