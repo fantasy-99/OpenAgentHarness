@@ -195,6 +195,8 @@ export class RuntimeService {
   readonly #modelGateway: RuntimeServiceOptions["modelGateway"];
   readonly #logger: RuntimeServiceOptions["logger"];
   readonly #runHeartbeatIntervalMs: number;
+  readonly #staleRunRecoveryStrategy: "fail" | "requeue_running" | "requeue_all";
+  readonly #staleRunRecoveryMaxAttempts: number;
   readonly #platformModels: Record<string, ModelDefinition>;
   readonly #workspaceRepository: RuntimeServiceOptions["workspaceRepository"];
   readonly #sessionRepository: RuntimeServiceOptions["sessionRepository"];
@@ -231,6 +233,8 @@ export class RuntimeService {
     this.#modelGateway = options.modelGateway;
     this.#logger = options.logger;
     this.#runHeartbeatIntervalMs = Math.max(50, options.runHeartbeatIntervalMs ?? 5_000);
+    this.#staleRunRecoveryStrategy = options.staleRunRecovery?.strategy ?? "fail";
+    this.#staleRunRecoveryMaxAttempts = Math.max(1, Math.floor(options.staleRunRecovery?.maxAttempts ?? 1));
     this.#platformModels = options.platformModels ?? {};
     this.#workspaceRepository = options.workspaceRepository;
     this.#sessionRepository = options.sessionRepository;
@@ -955,14 +959,23 @@ export class RuntimeService {
     await this.#processRun(runId);
   }
 
-  async recoverStaleRuns(options?: { staleBefore?: string | undefined; limit?: number | undefined }): Promise<{ recoveredRunIds: string[] }> {
+  async recoverStaleRuns(options?: {
+    staleBefore?: string | undefined;
+    limit?: number | undefined;
+  }): Promise<{ recoveredRunIds: string[]; requeuedRunIds: string[] }> {
     const staleBefore = options?.staleBefore ?? new Date(Date.now() - this.#runHeartbeatIntervalMs * 3).toISOString();
     const recoverableRuns = await this.#runRepository.listRecoverableActiveRuns(staleBefore, options?.limit ?? 100);
     const recoveredRunIds: string[] = [];
+    const requeuedRunIds: string[] = [];
 
     for (const run of recoverableRuns) {
       const currentRun = await this.#runRepository.getById(run.id);
       if (!currentRun || (currentRun.status !== "running" && currentRun.status !== "waiting_tool")) {
+        continue;
+      }
+
+      if (await this.#tryRequeueRecoveredRun(currentRun)) {
+        requeuedRunIds.push(currentRun.id);
         continue;
       }
 
@@ -999,7 +1012,7 @@ export class RuntimeService {
       recoveredRunIds.push(failedRun.id);
     }
 
-    return { recoveredRunIds };
+    return { recoveredRunIds, requeuedRunIds };
   }
 
   async #appendEvent(input: Omit<SessionEvent, "id" | "cursor" | "createdAt">): Promise<SessionEvent> {
@@ -1063,6 +1076,68 @@ export class RuntimeService {
       });
 
     this.#sessionChains.set(sessionId, next);
+  }
+
+  async #tryRequeueRecoveredRun(run: Run): Promise<boolean> {
+    if (!this.#runQueue || !run.sessionId) {
+      return false;
+    }
+
+    if (this.#staleRunRecoveryStrategy === "fail") {
+      return false;
+    }
+
+    if (this.#staleRunRecoveryStrategy === "requeue_running" && run.status !== "running") {
+      return false;
+    }
+
+    const recoveryMetadata =
+      run.metadata && typeof run.metadata === "object" && !Array.isArray(run.metadata)
+        ? run.metadata
+        : {};
+    const attemptsValue = recoveryMetadata.recoveryAttempts;
+    const recoveryAttempts =
+      typeof attemptsValue === "number" && Number.isFinite(attemptsValue) && attemptsValue >= 0 ? Math.floor(attemptsValue) : 0;
+    if (recoveryAttempts >= this.#staleRunRecoveryMaxAttempts) {
+      return false;
+    }
+
+    const nextRecoveryAttempt = recoveryAttempts + 1;
+    const queuedRun = await this.#updateRun(run, {
+      status: "queued",
+      startedAt: undefined,
+      heartbeatAt: undefined,
+      endedAt: undefined,
+      cancelRequestedAt: undefined,
+      errorCode: undefined,
+      errorMessage: undefined,
+      metadata: {
+        ...recoveryMetadata,
+        recoveryAttempts: nextRecoveryAttempt,
+        recoveredBy: "worker_startup_requeue",
+        recoveredAt: nowIso()
+      }
+    });
+
+    await this.#appendEvent({
+      sessionId: run.sessionId,
+      runId: queuedRun.id,
+      event: "run.queued",
+      data: {
+        runId: queuedRun.id,
+        sessionId: run.sessionId,
+        status: queuedRun.status,
+        recoveredBy: "worker_startup_requeue",
+        recoveryAttempt: nextRecoveryAttempt
+      }
+    });
+    await this.#recordSystemStep(queuedRun, "run.requeued", {
+      status: queuedRun.status,
+      recoveredBy: "worker_startup_requeue",
+      recoveryAttempt: nextRecoveryAttempt
+    });
+    await this.#enqueueRun(run.sessionId, queuedRun.id);
+    return true;
   }
 
   async #processRun(runId: string): Promise<void> {

@@ -6,7 +6,7 @@ import { Bot, ChevronRight, Folder, Loader2, RefreshCw, Send, Square, Wrench, Co
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 
-import { formatTimestamp, statusTone } from "../support";
+import { formatTimestamp, statusTone, toneBadgeClass, toneTextClass } from "../support";
 import type { Message } from "@oah/api-contracts";
 import type { useAppController } from "../use-app-controller";
 import { Badge } from "@/components/ui/badge";
@@ -23,22 +23,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function agentModeTone(mode: "primary" | "subagent" | "all") {
   switch (mode) {
     case "primary":
-      return "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-800 dark:bg-sky-950/40 dark:text-sky-300";
+      return toneBadgeClass("sky");
     case "subagent":
-      return "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300";
+      return toneBadgeClass("amber");
     case "all":
-      return "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300";
+      return toneBadgeClass("emerald");
   }
 }
 
 function toolStatusTone(status: ToolStatus) {
   switch (status) {
     case "running":
-      return "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300";
+      return toneBadgeClass("amber");
     case "completed":
-      return "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300";
+      return toneBadgeClass("emerald");
     case "failed":
-      return "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-300";
+      return toneBadgeClass("rose");
   }
 }
 
@@ -144,12 +144,12 @@ function getParamKind(value: unknown): ParamKind {
 
 function paramTypeBadgeClass(kind: ParamKind) {
   switch (kind) {
-    case "string":   return "border-sky-500/20 bg-sky-500/10 text-sky-700 dark:text-sky-300";
-    case "number":   return "border-blue-500/20 bg-blue-500/10 text-blue-700 dark:text-blue-300";
-    case "boolean":  return "border-violet-500/20 bg-violet-500/10 text-violet-700 dark:text-violet-300";
+    case "string":   return toneBadgeClass("sky");
+    case "number":   return toneBadgeClass("emerald");
+    case "boolean":  return toneBadgeClass("plum");
     case "null":     return "border-border/60 bg-muted/60 text-muted-foreground";
     case "array":
-    case "object":   return "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+    case "object":   return toneBadgeClass("amber");
     default:         return "border-border/60 bg-muted/60 text-muted-foreground";
   }
 }
@@ -168,13 +168,13 @@ function ToolCallBlock({
   const durationLabel = formatToolDuration(toolMeta.durationMs);
 
   return (
-    <div className="rounded-2xl border border-border/60 bg-muted/35 overflow-hidden shadow-sm">
+    <div className="info-panel rounded-2xl overflow-hidden">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2.5 px-4 py-2.5 text-sm hover:bg-muted/55 transition-colors text-left"
+        className="info-panel-hoverable w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-left"
       >
         <ChevronRight className={`w-3 h-3 text-foreground/50 transition-transform flex-shrink-0 ${expanded ? "rotate-90" : ""}`} />
-        <span className="inline-flex items-center rounded-md border border-border/60 bg-background/45 px-2 py-0.5 text-[10px] font-medium text-muted-foreground/80">
+        <span className="info-inline inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-medium text-muted-foreground/80">
           tool call
         </span>
         <Wrench className="w-3 h-3 text-foreground/40 flex-shrink-0" />
@@ -186,12 +186,12 @@ function ToolCallBlock({
           </span>
         ) : null}
         {toolMeta.sourceType ? (
-          <span className="inline-flex items-center rounded-md border border-border/60 bg-background/45 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/75">
+          <span className="info-inline inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/75">
             {toolMeta.sourceType}
           </span>
         ) : null}
         {durationLabel ? (
-          <span className="inline-flex items-center rounded-md border border-border/60 bg-background/45 px-2 py-0.5 text-[10px] font-medium text-muted-foreground/75">
+          <span className="info-inline inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-medium text-muted-foreground/75">
             {durationLabel}
           </span>
         ) : null}
@@ -222,22 +222,22 @@ function ToolCallBlock({
                     <div className="text-xs font-mono text-foreground/80">
                       {typeof value === "string" ? (
                         isMultiline ? (
-                          <pre className="rounded-lg border border-sky-500/15 bg-sky-500/5 px-3 py-2 text-sky-800 dark:text-sky-200 whitespace-pre-wrap break-all max-h-48 overflow-y-auto">
+                          <pre className={`rounded-lg border px-3 py-2 whitespace-pre-wrap break-all max-h-48 overflow-y-auto ${toneBadgeClass("sky")}`}>
                             {value}
                           </pre>
                         ) : (
-                          <span className="inline-flex items-center rounded-md border border-sky-500/15 bg-sky-500/5 px-2 py-1 text-sky-800 dark:text-sky-200">
+                          <span className={`inline-flex items-center rounded-md border px-2 py-1 ${toneBadgeClass("sky")}`}>
                             <span className="opacity-50 mr-0.5">"</span>{value}<span className="opacity-50 ml-0.5">"</span>
                           </span>
                         )
                       ) : typeof value === "number" ? (
-                        <span className="inline-flex items-center rounded-md border border-blue-500/15 bg-blue-500/5 px-2 py-1 text-blue-700 dark:text-blue-300">{value}</span>
+                        <span className={`inline-flex items-center rounded-md border px-2 py-1 ${toneBadgeClass("emerald")}`}>{value}</span>
                       ) : typeof value === "boolean" ? (
-                        <span className="inline-flex items-center rounded-md border border-violet-500/15 bg-violet-500/5 px-2 py-1 text-violet-700 dark:text-violet-300">{String(value)}</span>
+                        <span className={`inline-flex items-center rounded-md border px-2 py-1 ${toneBadgeClass("plum")}`}>{String(value)}</span>
                       ) : value === null ? (
-                        <span className="inline-flex items-center rounded-md border border-border/60 bg-muted/50 px-2 py-1 text-muted-foreground">null</span>
+                        <span className="info-inline inline-flex items-center rounded-md px-2 py-1 text-muted-foreground">null</span>
                       ) : (
-                        <pre className="rounded-lg border border-border/60 bg-muted/40 px-3 py-2 text-foreground/75 overflow-x-auto whitespace-pre-wrap break-all max-h-48 overflow-y-auto">
+                        <pre className="code-panel rounded-lg px-3 py-2 overflow-x-auto whitespace-pre-wrap break-all max-h-48 overflow-y-auto">
                           {JSON.stringify(value, null, 2)}
                         </pre>
                       )}
@@ -291,10 +291,10 @@ function ToolResultBlock({
   const durationLabel = formatToolDuration(toolMeta.durationMs);
 
   return (
-    <div className={`rounded-2xl border overflow-hidden shadow-sm ${isError ? "border-destructive/20 bg-destructive/5" : "border-border/60 bg-muted/35"}`}>
+    <div className={isError ? "rounded-2xl border border-destructive/20 bg-destructive/5 overflow-hidden shadow-sm" : "info-panel rounded-2xl overflow-hidden"}>
       <button
         onClick={() => setExpanded(!expanded)}
-        className={`w-full flex items-center gap-2.5 px-4 py-2.5 text-sm transition-colors text-left ${isError ? "hover:bg-destructive/10" : "hover:bg-muted/55"}`}
+        className={`${isError ? "w-full flex items-center gap-2.5 px-4 py-2.5 text-sm transition-colors text-left hover:bg-destructive/10" : "info-panel-hoverable w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-left"}`}
       >
         <ChevronRight className={`w-3 h-3 transition-transform flex-shrink-0 ${expanded ? "rotate-90" : ""} ${isError ? "text-destructive/70" : "text-foreground/50"}`} />
         <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[10px] font-medium ${isError ? "border-destructive/20 bg-destructive/10 text-destructive" : "border-primary/15 bg-primary/5 text-primary/85"}`}>
@@ -302,7 +302,7 @@ function ToolResultBlock({
         </span>
         <CornerDownRight className={`w-3 h-3 flex-shrink-0 ${isError ? "text-destructive/60" : "text-foreground/40"}`} />
         {part.toolName && (
-          <code className="inline-flex items-center rounded-md border border-border/60 bg-background/45 px-2 py-0.5 text-[11px] font-mono text-foreground/70">
+          <code className="info-inline inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-mono text-foreground/70">
             {part.toolName}
           </code>
         )}
@@ -312,12 +312,12 @@ function ToolResultBlock({
           </span>
         ) : null}
         {toolMeta.sourceType ? (
-          <span className="inline-flex items-center rounded-md border border-border/60 bg-background/45 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/75">
+          <span className="info-inline inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/75">
             {toolMeta.sourceType}
           </span>
         ) : null}
         {durationLabel ? (
-          <span className="inline-flex items-center rounded-md border border-border/60 bg-background/45 px-2 py-0.5 text-[10px] font-medium text-muted-foreground/75">
+          <span className="info-inline inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-medium text-muted-foreground/75">
             {durationLabel}
           </span>
         ) : null}
@@ -331,7 +331,7 @@ function ToolResultBlock({
           <pre className={`rounded-xl border px-3 py-3 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all max-h-64 overflow-y-auto shadow-sm ${
             isError
               ? "border-destructive/20 bg-destructive/5 text-destructive/90"
-              : "border-border/60 bg-background/50 text-foreground/80"
+              : "code-panel"
           }`}>
             {content}
           </pre>
@@ -381,15 +381,15 @@ function MessageContent({
       {reasoningParts.length > 0 && (
         <details className="group/reasoning">
           <summary className="list-none cursor-pointer select-none">
-            <span className="inline-flex items-center gap-1.5 rounded-md border border-violet-200/70 bg-violet-50/60 px-2 py-0.5 text-[11px] font-medium text-violet-600 transition hover:bg-violet-50 dark:border-violet-800/70 dark:bg-violet-950/40 dark:text-violet-400 dark:hover:bg-violet-950/60">
+            <span className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium transition ${toneBadgeClass("plum")}`}>
               <span className="opacity-70">✦</span> reasoning
               <span className="opacity-50 text-[10px] group-open/reasoning:hidden">▸</span>
               <span className="opacity-50 text-[10px] hidden group-open/reasoning:inline">▾</span>
             </span>
           </summary>
-          <div className="mt-1.5 rounded-lg border border-violet-200/50 bg-violet-50/30 px-3 py-2 dark:border-violet-800/50 dark:bg-violet-950/20">
+          <div className={`mt-1.5 rounded-lg border px-3 py-2 ${toneBadgeClass("plum")}`}>
             {reasoningParts.map((part, i) => (
-              <div key={i} className="whitespace-pre-wrap break-words text-xs leading-relaxed text-violet-700/80 dark:text-violet-400/80">
+              <div key={i} className={`whitespace-pre-wrap break-words text-xs leading-relaxed ${toneTextClass("plum")}`}>
                 {"text" in part ? part.text : null}
               </div>
             ))}
@@ -408,10 +408,10 @@ function MessageContent({
               key={i}
               className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-medium ${
                 part.type === "tool-approval-request"
-                  ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-400"
+                  ? toneBadgeClass("amber")
                   : "approved" in part && part.approved
-                  ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-400"
-                  : "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-800 dark:bg-rose-950/50 dark:text-rose-400"
+                    ? toneBadgeClass("emerald")
+                    : toneBadgeClass("rose")
               }`}
             >
               {part.type === "tool-approval-request" ? "⏳ approval requested" : "approved" in part && part.approved ? "✓ approved" : "✗ denied"}

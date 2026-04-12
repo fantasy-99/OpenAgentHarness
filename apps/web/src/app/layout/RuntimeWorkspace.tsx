@@ -1,3 +1,5 @@
+import { Suspense, lazy } from "react";
+
 import { MessageSquareText, Sparkles } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -5,11 +7,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import type { useAppController } from "../use-app-controller";
-import { ConversationWorkspace } from "../chat/ConversationWorkspace";
-import { InspectorWorkspace } from "../inspector/InspectorWorkspace";
 
 type RuntimeProps = ReturnType<typeof useAppController>["runtimeDetailSurfaceProps"];
 const AUTO_SESSION_MODEL_VALUE = "__session_model_auto__";
+const ConversationWorkspace = lazy(async () => ({
+  default: (await import("../chat/ConversationWorkspace")).ConversationWorkspace
+}));
+const InspectorWorkspace = lazy(async () => ({
+  default: (await import("../inspector/InspectorWorkspace")).InspectorWorkspace
+}));
 
 function sessionAgentLabel(agent: { name: string; mode: "primary" | "subagent" | "all" }) {
   return `${agent.name} · ${agent.mode}`;
@@ -69,6 +75,13 @@ export function RuntimeWorkspace(props: RuntimeProps) {
     props.sessionRuns.length > 0 ||
     (props.run?.sessionId != null && props.run.sessionId === props.session?.id) ||
     props.isRunning;
+  const runtimePanelFallback = (
+    <div className="flex min-h-0 flex-1 items-center justify-center px-6 py-8">
+      <div className="rounded-2xl border border-border/70 bg-background/80 px-4 py-3 text-sm text-muted-foreground shadow-[0_10px_30px_-24px_rgba(17,17,17,0.35)]">
+        {props.mainViewMode === "conversation" ? "Loading conversation..." : "Loading inspector..."}
+      </div>
+    </div>
+  );
 
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -240,15 +253,17 @@ export function RuntimeWorkspace(props: RuntimeProps) {
         </div>
       </div>
 
-      {props.mainViewMode === "conversation" ? (
-        <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
-          <ConversationWorkspace {...props} />
-        </div>
-      ) : (
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 py-4 md:px-5 md:py-5">
-          <InspectorWorkspace {...props} />
-        </div>
-      )}
+      <Suspense fallback={runtimePanelFallback}>
+        {props.mainViewMode === "conversation" ? (
+          <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
+            <ConversationWorkspace {...props} />
+          </div>
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 py-4 md:px-5 md:py-5">
+            <InspectorWorkspace {...props} />
+          </div>
+        )}
+      </Suspense>
     </section>
   );
 }

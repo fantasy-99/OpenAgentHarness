@@ -40,7 +40,7 @@ function StorageMessageRowDetail(props: { row: Record<string, unknown> }) {
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <span className={cn("rounded-full px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em]", modelMessageTone(message.role))}>
+        <span className={cn("rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em]", modelMessageTone(message.role))}>
           {message.role}
         </span>
         {message.runId ? <Badge>{message.runId}</Badge> : null}

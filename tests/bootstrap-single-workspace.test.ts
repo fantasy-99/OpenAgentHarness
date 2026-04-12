@@ -410,6 +410,19 @@ openai-default:
       await expect(runtime.healthReport()).resolves.toMatchObject({
         storage: {
           primary: "sqlite"
+        },
+        worker: {
+          mode: "disabled",
+          activeWorkers: [],
+          summary: {
+            active: 0,
+            healthy: 0,
+            late: 0,
+            busy: 0,
+            embedded: 0,
+            standalone: 0
+          },
+          pool: null
         }
       });
     } finally {

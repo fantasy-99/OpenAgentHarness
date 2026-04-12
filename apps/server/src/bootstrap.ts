@@ -21,7 +21,8 @@ import { createPostgresRuntimePersistence } from "@oah/storage-postgres";
 import { createSQLiteRuntimePersistence, sqliteWorkspaceHistoryDbPath } from "@oah/storage-sqlite";
 import {
   FanoutSessionEventStore,
-  RedisRunWorker,
+  RedisRunWorkerPool,
+  createRedisWorkerRegistry,
   createRedisSessionEventBus,
   createRedisSessionRunQueue
 } from "@oah/storage-redis";
@@ -73,6 +74,39 @@ export interface BootstrapOptions {
   startWorker?: boolean | undefined;
   processKind?: "api" | "worker" | undefined;
   platformAgents?: PlatformAgentRegistry | undefined;
+}
+
+function summarizeActiveWorkers(activeWorkers: Array<import("@oah/storage-redis").RedisWorkerRegistryEntry>) {
+  return {
+    active: activeWorkers.length,
+    healthy: activeWorkers.filter((worker) => worker.health === "healthy").length,
+    late: activeWorkers.filter((worker) => worker.health === "late").length,
+    busy: activeWorkers.filter((worker) => worker.state === "busy").length,
+    embedded: activeWorkers.filter((worker) => worker.processKind === "embedded").length,
+    standalone: activeWorkers.filter((worker) => worker.processKind === "standalone").length
+  };
+}
+
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw || raw.trim().length === 0) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseStaleRunRecoveryStrategyEnv(
+  name: string,
+  fallback: "fail" | "requeue_running" | "requeue_all"
+): "fail" | "requeue_running" | "requeue_all" {
+  const raw = process.env[name]?.trim();
+  if (!raw) {
+    return fallback;
+  }
+
+  return raw === "fail" || raw === "requeue_running" || raw === "requeue_all" ? raw : fallback;
 }
 
 export interface BootstrappedRuntime {
@@ -144,6 +178,16 @@ export interface BootstrappedRuntime {
     };
     worker: {
       mode: "embedded" | "external" | "disabled";
+      activeWorkers: Array<import("@oah/storage-redis").RedisWorkerRegistryEntry>;
+      summary: {
+        active: number;
+        healthy: number;
+        late: number;
+        busy: number;
+        embedded: number;
+        standalone: number;
+      };
+      pool: import("@oah/storage-redis").RedisRunWorkerPoolSnapshot | null;
     };
     mirror: {
       worker: "running" | "disabled";
@@ -362,6 +406,17 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
           return undefined;
         })
       : undefined;
+  const redisWorkerRegistry =
+    config.storage.redis_url && config.storage.redis_url.trim().length > 0
+      ? await createRedisWorkerRegistry({
+          url: config.storage.redis_url
+        }).catch((error) => {
+          console.warn(
+            `Redis worker registry unavailable (${error instanceof Error ? error.message : "unknown error"}); continuing without worker leases.`
+          );
+          return undefined;
+        })
+      : undefined;
   const redisConfigured = Boolean(config.storage.redis_url && config.storage.redis_url.trim().length > 0);
   const storageAdmin = createStorageAdmin({
     ...("pool" in persistence ? { postgresPool: persistence.pool } : {}),
@@ -400,7 +455,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     startWorker,
     hasRedisRunQueue: Boolean(redisRunQueue)
   });
-  const workerMode = startWorker ? "embedded" : redisRunQueue ? "external" : "disabled";
+  const workerMode = startWorker ? (processKind === "worker" ? "external" : "embedded") : redisRunQueue ? "external" : "disabled";
   const persistedWorkspaceSnapshots = hasPersistedWorkspaceListing(persistence)
     ? await persistence.listPersistedWorkspaces()
     : hasWorkspaceSnapshotListing(persistence)
@@ -716,6 +771,13 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     defaultModel: config.llm.default_model,
     modelGateway,
     logger: runtimeDebugLogger,
+    staleRunRecovery: {
+      strategy: parseStaleRunRecoveryStrategyEnv(
+        "OAH_STALE_RUN_RECOVERY_STRATEGY",
+        config.storage.redis_url ? "requeue_running" : "fail"
+      ),
+      maxAttempts: parsePositiveIntEnv("OAH_STALE_RUN_RECOVERY_MAX_ATTEMPTS", 1)
+    },
     platformModels: models,
     ...persistence,
     workspaceRepository,
@@ -780,12 +842,43 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         }
       : {})
   });
-  const redisRunWorker =
-    startWorker && redisRunQueue
-      ? new RedisRunWorker({
+  const embeddedWorkerMin =
+    processKind === "worker" ? 1 : parsePositiveIntEnv("OAH_EMBEDDED_WORKER_MIN", config.storage.redis_url ? 2 : 1);
+  const embeddedWorkerMax = Math.max(embeddedWorkerMin, parsePositiveIntEnv("OAH_EMBEDDED_WORKER_MAX", embeddedWorkerMin));
+  const embeddedWorkerScaleIntervalMs = parsePositiveIntEnv("OAH_EMBEDDED_WORKER_SCALE_INTERVAL_MS", 5_000);
+  const embeddedWorkerReadySessionsPerWorker = parsePositiveIntEnv("OAH_EMBEDDED_WORKER_READY_SESSIONS_PER_WORKER", 1);
+  const embeddedWorkerScaleUpCooldownMs = parsePositiveIntEnv("OAH_EMBEDDED_WORKER_SCALE_UP_COOLDOWN_MS", 1_000);
+  const embeddedWorkerScaleDownCooldownMs = parsePositiveIntEnv("OAH_EMBEDDED_WORKER_SCALE_DOWN_COOLDOWN_MS", 15_000);
+  const embeddedWorkerScaleUpSampleSize = parsePositiveIntEnv("OAH_EMBEDDED_WORKER_SCALE_UP_SAMPLE_SIZE", 2);
+  const embeddedWorkerScaleDownSampleSize = parsePositiveIntEnv("OAH_EMBEDDED_WORKER_SCALE_DOWN_SAMPLE_SIZE", 3);
+  const embeddedWorkerScaleUpBusyRatioPercent = parsePositiveIntEnv("OAH_EMBEDDED_WORKER_SCALE_UP_BUSY_RATIO_PERCENT", 75);
+  const embeddedWorkerScaleUpBusyRatioThreshold = Math.min(1, Math.max(0, embeddedWorkerScaleUpBusyRatioPercent / 100));
+  const embeddedWorkerScaleUpMaxReadyAgeMs = parsePositiveIntEnv("OAH_EMBEDDED_WORKER_SCALE_UP_MAX_READY_AGE_MS", 2_000);
+  const redisRunWorkerPool =
+    startWorker && redisRunQueue && config.storage.redis_url
+      ? new RedisRunWorkerPool({
           queue: redisRunQueue,
+          queueFactory: () =>
+            createRedisSessionRunQueue({
+              url: config.storage.redis_url as string
+            }),
           runtimeService,
+          processKind: processKind === "worker" ? "standalone" : "embedded",
+          registry: redisWorkerRegistry,
+          minWorkers: embeddedWorkerMin,
+          maxWorkers: embeddedWorkerMax,
+          scaleIntervalMs: embeddedWorkerScaleIntervalMs,
+          readySessionsPerWorker: embeddedWorkerReadySessionsPerWorker,
+          scaleUpCooldownMs: embeddedWorkerScaleUpCooldownMs,
+          scaleDownCooldownMs: embeddedWorkerScaleDownCooldownMs,
+          scaleUpSampleSize: embeddedWorkerScaleUpSampleSize,
+          scaleDownSampleSize: embeddedWorkerScaleDownSampleSize,
+          scaleUpBusyRatioThreshold: embeddedWorkerScaleUpBusyRatioThreshold,
+          scaleUpMaxReadyAgeMs: embeddedWorkerScaleUpMaxReadyAgeMs,
           logger: {
+            info(message) {
+              console.info(message);
+            },
             warn(message, error) {
               console.warn(message, error);
             },
@@ -795,7 +888,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
           }
         })
       : undefined;
-  redisRunWorker?.start();
+  redisRunWorkerPool?.start();
   const historyMirrorSyncer =
     primaryStorageMode === "postgres" &&
     shouldRunHistoryMirrorSync({
@@ -1070,6 +1163,9 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       });
     },
     async healthReport() {
+      const activeWorkers = redisWorkerRegistry ? await redisWorkerRegistry.listActive() : [];
+      const workerSummary = summarizeActiveWorkers(activeWorkers);
+      const workerPool = redisRunWorkerPool?.snapshot() ?? null;
       const mirror = await historyMirrorSummary();
       const checks = {
         postgres: await postgresCheck(),
@@ -1088,7 +1184,10 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         process: runtimeProcess,
         checks,
         worker: {
-          mode: workerMode
+          mode: workerMode,
+          activeWorkers,
+          summary: workerSummary,
+          pool: workerPool
         },
         mirror
       };
@@ -1110,10 +1209,11 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         historyMirrorSyncer?.close() ?? Promise.resolve(),
         historyEventCleaner?.close() ?? Promise.resolve(),
         workspaceArchiveExporter?.close() ?? Promise.resolve(),
-        redisRunWorker?.close() ?? Promise.resolve(),
+        redisRunWorkerPool?.close() ?? Promise.resolve(),
         storageAdmin.close(),
         closePersistence(),
         redisBus?.close() ?? Promise.resolve(),
+        redisWorkerRegistry?.close() ?? Promise.resolve(),
         redisRunQueue?.close() ?? Promise.resolve()
       ]);
       if (workspaceSyncTimer) {

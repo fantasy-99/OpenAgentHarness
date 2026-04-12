@@ -444,7 +444,7 @@ function ModelMessageList(props: { traceId: string; messages: ModelCallTraceMess
         <div key={`${props.traceId}:message:${index}`} className="ob-subsection p-3">
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <Badge>{index + 1}</Badge>
-            <span className={cn("rounded-full px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em]", modelMessageTone(message.role))}>
+            <span className={cn("rounded-full border px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em]", modelMessageTone(message.role))}>
               {message.role}
             </span>
             <MessageToolRefChips content={message.content} />
@@ -500,10 +500,10 @@ function ContextWorkbench(props: {
                 <button
                   key={message.id}
                   className={cn(
-                    "w-full rounded-[16px] border p-3 text-left transition",
+                    "w-full rounded-[16px] p-3 text-left transition",
                     props.selectedMessage?.id === message.id
-                      ? "border-border bg-muted/60"
-                      : "border-border/60 bg-card/60 hover:bg-muted/40"
+                      ? "border border-border bg-muted/60"
+                      : "info-panel info-panel-hoverable"
                   )}
                   onClick={() => props.onSelectMessage(message.id)}
                 >
@@ -593,10 +593,10 @@ function CallsWorkbench(props: {
                 <button
                   key={trace.id}
                   className={cn(
-                    "w-full rounded-[16px] border p-3 text-left transition",
+                    "w-full rounded-[16px] p-3 text-left transition",
                     props.selectedTrace?.id === trace.id
-                      ? "border-border bg-muted/60"
-                      : "border-border/60 bg-card/60 hover:bg-muted/40"
+                      ? "border border-border bg-muted/60"
+                      : "info-panel info-panel-hoverable"
                   )}
                   onClick={() => props.onSelectTrace(trace.id)}
                 >

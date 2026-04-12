@@ -449,6 +449,12 @@ export interface RuntimeServiceOptions {
   modelGateway: ModelGateway;
   logger?: RuntimeLogger | undefined;
   runHeartbeatIntervalMs?: number | undefined;
+  staleRunRecovery?:
+    | {
+        strategy?: "fail" | "requeue_running" | "requeue_all" | undefined;
+        maxAttempts?: number | undefined;
+      }
+    | undefined;
   platformModels?: Record<string, ModelDefinition> | undefined;
   workspaceRepository: WorkspaceRepository;
   sessionRepository: SessionRepository;

@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 
 import { EmptyState, EntityPreview } from "../primitives";
+import { probeTone, streamTone, toneBadgeClass } from "../support";
 import type { useAppController } from "../use-app-controller";
 import { InspectorPanelHeader } from "../inspector-panels";
 
@@ -70,10 +71,12 @@ export function ProviderWorkspace(props: ProviderProps) {
                 />
 
                 <div className="flex flex-wrap gap-2">
-                  <Badge variant="outline">health {props.healthStatus}</Badge>
-                  <Badge variant="outline">stream {props.streamState}</Badge>
-                  <Badge variant="outline">ready {readinessLabel}</Badge>
-                  <Badge variant="outline">mirror {props.healthReport?.checks.historyMirror ?? "unknown"}</Badge>
+                  <Badge variant="outline" className={toneBadgeClass(probeTone(props.healthStatus))}>{`health ${props.healthStatus}`}</Badge>
+                  <Badge variant="outline" className={toneBadgeClass(streamTone(props.streamState))}>{`stream ${props.streamState}`}</Badge>
+                  <Badge variant="outline" className={toneBadgeClass(probeTone(readinessLabel))}>{`ready ${readinessLabel}`}</Badge>
+                  <Badge variant="outline" className={toneBadgeClass(probeTone(props.healthReport?.checks.historyMirror ?? "unknown"))}>
+                    {`mirror ${props.healthReport?.checks.historyMirror ?? "unknown"}`}
+                  </Badge>
                 </div>
               </Section>
 
@@ -118,7 +121,11 @@ export function ProviderWorkspace(props: ProviderProps) {
                         <Badge variant="outline">{selectedModel.modelName}</Badge>
                         {selectedModel.isDefault ? <Badge className="bg-foreground text-background">default</Badge> : null}
                         {selectedModel.url ? <Badge variant="outline">custom url</Badge> : null}
-                        {selectedModel.hasKey ? <Badge variant="outline">key ready</Badge> : <Badge variant="outline">no key</Badge>}
+                        {selectedModel.hasKey ? (
+                          <Badge variant="outline" className={toneBadgeClass("emerald")}>key ready</Badge>
+                        ) : (
+                          <Badge variant="outline" className={toneBadgeClass("amber")}>no key</Badge>
+                        )}
                       </div>
                       <div className="mt-4 grid gap-3 sm:grid-cols-2">
                         <div className="border-l border-border/70 pl-4">

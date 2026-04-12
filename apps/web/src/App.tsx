@@ -1,5 +1,8 @@
 import { AppScreen } from "./app/AppScreen";
+import { useAppTheme } from "./app/theme";
 
 export function App() {
-  return <AppScreen />;
+  const { theme, setTheme } = useAppTheme();
+
+  return <AppScreen theme={theme} onThemeChange={setTheme} />;
 }

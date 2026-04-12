@@ -4,7 +4,7 @@ import { cn } from "../../lib/utils";
 
 export function StoragePlainRowDetail(props: { row: Record<string, unknown>; prettyJson: (value: unknown) => string }) {
   return (
-    <div className="min-w-0">
+    <div className="code-panel min-w-0 rounded-xl p-3">
       <pre className="overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-foreground/80">
         {props.prettyJson(props.row)}
       </pre>
@@ -38,7 +38,7 @@ export function StorageDetailPre(props: { value: string; maxHeightClassName?: st
   return (
     <pre
       className={cn(
-        "min-w-0 overflow-auto whitespace-pre-wrap break-words text-xs leading-6 text-foreground/80",
+        "code-panel min-w-0 overflow-auto whitespace-pre-wrap break-words rounded-xl p-3 text-xs leading-6 text-foreground/80",
         props.maxHeightClassName
       )}
     >
@@ -88,4 +88,3 @@ export function storageCollectionSize(value: unknown) {
 
   return "0";
 }
-

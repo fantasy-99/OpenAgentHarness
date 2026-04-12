@@ -6,10 +6,11 @@ import type {
   StorageRedisKeyPage
 } from "@oah/api-contracts";
 
-import type { StorageBrowserTab } from "../support";
+import type { HealthReportResponse, StorageBrowserTab } from "../support";
 
 export interface StorageWorkbenchProps {
   browserTab: StorageBrowserTab;
+  healthReport: HealthReportResponse | null;
   overview: StorageOverview | null;
   tablePage: StoragePostgresTablePage | null;
   selectedTable: StoragePostgresTableName;
@@ -35,4 +36,3 @@ export interface StorageWorkbenchProps {
   onReleaseRedisSessionLock: (key: string) => void;
   busy: boolean;
 }
-

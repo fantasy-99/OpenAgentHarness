@@ -6,15 +6,11 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { formatTimestamp, pathLeaf, type SavedSessionRecord, type SavedWorkspaceRecord } from "../support";
 
 function workspaceItemClass(active: boolean) {
-  return active
-    ? "bg-white/62 text-foreground shadow-[0_16px_28px_-26px_rgba(17,17,17,0.35)]"
-    : "text-foreground/82 hover:bg-white/34 hover:text-foreground/94";
+  return active ? "ob-list-item-active text-foreground" : "text-foreground/82";
 }
 
 function sessionItemClass(active: boolean) {
-  return active
-    ? "border border-black/10 bg-white/62 shadow-[0_16px_28px_-26px_rgba(17,17,17,0.35)]"
-    : "border border-transparent hover:bg-white/34";
+  return active ? "ob-list-item-active" : "";
 }
 
 function hasTextSelection() {
@@ -53,17 +49,17 @@ export function WorkspaceNavItem(props: {
 
   return (
     <div
-      className={`group relative flex items-center gap-2 rounded-lg px-2 py-2.5 transition-colors cursor-pointer ${workspaceItemClass(props.active)}`}
+      className={`ob-list-item group relative flex items-center gap-2 rounded-lg px-2 py-2.5 transition-colors cursor-pointer ${workspaceItemClass(props.active)}`}
       onClick={() => {
         if (hasTextSelection()) return;
         props.onSelect();
       }}
     >
-      {props.active ? <span className="absolute left-0 top-2 bottom-2 w-1 rounded-full bg-foreground/28" aria-hidden="true" /> : null}
+      {props.active ? <span className="ob-list-item-branch-line-active absolute left-0 top-2 bottom-2 w-1 rounded-full" aria-hidden="true" /> : null}
       <Button
         variant="ghost"
         size="icon"
-        className="h-6 w-6 shrink-0 rounded-md text-muted-foreground/78 hover:bg-white/58 hover:text-foreground"
+        className="ob-list-item-control h-6 w-6 shrink-0 rounded-md text-muted-foreground/78"
         onClick={(e) => { e.stopPropagation(); props.onToggleExpanded(); }}
       >
         <ExpandIcon className="h-3.5 w-3.5" />
@@ -71,7 +67,7 @@ export function WorkspaceNavItem(props: {
       <Tooltip>
         <TooltipTrigger asChild>
           <div className="flex min-w-0 flex-1 items-center gap-2.5">
-            <div className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center ${props.active ? "text-foreground/82" : "text-muted-foreground/78"}`}>
+            <div className={`ob-list-item-icon mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-[10px] ${props.active ? "ob-list-item-icon-active" : ""}`}>
               <Folder className="h-[13px] w-[13px]" />
             </div>
             <div className="min-w-0 select-text">
@@ -99,7 +95,7 @@ export function WorkspaceNavItem(props: {
         <Button
           variant="ghost"
           size="icon"
-          className="h-6 w-6 shrink-0 rounded-md text-muted-foreground/56 opacity-0 transition group-hover:opacity-100 hover:bg-white/58 hover:text-foreground"
+          className="ob-list-item-control h-6 w-6 shrink-0 rounded-md text-muted-foreground/56 opacity-0 group-hover:opacity-100"
           onClick={(e) => {
             e.stopPropagation();
             props.onRemove();
@@ -128,20 +124,15 @@ export function SessionNavItem(props: {
   const subtitle = [props.entry.agentName, primaryTime].filter(Boolean).join(" · ");
   const isChild = (props.depth ?? 0) > 0;
   const ExpandIcon = props.expanded ? ChevronDown : ChevronRight;
-  const childLineClass = props.active ? "bg-foreground/30" : "bg-border/75 group-hover:bg-border";
   const rowSurfaceClass = isChild
     ? props.active
-      ? "border border-transparent bg-white/38"
-      : "border border-transparent bg-transparent hover:bg-transparent"
+      ? "ob-list-item-child-active"
+      : ""
     : sessionItemClass(props.active);
   const rowPaddingClass = isChild ? "py-1.5 pr-2.5 pl-2" : "px-2 py-2.5 pr-3";
   const rowGapClass = isChild ? "gap-1.5" : "gap-2";
   const controlSizeClass = isChild ? "h-5 w-5" : "h-6 w-6";
-  const iconToneClass = props.active
-    ? "text-foreground"
-    : isChild
-      ? "text-muted-foreground/66 group-hover:text-muted-foreground/82"
-      : "text-muted-foreground";
+  const iconToneClass = props.active ? "ob-list-item-icon-active" : "ob-list-item-icon";
   const titleToneClass = isChild
     ? props.active
       ? "text-[13px] font-medium text-foreground"
@@ -155,7 +146,7 @@ export function SessionNavItem(props: {
 
   return (
     <div
-      className={`group relative flex items-center rounded-md transition-colors cursor-pointer ${rowGapClass} ${rowPaddingClass} ${rowSurfaceClass} ${
+      className={`ob-list-item group relative flex items-center rounded-md transition-colors cursor-pointer ${rowGapClass} ${rowPaddingClass} ${rowSurfaceClass} ${
         isChild ? "shadow-none" : ""
       }`}
       onClick={() => {
@@ -164,13 +155,16 @@ export function SessionNavItem(props: {
       }}
     >
       {isChild ? (
-        <span className={`absolute left-0.5 top-1.5 bottom-1.5 w-px rounded-full ${childLineClass}`} aria-hidden="true" />
+        <>
+          <span className={`absolute left-0.5 top-1.5 bottom-1.5 w-px rounded-full ${props.active ? "ob-list-item-branch-line-active" : "ob-list-item-branch-line"}`} aria-hidden="true" />
+          {props.active ? <span className="ob-list-item-branch-line-active absolute left-0 top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full" aria-hidden="true" /> : null}
+        </>
       ) : null}
       {props.hasChildren ? (
         <Button
           variant="ghost"
           size="icon"
-          className={`${controlSizeClass} shrink-0 rounded-md text-muted-foreground/72 hover:bg-white/58 hover:text-foreground`}
+          className={`ob-list-item-control ${controlSizeClass} shrink-0 rounded-md text-muted-foreground/72`}
           onClick={(event) => {
             event.stopPropagation();
             props.onToggleExpanded?.();
@@ -185,7 +179,7 @@ export function SessionNavItem(props: {
       <Tooltip>
         <TooltipTrigger asChild>
           <div className={`flex min-w-0 flex-1 items-center text-left ${isChild ? "gap-1.5" : "gap-2"}`}>
-            <div className={`mt-0.5 flex shrink-0 items-center justify-center ${isChild ? "h-3.5 w-3.5" : "h-4 w-4"} ${iconToneClass}`}>
+            <div className={`ob-list-item-icon mt-0.5 flex shrink-0 items-center justify-center rounded-[10px] ${isChild ? "h-6 w-6" : "h-8 w-8"} ${iconToneClass}`}>
               <Bot className={isChild ? "h-3 w-3" : "h-3.5 w-3.5"} />
             </div>
             <div className="min-w-0 select-text">
@@ -221,7 +215,7 @@ export function SessionNavItem(props: {
         <Button
           variant="ghost"
           size="icon"
-          className="h-6 w-6 shrink-0 rounded-md text-muted-foreground/66 hover:bg-white/68 hover:text-foreground"
+          className="ob-list-item-control h-6 w-6 shrink-0 rounded-md text-muted-foreground/66"
           title="Rename session"
           onClick={(event) => {
             event.stopPropagation();
@@ -237,7 +231,7 @@ export function SessionNavItem(props: {
         <Button
           variant="ghost"
           size="icon"
-          className="h-6 w-6 shrink-0 rounded-md text-muted-foreground/66 hover:bg-white/68 hover:text-foreground"
+          className="ob-list-item-control h-6 w-6 shrink-0 rounded-md text-muted-foreground/66"
           title="Delete session"
           onClick={(event) => {
             event.stopPropagation();

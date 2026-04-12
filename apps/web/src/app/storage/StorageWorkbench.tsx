@@ -20,6 +20,7 @@ export function StorageWorkbench(props: StorageWorkbenchProps) {
         />
       ) : (
         <StorageRedisPanel
+          healthReport={props.healthReport}
           overview={props.overview}
           redisKeyPage={props.redisKeyPage}
           selectedRedisKey={props.selectedRedisKey}

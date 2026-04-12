@@ -8,7 +8,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 
-import { downloadJsonFile, formatTimestamp, prettyJson, type ConsoleFilter, type RuntimeConsoleEntry } from "../support";
+import { downloadJsonFile, formatTimestamp, prettyJson, toneBadgeClass, type ConsoleFilter, type RuntimeConsoleEntry } from "../support";
 
 const filters: Array<{ id: ConsoleFilter; label: string }> = [
   { id: "all", label: "All" },
@@ -23,13 +23,13 @@ const filters: Array<{ id: ConsoleFilter; label: string }> = [
 function levelBadgeClass(level: RuntimeConsoleEntry["level"]) {
   switch (level) {
     case "error":
-      return "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-300";
+      return toneBadgeClass("rose");
     case "warn":
-      return "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300";
+      return toneBadgeClass("amber");
     case "debug":
-      return "border-slate-200 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300";
+      return toneBadgeClass("sky");
     default:
-      return "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300";
+      return toneBadgeClass("emerald");
   }
 }
 
@@ -122,11 +122,11 @@ export function RuntimeConsolePanel(props: RuntimeConsolePanelProps) {
   }
 
   return (
-    <section className="border-t border-black/8 bg-[linear-gradient(180deg,rgba(252,252,250,0.96)_0%,rgba(241,241,238,0.98)_100%)] shadow-[0_-18px_44px_-38px_rgba(17,17,17,0.32)]" style={{ height: props.height }}>
+    <section className="console-surface" style={{ height: props.height }}>
       <div
         className={cn(
-          "h-2 cursor-ns-resize border-b border-black/6 bg-black/[0.035] transition-colors hover:bg-black/[0.08]",
-          dragging ? "bg-black/[0.1]" : undefined
+          "console-resizer h-2 cursor-ns-resize transition-colors",
+          dragging ? "console-resizer-active" : undefined
         )}
         onPointerDown={(event) => {
           dragStateRef.current = { startY: event.clientY, startHeight: props.height };
@@ -136,7 +136,7 @@ export function RuntimeConsolePanel(props: RuntimeConsolePanelProps) {
         }}
       />
       <div className="flex h-[calc(100%-8px)] min-h-0 flex-col">
-        <div className="flex flex-wrap items-center gap-2 border-b border-black/6 px-3 py-2">
+        <div className="console-divider flex flex-wrap items-center gap-2 border-b px-3 py-2">
           <div className="flex items-center gap-2">
             <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-foreground/56">Console</span>
             <Badge variant="secondary">{visibleEntries.length}</Badge>
@@ -151,8 +151,8 @@ export function RuntimeConsolePanel(props: RuntimeConsolePanelProps) {
                 className={cn(
                   "rounded-full border px-2.5 py-1 text-[11px] transition",
                   props.filter === filter.id
-                    ? "border-black/10 bg-foreground text-background"
-                    : "border-black/8 bg-white/76 text-foreground/62 hover:bg-white hover:text-foreground"
+                    ? "console-filter-chip-active"
+                    : "console-filter-chip"
                 )}
               >
                 {filter.label}
@@ -165,7 +165,7 @@ export function RuntimeConsolePanel(props: RuntimeConsolePanelProps) {
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search logs" className="h-8 pl-8 text-xs" />
             </div>
-            <div className="flex items-center gap-2 rounded-full border border-black/8 bg-white/74 px-2.5 py-1.5">
+            <div className="console-chip flex items-center gap-2 rounded-full px-2.5 py-1.5">
               <Switch checked={autoScroll} onCheckedChange={setAutoScroll} size="sm" />
               <span className="text-[11px] text-muted-foreground">Auto-scroll</span>
             </div>
@@ -195,10 +195,10 @@ export function RuntimeConsolePanel(props: RuntimeConsolePanelProps) {
                   <article
                     key={entry.id}
                     className={cn(
-                      "rounded-2xl border px-3 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.62)] transition",
+                      "rounded-2xl border px-3 py-2 transition",
                       entry.level === "error"
-                        ? "border-rose-200/80 bg-rose-50/70 dark:border-rose-800/80 dark:bg-rose-950/25"
-                        : "border-black/8 bg-white/66 hover:bg-white/84"
+                        ? toneBadgeClass("rose")
+                        : "console-entry"
                     )}
                   >
                     <div className="flex flex-wrap items-start gap-2">
@@ -206,14 +206,14 @@ export function RuntimeConsolePanel(props: RuntimeConsolePanelProps) {
                       <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] ${levelBadgeClass(entry.level)}`}>
                         {entry.level}
                       </span>
-                      <span className="rounded-full border border-black/8 bg-black/[0.03] px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-foreground/68">
+                      <span className="console-chip rounded-full px-2 py-0.5 text-[10px] uppercase tracking-[0.16em] text-foreground/68">
                         {entry.category}
                       </span>
                       {entry.runId ? (
                         <button
                           type="button"
                           onClick={() => props.onEntryInspect(entry)}
-                          className="rounded-full border border-black/8 bg-white/80 px-2 py-0.5 text-[10px] text-foreground/68 hover:text-foreground"
+                          className="console-chip rounded-full px-2 py-0.5 text-[10px] text-foreground/68 hover:text-foreground"
                         >
                           {entry.runId}
                         </button>
@@ -244,7 +244,7 @@ export function RuntimeConsolePanel(props: RuntimeConsolePanelProps) {
                       </button>
                     </div>
                     {entry.details !== undefined && isExpanded ? (
-                      <pre className="mt-2 max-h-56 overflow-auto rounded-xl border border-black/8 bg-black/[0.03] p-3 text-[11px] leading-6 text-foreground/74">
+                      <pre className="console-detail mt-2 max-h-56 overflow-auto rounded-xl p-3 text-[11px] leading-6">
                         {prettyJson(entry.details)}
                       </pre>
                     ) : null}
@@ -256,7 +256,7 @@ export function RuntimeConsolePanel(props: RuntimeConsolePanelProps) {
           )}
         </ScrollArea>
 
-        <div className="flex flex-wrap items-center gap-3 border-t border-black/6 px-3 py-2 text-[11px] text-muted-foreground">
+        <div className="console-divider flex flex-wrap items-center gap-3 border-t px-3 py-2 text-[11px] text-muted-foreground">
           <span>{visibleEntries.length} visible entries</span>
           <span>{props.entries.filter((entry) => entry.level === "error").length} errors</span>
           <span>{props.entries.filter((entry) => entry.category === "tool").length} tool events</span>

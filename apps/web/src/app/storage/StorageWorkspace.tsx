@@ -9,6 +9,7 @@ export function StorageWorkspace(props: StorageProps) {
       <div className="min-h-0 h-full flex-1 overflow-hidden px-5 py-5">
         <StorageWorkbench
           browserTab={props.storageBrowserTab}
+          healthReport={props.healthReport}
           overview={props.storageOverview}
           tablePage={props.storageTablePage}
           selectedTable={props.selectedStorageTable}

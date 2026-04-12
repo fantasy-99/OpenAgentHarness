@@ -4312,6 +4312,126 @@ describe("runtime service", () => {
     expect(runSteps.items.some((step) => step.stepType === "system" && step.name === "run.failed")).toBe(true);
   });
 
+  it("requeues stale running runs when stale-run recovery is enabled", async () => {
+    const persistence = createMemoryRuntimePersistence();
+    const enqueuedRuns: Array<{ sessionId: string; runId: string }> = [];
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: new FakeModelGateway(),
+      ...persistence,
+      runQueue: {
+        async enqueue(sessionId, runId) {
+          enqueuedRuns.push({ sessionId, runId });
+        }
+      },
+      staleRunRecovery: {
+        strategy: "requeue_running",
+        maxAttempts: 2
+      }
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_run_requeue",
+      name: "run-requeue",
+      rootPath: "/tmp/run-requeue",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: "2026-04-01T00:00:00.000Z",
+      updatedAt: "2026-04-01T00:00:00.000Z",
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "builder",
+      settings: {
+        defaultAgent: "builder",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        builder: {
+          name: "builder",
+          mode: "primary",
+          prompt: "Recover stale runs by requeueing safe work.",
+          tools: {
+            native: [],
+            actions: [],
+            skills: [],
+            external: []
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_run_requeue",
+        agents: [{ name: "builder", mode: "primary", source: "workspace" }],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    await persistence.sessionRepository.create({
+      id: "ses_requeue",
+      workspaceId: "project_run_requeue",
+      subjectRef: "dev:test",
+      activeAgentName: "builder",
+      status: "active",
+      createdAt: "2026-04-01T00:00:00.000Z",
+      updatedAt: "2026-04-01T00:00:00.000Z"
+    });
+
+    await persistence.runRepository.create({
+      id: "run_stale_requeue",
+      workspaceId: "project_run_requeue",
+      sessionId: "ses_requeue",
+      initiatorRef: "dev:test",
+      triggerType: "message",
+      triggerRef: "msg_1",
+      agentName: "builder",
+      effectiveAgentName: "builder",
+      switchCount: 0,
+      status: "running",
+      createdAt: "2026-04-01T00:00:00.000Z",
+      startedAt: "2026-04-01T00:00:10.000Z",
+      heartbeatAt: "2026-04-01T00:00:20.000Z"
+    });
+
+    const recovered = await runtimeService.recoverStaleRuns({
+      staleBefore: "2026-04-01T00:00:40.000Z"
+    });
+
+    expect(recovered.recoveredRunIds).toEqual([]);
+    expect(recovered.requeuedRunIds).toEqual(["run_stale_requeue"]);
+    expect(enqueuedRuns).toEqual([{ sessionId: "ses_requeue", runId: "run_stale_requeue" }]);
+
+    const requeuedRun = await runtimeService.getRun("run_stale_requeue");
+    expect(requeuedRun.status).toBe("queued");
+    expect(requeuedRun.startedAt).toBeUndefined();
+    expect(requeuedRun.heartbeatAt).toBeUndefined();
+    expect(requeuedRun.metadata).toMatchObject({
+      recoveryAttempts: 1,
+      recoveredBy: "worker_startup_requeue"
+    });
+
+    const events = await runtimeService.listSessionEvents("ses_requeue", undefined, "run_stale_requeue");
+    expect(events.find((event) => event.event === "run.queued")?.data).toMatchObject({
+      status: "queued",
+      recoveredBy: "worker_startup_requeue",
+      recoveryAttempt: 1
+    });
+
+    const runSteps = await runtimeService.listRunSteps("run_stale_requeue");
+    expect(runSteps.items.some((step) => step.stepType === "system" && step.name === "run.requeued")).toBe(true);
+  });
+
   it("keeps runs in waiting_tool until all parallel tool calls finish", async () => {
     const workspaceRoot = await mkdtemp(path.join(tmpdir(), "oah-parallel-tools-"));
     const gateway = new FakeModelGateway();

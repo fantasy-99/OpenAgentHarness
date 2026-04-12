@@ -96,6 +96,80 @@ interface HealthReportResponse {
   };
   worker: {
     mode: "embedded" | "external" | "disabled";
+    activeWorkers: Array<{
+      workerId: string;
+      processKind: "embedded" | "standalone";
+      state: "starting" | "idle" | "busy" | "stopping";
+      lastSeenAt: string;
+      leaseTtlMs: number;
+      expiresAt: string;
+      lastSeenAgeMs: number;
+      health: "healthy" | "late";
+      currentSessionId?: string | undefined;
+    }>;
+    summary: {
+      active: number;
+      healthy: number;
+      late: number;
+      busy: number;
+      embedded: number;
+      standalone: number;
+    };
+    pool: {
+      running: boolean;
+      processKind: "embedded" | "standalone";
+      minWorkers: number;
+      maxWorkers: number;
+      suggestedWorkers: number;
+      globalSuggestedWorkers?: number | undefined;
+      desiredWorkers: number;
+      activeWorkers: number;
+      busyWorkers: number;
+      idleWorkers: number;
+      globalActiveWorkers?: number | undefined;
+      globalBusyWorkers?: number | undefined;
+      remoteActiveWorkers?: number | undefined;
+      remoteBusyWorkers?: number | undefined;
+      readySessionsPerWorker: number;
+      scaleIntervalMs: number;
+      scaleUpCooldownMs: number;
+      scaleDownCooldownMs: number;
+      scaleUpSampleSize: number;
+      scaleDownSampleSize: number;
+      scaleUpBusyRatioThreshold: number;
+      scaleUpMaxReadyAgeMs: number;
+      readySessionCount?: number | undefined;
+      readyQueueDepth?: number | undefined;
+      uniqueReadySessionCount?: number | undefined;
+      lockedReadySessionCount?: number | undefined;
+      staleReadySessionCount?: number | undefined;
+      oldestSchedulableReadyAgeMs?: number | undefined;
+      lastRebalanceAt?: string | undefined;
+      lastRebalanceReason?: "startup" | "steady" | "scale_up" | "scale_down" | "cooldown_hold" | "shutdown" | undefined;
+      scaleUpPressureStreak: number;
+      scaleDownPressureStreak: number;
+      scaleUpCooldownRemainingMs: number;
+      scaleDownCooldownRemainingMs: number;
+      recentDecisions: Array<{
+        timestamp: string;
+        reason: "startup" | "steady" | "scale_up" | "scale_down" | "cooldown_hold" | "shutdown";
+        suggestedWorkers: number;
+        globalSuggestedWorkers?: number | undefined;
+        desiredWorkers: number;
+        activeWorkers: number;
+        busyWorkers?: number | undefined;
+        globalActiveWorkers?: number | undefined;
+        globalBusyWorkers?: number | undefined;
+        remoteActiveWorkers?: number | undefined;
+        remoteBusyWorkers?: number | undefined;
+        readySessionCount?: number | undefined;
+        readyQueueDepth?: number | undefined;
+        uniqueReadySessionCount?: number | undefined;
+        lockedReadySessionCount?: number | undefined;
+        staleReadySessionCount?: number | undefined;
+        oldestSchedulableReadyAgeMs?: number | undefined;
+      }>;
+    } | null;
   };
   mirror: {
     worker: "running" | "disabled";
@@ -140,6 +214,7 @@ type UserMessageContent = Extract<Message, { role: "user" }>["content"];
 type AssistantMessageContent = Extract<Message, { role: "assistant" }>["content"];
 type ToolMessageContent = Extract<Message, { role: "tool" }>["content"];
 type AgentMode = "primary" | "subagent" | "all";
+type StatusSemanticTone = "sky" | "emerald" | "rose" | "amber" | "plum";
 
 interface ModelCallTraceMessage {
   role: Message["role"];
@@ -1153,26 +1228,103 @@ function formatTimestamp(value?: string) {
   return date.toLocaleString();
 }
 
+function toneBadgeClass(tone: StatusSemanticTone) {
+  switch (tone) {
+    case "emerald":
+      return "border-[color:var(--app-tone-emerald-border)] bg-[color:var(--app-tone-emerald-surface)] text-[color:var(--app-tone-emerald-foreground)]";
+    case "rose":
+      return "border-[color:var(--app-tone-rose-border)] bg-[color:var(--app-tone-rose-surface)] text-[color:var(--app-tone-rose-foreground)]";
+    case "amber":
+      return "border-[color:var(--app-tone-amber-border)] bg-[color:var(--app-tone-amber-surface)] text-[color:var(--app-tone-amber-foreground)]";
+    case "plum":
+      return "border-[color:var(--app-tone-plum-border)] bg-[color:var(--app-tone-plum-surface)] text-[color:var(--app-tone-plum-foreground)]";
+    default:
+      return "border-[color:var(--app-tone-sky-border)] bg-[color:var(--app-tone-sky-surface)] text-[color:var(--app-tone-sky-foreground)]";
+  }
+}
+
+function toneSolidClass(tone: StatusSemanticTone) {
+  switch (tone) {
+    case "emerald":
+      return "bg-[color:var(--app-tone-emerald-solid)]";
+    case "rose":
+      return "bg-[color:var(--app-tone-rose-solid)]";
+    case "amber":
+      return "bg-[color:var(--app-tone-amber-solid)]";
+    case "plum":
+      return "bg-[color:var(--app-tone-plum-solid)]";
+    default:
+      return "bg-[color:var(--app-tone-sky-solid)]";
+  }
+}
+
+function toneTextClass(tone: StatusSemanticTone) {
+  switch (tone) {
+    case "emerald":
+      return "text-[color:var(--app-tone-emerald-solid)]";
+    case "rose":
+      return "text-[color:var(--app-tone-rose-solid)]";
+    case "amber":
+      return "text-[color:var(--app-tone-amber-solid)]";
+    case "plum":
+      return "text-[color:var(--app-tone-plum-solid)]";
+    default:
+      return "text-[color:var(--app-tone-sky-solid)]";
+  }
+}
+
+function streamTone(status: string): StatusSemanticTone {
+  switch (status) {
+    case "open":
+    case "listening":
+      return "emerald";
+    case "connecting":
+      return "amber";
+    case "error":
+      return "rose";
+    default:
+      return "sky";
+  }
+}
+
+function workerStateTone(state: HealthReportResponse["worker"]["activeWorkers"][number]["state"]): StatusSemanticTone {
+  switch (state) {
+    case "idle":
+      return "emerald";
+    case "busy":
+      return "sky";
+    case "starting":
+    case "stopping":
+      return "amber";
+    default:
+      return "sky";
+  }
+}
+
+function workerHealthTone(health: HealthReportResponse["worker"]["activeWorkers"][number]["health"]): StatusSemanticTone {
+  return health === "late" ? "amber" : "emerald";
+}
+
 function statusTone(status: string) {
   switch (status) {
     case "completed":
-      return "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-400";
+      return toneBadgeClass("emerald");
     case "running":
     case "waiting_tool":
-      return "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-800 dark:bg-sky-950/50 dark:text-sky-400";
+      return toneBadgeClass("sky");
     case "queued":
-      return "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-400";
+      return toneBadgeClass("amber");
     case "cancelled":
       return "border-border bg-muted text-muted-foreground";
     case "failed":
     case "timed_out":
-      return "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-800 dark:bg-rose-950/50 dark:text-rose-400";
+      return toneBadgeClass("rose");
     default:
       return "";
   }
 }
 
-function probeTone(status: string): "sky" | "emerald" | "rose" | "amber" {
+function probeTone(status: string): StatusSemanticTone {
   switch (status) {
     case "ok":
     case "ready":
@@ -1483,6 +1635,12 @@ export {
   isTerminalRunEvent,
   isTerminalRunStatus,
   formatTimestamp,
+  toneBadgeClass,
+  toneSolidClass,
+  toneTextClass,
+  streamTone,
+  workerStateTone,
+  workerHealthTone,
   statusTone,
   probeTone,
   consumeSse,
@@ -1521,5 +1679,6 @@ export type {
   ModelCallTrace,
   AgentMode,
   MessageAgentSnapshot,
-  StorageToolCallRecord
+  StorageToolCallRecord,
+  StatusSemanticTone
 };

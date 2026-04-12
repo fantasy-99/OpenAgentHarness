@@ -30,37 +30,11 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 
-import { probeTone, type SavedSessionRecord } from "../support";
+import { probeTone, streamTone, toneBadgeClass, type SavedSessionRecord } from "../support";
 import type { useAppController } from "../use-app-controller";
 import { SessionNavItem, WorkspaceNavItem } from "./sidebar-items";
 
 type SidebarProps = ReturnType<typeof useAppController>["sidebarSurfaceProps"];
-
-function statusClass(tone: "sky" | "emerald" | "rose" | "amber") {
-  switch (tone) {
-    case "emerald":
-      return "border-foreground/10 bg-white/60 text-foreground";
-    case "rose":
-      return "border-foreground/8 bg-black/[0.035] text-foreground/78";
-    case "amber":
-      return "border-foreground/10 bg-white/50 text-foreground/84";
-    default:
-      return "border-foreground/8 bg-white/44 text-foreground/72";
-  }
-}
-
-function streamTone(value: SidebarProps["streamState"]): "sky" | "emerald" | "rose" | "amber" {
-  if (value === "open" || value === "listening") {
-    return "emerald";
-  }
-  if (value === "error") {
-    return "rose";
-  }
-  if (value === "connecting") {
-    return "amber";
-  }
-  return "sky";
-}
 
 function tableLabel(name: string) {
   return name.replace(/_/g, " ");
@@ -118,7 +92,7 @@ function SidebarHero(props: {
 
 function SidebarMetric(props: { label: string; value: string; tone?: "sky" | "emerald" | "rose" | "amber" }) {
   return (
-    <div className={`rounded-2xl border px-3 py-2 ${statusClass(props.tone ?? "sky")}`}>
+    <div className={`rounded-2xl border px-3 py-2 ${toneBadgeClass(props.tone ?? "sky")}`}>
       <p className="text-[10px] uppercase tracking-[0.14em]">{props.label}</p>
       <p className="mt-1 truncate text-sm font-semibold tracking-tight">{props.value}</p>
     </div>
@@ -145,15 +119,15 @@ function SidebarModeToggle(props: {
   onChange: (key: string) => void;
 }) {
   return (
-    <div className="grid grid-cols-2 gap-1 rounded-2xl border border-black/8 bg-black/[0.03] p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
+    <div className="info-panel grid grid-cols-2 gap-1 rounded-2xl p-1">
       {props.items.map((item) => (
         <Button
           key={item.key}
           variant="ghost"
-          className={`h-10 justify-start rounded-xl px-3 ${
+          className={`ob-list-item h-10 justify-start rounded-xl px-3 ${
             props.activeKey === item.key
-              ? "border border-black/10 bg-white/82 text-foreground shadow-[0_8px_18px_-16px_rgba(17,17,17,0.4)]"
-              : "text-muted-foreground hover:bg-white/45 hover:text-foreground"
+              ? "ob-list-item-active text-foreground"
+              : "text-muted-foreground hover:text-foreground"
           }`}
           onClick={() => props.onChange(item.key)}
         >
@@ -176,18 +150,18 @@ function SidebarActionItem(props: {
   return (
     <Button
       variant="ghost"
-      className={`h-auto w-full justify-start rounded-2xl border px-3 py-3 text-left transition-all ${
+      className={`h-auto w-full justify-start rounded-2xl px-3 py-3 text-left transition-all ${
         props.active
-          ? "border-black/10 bg-white/72 shadow-[0_18px_30px_-26px_rgba(17,17,17,0.35)]"
-          : "border-transparent bg-transparent hover:border-black/8 hover:bg-white/42"
+          ? "info-panel ob-list-item-active"
+          : "info-panel info-panel-hoverable"
       }`}
       onClick={props.onClick}
     >
       <div className="flex min-w-0 flex-1 items-start gap-3">
         {props.icon ? (
           <div
-            className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border ${
-              props.active ? "border-black/10 bg-white/82 text-foreground" : "border-black/8 bg-black/[0.03] text-muted-foreground"
+            className={`ob-list-item-icon mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ${
+              props.active ? "ob-list-item-icon-active" : ""
             }`}
           >
             {props.icon}
@@ -207,7 +181,7 @@ function SidebarActionItem(props: {
 
 function ToggleRow(props: { label: string; checked: boolean; onCheckedChange: (checked: boolean) => void }) {
   return (
-    <label className="flex items-center justify-between gap-3 rounded-xl border border-black/8 bg-white/45 px-3 py-2">
+    <label className="info-panel flex items-center justify-between gap-3 rounded-xl px-3 py-2">
       <span className="text-sm text-foreground">{props.label}</span>
       <Switch checked={props.checked} onCheckedChange={props.onCheckedChange} />
     </label>
@@ -449,6 +423,12 @@ function StorageSidebar(props: SidebarProps) {
     (props.storageOverview?.redis.sessionQueues.length ?? 0) +
     (props.storageOverview?.redis.sessionLocks.length ?? 0) +
     (props.storageOverview?.redis.eventBuffers.length ?? 0);
+  const activeWorkerCount = props.healthReport?.worker.summary.active ?? props.healthReport?.worker.activeWorkers.length ?? 0;
+  const targetWorkerCount = props.healthReport?.worker.pool?.desiredWorkers ?? activeWorkerCount;
+  const lateWorkerCount =
+    props.healthReport?.worker.summary.late ??
+    props.healthReport?.worker.activeWorkers.filter((entry) => entry.health === "late").length ??
+    0;
 
   return (
     <div className="space-y-5 px-3 py-4">
@@ -582,6 +562,11 @@ function StorageSidebar(props: SidebarProps) {
               <SidebarMetric label="Locks" value={String(props.storageOverview?.redis.sessionLocks.length ?? 0)} tone="rose" />
               <SidebarMetric label="Buffers" value={String(props.storageOverview?.redis.eventBuffers.length ?? 0)} tone="sky" />
             </div>
+            <div className="grid grid-cols-3 gap-2">
+              <SidebarMetric label="Workers" value={String(activeWorkerCount)} tone={activeWorkerCount > 0 ? "emerald" : "sky"} />
+              <SidebarMetric label="Target" value={String(targetWorkerCount)} tone="sky" />
+              <SidebarMetric label="Late" value={String(lateWorkerCount)} tone={lateWorkerCount > 0 ? "amber" : "emerald"} />
+            </div>
             <div className="space-y-1.5">
               {props.storageOverview?.redis.sessionQueues.slice(0, 4).map((item) => (
                 <SidebarActionItem
@@ -676,7 +661,9 @@ function ProviderSidebar(props: SidebarProps) {
               <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Base URL</p>
               <p className="truncate text-xs text-foreground">{props.connection.baseUrl || "not configured"}</p>
               <div className="flex flex-wrap gap-1.5">
-                <Badge variant="outline">ready {props.readinessReport?.status ?? "unknown"}</Badge>
+                <Badge variant="outline" className={toneBadgeClass(probeTone(props.readinessReport?.status ?? "unknown"))}>
+                  {`ready ${props.readinessReport?.status ?? "unknown"}`}
+                </Badge>
                 {defaultModel ? <Badge variant="outline">default {defaultModel.id}</Badge> : null}
               </div>
             </div>

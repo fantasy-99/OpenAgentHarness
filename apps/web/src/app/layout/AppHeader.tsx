@@ -1,29 +1,23 @@
-import { Loader2, Network, Orbit, SquareTerminal } from "lucide-react";
+import { Loader2, Network, Orbit, Palette, SquareTerminal } from "lucide-react";
 
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-import { probeTone } from "../support";
+import { probeTone, streamTone, toneBadgeClass, toneSolidClass, toneTextClass } from "../support";
+import { appThemeOptions, isAppThemeName } from "../theme";
+import type { AppThemeName } from "../theme";
 import type { useAppController } from "../use-app-controller";
 
 type HeaderProps = ReturnType<typeof useAppController>["headerProps"];
-
-function statusClass(tone: "sky" | "emerald" | "rose" | "amber") {
-  switch (tone) {
-    case "emerald":
-      return "border-emerald-200/80 bg-emerald-50/70 text-emerald-700 dark:border-emerald-800/80 dark:bg-emerald-950/40 dark:text-emerald-400";
-    case "rose":
-      return "border-rose-200/80 bg-rose-50/70 text-rose-700 dark:border-rose-800/80 dark:bg-rose-950/40 dark:text-rose-400";
-    case "amber":
-      return "border-amber-200/80 bg-amber-50/70 text-amber-700 dark:border-amber-800/80 dark:bg-amber-950/40 dark:text-amber-400";
-    default:
-      return "border-border bg-muted text-muted-foreground";
-  }
-}
+type AppHeaderProps = HeaderProps & {
+  theme: AppThemeName;
+  onThemeChange: (theme: AppThemeName) => void;
+};
 
 function StatusPill(props: { label: string; value: string; tone: "sky" | "emerald" | "rose" | "amber"; icon: typeof Network }) {
   const Icon = props.icon;
   return (
-    <div className={`inline-flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-[11px] ${statusClass(props.tone)}`}>
+    <div className={`inline-flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-[11px] ${toneBadgeClass(props.tone)}`}>
       <Icon className="h-3.5 w-3.5" />
       <span className="uppercase tracking-[0.14em]">{props.label}</span>
       <span className="font-medium normal-case tracking-normal">{props.value}</span>
@@ -31,18 +25,18 @@ function StatusPill(props: { label: string; value: string; tone: "sky" | "emeral
   );
 }
 
-export function AppHeader(props: HeaderProps) {
+export function AppHeader(props: AppHeaderProps) {
   return (
     <header className="app-topbar h-[60px] flex items-center justify-between gap-4 px-4 sm:px-6 overflow-hidden min-w-0">
       <div className="flex min-w-0 items-center gap-3">
-        <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-[1rem] border border-black/10 bg-white/58 p-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.82),0_12px_22px_-18px_rgba(17,17,17,0.24)] dark:border-white/10 dark:bg-white/8">
+        <div className="topbar-chip relative flex h-10 w-10 shrink-0 items-center justify-center rounded-[1rem] p-1.5">
           <img src="/oah-logo.png" alt="Open Agent Harness logo" className="h-full w-full object-contain dark:hidden" />
           <img src="/oah-logo-dark.png" alt="" aria-hidden="true" className="hidden h-full w-full object-contain dark:block" />
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <p className="truncate text-[15px] font-semibold tracking-tight text-foreground">Open Agent Harness</p>
-            <span className="hidden rounded-full border border-black/8 bg-white/52 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em] text-foreground/48 md:inline-flex">
+            <span className="topbar-chip hidden rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em] text-foreground/48 md:inline-flex">
               Beta
             </span>
           </div>
@@ -50,37 +44,65 @@ export function AppHeader(props: HeaderProps) {
             {props.surfaceMode === "provider"
               ? "Provider Workbench"
               : props.hasActiveSession
-              ? `${props.currentWorkspaceName} / ${props.currentSessionName}`
-              : props.surfaceMode === "storage"
-              ? "Storage Workbench"
-              : "Runtime Workbench"}
+                ? `${props.currentWorkspaceName} / ${props.currentSessionName}`
+                : props.surfaceMode === "storage"
+                  ? "Storage Workbench"
+                  : "Runtime Workbench"}
           </p>
         </div>
       </div>
       <div className="flex min-w-0 flex-1 items-center justify-end gap-2.5">
+        <div className="topbar-chip flex shrink-0 items-center gap-1 rounded-2xl p-1">
+          <div className="hidden items-center gap-1.5 pl-2 sm:flex">
+            <Palette className="h-3.5 w-3.5 text-foreground/48" />
+            <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-foreground/46">Theme</span>
+          </div>
+          <Select
+            value={props.theme}
+            onValueChange={(value) => {
+              if (isAppThemeName(value)) {
+                props.onThemeChange(value);
+              }
+            }}
+          >
+            <SelectTrigger
+              size="sm"
+              className="topbar-chip-hoverable h-7 min-w-[110px] border-none bg-transparent px-2 text-xs text-foreground shadow-none focus-visible:ring-2 focus-visible:ring-black/10 sm:min-w-[132px]"
+            >
+              <SelectValue placeholder="Theme" />
+            </SelectTrigger>
+            <SelectContent className="min-w-[132px]">
+              {appThemeOptions.map((theme) => (
+                <SelectItem key={theme.value} value={theme.value}>
+                  {theme.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
         <Tabs value={props.surfaceMode} onValueChange={(value) => props.onSurfaceModeChange(value as HeaderProps["surfaceMode"])}>
-          <TabsList className="h-9 rounded-2xl border border-black/8 bg-black/[0.03] p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.44)]">
-            <TabsTrigger value="runtime" className="h-7 rounded-xl px-3 text-xs text-foreground/54 hover:text-foreground data-active:bg-white/90 data-active:text-foreground">
+          <TabsList className="topbar-chip h-9 rounded-2xl p-1">
+            <TabsTrigger value="runtime" className="topbar-tabs-trigger h-7 rounded-xl px-3 text-xs">
               Runtime
             </TabsTrigger>
-            <TabsTrigger value="storage" className="h-7 rounded-xl px-3 text-xs text-foreground/54 hover:text-foreground data-active:bg-white/90 data-active:text-foreground">
+            <TabsTrigger value="storage" className="topbar-tabs-trigger h-7 rounded-xl px-3 text-xs">
               Storage
             </TabsTrigger>
-            <TabsTrigger value="provider" className="h-7 rounded-xl px-3 text-xs text-foreground/54 hover:text-foreground data-active:bg-white/90 data-active:text-foreground">
+            <TabsTrigger value="provider" className="topbar-tabs-trigger h-7 rounded-xl px-3 text-xs">
               Provider
             </TabsTrigger>
           </TabsList>
         </Tabs>
-        {/* Compact stream dot — visible on md+, hidden on xl where full pills show */}
         {props.streamState !== "idle" && (
           <div className="flex items-center gap-1.5 xl:hidden">
-            {props.streamState === "connecting" || props.streamState === "listening" ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-500" />
+            {props.streamState === "connecting" ? (
+              <Loader2 className={`h-3.5 w-3.5 animate-spin ${toneTextClass("amber")}`} />
             ) : (
               <span
                 className={`h-2 w-2 rounded-full ${
-                  props.streamState === "open" ? "bg-emerald-500 animate-pulse" :
-                  props.streamState === "error" ? "bg-rose-500" : "bg-muted-foreground/50"
+                  props.streamState === "open" || props.streamState === "listening"
+                    ? `${toneSolidClass(streamTone(props.streamState))} animate-pulse`
+                    : toneSolidClass(streamTone(props.streamState))
                 }`}
               />
             )}
@@ -93,7 +115,7 @@ export function AppHeader(props: HeaderProps) {
             icon={Orbit}
             label="Stream"
             value={props.streamState}
-            tone={props.streamState === "open" || props.streamState === "listening" ? "emerald" : props.streamState === "error" ? "rose" : "sky"}
+            tone={streamTone(props.streamState)}
           />
         </div>
         <button
@@ -101,8 +123,8 @@ export function AppHeader(props: HeaderProps) {
           onClick={props.toggleConsole}
           className={`inline-flex h-9 items-center gap-2 rounded-2xl border px-3 text-xs transition ${
             props.consoleOpen
-              ? "border-black/15 bg-white/92 text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.64)]"
-              : "border-black/8 bg-black/[0.03] text-foreground/58 hover:bg-white/75 hover:text-foreground"
+              ? "topbar-control-active text-foreground"
+              : "topbar-control-idle"
           }`}
         >
           <SquareTerminal className="h-4 w-4" />

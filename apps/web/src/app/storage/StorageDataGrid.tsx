@@ -109,10 +109,10 @@ export function StorageDataGrid(props: {
     <div className="data-grid-shell flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <div className="min-h-0 flex-1 overflow-auto">
         <table className="min-w-full border-collapse text-left text-xs text-foreground/80">
-          <thead className="sticky top-0 z-10 bg-background/95 backdrop-blur">
+          <thead>
             <tr>
               {props.columns.map((column) => (
-                <th key={column} className="border-b border-border px-3 py-2 font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                <th key={column} className="px-3 py-2 font-medium uppercase tracking-[0.14em] text-muted-foreground">
                   {column}
                 </th>
               ))}
@@ -123,13 +123,14 @@ export function StorageDataGrid(props: {
               <tr
                 key={`row:${index}`}
                 className={cn(
-                  "cursor-pointer align-top odd:bg-background even:bg-muted/20 hover:bg-muted/40",
-                  props.selectedRow === row ? "bg-primary/5 even:bg-primary/5" : ""
+                  "data-grid-row cursor-pointer align-top",
+                  index % 2 === 0 ? "data-grid-row-even" : "data-grid-row-odd",
+                  props.selectedRow === row ? "data-grid-row-selected" : ""
                 )}
                 onClick={() => props.onSelectRow(row)}
               >
                 {props.columns.map((column) => (
-                  <td key={`${index}:${column}`} className="max-w-[280px] border-b border-border px-3 py-2">
+                  <td key={`${index}:${column}`} className="max-w-[280px] px-3 py-2">
                     <div
                       className="line-clamp-4 break-words text-xs leading-6 text-foreground/80"
                       title={typeof row[column] === "string" ? row[column] : prettyJson(row[column])}

@@ -10,6 +10,7 @@ import {
   formatTimestamp,
   isRecord,
   prettyJson,
+  toneBadgeClass,
   type ModelCallTrace,
   type ModelCallTraceRuntimeTool,
   type SavedSessionRecord,
@@ -43,7 +44,7 @@ function WorkspaceSidebarItem(props: {
       )}
     >
       <button
-        className="rounded-lg p-1.5 text-muted-foreground transition hover:bg-muted/50 hover:text-foreground"
+        className="ob-list-item-control rounded-lg p-1.5 text-muted-foreground"
         onClick={props.onToggleExpanded}
         title={props.expanded ? "折叠 sessions" : "展开 sessions"}
       >
@@ -52,8 +53,8 @@ function WorkspaceSidebarItem(props: {
       <button className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={props.onSelect}>
         <div
           className={cn(
-            "flex h-9 w-9 items-center justify-center rounded-[12px] transition",
-            props.active ? "bg-foreground/[0.08] text-foreground" : "bg-foreground/[0.035] text-muted-foreground"
+            "ob-list-item-icon flex h-9 w-9 items-center justify-center rounded-[12px] transition",
+            props.active ? "ob-list-item-icon-active" : undefined
           )}
         >
           <Folder className="h-4 w-4" />
@@ -65,7 +66,7 @@ function WorkspaceSidebarItem(props: {
       </button>
       {props.canRemove ? (
         <button
-          className="rounded-lg p-1.5 text-muted-foreground opacity-0 transition hover:bg-muted/50 hover:text-foreground group-hover:opacity-100"
+          className="ob-list-item-control rounded-lg p-1.5 text-muted-foreground opacity-0 group-hover:opacity-100"
           onClick={props.onRemove}
           title="删除 workspace"
         >
@@ -101,8 +102,8 @@ function SessionSidebarItem(props: {
       <button className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={props.onSelect}>
         <div
           className={cn(
-            "flex h-9 w-9 items-center justify-center rounded-[12px] transition",
-            props.active ? "bg-foreground/[0.08] text-foreground" : "bg-foreground/[0.035] text-muted-foreground"
+            "ob-list-item-icon flex h-9 w-9 items-center justify-center rounded-[12px] transition",
+            props.active ? "ob-list-item-icon-active" : undefined
           )}
         >
           <Bot className="h-4 w-4" />
@@ -113,7 +114,7 @@ function SessionSidebarItem(props: {
         </div>
       </button>
       <button
-        className="rounded-lg p-1.5 text-muted-foreground opacity-0 transition hover:bg-muted/50 hover:text-foreground group-hover:opacity-100"
+        className="ob-list-item-control rounded-lg p-1.5 text-muted-foreground opacity-0 group-hover:opacity-100"
         onClick={props.onRemove}
         title="从本地侧栏移除"
       >
@@ -193,11 +194,11 @@ function modelMessageTone(role: Message["role"]) {
     case "system":
       return "bg-foreground text-background";
     case "user":
-      return "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300";
+      return toneBadgeClass("sky");
     case "assistant":
-      return "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300";
+      return toneBadgeClass("emerald");
     case "tool":
-      return "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300";
+      return toneBadgeClass("amber");
     default:
       return "";
   }
@@ -341,14 +342,7 @@ function StatusTile(props: {
   tone: "sky" | "emerald" | "rose" | "amber";
   compact?: boolean;
 }) {
-  const colorClass =
-    props.tone === "emerald"
-      ? "border-emerald-200/80 bg-emerald-50/70 text-emerald-700 dark:border-emerald-800/80 dark:bg-emerald-950/40 dark:text-emerald-400"
-      : props.tone === "rose"
-        ? "border-rose-200/80 bg-rose-50/70 text-rose-700 dark:border-rose-800/80 dark:bg-rose-950/40 dark:text-rose-400"
-        : props.tone === "amber"
-          ? "border-amber-200/80 bg-amber-50/70 text-amber-700 dark:border-amber-800/80 dark:bg-amber-950/40 dark:text-amber-400"
-          : "border-border bg-muted text-muted-foreground";
+  const colorClass = toneBadgeClass(props.tone);
 
   const Icon = props.icon;
 
