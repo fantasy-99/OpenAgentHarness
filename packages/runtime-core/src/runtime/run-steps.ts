@@ -12,6 +12,7 @@ export class RunStepService {
   readonly #runStepRepository: RunStepRepository;
   readonly #createId: RunStepServiceDependencies["createId"];
   readonly #nowIso: RunStepServiceDependencies["nowIso"];
+  readonly #createQueues = new Map<string, Promise<void>>();
 
   constructor(dependencies: RunStepServiceDependencies) {
     this.#runStepRepository = dependencies.runStepRepository;
@@ -26,17 +27,19 @@ export class RunStepService {
     agentName?: string | undefined;
     input?: Record<string, unknown> | undefined;
   }): Promise<RunStep> {
-    const existingSteps = await this.#runStepRepository.listByRunId(input.runId);
-    return this.#runStepRepository.create({
-      id: this.#createId("step"),
-      runId: input.runId,
-      seq: existingSteps.length + 1,
-      stepType: input.stepType,
-      ...(input.name ? { name: input.name } : {}),
-      ...(input.agentName ? { agentName: input.agentName } : {}),
-      status: "running",
-      ...(input.input ? { input: input.input } : {}),
-      startedAt: this.#nowIso()
+    return this.#serializeCreate(input.runId, async () => {
+      const existingSteps = await this.#runStepRepository.listByRunId(input.runId);
+      return this.#runStepRepository.create({
+        id: this.#createId("step"),
+        runId: input.runId,
+        seq: existingSteps.length + 1,
+        stepType: input.stepType,
+        ...(input.name ? { name: input.name } : {}),
+        ...(input.agentName ? { agentName: input.agentName } : {}),
+        status: "running",
+        ...(input.input ? { input: input.input } : {}),
+        startedAt: this.#nowIso()
+      });
     });
   }
 
@@ -66,5 +69,26 @@ export class RunStepService {
     });
 
     return this.completeRunStep(step, "completed", output);
+  }
+
+  async #serializeCreate<T>(runId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.#createQueues.get(runId) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.catch(() => undefined).then(() => gate);
+    this.#createQueues.set(runId, queued);
+
+    await previous.catch(() => undefined);
+
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.#createQueues.get(runId) === queued) {
+        this.#createQueues.delete(runId);
+      }
+    }
   }
 }
