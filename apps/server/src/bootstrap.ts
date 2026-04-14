@@ -23,6 +23,7 @@ import { createSQLiteRuntimePersistence, sqliteWorkspaceHistoryDbPath } from "@o
 import {
   FanoutSessionEventStore,
   createRedisWorkerRegistry,
+  createRedisWorkspaceLeaseRegistry,
   createRedisSessionEventBus,
   createRedisSessionRunQueue
 } from "@oah/storage-redis";
@@ -148,6 +149,17 @@ export interface BootstrappedRuntime {
     name?: string;
     externalRef?: string;
   }) => Promise<import("@oah/api-contracts").Workspace>;
+  resolveWorkspaceOwnership?: (workspaceId: string) => Promise<{
+    workspaceId: string;
+    version: string;
+    ownerWorkerId: string;
+    ownerBaseUrl?: string | undefined;
+    health: "healthy" | "late";
+    lastActivityAt: string;
+    localPath: string;
+    remotePrefix?: string | undefined;
+    isLocalOwner: boolean;
+  } | undefined>;
   storageAdmin: StorageAdmin;
   appendRuntimeLog(input: {
     sessionId: string;
@@ -181,6 +193,20 @@ async function fileExists(targetPath: string): Promise<boolean> {
 
 function isTruthyEnvValue(value: string | undefined): boolean {
   return value !== undefined && /^(1|true|yes|on)$/iu.test(value.trim());
+}
+
+function resolveInternalBaseUrl(config: Pick<ServerConfig, "server">): string | undefined {
+  const explicit = process.env.OAH_INTERNAL_BASE_URL?.trim();
+  if (explicit) {
+    return explicit.replace(/\/+$/u, "");
+  }
+
+  const host = config.server.host.trim();
+  if (!host || host === "0.0.0.0" || host === "::") {
+    return undefined;
+  }
+
+  return `http://${host}:${config.server.port}`;
 }
 
 type PlatformModelRegistry = Awaited<ReturnType<typeof loadPlatformModels>>;
@@ -269,6 +295,7 @@ export async function cleanupWorkspaceLocalArtifacts(input: {
 
 export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<BootstrappedRuntime> {
   const argv = options.argv ?? process.argv.slice(2);
+  const currentWorkerId = `${process.pid}`;
   const startWorker = options.startWorker ?? false;
   const processKind = options.processKind ?? "api";
   const singleWorkspace = parseSingleWorkspaceOptions(argv);
@@ -295,19 +322,11 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         console.info(`[oah-object-storage] ${message}`);
       })
     : undefined;
+  const ownerBaseUrl = resolveInternalBaseUrl(config);
   if (objectStorageMirror) {
     await objectStorageMirror.initialize();
   }
-  const workspaceMaterializationManager = config.object_storage
-    ? new WorkspaceMaterializationManager({
-        cacheRoot: path.join(config.paths.workspace_dir, ".openharness", "__materialized__"),
-        workerId: `${process.pid}`,
-        store: createDirectoryObjectStore(config.object_storage),
-        logger: (message) => {
-          console.info(message);
-        }
-      })
-    : undefined;
+  let workspaceMaterializationManager: WorkspaceMaterializationManager | undefined;
   const modelDir = config.paths.model_dir;
   const toolDir = config.paths.tool_dir;
   const logModelLoadError = (filePath: string, error: unknown): void => {
@@ -398,6 +417,29 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
           return undefined;
         })
       : undefined;
+  const redisWorkspaceLeaseRegistry =
+    config.storage.redis_url && config.storage.redis_url.trim().length > 0
+      ? await createRedisWorkspaceLeaseRegistry({
+          url: config.storage.redis_url
+        }).catch((error: unknown) => {
+          console.warn(
+            `Redis workspace lease registry unavailable (${error instanceof Error ? error.message : "unknown error"}); continuing without workspace ownership leases.`
+          );
+          return undefined;
+        })
+      : undefined;
+  workspaceMaterializationManager = config.object_storage
+    ? new WorkspaceMaterializationManager({
+        cacheRoot: path.join(config.paths.workspace_dir, ".openharness", "__materialized__"),
+        workerId: currentWorkerId,
+        ...(ownerBaseUrl ? { ownerBaseUrl } : {}),
+        store: createDirectoryObjectStore(config.object_storage),
+        leaseRegistry: redisWorkspaceLeaseRegistry,
+        logger: (message) => {
+          console.info(message);
+        }
+      })
+    : undefined;
   const redisConfigured = Boolean(config.storage.redis_url && config.storage.redis_url.trim().length > 0);
   const storageAdmin = createStorageAdmin({
     ...("pool" in persistence ? { postgresPool: persistence.pool } : {}),
@@ -720,7 +762,8 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         Date.now() - parsePositiveIntEnv("OAH_WORKSPACE_MATERIALIZATION_IDLE_TTL_MS", 60_000)
       ).toISOString();
       void workspaceMaterializationManager
-        .flushIdleCopies({ idleBefore })
+        .refreshLeases()
+        .then(() => workspaceMaterializationManager.flushIdleCopies({ idleBefore }))
         .then(() => workspaceMaterializationManager.evictIdleCopies({ idleBefore }))
         .catch((error) => {
           console.warn("Workspace materialization maintenance failed.", error);
@@ -749,6 +792,23 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     ...(workspaceMaterializationManager
       ? {
           workspaceExecutionProvider: {
+            async acquire({ workspace }: { workspace: WorkspaceRecord }) {
+              const lease = await workspaceMaterializationManager.acquireWorkspace({
+                workspace
+              });
+
+              return {
+                workspace: {
+                  ...workspace,
+                  rootPath: lease.localPath
+                },
+                async release(options?: { dirty?: boolean | undefined }) {
+                  await lease.release(options);
+                }
+              };
+            }
+          },
+          workspaceFileAccessProvider: {
             async acquire({ workspace }: { workspace: WorkspaceRecord }) {
               const lease = await workspaceMaterializationManager.acquireWorkspace({
                 workspace
@@ -949,6 +1009,26 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
           }
         }
       : {}),
+    ...(redisWorkspaceLeaseRegistry
+      ? {
+          resolveWorkspaceOwnership: async (workspaceId: string) => {
+            const lease = await redisWorkspaceLeaseRegistry.getByWorkspaceId?.(workspaceId);
+            return lease
+              ? {
+                  workspaceId: lease.workspaceId,
+                  version: lease.version,
+                  ownerWorkerId: lease.ownerWorkerId,
+                  ...(lease.ownerBaseUrl ? { ownerBaseUrl: lease.ownerBaseUrl } : {}),
+                  health: lease.health,
+                  lastActivityAt: lease.lastActivityAt,
+                  localPath: lease.localPath,
+                  ...(lease.remotePrefix ? { remotePrefix: lease.remotePrefix } : {}),
+                  isLocalOwner: lease.ownerWorkerId === currentWorkerId
+                }
+              : undefined;
+          }
+        }
+      : {}),
     storageAdmin,
     appendRuntimeLog(input) {
       return appendRuntimeLogEvent(primarySessionEventStore, {
@@ -994,6 +1074,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         storageAdmin.close(),
         redisBus?.close() ?? Promise.resolve(),
         redisWorkerRegistry?.close() ?? Promise.resolve(),
+        redisWorkspaceLeaseRegistry?.close() ?? Promise.resolve(),
         redisRunQueue?.close() ?? Promise.resolve()
       ]);
       await workspaceMaterializationManager?.close();

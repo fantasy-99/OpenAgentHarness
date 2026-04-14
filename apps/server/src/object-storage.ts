@@ -153,6 +153,10 @@ function createDirectoryFingerprint(snapshot: LocalDirectorySnapshot): string {
   return hash.digest("hex");
 }
 
+export async function computeLocalDirectoryFingerprint(rootDir: string): Promise<string> {
+  return createDirectoryFingerprint(await collectLocalDirectorySnapshot(rootDir));
+}
+
 async function removeDirectoryContents(rootDir: string): Promise<void> {
   const rootExists = await stat(rootDir).catch(() => null);
   if (!rootExists?.isDirectory()) {

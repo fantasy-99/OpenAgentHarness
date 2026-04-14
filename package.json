@@ -10,7 +10,11 @@
   "scripts": {
     "build": "tsc -b && pnpm --filter @oah/web build",
     "clean": "tsc -b --clean && pnpm -r exec rm -rf dist .vite",
+    "dev:server": "pnpm --filter @oah/server dev:api-only",
+    "dev:worker": "pnpm --filter @oah/worker dev",
     "dev:web": "pnpm --filter @oah/web dev",
+    "start:server": "pnpm --filter @oah/server start:api-only",
+    "start:worker": "pnpm --filter @oah/worker start",
     "storage:sync": "python3 ${OAH_TEST_ROOT:?set OAH_TEST_ROOT}/scripts/sync_to_minio.py --root ${OAH_TEST_ROOT:?set OAH_TEST_ROOT} --delete",
     "local:up": "node ./scripts/local-stack.mjs up",
     "local:down": "node ./scripts/local-stack.mjs down",

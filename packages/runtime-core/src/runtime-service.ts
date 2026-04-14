@@ -217,6 +217,7 @@ export class RuntimeService {
   readonly #workspaceDeletionHandler: RuntimeServiceOptions["workspaceDeletionHandler"];
   readonly #workspaceInitializer: RuntimeServiceOptions["workspaceInitializer"];
   readonly #workspaceExecutionProvider: RuntimeServiceOptions["workspaceExecutionProvider"];
+  readonly #workspaceFileAccessProvider: RuntimeServiceOptions["workspaceFileAccessProvider"];
   readonly #workspaceFiles: WorkspaceFileService;
   readonly #sessionHistory: SessionHistoryService;
   readonly #runSteps: RunStepService;
@@ -256,6 +257,7 @@ export class RuntimeService {
     this.#workspaceDeletionHandler = options.workspaceDeletionHandler;
     this.#workspaceInitializer = options.workspaceInitializer;
     this.#workspaceExecutionProvider = options.workspaceExecutionProvider;
+    this.#workspaceFileAccessProvider = options.workspaceFileAccessProvider;
     this.#workspaceFiles = new WorkspaceFileService();
     this.#sessionHistory = new SessionHistoryService({
       messageRepository: this.#messageRepository,
@@ -484,14 +486,18 @@ export class RuntimeService {
       sortOrder: SortOrder;
     }
   ): Promise<WorkspaceEntryPage> {
-    return this.#workspaceFiles.listEntries(await this.getWorkspaceRecord(workspaceId), input);
+    return this.#withWorkspaceFileLease(workspaceId, "read", input.path, (workspace) =>
+      this.#workspaceFiles.listEntries(workspace, input)
+    );
   }
 
   async getWorkspaceFileContent(
     workspaceId: string,
     input: { path: string; encoding: "utf8" | "base64"; maxBytes?: number | undefined }
   ): Promise<WorkspaceFileContentResult> {
-    return this.#workspaceFiles.getFileContent(await this.getWorkspaceRecord(workspaceId), input);
+    return this.#withWorkspaceFileLease(workspaceId, "read", input.path, (workspace) =>
+      this.#workspaceFiles.getFileContent(workspace, input)
+    );
   }
 
   async putWorkspaceFileContent(
@@ -504,35 +510,45 @@ export class RuntimeService {
       ifMatch?: string | undefined;
     }
   ): Promise<WorkspaceEntry> {
-    return this.#workspaceFiles.putFileContent(await this.getWorkspaceRecord(workspaceId), input);
+    return this.#withWorkspaceFileLease(workspaceId, "write", input.path, (workspace) =>
+      this.#workspaceFiles.putFileContent(workspace, input)
+    );
   }
 
   async uploadWorkspaceFile(
     workspaceId: string,
     input: { path: string; data: Buffer; overwrite?: boolean | undefined; ifMatch?: string | undefined }
   ): Promise<WorkspaceEntry> {
-    return this.#workspaceFiles.uploadFile(await this.getWorkspaceRecord(workspaceId), input);
+    return this.#withWorkspaceFileLease(workspaceId, "write", input.path, (workspace) =>
+      this.#workspaceFiles.uploadFile(workspace, input)
+    );
   }
 
   async createWorkspaceDirectory(
     workspaceId: string,
     input: { path: string; createParents: boolean }
   ): Promise<WorkspaceEntry> {
-    return this.#workspaceFiles.createDirectory(await this.getWorkspaceRecord(workspaceId), input);
+    return this.#withWorkspaceFileLease(workspaceId, "write", input.path, (workspace) =>
+      this.#workspaceFiles.createDirectory(workspace, input)
+    );
   }
 
   async deleteWorkspaceEntry(
     workspaceId: string,
     input: { path: string; recursive: boolean }
   ): Promise<WorkspaceDeleteResult> {
-    return this.#workspaceFiles.deleteEntry(await this.getWorkspaceRecord(workspaceId), input);
+    return this.#withWorkspaceFileLease(workspaceId, "write", input.path, (workspace) =>
+      this.#workspaceFiles.deleteEntry(workspace, input)
+    );
   }
 
   async moveWorkspaceEntry(
     workspaceId: string,
     input: { sourcePath: string; targetPath: string; overwrite: boolean }
   ): Promise<WorkspaceEntry> {
-    return this.#workspaceFiles.moveEntry(await this.getWorkspaceRecord(workspaceId), input);
+    return this.#withWorkspaceFileLease(workspaceId, "write", input.targetPath, (workspace) =>
+      this.#workspaceFiles.moveEntry(workspace, input)
+    );
   }
 
   async getWorkspaceFileDownload(
@@ -540,6 +556,74 @@ export class RuntimeService {
     targetPath: string
   ): Promise<WorkspaceFileDownloadResult> {
     return this.#workspaceFiles.getFileDownload(await this.getWorkspaceRecord(workspaceId), targetPath);
+  }
+
+  async openWorkspaceFileDownload(
+    workspaceId: string,
+    targetPath: string
+  ): Promise<{
+    file: WorkspaceFileDownloadResult;
+    release(options?: { dirty?: boolean | undefined }): Promise<void>;
+  }> {
+    const workspace = await this.getWorkspaceRecord(workspaceId);
+    if (!this.#workspaceFileAccessProvider) {
+      return {
+        file: await this.#workspaceFiles.getFileDownload(workspace, targetPath),
+        async release() {
+          return undefined;
+        }
+      };
+    }
+
+    const lease = await this.#workspaceFileAccessProvider.acquire({
+      workspace,
+      access: "read",
+      path: targetPath
+    });
+
+    let released = false;
+    try {
+      return {
+        file: await this.#workspaceFiles.getFileDownload(lease.workspace, targetPath),
+        async release(options?: { dirty?: boolean | undefined }) {
+          if (released) {
+            return;
+          }
+
+          released = true;
+          await lease.release(options);
+        }
+      };
+    } catch (error) {
+      await lease.release({ dirty: false });
+      throw error;
+    }
+  }
+
+  async #withWorkspaceFileLease<T>(
+    workspaceId: string,
+    access: "read" | "write",
+    targetPath: string | undefined,
+    operation: (workspace: WorkspaceRecord) => Promise<T>
+  ): Promise<T> {
+    const workspace = await this.getWorkspaceRecord(workspaceId);
+    if (!this.#workspaceFileAccessProvider) {
+      return operation(workspace);
+    }
+
+    const lease = await this.#workspaceFileAccessProvider.acquire({
+      workspace,
+      access,
+      ...(targetPath ? { path: targetPath } : {})
+    });
+
+    try {
+      return await operation(lease.workspace);
+    } finally {
+      await lease.release({
+        dirty: access === "write" && !lease.workspace.readOnly && lease.workspace.kind === "project"
+      });
+    }
   }
 
   async deleteWorkspace(workspaceId: string): Promise<void> {

@@ -334,6 +334,19 @@ export interface WorkspaceExecutionProvider {
   }): Promise<WorkspaceExecutionLease>;
 }
 
+export interface WorkspaceFileAccessLease {
+  workspace: WorkspaceRecord;
+  release(options?: { dirty?: boolean | undefined }): Promise<void> | void;
+}
+
+export interface WorkspaceFileAccessProvider {
+  acquire(input: {
+    workspace: WorkspaceRecord;
+    access: "read" | "write";
+    path?: string | undefined;
+  }): Promise<WorkspaceFileAccessLease>;
+}
+
 export type ToolCallSourceType = "action" | "skill" | "agent" | "tool" | "native";
 
 export interface ToolCallAuditRecord {
@@ -485,6 +498,7 @@ export interface RuntimeServiceOptions {
   workspaceDeletionHandler?: WorkspaceDeletionHandler | undefined;
   workspaceInitializer?: WorkspaceInitializer | undefined;
   workspaceExecutionProvider?: WorkspaceExecutionProvider | undefined;
+  workspaceFileAccessProvider?: WorkspaceFileAccessProvider | undefined;
 }
 
 export type RunQueuePriority = "normal" | "subagent";

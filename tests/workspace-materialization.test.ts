@@ -183,4 +183,82 @@ describe("workspace materialization", () => {
     await manager.close();
     await expect(readFile(path.join(localWorkspace, "README.md"), "utf8")).resolves.toBe("# local\n");
   });
+
+  it("publishes workspace ownership leases through the registry lifecycle", async () => {
+    const cacheRoot = await mkdtemp(path.join(os.tmpdir(), "oah-materialization-cache-"));
+    tempDirs.push(cacheRoot);
+    const store = new FakeDirectoryObjectStore();
+    await store.putObject("workspace/demo/README.md", Buffer.from("# demo\n"));
+    const heartbeats: Array<{ workspaceId: string; dirty: boolean; refCount: number; ownerBaseUrl?: string }> = [];
+    const removals: Array<{ workspaceId: string; version: string; ownerWorkerId: string }> = [];
+
+    const manager = new WorkspaceMaterializationManager({
+      cacheRoot,
+      workerId: "worker_1",
+      ownerBaseUrl: "http://worker-1.internal:8787",
+      store,
+      leaseRegistry: {
+        async heartbeat(entry) {
+          heartbeats.push({
+            workspaceId: entry.workspaceId,
+            dirty: entry.dirty,
+            refCount: entry.refCount,
+            ownerBaseUrl: entry.ownerBaseUrl
+          });
+        },
+        async remove(workspaceId, version, ownerWorkerId) {
+          removals.push({ workspaceId, version, ownerWorkerId });
+        }
+      }
+    });
+
+    const lease = await manager.acquireWorkspace({
+      workspace: {
+        id: "ws_1",
+        rootPath: "/unused",
+        externalRef: "s3://test-bucket/workspace/demo"
+      } as never
+    });
+    lease.markDirty();
+    await lease.release({ dirty: true });
+    await manager.refreshLeases();
+    await manager.evictIdleCopies({ idleBefore: new Date(Date.now() + 1_000).toISOString() });
+
+    expect(heartbeats.some((entry) => entry.workspaceId === "ws_1" && entry.refCount === 1)).toBe(true);
+    expect(heartbeats.some((entry) => entry.workspaceId === "ws_1" && entry.dirty)).toBe(true);
+    expect(heartbeats.some((entry) => entry.workspaceId === "ws_1" && entry.ownerBaseUrl === "http://worker-1.internal:8787")).toBe(true);
+    expect(removals).toEqual([{ workspaceId: "ws_1", version: "live", ownerWorkerId: "worker_1" }]);
+  });
+
+  it("does not mark a workspace dirty when a write-capable lease releases without file changes", async () => {
+    const cacheRoot = await mkdtemp(path.join(os.tmpdir(), "oah-materialization-cache-"));
+    tempDirs.push(cacheRoot);
+    const store = new FakeDirectoryObjectStore();
+    await store.putObject("workspace/demo/README.md", Buffer.from("# demo\n"));
+    const manager = new WorkspaceMaterializationManager({
+      cacheRoot,
+      workerId: "worker_1",
+      store
+    });
+
+    const lease = await manager.acquireWorkspace({
+      workspace: {
+        id: "ws_1",
+        rootPath: "/unused",
+        externalRef: "s3://test-bucket/workspace/demo"
+      } as never
+    });
+
+    await lease.release({ dirty: true });
+
+    expect(manager.snapshot()).toEqual([
+      expect.objectContaining({
+        workspaceId: "ws_1",
+        dirty: false,
+        refCount: 0
+      })
+    ]);
+
+    await manager.close();
+  });
 });

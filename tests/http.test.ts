@@ -203,6 +203,17 @@ async function createStartedAppWithRuntimeService(
     }) => Promise<any>;
     workspaceMode?: "multi" | "single";
     resolveCallerContext?: (request: import("fastify").FastifyRequest) => Promise<CallerContext | undefined> | CallerContext | undefined;
+    resolveWorkspaceOwnership?: (workspaceId: string) => Promise<{
+      workspaceId: string;
+      version: string;
+      ownerWorkerId: string;
+      ownerBaseUrl?: string;
+      health: "healthy" | "late";
+      lastActivityAt: string;
+      localPath: string;
+      remotePrefix?: string | undefined;
+      isLocalOwner: boolean;
+    } | undefined>;
     storageAdmin?: StorageAdmin;
   }
 ) {
@@ -219,6 +230,7 @@ async function createStartedAppWithRuntimeService(
       : {}),
     ...(options?.workspaceMode ? { workspaceMode: options.workspaceMode } : {}),
     ...(options?.resolveCallerContext ? { resolveCallerContext: options.resolveCallerContext } : {}),
+    ...(options?.resolveWorkspaceOwnership ? { resolveWorkspaceOwnership: options.resolveWorkspaceOwnership } : {}),
     ...(options?.storageAdmin ? { storageAdmin: options.storageAdmin } : {}),
     ...(options?.importWorkspace ? { importWorkspace: options.importWorkspace } : {})
   });
@@ -296,6 +308,7 @@ async function createWorkspaceRecord(overrides?: Partial<WorkspaceRecord>): Prom
 }
 
 let activeApp: Awaited<ReturnType<typeof createStartedApp>> | undefined;
+const activeClosers: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
   vi.unstubAllEnvs();
@@ -303,6 +316,8 @@ afterEach(async () => {
     await activeApp.app.close();
     activeApp = undefined;
   }
+
+  await Promise.all(activeClosers.splice(0).map(async (close) => close()));
 
   await Promise.all(
     tempWorkspaceRoots.splice(0).map(async (rootPath) => {
@@ -1448,6 +1463,149 @@ describe("http api", () => {
     expect(contentResponse.status).toBe(200);
     const contentPayload = (await contentResponse.json()) as { content: string };
     expect(contentPayload.content).toBe(Buffer.from(bytes).toString("base64"));
+  });
+
+  it("returns a routing hint when workspace files are owned by another worker", async () => {
+    const gateway = new FakeModelGateway(20);
+    const persistence = createMemoryRuntimePersistence();
+    const workspace = await createWorkspaceRecord();
+    await persistence.workspaceRepository.upsert(workspace);
+    activeApp = await createStartedAppWithRuntimeService(
+      new RuntimeService({
+        defaultModel: "openai-default",
+        modelGateway: gateway,
+        ...persistence
+      }),
+      gateway,
+      {
+        resolveWorkspaceOwnership: async (workspaceId) => ({
+          workspaceId,
+          version: "live",
+          ownerWorkerId: "worker-remote",
+          health: "healthy",
+          lastActivityAt: "2026-04-14T12:00:00.000Z",
+          localPath: "/tmp/worker-remote/ws",
+          remotePrefix: "workspace/demo",
+          isLocalOwner: false
+        })
+      }
+    );
+
+    const readResponse = await fetch(
+      `${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}/files/content?path=${encodeURIComponent("hello.txt")}`
+    );
+    expect(readResponse.status).toBe(409);
+    await expect(readResponse.json()).resolves.toMatchObject({
+      error: {
+        code: "workspace_owned_by_another_worker",
+        details: {
+          workspaceId: workspace.id,
+          ownerWorkerId: "worker-remote",
+          version: "live",
+          routingHint: "owner_worker"
+        }
+      }
+    });
+
+    const writeResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}/files/content`, {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        path: "hello.txt",
+        content: "blocked",
+        encoding: "utf8"
+      })
+    });
+    expect(writeResponse.status).toBe(409);
+    await expect(writeResponse.json()).resolves.toMatchObject({
+      error: {
+        code: "workspace_owned_by_another_worker"
+      }
+    });
+  });
+
+  it("proxies workspace file requests to the owner when an internal owner base url is available", async () => {
+    const ownerGateway = new FakeModelGateway(20);
+    const ownerPersistence = createMemoryRuntimePersistence();
+    const ownerRuntime = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: ownerGateway,
+      ...ownerPersistence
+    });
+    const ownerWorkspace = await createWorkspaceRecord();
+    await writeFile(path.join(ownerWorkspace.rootPath, "hello.txt"), "Hello from OAH.\n", "utf8");
+    await ownerPersistence.workspaceRepository.upsert(ownerWorkspace);
+
+    const ownerApp = createApp({
+      runtimeService: ownerRuntime,
+      modelGateway: ownerGateway,
+      defaultModel: "openai-default",
+      logger: false,
+      workspaceMode: "multi"
+    });
+    await ownerApp.listen({ host: "127.0.0.1", port: 0 });
+    activeClosers.push(async () => {
+      await ownerApp.close();
+    });
+    const ownerAddress = ownerApp.server.address() as AddressInfo;
+    const ownerBaseUrl = `http://127.0.0.1:${ownerAddress.port}`;
+
+    const proxyGateway = new FakeModelGateway(20);
+    const proxyPersistence = createMemoryRuntimePersistence();
+    activeApp = await createStartedAppWithRuntimeService(
+      new RuntimeService({
+        defaultModel: "openai-default",
+        modelGateway: proxyGateway,
+        ...proxyPersistence
+      }),
+      proxyGateway,
+      {
+        resolveWorkspaceOwnership: async (workspaceId) => ({
+          workspaceId,
+          version: "live",
+          ownerWorkerId: "worker-owner",
+          ownerBaseUrl,
+          health: "healthy",
+          lastActivityAt: "2026-04-14T12:00:00.000Z",
+          localPath: "/tmp/worker-owner/ws",
+          remotePrefix: "workspace/demo",
+          isLocalOwner: false
+        })
+      }
+    );
+
+    const readResponse = await fetch(
+      `${activeApp.baseUrl}/api/v1/workspaces/${ownerWorkspace.id}/files/content?path=${encodeURIComponent("hello.txt")}`
+    );
+    expect(readResponse.status).toBe(200);
+    await expect(readResponse.json()).resolves.toMatchObject({
+      workspaceId: ownerWorkspace.id,
+      path: "hello.txt",
+      content: "Hello from OAH.\n"
+    });
+
+    const writeResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/${ownerWorkspace.id}/files/content`, {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        path: "hello.txt",
+        content: "proxied write\n",
+        encoding: "utf8"
+      })
+    });
+    expect(writeResponse.status).toBe(200);
+
+    const verifyResponse = await fetch(
+      `${ownerBaseUrl}/internal/v1/workspaces/${ownerWorkspace.id}/files/content?path=${encodeURIComponent("hello.txt")}`
+    );
+    expect(verifyResponse.status).toBe(200);
+    await expect(verifyResponse.json()).resolves.toMatchObject({
+      content: "proxied write\n"
+    });
   });
 
   it("rejects unsafe paths and mutations on read-only workspaces", async () => {

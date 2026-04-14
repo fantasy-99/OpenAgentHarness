@@ -3,12 +3,24 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./dist/runtime-entry.js",
+  "types": "./dist/runtime-entry.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/runtime-entry.d.ts",
+      "default": "./dist/runtime-entry.js"
+    },
+    "./runtime-entry": {
+      "types": "./dist/runtime-entry.d.ts",
+      "default": "./dist/runtime-entry.js"
+    }
+  },
   "scripts": {
     "dev": "tsx watch --tsconfig ./tsconfig.json src/index.ts",
+    "dev:api-only": "tsx watch --tsconfig ./tsconfig.json src/index.ts --api-only",
     "dev:worker": "tsx watch --tsconfig ./tsconfig.json src/worker.ts",
     "start": "node dist/index.js",
+    "start:api-only": "node dist/index.js --api-only",
     "start:worker": "node dist/worker.js"
   },
   "dependencies": {

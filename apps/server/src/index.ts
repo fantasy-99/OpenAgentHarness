@@ -1,51 +1,7 @@
-import { createApp } from "./app.js";
-import { bootstrapRuntime, installSignalHandlers, shouldStartEmbeddedWorker } from "./bootstrap.js";
+import { startApiServer } from "./runtime-entry.js";
 
 async function main() {
-  const runtime = await bootstrapRuntime({
-    argv: process.argv.slice(2),
-    startWorker: shouldStartEmbeddedWorker(process.argv.slice(2)),
-    processKind: "api"
-  });
-
-  const app = createApp({
-    runtimeService: runtime.runtimeService,
-    modelGateway: runtime.modelGateway,
-    defaultModel: runtime.config.llm.default_model,
-    workspaceMode: runtime.workspaceMode.kind,
-    healthCheck: () => runtime.healthReport(),
-    readinessCheck: () => runtime.readinessReport(),
-    storageAdmin: runtime.storageAdmin,
-    appendRuntimeLog: runtime.appendRuntimeLog,
-    ...(runtime.listPlatformModels ? { listPlatformModels: runtime.listPlatformModels } : {}),
-    ...(runtime.getPlatformModelSnapshot ? { getPlatformModelSnapshot: runtime.getPlatformModelSnapshot } : {}),
-    ...(runtime.subscribePlatformModelSnapshot
-      ? { subscribePlatformModelSnapshot: runtime.subscribePlatformModelSnapshot }
-      : {}),
-    ...(runtime.listWorkspaceTemplates ? { listWorkspaceTemplates: runtime.listWorkspaceTemplates } : {}),
-    ...(runtime.importWorkspace ? { importWorkspace: runtime.importWorkspace } : {})
-  });
-
-  app.addHook("onClose", async () => {
-    await runtime.close();
-  });
-
-  installSignalHandlers(async () => {
-    await app.close();
-  });
-
-  await app.listen({
-    host: runtime.config.server.host,
-    port: runtime.config.server.port
-  });
-
-  const workspaceScopeLabel =
-    runtime.workspaceMode.kind === "single"
-      ? `; workspace=${runtime.workspaceMode.workspaceId} (${runtime.workspaceMode.workspaceKind})`
-      : "";
-  console.log(
-    `Open Agent Harness server listening on ${runtime.config.server.host}:${runtime.config.server.port} (${runtime.process.label}; execution=${runtime.process.execution}${workspaceScopeLabel})`
-  );
+  await startApiServer(process.argv.slice(2));
 }
 
 main().catch((error) => {

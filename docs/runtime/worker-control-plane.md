@@ -16,8 +16,13 @@
 - 同一 worker 进程内对同一 `workspace + version` 的并发请求会复用同一份本地副本
 - 本地副本具备 `dirty`、idle flush、idle eviction 和 close flush 语义
 - queued run 当前已经会通过 execution workspace lease 使用 materialized 本地副本执行
-- 当前 dirty 判定先采用保守策略：可写 project run 结束时默认把 lease 按 `dirty` 释放
-- 这层目前仍未完全接入所有 API 文件读写路径
+- API 文件变更路径当前也已经会通过 workspace file access lease 写入 materialized 本地副本
+- API 文件读取、content 查看和 download 当前也已经会通过 workspace file access lease 读取本地副本
+- Redis workspace lease registry 当前已经会记录 `workspaceId + version + ownerWorkerId + ownerBaseUrl` 的 ownership lease，并随 materialization 生命周期续租/释放
+- API 文件入口当前会先查询 ownership lease；如果 workspace 由其他 worker 持有且 lease 带有 `ownerBaseUrl`，会直接走 internal proxy 到 owner worker
+- 当 ownership 真值存在但 owner 暂时不可达时，API 文件入口会回退为带 routing hint 的 `409 workspace_owned_by_another_worker`
+- queued run 的 execution lease 当前会按 materialized 本地目录 fingerprint 判定真实 dirty，避免长期维持“project run 一律 dirty”的保守 flush
+- standalone worker 当前已具备 internal-only HTTP 面，只暴露健康探针与 internal routes，供 split 部署下的 owner worker 文件转发使用
 
 ## 2. 组件关系
 

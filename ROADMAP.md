@@ -367,13 +367,18 @@ OAH 当前只负责：
 
 当前落点：
 
-- `started` 已新增 workspace materialization manager 基础组件
 - `done` 对象存储来源的 workspace 副本现在具备进程内并发复用能力
 - `done` 本地副本已具备 `dirty` 标记、idle flush、idle eviction 和 close flush 语义
 - `done` queued run 执行现在已经通过 execution workspace lease 切换到 materialized 本地副本目录
+- `done` API 文件变更路径现在也已经通过 workspace file access lease 写入 materialized 本地副本
+- `done` API 文件读取 / content / download 现在也已开始通过 workspace file access lease 读取本地副本
+- `done` Redis workspace lease registry 已落地，materialization 生命周期现在会发布 `workspace + version + ownerWorker` ownership lease
+- `done` ownership lease 现在还会携带可选 `ownerBaseUrl`，为 owner worker 内部转发提供直接目标
 - `done` 无 `externalRef` 的 workspace 当前可先走本地目录直通，便于保持开发模式兼容
-- `partial` 当前 dirty 判定先走保守策略：可写 project run 结束时默认把 lease 作为 `dirty` 释放
-- `next` 下一步优先把 API 文件写与 owner worker / execution lease 对齐，并继续细化 dirty 判定，避免长期依赖保守 flush
+- `done` API 文件入口现在已经先查 owner worker；当 ownership lease 包含 `ownerBaseUrl` 时会直接走 internal proxy，否则回退为带 routing hint 的 `409 workspace_owned_by_another_worker`
+- `done` standalone worker 当前已具备 internal-only HTTP 面，可承接 owner worker 文件代理而不暴露整套 public API
+- `done` queued run 的 execution lease 现在会按 materialized 本地目录 fingerprint 判定真实 dirty，而不是一律保守 flush
+- `done` Phase 3 交付标准当前已达成；后续 sticky dispatch / 更强调度策略进入 Phase 4/5 继续收敛
 
 ### Phase 4: 固化生产部署骨架
 
@@ -386,6 +391,16 @@ OAH 当前只负责：
 
 - 生产部署骨架清晰
 - 开发闭环能力与生产执行形态不再混淆
+
+当前落点：
+
+- `done` 已新增独立 `apps/worker` app 包，standalone worker 现在有明确的仓库级入口
+- `done` `apps/server/src/runtime-entry.ts` 已沉淀共享装配入口，`api-server` / `worker` 不再各自复制 bootstrap + app wiring
+- `done` 仓库根脚本现在提供 `pnpm dev:server` / `pnpm dev:worker` / `pnpm start:server` / `pnpm start:worker`
+- `done` split 模式下根脚本默认把 `api-server` 跑成 `api-only`
+- `done` 已补充 [`docs/runtime/split-deployment.md`](docs/runtime/split-deployment.md)，明确当前 role boundary、启动方式和 worker 所需目录/环境变量
+- `partial` 当前 `apps/worker` 仍是对共享 server worker entry 的轻包装，后续可继续收敛为更独立的 worker-only composition root
+- `next` 下一步进入 Phase 5，优先把 `worker-controller` 的 desiredReplicas / cooldown / reason 抽象落出来，再补 deployment manifests
 
 ### Phase 5: 引入 Worker Controller
 

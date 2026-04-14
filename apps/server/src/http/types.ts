@@ -54,6 +54,20 @@ export interface AppDependencies {
       workspaceId: string,
       targetPath: string
     ) => Promise<{ absolutePath: string; name: string; sizeBytes: number; mimeType?: string | undefined; etag: string; updatedAt: string }>;
+    openWorkspaceFileDownload?: (
+      workspaceId: string,
+      targetPath: string
+    ) => Promise<{
+      file: {
+        absolutePath: string;
+        name: string;
+        sizeBytes: number;
+        mimeType?: string | undefined;
+        etag: string;
+        updatedAt: string;
+      };
+      release(options?: { dirty?: boolean | undefined }): Promise<void>;
+    }>;
     createWorkspaceDirectory: (
       workspaceId: string,
       input: { path: string; createParents: boolean }
@@ -84,6 +98,17 @@ export interface AppDependencies {
   defaultModel: string;
   logger?: boolean;
   workspaceMode?: "multi" | "single";
+  resolveWorkspaceOwnership?: ((workspaceId: string) => Promise<{
+    workspaceId: string;
+    version: string;
+    ownerWorkerId: string;
+    ownerBaseUrl?: string | undefined;
+    health: "healthy" | "late";
+    lastActivityAt: string;
+    localPath: string;
+    remotePrefix?: string | undefined;
+    isLocalOwner: boolean;
+  } | undefined>) | undefined;
   resolveCallerContext?: ((request: FastifyRequest) => Promise<CallerContext | undefined> | CallerContext | undefined) | undefined;
   listWorkspaceTemplates?: (() => Promise<import("@oah/config").WorkspaceTemplateDescriptor[]>) | undefined;
   uploadWorkspaceTemplate?: ((input: {

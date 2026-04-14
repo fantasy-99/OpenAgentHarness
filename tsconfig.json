@@ -10,6 +10,7 @@
     { "path": "./packages/storage-redis" },
     { "path": "./packages/model-gateway" },
     { "path": "./apps/cli" },
-    { "path": "./apps/server" }
+    { "path": "./apps/server" },
+    { "path": "./apps/worker" }
   ]
 }

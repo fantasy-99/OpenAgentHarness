@@ -4,12 +4,16 @@ import { isAppError } from "@oah/runtime-core";
 
 import { createStandaloneCallerContext, isLoopbackAddress, isPrivateNetworkAddress, sendError } from "./http/context.js";
 import { registerPublicRoutes } from "./http/routes/public.js";
-import { registerWorkspaceRoutes } from "./http/routes/workspaces.js";
+import { registerInternalWorkspaceRoutes, registerWorkspaceRoutes } from "./http/routes/workspaces.js";
 import { registerSessionRoutes } from "./http/routes/sessions.js";
 import { registerInternalModelRoutes } from "./http/routes/internal-models.js";
 import type { AppDependencies } from "./http/types.js";
 
 export type { AppDependencies } from "./http/types.js";
+
+export interface CreateAppOptions {
+  surface?: "full" | "internal_only";
+}
 
 function readRequestParam(request: FastifyRequest, key: string): string | undefined {
   const params = request.params;
@@ -21,15 +25,18 @@ function readRequestParam(request: FastifyRequest, key: string): string | undefi
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-export function createApp(dependencies: AppDependencies) {
+export function createApp(dependencies: AppDependencies, options: CreateAppOptions = {}) {
   const app = Fastify({
     logger: dependencies.logger ?? true
   });
   const hostOwnsCallerContext = Boolean(dependencies.resolveCallerContext);
   const workspaceMode = dependencies.workspaceMode ?? "multi";
-  const allowPrivateInternalModelRoutes =
-    process.env.OAH_ALLOW_PRIVATE_INTERNAL_MODEL_ROUTES !== undefined &&
-    /^(1|true|yes|on)$/iu.test(process.env.OAH_ALLOW_PRIVATE_INTERNAL_MODEL_ROUTES.trim());
+  const appSurface = options.surface ?? "full";
+  const allowPrivateInternalRoutes =
+    (process.env.OAH_ALLOW_PRIVATE_INTERNAL_ROUTES !== undefined &&
+      /^(1|true|yes|on)$/iu.test(process.env.OAH_ALLOW_PRIVATE_INTERNAL_ROUTES.trim())) ||
+    (process.env.OAH_ALLOW_PRIVATE_INTERNAL_MODEL_ROUTES !== undefined &&
+      /^(1|true|yes|on)$/iu.test(process.env.OAH_ALLOW_PRIVATE_INTERNAL_MODEL_ROUTES.trim()));
 
   app.addContentTypeParser(/^application\/octet-stream(?:\s*;.*)?$/i, { parseAs: "buffer" }, (_request, body, done) => {
     done(null, body);
@@ -81,10 +88,10 @@ export function createApp(dependencies: AppDependencies) {
       return;
     }
 
-    if (request.url.startsWith("/internal/v1/models/")) {
+    if (request.url.startsWith("/internal/v1/")) {
       const remoteAddress = request.ip || request.raw.socket.remoteAddress;
-      if (!isLoopbackAddress(remoteAddress) && !(allowPrivateInternalModelRoutes && isPrivateNetworkAddress(remoteAddress))) {
-        await sendError(reply, 403, "forbidden", "Internal model routes are only available from loopback addresses.");
+      if (!isLoopbackAddress(remoteAddress) && !(allowPrivateInternalRoutes && isPrivateNetworkAddress(remoteAddress))) {
+        await sendError(reply, 403, "forbidden", "Internal routes are only available from loopback addresses.");
         return reply;
       }
 
@@ -110,9 +117,70 @@ export function createApp(dependencies: AppDependencies) {
     return reply;
   });
 
-  registerPublicRoutes(app, dependencies, { workspaceMode });
-  registerWorkspaceRoutes(app, dependencies, { workspaceMode });
-  registerSessionRoutes(app, dependencies);
+  if (appSurface === "full") {
+    registerPublicRoutes(app, dependencies, { workspaceMode });
+    registerWorkspaceRoutes(app, dependencies, { workspaceMode });
+    registerSessionRoutes(app, dependencies);
+  } else {
+    app.get("/healthz", async () =>
+      dependencies.healthCheck
+        ? await dependencies.healthCheck()
+        : {
+            status: "ok",
+            storage: {
+              primary: "sqlite",
+              events: "memory",
+              runQueue: "in_process"
+            },
+            process: {
+              mode: "standalone_worker",
+              label: "standalone worker",
+              execution: "redis_queue"
+            },
+            checks: {
+              postgres: "not_configured",
+              redisEvents: "not_configured",
+              redisRunQueue: "not_configured"
+            },
+            worker: {
+              mode: "disabled",
+              sessionSerialBoundary: "session",
+              localSlots: [],
+              activeWorkers: [],
+              summary: {
+                active: 0,
+                healthy: 0,
+                late: 0,
+                busy: 0,
+                embedded: 0,
+                standalone: 0
+              },
+              pool: null
+            }
+          }
+    );
+
+    app.get("/readyz", async (_request, reply) => {
+      const payload = dependencies.readinessCheck
+        ? await dependencies.readinessCheck()
+        : {
+            status: "ready",
+            checks: {
+              postgres: "not_configured",
+              redisEvents: "not_configured",
+              redisRunQueue: "not_configured"
+            }
+          };
+
+      if (payload.status === "not_ready") {
+        return reply.status(503).send(payload);
+      }
+
+      return reply.send(payload);
+    });
+  }
+
+  registerInternalWorkspaceRoutes(app, dependencies);
   registerInternalModelRoutes(app, dependencies);
 
   return app;

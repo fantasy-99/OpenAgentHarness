@@ -3,8 +3,14 @@ import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 
 import type { WorkspaceRecord } from "@oah/runtime-core";
+import type { WorkspaceLeaseRegistry } from "@oah/storage-redis";
 
-import { syncLocalDirectoryToRemote, syncRemotePrefixToLocal, type DirectoryObjectStore } from "../object-storage.js";
+import {
+  computeLocalDirectoryFingerprint,
+  syncLocalDirectoryToRemote,
+  syncRemotePrefixToLocal,
+  type DirectoryObjectStore
+} from "../object-storage.js";
 
 type WorkspaceMaterializationSource =
   | {
@@ -60,7 +66,10 @@ export interface WorkspaceMaterializationLease {
 export interface WorkspaceMaterializationManagerOptions {
   cacheRoot: string;
   workerId: string;
+  ownerBaseUrl?: string | undefined;
   store: DirectoryObjectStore;
+  leaseRegistry?: WorkspaceLeaseRegistry | undefined;
+  leaseTtlMs?: number | undefined;
   logger?: ((message: string) => void) | undefined;
 }
 
@@ -114,14 +123,20 @@ function resolveWorkspaceMaterializationSource(
 export class WorkspaceMaterializationManager {
   readonly #cacheRoot: string;
   readonly #workerId: string;
+  readonly #ownerBaseUrl?: string | undefined;
   readonly #store: DirectoryObjectStore;
+  readonly #leaseRegistry?: WorkspaceLeaseRegistry | undefined;
+  readonly #leaseTtlMs: number;
   readonly #logger: (message: string) => void;
   readonly #entries = new Map<string, WorkspaceMaterializationEntry>();
 
   constructor(options: WorkspaceMaterializationManagerOptions) {
     this.#cacheRoot = options.cacheRoot;
     this.#workerId = options.workerId;
+    this.#ownerBaseUrl = options.ownerBaseUrl;
     this.#store = options.store;
+    this.#leaseRegistry = options.leaseRegistry;
+    this.#leaseTtlMs = Math.max(1_000, options.leaseTtlMs ?? 15_000);
     this.#logger = options.logger ?? (() => undefined);
   }
 
@@ -155,8 +170,11 @@ export class WorkspaceMaterializationManager {
     }
 
     await this.#ensureMaterialized(entry);
+    const baselineFingerprint =
+      entry.source.kind === "object_store" ? await computeLocalDirectoryFingerprint(entry.localPath) : undefined;
     entry.refCount += 1;
     this.#touchEntry(entry);
+    await this.#publishEntry(entry);
 
     let released = false;
     return {
@@ -180,10 +198,15 @@ export class WorkspaceMaterializationManager {
 
         released = true;
         if (options?.dirty) {
-          entry!.dirty = true;
+          if (baselineFingerprint !== undefined) {
+            entry!.dirty ||= (await computeLocalDirectoryFingerprint(entry!.localPath)) !== baselineFingerprint;
+          } else {
+            entry!.dirty = true;
+          }
         }
         entry!.refCount = Math.max(0, entry!.refCount - 1);
         this.#touchEntry(entry!);
+        await this.#publishEntry(entry!);
       }
     };
   }
@@ -195,6 +218,7 @@ export class WorkspaceMaterializationManager {
         workspaceId: entry.workspaceId,
         version: entry.version,
         ownerWorkerId: entry.ownerWorkerId,
+        ...(this.#ownerBaseUrl ? { ownerBaseUrl: this.#ownerBaseUrl } : {}),
         sourceKind: entry.source.kind,
         localPath: entry.localPath,
         ...(entry.source.kind === "object_store" ? { remotePrefix: entry.source.remotePrefix } : {}),
@@ -215,6 +239,7 @@ export class WorkspaceMaterializationManager {
         continue;
       }
       await this.#flushEntry(entry);
+      await this.#publishEntry(entry);
       flushed.push(this.#toSnapshot(entry));
     }
 
@@ -239,6 +264,7 @@ export class WorkspaceMaterializationManager {
       }
 
       this.#entries.delete(entry.cacheKey);
+      await this.#removeEntryLease(entry);
       evicted.push(this.#toSnapshot(entry));
     }
 
@@ -250,11 +276,18 @@ export class WorkspaceMaterializationManager {
       if (entry.dirty) {
         await this.#flushEntry(entry);
       }
+      await this.#removeEntryLease(entry);
       if (entry.source.kind === "object_store") {
         await rm(entry.localPath, { recursive: true, force: true });
       }
     }
     this.#entries.clear();
+  }
+
+  async refreshLeases(): Promise<void> {
+    for (const entry of this.#entries.values()) {
+      await this.#publishEntry(entry);
+    }
   }
 
   async #ensureMaterialized(entry: WorkspaceMaterializationEntry): Promise<void> {
@@ -299,6 +332,34 @@ export class WorkspaceMaterializationManager {
 
   #touchEntry(entry: WorkspaceMaterializationEntry): void {
     entry.lastActivityAt = nowIso();
+  }
+
+  async #publishEntry(entry: WorkspaceMaterializationEntry): Promise<void> {
+    if (!this.#leaseRegistry) {
+      return;
+    }
+
+    await this.#leaseRegistry.heartbeat(
+      {
+        workspaceId: entry.workspaceId,
+        version: entry.version,
+        ownerWorkerId: entry.ownerWorkerId,
+        ...(this.#ownerBaseUrl ? { ownerBaseUrl: this.#ownerBaseUrl } : {}),
+        sourceKind: entry.source.kind,
+        localPath: entry.localPath,
+        dirty: entry.dirty,
+        refCount: entry.refCount,
+        lastActivityAt: entry.lastActivityAt,
+        lastSeenAt: nowIso(),
+        ...(entry.source.kind === "object_store" ? { remotePrefix: entry.source.remotePrefix } : {}),
+        ...(entry.materializedAt ? { materializedAt: entry.materializedAt } : {})
+      },
+      this.#leaseTtlMs
+    );
+  }
+
+  async #removeEntryLease(entry: WorkspaceMaterializationEntry): Promise<void> {
+    await this.#leaseRegistry?.remove(entry.workspaceId, entry.version, entry.ownerWorkerId);
   }
 
   #cacheKey(workspaceId: string, version: string, source: WorkspaceMaterializationSource): string {

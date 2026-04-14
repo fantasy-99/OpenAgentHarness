@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -402,6 +402,236 @@ describe("runtime service", () => {
     await expect(runtimeService.getSession(session.id)).rejects.toMatchObject({
       code: "session_not_found"
     });
+  });
+
+  it("routes workspace file mutations through the workspace file access lease", async () => {
+    const sourceRoot = await mkdtemp(path.join(tmpdir(), "oah-workspace-source-"));
+    const materializedRoot = await mkdtemp(path.join(tmpdir(), "oah-workspace-materialized-"));
+    const releases: Array<{ dirty?: boolean | undefined }> = [];
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence,
+      workspaceFileAccessProvider: {
+        async acquire({ workspace }) {
+          return {
+            workspace: {
+              ...workspace,
+              rootPath: materializedRoot
+            },
+            async release(options) {
+              releases.push(options ?? {});
+            }
+          };
+        }
+      },
+      workspaceInitializer: {
+        async initialize(input) {
+          return {
+            rootPath: input.rootPath,
+            settings: {
+              defaultAgent: "default",
+              skillDirs: []
+            },
+            defaultAgent: "default",
+            workspaceModels: {},
+            agents: {},
+            actions: {},
+            skills: {},
+            toolServers: {},
+            hooks: {},
+            catalog: {
+              workspaceId: "template",
+              agents: [],
+              models: [],
+              actions: [],
+              skills: [],
+              tools: [],
+              hooks: [],
+              nativeTools: []
+            }
+          };
+        }
+      }
+    });
+
+    try {
+      const workspace = await runtimeService.createWorkspace({
+        input: {
+          name: "demo",
+          template: "workspace",
+          rootPath: sourceRoot,
+          executionPolicy: "local"
+        }
+      });
+
+      await runtimeService.putWorkspaceFileContent(workspace.id, {
+        path: "README.md",
+        content: "# materialized\n",
+        encoding: "utf8",
+        overwrite: true
+      });
+
+      await expect(readFile(path.join(materializedRoot, "README.md"), "utf8")).resolves.toBe("# materialized\n");
+      await expect(readFile(path.join(sourceRoot, "README.md"), "utf8")).rejects.toThrow();
+      expect(releases).toEqual([{ dirty: true }]);
+    } finally {
+      await rm(sourceRoot, { recursive: true, force: true });
+      await rm(materializedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("routes workspace file reads through the workspace file access lease", async () => {
+    const sourceRoot = await mkdtemp(path.join(tmpdir(), "oah-workspace-source-"));
+    const materializedRoot = await mkdtemp(path.join(tmpdir(), "oah-workspace-materialized-"));
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence,
+      workspaceFileAccessProvider: {
+        async acquire({ workspace }) {
+          return {
+            workspace: {
+              ...workspace,
+              rootPath: materializedRoot
+            },
+            async release() {
+              return undefined;
+            }
+          };
+        }
+      },
+      workspaceInitializer: {
+        async initialize(input) {
+          return {
+            rootPath: input.rootPath,
+            settings: {
+              defaultAgent: "default",
+              skillDirs: []
+            },
+            defaultAgent: "default",
+            workspaceModels: {},
+            agents: {},
+            actions: {},
+            skills: {},
+            toolServers: {},
+            hooks: {},
+            catalog: {
+              workspaceId: "template",
+              agents: [],
+              models: [],
+              actions: [],
+              skills: [],
+              tools: [],
+              hooks: [],
+              nativeTools: []
+            }
+          };
+        }
+      }
+    });
+
+    try {
+      await writeFile(path.join(materializedRoot, "README.md"), "# materialized-read\n", "utf8");
+      const workspace = await runtimeService.createWorkspace({
+        input: {
+          name: "demo",
+          template: "workspace",
+          rootPath: sourceRoot,
+          executionPolicy: "local"
+        }
+      });
+
+      const file = await runtimeService.getWorkspaceFileContent(workspace.id, {
+        path: "README.md",
+        encoding: "utf8"
+      });
+
+      expect(file.content).toBe("# materialized-read\n");
+    } finally {
+      await rm(sourceRoot, { recursive: true, force: true });
+      await rm(materializedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a read lease open for workspace downloads until the caller releases it", async () => {
+    const sourceRoot = await mkdtemp(path.join(tmpdir(), "oah-workspace-source-"));
+    const materializedRoot = await mkdtemp(path.join(tmpdir(), "oah-workspace-materialized-"));
+    const releases: Array<{ dirty?: boolean | undefined }> = [];
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence,
+      workspaceFileAccessProvider: {
+        async acquire({ workspace }) {
+          return {
+            workspace: {
+              ...workspace,
+              rootPath: materializedRoot
+            },
+            async release(options) {
+              releases.push(options ?? {});
+            }
+          };
+        }
+      },
+      workspaceInitializer: {
+        async initialize(input) {
+          return {
+            rootPath: input.rootPath,
+            settings: {
+              defaultAgent: "default",
+              skillDirs: []
+            },
+            defaultAgent: "default",
+            workspaceModels: {},
+            agents: {},
+            actions: {},
+            skills: {},
+            toolServers: {},
+            hooks: {},
+            catalog: {
+              workspaceId: "template",
+              agents: [],
+              models: [],
+              actions: [],
+              skills: [],
+              tools: [],
+              hooks: [],
+              nativeTools: []
+            }
+          };
+        }
+      }
+    });
+
+    try {
+      await writeFile(path.join(materializedRoot, "README.md"), "# download\n", "utf8");
+      const workspace = await runtimeService.createWorkspace({
+        input: {
+          name: "demo",
+          template: "workspace",
+          rootPath: sourceRoot,
+          executionPolicy: "local"
+        }
+      });
+
+      const handle = await runtimeService.openWorkspaceFileDownload(workspace.id, "README.md");
+      expect(handle.file.absolutePath).toBe(path.join(materializedRoot, "README.md"));
+      expect(releases).toEqual([]);
+
+      await handle.release({ dirty: false });
+      expect(releases).toEqual([{ dirty: false }]);
+    } finally {
+      await rm(sourceRoot, { recursive: true, force: true });
+      await rm(materializedRoot, { recursive: true, force: true });
+    }
   });
 
   it("deletes child sessions when removing a parent session", async () => {

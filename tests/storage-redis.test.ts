@@ -4,6 +4,7 @@ import {
   FanoutSessionEventStore,
   RedisRunWorker,
   RedisRunWorkerPool,
+  RedisWorkspaceLeaseRegistry,
   RedisWorkerRegistry,
   appendRedisRunWorkerPoolDecision,
   buildRedisWorkerAffinitySummary,
@@ -428,6 +429,52 @@ describe("storage redis", () => {
       expiresAt: "2026-04-01T00:00:06.000Z"
     });
     expect(redis.expiries.get("test:worker:worker_1")).toBe(6_000);
+  });
+
+  it("derives workspace ownership leases from registry heartbeats", async () => {
+    const redis = createInMemoryRedisCommands();
+    const registry = new RedisWorkspaceLeaseRegistry({
+      url: "redis://unused",
+      keyPrefix: "test",
+      commands: redis.commands
+    });
+
+    await registry.heartbeat(
+      {
+        workspaceId: "ws_1",
+        version: "live",
+        ownerWorkerId: "worker_1",
+        ownerBaseUrl: "http://worker-1.internal:8787",
+        sourceKind: "object_store",
+        localPath: "/tmp/materialized/ws_1",
+        remotePrefix: "workspace/demo",
+        dirty: true,
+        refCount: 2,
+        lastActivityAt: "2026-04-01T00:00:01.000Z",
+        materializedAt: "2026-04-01T00:00:00.000Z",
+        lastSeenAt: "2026-04-01T00:00:02.000Z"
+      },
+      9_000
+    );
+
+    const entry = await registry.getByWorkspaceId("ws_1", Date.parse("2026-04-01T00:00:05.000Z"));
+
+    expect(entry).toMatchObject({
+      workspaceId: "ws_1",
+      version: "live",
+      ownerWorkerId: "worker_1",
+      ownerBaseUrl: "http://worker-1.internal:8787",
+      sourceKind: "object_store",
+      localPath: "/tmp/materialized/ws_1",
+      remotePrefix: "workspace/demo",
+      dirty: true,
+      refCount: 2,
+      leaseTtlMs: 9_000,
+      expiresAt: "2026-04-01T00:00:11.000Z",
+      lastSeenAgeMs: 3_000,
+      health: "healthy"
+    });
+    expect(redis.expiries.get("test:workspace-lease:ws_1:live:worker_1")).toBe(9_000);
   });
 
   it("prefers a workspace-affine worker when it still has idle slot capacity", () => {
