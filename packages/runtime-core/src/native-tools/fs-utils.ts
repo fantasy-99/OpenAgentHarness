@@ -1,7 +1,7 @@
-import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { AppError } from "../errors.js";
+import type { WorkspaceFileSystem } from "../types.js";
 
 export function formatReadLines(
   content: string,
@@ -22,7 +22,10 @@ export function formatReadLines(
   };
 }
 
-export async function collectWorkspaceFiles(directory: string): Promise<Array<{ absolutePath: string; mtimeMs: number }>> {
+export async function collectWorkspaceFiles(
+  fileSystem: WorkspaceFileSystem,
+  directory: string
+): Promise<Array<{ absolutePath: string; mtimeMs: number }>> {
   const pending = [directory];
   const files: Array<{ absolutePath: string; mtimeMs: number }> = [];
 
@@ -32,19 +35,19 @@ export async function collectWorkspaceFiles(directory: string): Promise<Array<{ 
       continue;
     }
 
-    const entries = await readdir(current, { withFileTypes: true });
+    const entries = await fileSystem.readdir(current);
     entries.sort((left, right) => left.name.localeCompare(right.name));
 
     for (const entry of entries) {
       const absoluteEntryPath = path.join(current, entry.name);
-      if (entry.isDirectory()) {
+      if (entry.kind === "directory") {
         pending.push(absoluteEntryPath);
         continue;
       }
 
-      if (entry.isFile()) {
-        const entryStat = await stat(absoluteEntryPath).catch(() => null);
-        if (entryStat?.isFile()) {
+      if (entry.kind === "file") {
+        const entryStat = await fileSystem.stat(absoluteEntryPath).catch(() => null);
+        if (entryStat?.kind === "file") {
           files.push({ absolutePath: absoluteEntryPath, mtimeMs: entryStat.mtimeMs });
         }
       }
@@ -54,8 +57,8 @@ export async function collectWorkspaceFiles(directory: string): Promise<Array<{ 
   return files;
 }
 
-export async function readJsonFile<T>(filePath: string, fallback: T): Promise<T> {
-  const raw = await readFile(filePath, "utf8").catch(() => null);
+export async function readJsonFile<T>(fileSystem: WorkspaceFileSystem, filePath: string, fallback: T): Promise<T> {
+  const raw = await fileSystem.readFile(filePath).then((buffer) => buffer.toString("utf8")).catch(() => null);
   if (!raw) {
     return fallback;
   }
@@ -67,6 +70,6 @@ export async function readJsonFile<T>(filePath: string, fallback: T): Promise<T>
   }
 }
 
-export async function ensureParentDirectory(filePath: string): Promise<void> {
-  await mkdir(path.dirname(filePath), { recursive: true });
+export async function ensureParentDirectory(fileSystem: WorkspaceFileSystem, filePath: string): Promise<void> {
+  await fileSystem.mkdir(path.dirname(filePath), { recursive: true });
 }

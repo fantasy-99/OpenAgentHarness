@@ -65,7 +65,7 @@ workers:
   #     type: kubernetes
   #     kubernetes:
   #       namespace: open-agent-harness
-  #       lease_name: oah-worker-controller
+  #       lease_name: oah-controller
   #       api_url: https://kubernetes.default.svc
   #       token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
   #       ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt

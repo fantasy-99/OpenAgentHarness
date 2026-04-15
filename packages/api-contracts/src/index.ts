@@ -93,7 +93,8 @@ export const actionCatalogItemSchema = z.object({
   exposeToLlm: z.boolean().optional(),
   callableByUser: z.boolean().optional(),
   callableByApi: z.boolean().optional(),
-  retryPolicy: actionRetryPolicySchema.optional()
+  retryPolicy: actionRetryPolicySchema.optional(),
+  inputSchema: jsonObjectSchema.optional()
 });
 
 export const skillCatalogItemSchema = z.object({
@@ -632,11 +633,48 @@ export const storageRedisMaintenanceResponseSchema = z.object({
   changed: z.boolean()
 });
 
+export const storageRedisWorkspacePlacementStateSchema = z.enum([
+  "unassigned",
+  "active",
+  "idle",
+  "draining",
+  "evicted"
+]);
+
+export const storageRedisWorkspacePlacementQuerySchema = z.object({
+  workspaceId: z.string().optional(),
+  userId: z.string().optional(),
+  ownerWorkerId: z.string().optional(),
+  state: storageRedisWorkspacePlacementStateSchema.optional()
+});
+
+export const storageRedisWorkspacePlacementSchema = z.object({
+  workspaceId: z.string(),
+  version: z.string(),
+  userId: z.string().optional(),
+  ownerWorkerId: z.string().optional(),
+  ownerBaseUrl: z.string().optional(),
+  state: storageRedisWorkspacePlacementStateSchema,
+  sourceKind: z.enum(["object_store", "local_directory"]).optional(),
+  localPath: z.string().optional(),
+  remotePrefix: z.string().optional(),
+  dirty: z.boolean().optional(),
+  refCount: z.number().int().min(0).optional(),
+  lastActivityAt: timestampSchema.optional(),
+  materializedAt: timestampSchema.optional(),
+  updatedAt: timestampSchema
+});
+
+export const storageRedisWorkspacePlacementPageSchema = z.object({
+  items: z.array(storageRedisWorkspacePlacementSchema)
+});
+
 export const createWorkspaceRequestSchema = z.object({
   externalRef: z.string().optional(),
   name: z.string().min(1),
   template: z.string().min(1),
   rootPath: z.string().min(1).optional(),
+  userId: z.string().trim().min(1).optional(),
   agentsMd: z.string().min(1).optional(),
   toolServers: z.record(z.string(), jsonObjectSchema).optional(),
   skills: z.array(workspaceSkillInputSchema).optional(),
@@ -727,7 +765,8 @@ export const batchRequeueRunsResponseSchema = z.object({
 export const createActionRunRequestSchema = z.object({
   sessionId: z.string().optional(),
   agentName: z.string().optional(),
-  input: z.union([jsonObjectSchema, z.null()]).optional()
+  input: jsonValueSchema.optional(),
+  triggerSource: z.enum(["api", "user"]).optional()
 });
 
 export const actionRunAcceptedSchema = z.object({
@@ -870,11 +909,54 @@ export const storageRedisKeyQuerySchema = z.object({
   key: z.string().min(1)
 });
 
+export const storageRedisWorkerAffinityQuerySchema = z.object({
+  sessionId: z.string().optional(),
+  workspaceId: z.string().optional(),
+  userId: z.string().optional(),
+  ownerWorkerId: z.string().optional()
+});
+
 export const workerModeSchema = z.enum(["embedded", "external", "disabled"]);
 export const workerProcessKindSchema = z.enum(["embedded", "standalone"]);
 export const workerStateSchema = z.enum(["starting", "idle", "busy", "stopping"]);
 export const workerHealthSchema = z.enum(["healthy", "late"]);
 export const sessionSerialBoundarySchema = z.literal("session");
+export const storageRedisWorkerAffinityReasonSchema = z.enum([
+  "owner_worker",
+  "same_session",
+  "same_workspace",
+  "same_user",
+  "healthy",
+  "late",
+  "idle_worker",
+  "busy_worker",
+  "starting_worker",
+  "stopping_worker",
+  "idle_slot_capacity",
+  "slot_saturated"
+]);
+export const storageRedisWorkerAffinityCandidateSchema = z.object({
+  workerId: z.string(),
+  processKind: workerProcessKindSchema,
+  state: workerStateSchema,
+  health: workerHealthSchema,
+  score: z.number(),
+  slotCapacity: z.number().int().min(0).optional(),
+  idleSlots: z.number().int().min(0).optional(),
+  busySlots: z.number().int().min(0).optional(),
+  matchingSessionSlots: z.number().int().min(0),
+  matchingWorkspaceSlots: z.number().int().min(0),
+  matchingUserWorkspaces: z.number().int().min(0),
+  reasons: z.array(storageRedisWorkerAffinityReasonSchema)
+});
+export const storageRedisWorkerAffinitySchema = z.object({
+  preferredWorkerId: z.string().optional(),
+  sessionAffinityWorkerId: z.string().optional(),
+  workspaceAffinityWorkerId: z.string().optional(),
+  userAffinityWorkerId: z.string().optional(),
+  ownerWorkerId: z.string().optional(),
+  candidates: z.array(storageRedisWorkerAffinityCandidateSchema)
+});
 export const healthCheckStatusSchema = z.enum(["up", "down", "not_configured"]);
 export const readinessStatusSchema = z.enum(["ready", "not_ready"]);
 export const readinessReasonSchema = z.enum(["draining", "checks_down"]);
@@ -1018,7 +1100,38 @@ export const healthWorkerSchema = z.object({
   localSlots: z.array(workerSlotSchema),
   activeWorkers: z.array(workerLeaseSchema),
   summary: workerSummarySchema,
-  pool: workerPoolSchema.nullable()
+  pool: workerPoolSchema.nullable(),
+  materialization: z
+    .object({
+      draining: z.boolean(),
+      drainStartedAt: timestampSchema.optional(),
+      cachedCopies: z.number().int().min(0),
+      objectStoreCopies: z.number().int().min(0),
+      dirtyCopies: z.number().int().min(0),
+      busyCopies: z.number().int().min(0),
+      idleCopies: z.number().int().min(0),
+      failureCount: z.number().int().min(0),
+      blockerCount: z.number().int().min(0),
+      failures: z.array(
+        z.object({
+          cacheKey: z.string(),
+          workspaceId: z.string(),
+          version: z.string(),
+          ownerWorkerId: z.string(),
+          sourceKind: z.enum(["object_store", "local_directory"]),
+          localPath: z.string(),
+          remotePrefix: z.string().optional(),
+          stage: z.enum(["materialize", "idle_flush", "idle_evict", "drain_evict", "drain_release", "close"]),
+          operation: z.enum(["materialize", "flush", "evict"]),
+          at: timestampSchema,
+          errorMessage: z.string(),
+          dirty: z.boolean(),
+          refCount: z.number().int().min(0),
+          draining: z.boolean()
+        })
+      )
+    })
+    .optional()
 });
 export const healthReportSchema = z.object({
   status: healthStatusSchema,
@@ -1109,6 +1222,9 @@ export type StorageOverview = z.infer<typeof storageOverviewSchema>;
 export type StoragePostgresTablePage = z.infer<typeof storagePostgresTablePageSchema>;
 export type StorageRedisKeyPage = z.infer<typeof storageRedisKeyPageSchema>;
 export type StorageRedisKeyDetail = z.infer<typeof storageRedisKeyDetailSchema>;
+export type StorageRedisWorkerAffinity = z.infer<typeof storageRedisWorkerAffinitySchema>;
+export type StorageRedisWorkspacePlacement = z.infer<typeof storageRedisWorkspacePlacementSchema>;
+export type StorageRedisWorkspacePlacementPage = z.infer<typeof storageRedisWorkspacePlacementPageSchema>;
 export type StorageRedisDeleteKeyResponse = z.infer<typeof storageRedisDeleteKeyResponseSchema>;
 export type StorageRedisDeleteKeysRequest = z.infer<typeof storageRedisDeleteKeysRequestSchema>;
 export type StorageRedisDeleteKeysResponse = z.infer<typeof storageRedisDeleteKeysResponseSchema>;

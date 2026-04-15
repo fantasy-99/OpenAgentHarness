@@ -1,4 +1,4 @@
-import type { ActionRetryPolicy, ModelGateway } from "../types.js";
+import type { ActionRetryPolicy, ModelGateway, WorkspaceCommandExecutor, WorkspaceFileSystem } from "../types.js";
 import { AppError } from "../errors.js";
 
 export const NATIVE_TOOL_NAMES = [
@@ -29,6 +29,8 @@ export interface NativeToolSetOptions {
   sessionId?: string | undefined;
   modelGateway?: ModelGateway | undefined;
   webFetchModel?: string | undefined;
+  commandExecutor?: WorkspaceCommandExecutor | undefined;
+  fileSystem?: WorkspaceFileSystem | undefined;
 }
 
 export interface NativeToolFactoryContext {
@@ -37,6 +39,8 @@ export interface NativeToolFactoryContext {
   readHistoryPath: string;
   todoPath: string;
   options?: NativeToolSetOptions | undefined;
+  commandExecutor: WorkspaceCommandExecutor;
+  fileSystem: WorkspaceFileSystem;
   assertVisible: (toolName: NativeToolName) => void;
   omitLegacyKeys: <T extends Record<string, unknown>>(value: T, keys: string[]) => Record<string, unknown>;
   rememberRead: (relativePath: string) => Promise<void>;

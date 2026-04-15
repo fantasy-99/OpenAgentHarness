@@ -1,4 +1,3 @@
-import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { z } from "zod";
@@ -41,10 +40,10 @@ export function createWriteTool(context: NativeToolFactoryContext): RuntimeToolS
               }
             : rawInput;
         const input = WriteInputSchema.parse(normalizedInput);
-        const resolved = resolveWorkspacePath(context.workspaceRoot, input.file_path);
+        const resolved = await resolveWorkspacePath(context.fileSystem, context.workspaceRoot, input.file_path);
         await context.assertReadBeforeMutating(resolved.relativePath, "Write");
-        await mkdir(path.dirname(resolved.absolutePath), { recursive: true });
-        await writeFile(resolved.absolutePath, input.content, "utf8");
+        await context.fileSystem.mkdir(path.dirname(resolved.absolutePath), { recursive: true });
+        await context.fileSystem.writeFile(resolved.absolutePath, Buffer.from(input.content, "utf8"));
         return formatToolOutput([
           ["file_path", resolved.relativePath],
           ["bytes_written", Buffer.byteLength(input.content, "utf8")]

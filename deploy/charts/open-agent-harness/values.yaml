@@ -1,0 +1,211 @@
+nameOverride: ""
+fullnameOverride: ""
+commonLabels: {}
+
+global:
+  clusterDomain: cluster.local
+
+image:
+  repository: ghcr.io/open-agent-harness/open-agent-harness
+  tag: latest
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+config:
+  create: true
+  nameOverride: ""
+  mountPath: /etc/oah
+  serverYaml: |
+    server:
+      host: 0.0.0.0
+      port: 8787
+
+    storage:
+      postgres_url: ${env.DATABASE_URL}
+      redis_url: ${env.REDIS_URL}
+
+    paths:
+      workspace_dir: /var/lib/oah/workspaces
+      chat_dir: /var/lib/oah/chat-workspaces
+      template_dir: /var/lib/oah/templates
+      model_dir: /var/lib/oah/models
+      tool_dir: /var/lib/oah/tools
+      skill_dir: /var/lib/oah/skills
+      archive_dir: /var/lib/oah/archives
+
+    workers:
+      standalone:
+        min_replicas: {{ .Values.worker.replicaCount }}
+        max_replicas: 12
+        slots_per_pod: 2
+        ready_sessions_per_worker: 1
+        reserved_capacity_for_subagent: 1
+      controller:
+        scale_interval_ms: 2000
+        scale_up_window: 2
+        scale_down_window: 3
+        cooldown_ms: 5000
+        scale_up_busy_ratio_threshold: 0.75
+        scale_up_max_ready_age_ms: 2000
+        leader_election:
+          type: kubernetes
+          kubernetes:
+            namespace: {{ .Release.Namespace }}
+            lease_name: {{ include "open-agent-harness.controllerName" . }}
+        scale_target:
+          type: kubernetes
+          allow_scale_down: true
+          kubernetes:
+            namespace: {{ .Release.Namespace }}
+            label_selector: app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=worker
+
+    llm:
+      default_model: openai-default
+
+apiServer:
+  enabled: true
+  replicaCount: 1
+  minReadySeconds: 5
+  terminationGracePeriodSeconds: 30
+  priorityClassName: ""
+  podSecurityContext: {}
+  securityContext: {}
+  topologySpreadConstraints: []
+  strategy:
+    maxUnavailable: 0
+    maxSurge: 1
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: ""
+    maxUnavailable: ""
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  resources: {}
+  extraEnv: []
+  envFrom: []
+  extraVolumes: []
+  extraVolumeMounts: []
+  serviceAnnotations: {}
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: http
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: http
+  service:
+    port: 8787
+    type: ClusterIP
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: oah.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+
+worker:
+  enabled: true
+  replicaCount: 2
+  minReadySeconds: 5
+  terminationGracePeriodSeconds: 120
+  priorityClassName: ""
+  podSecurityContext: {}
+  securityContext: {}
+  topologySpreadConstraints: []
+  strategy:
+    maxUnavailable: 0
+    maxSurge: 1
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: ""
+    maxUnavailable: ""
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  resources: {}
+  extraEnv: []
+  envFrom: []
+  extraVolumes: []
+  extraVolumeMounts: []
+  serviceAnnotations: {}
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: http
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: http
+  service:
+    port: 8787
+  workspaceVolume:
+    type: emptyDir
+    mountPath: /var/lib/oah/workspaces
+    emptyDir: {}
+    persistentVolumeClaim:
+      claimName: ""
+      readOnly: false
+
+controller:
+  enabled: true
+  replicaCount: 2
+  minReadySeconds: 5
+  terminationGracePeriodSeconds: 30
+  priorityClassName: ""
+  podSecurityContext: {}
+  securityContext: {}
+  topologySpreadConstraints: []
+  strategy:
+    maxUnavailable: 1
+    maxSurge: 1
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: ""
+    maxUnavailable: ""
+  podAnnotations: {}
+  podLabels: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  resources: {}
+  extraEnv: []
+  envFrom: []
+  extraVolumes: []
+  extraVolumeMounts: []
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: http
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: http
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+  rbac:
+    create: true
+  service:
+    port: 8788
+    annotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/path: /metrics
+      prometheus.io/port: "8788"
+
+serviceMonitor:
+  enabled: false
+  additionalLabels: {}
+  interval: 15s
+  scrapeTimeout: 5s

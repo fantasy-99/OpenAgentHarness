@@ -12,6 +12,6 @@
     { "path": "./apps/cli" },
     { "path": "./apps/server" },
     { "path": "./apps/worker" },
-    { "path": "./apps/worker-controller" }
+    { "path": "./apps/controller" }
   ]
 }

@@ -1,7 +1,7 @@
 import type { Message, Run, RunStep, Session } from "@oah/api-contracts";
 
 import { AppError } from "../errors.js";
-import { textContent } from "../runtime-message-content.js";
+import { textContent, toolErrorResultContent, toolResultContent } from "../runtime-message-content.js";
 import { canDelegateFromAgent } from "../runtime-tooling.js";
 import { formatToolOutput } from "../tool-output.js";
 import type {
@@ -182,6 +182,7 @@ export class AgentCoordinationService {
     task: string;
     handoffSummary?: string | undefined;
     taskId?: string | undefined;
+    notifyParentOnCompletion?: boolean | undefined;
   }): Promise<{ childSessionId: string; childRunId: string; targetAgentName: string }> {
     if (!canDelegateFromAgent(input.workspace, input.currentAgentName)) {
       throw new AppError(
@@ -340,21 +341,11 @@ export class AgentCoordinationService {
     await this.#messageRepository.create(childMessage);
     await this.#runRepository.create(childRun);
 
-    const updatedDelegatedRuns = [
-      ...this.delegatedRunRecords(latestParentRun),
-      {
-        childRunId,
-        childSessionId,
-        targetAgentName: resolvedTargetAgentName,
-        parentAgentName: input.currentAgentName
-      }
-    ];
-
-    await this.#updateRun(latestParentRun, {
-      metadata: {
-        ...(latestParentRun.metadata ?? {}),
-        delegatedRuns: updatedDelegatedRuns
-      }
+    await this.#appendDelegatedRunRecord(input.parentRun.id, {
+      childRunId,
+      childSessionId,
+      targetAgentName: resolvedTargetAgentName,
+      parentAgentName: input.currentAgentName
     });
 
     await this.#appendEvent({
@@ -386,7 +377,8 @@ export class AgentCoordinationService {
       parentRunId: input.parentRun.id,
       parentAgentName: input.currentAgentName,
       targetAgentName: resolvedTargetAgentName,
-      childRunId
+      childRunId,
+      notifyParentOnCompletion: input.notifyParentOnCompletion ?? false
     });
 
     return {
@@ -459,11 +451,20 @@ export class AgentCoordinationService {
     parentAgentName: string;
     targetAgentName: string;
     childRunId: string;
+    notifyParentOnCompletion: boolean;
   }): Promise<void> {
     const childRun = await this.#waitForRunTerminalState(input.childRunId);
     const childSummary = await this.#collectAwaitedRunSummary(input.childRunId);
 
     if (childRun.status === "completed") {
+      if (input.notifyParentOnCompletion) {
+        await this.#persistDelegatedRunUpdate({
+          parentSessionId: input.parentSessionId,
+          parentRunId: input.parentRunId,
+          parentAgentName: input.parentAgentName,
+          childSummary
+        });
+      }
       await this.#appendEvent({
         sessionId: input.parentSessionId,
         runId: input.parentRunId,
@@ -481,6 +482,14 @@ export class AgentCoordinationService {
       return;
     }
 
+    if (input.notifyParentOnCompletion) {
+      await this.#persistDelegatedRunFailure({
+        parentSessionId: input.parentSessionId,
+        parentRunId: input.parentRunId,
+        parentAgentName: input.parentAgentName,
+        childRun
+      });
+    }
     await this.#appendEvent({
       sessionId: input.parentSessionId,
       runId: input.parentRunId,
@@ -581,5 +590,138 @@ export class AgentCoordinationService {
           : [])
       ]
     );
+  }
+
+  async #appendDelegatedRunRecord(parentRunId: string, record: DelegatedRunRecord): Promise<void> {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const currentParentRun = await this.#getRun(parentRunId);
+      const currentRecords = this.delegatedRunRecords(currentParentRun);
+      if (currentRecords.some((existing) => existing.childRunId === record.childRunId)) {
+        return;
+      }
+
+      const nextRecords = [...currentRecords, record];
+      await this.#updateRun(currentParentRun, {
+        metadata: {
+          ...(currentParentRun.metadata ?? {}),
+          delegatedRuns: nextRecords
+        }
+      });
+
+      const persistedParentRun = await this.#getRun(parentRunId);
+      if (this.delegatedRunRecords(persistedParentRun).some((existing) => existing.childRunId === record.childRunId)) {
+        return;
+      }
+    }
+
+    throw new AppError(409, "delegated_run_record_conflict", `Failed to attach delegated run ${record.childRunId}.`);
+  }
+
+  async #persistDelegatedRunUpdate(input: {
+    parentSessionId: string;
+    parentRunId: string;
+    parentAgentName: string;
+    childSummary: AwaitedRunSummary;
+  }): Promise<void> {
+    const renderedSummary = this.#renderAwaitedRunSummary(input.childSummary);
+    const message = await this.#messageRepository.create({
+      id: this.#createId("msg"),
+      sessionId: input.parentSessionId,
+      runId: input.parentRunId,
+      role: "tool",
+      content: toolResultContent({
+        toolCallId: `delegate_${input.childSummary.run.id}`,
+        toolName: "SubAgent",
+        output: renderedSummary
+      }),
+      metadata: {
+        agentName: input.parentAgentName,
+        effectiveAgentName: input.parentAgentName,
+        toolStatus: "completed",
+        toolSourceType: "agent",
+        synthetic: true,
+        delegatedUpdate: "completed",
+        delegatedChildRunId: input.childSummary.run.id,
+        delegatedChildSessionId: input.childSummary.run.sessionId
+      },
+      createdAt: this.#nowIso()
+    });
+
+    await this.#appendEvent({
+      sessionId: input.parentSessionId,
+      runId: input.parentRunId,
+      event: "message.completed",
+      data: {
+        runId: input.parentRunId,
+        messageId: message.id,
+        content: message.content,
+        toolName: "SubAgent",
+        toolCallId: `delegate_${input.childSummary.run.id}`,
+        ...(message.metadata ? { metadata: message.metadata } : {})
+      }
+    });
+  }
+
+  async #persistDelegatedRunFailure(input: {
+    parentSessionId: string;
+    parentRunId: string;
+    parentAgentName: string;
+    childRun: Run;
+  }): Promise<void> {
+    const message = await this.#messageRepository.create({
+      id: this.#createId("msg"),
+      sessionId: input.parentSessionId,
+      runId: input.parentRunId,
+      role: "tool",
+      content: toolErrorResultContent({
+        toolCallId: `delegate_${input.childRun.id}`,
+        toolName: "SubAgent",
+        error: formatToolOutput(
+          [
+            ["task_id", input.childRun.sessionId],
+            ["run_id", input.childRun.id],
+            ["status", input.childRun.status],
+            ["subagent_name", input.childRun.effectiveAgentName]
+          ],
+          [
+            ...(input.childRun.errorMessage
+              ? [
+                  {
+                    title: "error_message",
+                    lines: input.childRun.errorMessage.split(/\r?\n/),
+                    emptyText: "(empty error)"
+                  }
+                ]
+              : [])
+          ]
+        )
+      }),
+      metadata: {
+        agentName: input.parentAgentName,
+        effectiveAgentName: input.parentAgentName,
+        toolStatus: "failed",
+        toolSourceType: "agent",
+        synthetic: true,
+        delegatedUpdate: "failed",
+        delegatedChildRunId: input.childRun.id,
+        delegatedChildSessionId: input.childRun.sessionId
+      },
+      createdAt: this.#nowIso()
+    });
+
+    await this.#appendEvent({
+      sessionId: input.parentSessionId,
+      runId: input.parentRunId,
+      event: "message.completed",
+      data: {
+        runId: input.parentRunId,
+        messageId: message.id,
+        content: message.content,
+        toolName: "SubAgent",
+        toolCallId: `delegate_${input.childRun.id}`,
+        resultType: "error",
+        ...(message.metadata ? { metadata: message.metadata } : {})
+      }
+    });
   }
 }

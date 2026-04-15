@@ -1,3 +1,4 @@
+import type { Readable } from "node:stream";
 import type { FastifyRequest } from "fastify";
 
 import type { CallerContext, ModelGateway, RuntimeService, WorkspaceRecord } from "@oah/runtime-core";
@@ -53,18 +54,25 @@ export interface AppDependencies {
     getWorkspaceFileDownload: (
       workspaceId: string,
       targetPath: string
-    ) => Promise<{ absolutePath: string; name: string; sizeBytes: number; mimeType?: string | undefined; etag: string; updatedAt: string }>;
+    ) => Promise<{
+      name: string;
+      sizeBytes: number;
+      mimeType?: string | undefined;
+      etag: string;
+      updatedAt: string;
+      openReadStream(): Readable;
+    }>;
     openWorkspaceFileDownload?: (
       workspaceId: string,
       targetPath: string
     ) => Promise<{
       file: {
-        absolutePath: string;
         name: string;
         sizeBytes: number;
         mimeType?: string | undefined;
         etag: string;
         updatedAt: string;
+        openReadStream(): Readable;
       };
       release(options?: { dirty?: boolean | undefined }): Promise<void>;
     }>;
@@ -80,7 +88,15 @@ export interface AppDependencies {
     deleteWorkspace: RuntimeService["deleteWorkspace"];
     createSession: RuntimeService["createSession"];
     listWorkspaceSessions: RuntimeService["listWorkspaceSessions"];
-    triggerActionRun: RuntimeService["triggerActionRun"];
+    triggerActionRun: (input: {
+      workspaceId: string;
+      caller: CallerContext;
+      actionName: string;
+      sessionId?: string | undefined;
+      agentName?: string | undefined;
+      input?: unknown;
+      triggerSource?: "api" | "user" | undefined;
+    }) => ReturnType<RuntimeService["triggerActionRun"]>;
     getSession: RuntimeService["getSession"];
     updateSession: RuntimeService["updateSession"];
     deleteSession: RuntimeService["deleteSession"];
@@ -159,7 +175,13 @@ export interface AppDependencies {
     kind?: "project" | "chat";
     name?: string;
     externalRef?: string;
+    userId?: string;
   }) => Promise<import("@oah/api-contracts").Workspace>;
+  assignWorkspacePlacementUser?: ((input: {
+    workspaceId: string;
+    userId: string;
+    overwrite?: boolean | undefined;
+  }) => Promise<void>) | undefined;
   healthCheck?: () => Promise<HealthReport> | HealthReport;
   readinessCheck?: () => Promise<ReadinessReport> | ReadinessReport;
   storageAdmin?: StorageAdmin;

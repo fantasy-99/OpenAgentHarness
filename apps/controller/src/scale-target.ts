@@ -43,6 +43,7 @@ interface ControllerScaleTargetConfigShape {
     | {
         namespace?: string | undefined;
         deployment?: string | undefined;
+        label_selector?: string | undefined;
         api_url?: string | undefined;
         token_file?: string | undefined;
         ca_file?: string | undefined;
@@ -61,7 +62,8 @@ export type ResolvedWorkerReplicaTargetConfig =
       allowScaleDown: boolean;
       kubernetes: {
         namespace: string;
-        deployment: string;
+        deployment?: string | undefined;
+        labelSelector?: string | undefined;
         apiUrl: string;
         tokenFile: string;
         caFile?: string | undefined;
@@ -86,13 +88,24 @@ export type KubernetesJsonRequestFn = (
   text: string;
 }>;
 
-function readBoolEnv(name: string, fallback: boolean): boolean {
-  const raw = process.env[name];
-  if (!raw || raw.trim().length === 0) {
+function readEnv(names: string | string[]): string | undefined {
+  for (const name of Array.isArray(names) ? names : [names]) {
+    const raw = process.env[name];
+    if (raw && raw.trim().length > 0) {
+      return raw.trim();
+    }
+  }
+
+  return undefined;
+}
+
+function readBoolEnv(names: string | string[], fallback: boolean): boolean {
+  const raw = readEnv(names);
+  if (!raw) {
     return fallback;
   }
 
-  const normalized = raw.trim().toLowerCase();
+  const normalized = raw.toLowerCase();
   if (["1", "true", "yes", "on"].includes(normalized)) {
     return true;
   }
@@ -102,13 +115,8 @@ function readBoolEnv(name: string, fallback: boolean): boolean {
   return fallback;
 }
 
-function readStringEnv(name: string, fallback?: string | undefined): string | undefined {
-  const raw = process.env[name];
-  if (!raw || raw.trim().length === 0) {
-    return fallback;
-  }
-
-  return raw.trim();
+function readStringEnv(names: string | string[], fallback?: string | undefined): string | undefined {
+  return readEnv(names) ?? fallback;
 }
 
 function resolveKubernetesApiUrl(raw?: string | undefined): string | undefined {
@@ -133,9 +141,9 @@ export function resolveWorkerReplicaTargetConfig(config: ServerConfig): Resolved
     scale_target?: ControllerScaleTargetConfigShape | undefined;
   };
   const scaleTarget = controllerConfig.scale_target;
-  const targetTypeRaw = readStringEnv("OAH_WORKER_CONTROLLER_TARGET_TYPE", scaleTarget?.type ?? "noop");
+  const targetTypeRaw = readStringEnv("OAH_CONTROLLER_TARGET_TYPE", scaleTarget?.type ?? "noop");
   const targetType = targetTypeRaw === "kubernetes" ? "kubernetes" : "noop";
-  const allowScaleDown = readBoolEnv("OAH_WORKER_CONTROLLER_ALLOW_SCALE_DOWN", scaleTarget?.allow_scale_down ?? false);
+  const allowScaleDown = readBoolEnv("OAH_CONTROLLER_ALLOW_SCALE_DOWN", scaleTarget?.allow_scale_down ?? true);
 
   if (targetType === "noop") {
     return {
@@ -145,33 +153,31 @@ export function resolveWorkerReplicaTargetConfig(config: ServerConfig): Resolved
   }
 
   const kubernetes = scaleTarget?.kubernetes;
-  const namespace = readStringEnv("OAH_WORKER_CONTROLLER_TARGET_NAMESPACE", kubernetes?.namespace);
-  const deployment = readStringEnv("OAH_WORKER_CONTROLLER_TARGET_DEPLOYMENT", kubernetes?.deployment);
-  const apiUrl = resolveKubernetesApiUrl(readStringEnv("OAH_WORKER_CONTROLLER_KUBE_API_URL", kubernetes?.api_url));
+  const namespace = readStringEnv("OAH_CONTROLLER_TARGET_NAMESPACE", kubernetes?.namespace);
+  const deployment = readStringEnv("OAH_CONTROLLER_TARGET_DEPLOYMENT", kubernetes?.deployment);
+  const labelSelector = readStringEnv("OAH_CONTROLLER_TARGET_LABEL_SELECTOR", kubernetes?.label_selector);
+  const apiUrl = resolveKubernetesApiUrl(readStringEnv("OAH_CONTROLLER_KUBE_API_URL", kubernetes?.api_url));
   const tokenFile = readStringEnv(
-    "OAH_WORKER_CONTROLLER_KUBE_TOKEN_FILE",
+    "OAH_CONTROLLER_KUBE_TOKEN_FILE",
     kubernetes?.token_file ?? "/var/run/secrets/kubernetes.io/serviceaccount/token"
   );
   const caFile = readStringEnv(
-    "OAH_WORKER_CONTROLLER_KUBE_CA_FILE",
+    "OAH_CONTROLLER_KUBE_CA_FILE",
     kubernetes?.ca_file ?? "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
   );
-  const skipTlsVerify = readBoolEnv(
-    "OAH_WORKER_CONTROLLER_KUBE_SKIP_TLS_VERIFY",
-    kubernetes?.skip_tls_verify ?? false
-  );
+  const skipTlsVerify = readBoolEnv("OAH_CONTROLLER_KUBE_SKIP_TLS_VERIFY", kubernetes?.skip_tls_verify ?? false);
 
   if (!namespace) {
-    throw new Error("worker-controller kubernetes scale target requires namespace.");
+    throw new Error("controller kubernetes scale target requires namespace.");
   }
-  if (!deployment) {
-    throw new Error("worker-controller kubernetes scale target requires deployment.");
+  if (!deployment && !labelSelector) {
+    throw new Error("controller kubernetes scale target requires deployment or label_selector.");
   }
   if (!apiUrl) {
-    throw new Error("worker-controller kubernetes scale target requires api_url or in-cluster service env.");
+    throw new Error("controller kubernetes scale target requires api_url or in-cluster service env.");
   }
   if (!tokenFile) {
-    throw new Error("worker-controller kubernetes scale target requires token_file.");
+    throw new Error("controller kubernetes scale target requires token_file.");
   }
 
   return {
@@ -179,7 +185,8 @@ export function resolveWorkerReplicaTargetConfig(config: ServerConfig): Resolved
     allowScaleDown,
     kubernetes: {
       namespace,
-      deployment,
+      ...(deployment ? { deployment } : {}),
+      ...(labelSelector ? { labelSelector } : {}),
       apiUrl,
       tokenFile,
       caFile,
@@ -226,14 +233,28 @@ export function createKubernetesWorkerReplicaTarget(
   }
 ): WorkerReplicaTarget {
   const request = options?.request ?? defaultKubernetesJsonRequest;
-  const scaleUrl = new URL(
-    `/apis/apps/v1/namespaces/${encodeURIComponent(config.kubernetes.namespace)}/deployments/${encodeURIComponent(config.kubernetes.deployment)}/scale`,
-    appendTrailingSlash(config.kubernetes.apiUrl)
-  ).toString();
 
   return {
     kind: "kubernetes",
     async reconcile(input) {
+      const deploymentName =
+        config.kubernetes.deployment ??
+        (await discoverKubernetesDeploymentName(
+          {
+            namespace: config.kubernetes.namespace,
+            labelSelector: config.kubernetes.labelSelector!,
+            apiUrl: config.kubernetes.apiUrl,
+            tokenFile: config.kubernetes.tokenFile,
+            caFile: config.kubernetes.caFile,
+            skipTlsVerify: config.kubernetes.skipTlsVerify
+          },
+          request
+        ));
+      const scaleUrl = buildKubernetesDeploymentScaleUrl({
+        apiUrl: config.kubernetes.apiUrl,
+        namespace: config.kubernetes.namespace,
+        deployment: deploymentName
+      });
       const authHeaders = await buildKubernetesAuthHeaders(config.kubernetes.tokenFile);
       const getResponse = await request({
         url: scaleUrl,
@@ -309,6 +330,59 @@ export function createKubernetesWorkerReplicaTarget(
   };
 }
 
+function buildKubernetesDeploymentScaleUrl(input: {
+  apiUrl: string;
+  namespace: string;
+  deployment: string;
+}): string {
+  return new URL(
+    `/apis/apps/v1/namespaces/${encodeURIComponent(input.namespace)}/deployments/${encodeURIComponent(input.deployment)}/scale`,
+    appendTrailingSlash(input.apiUrl)
+  ).toString();
+}
+
+async function discoverKubernetesDeploymentName(
+  input: {
+    namespace: string;
+    labelSelector: string;
+    apiUrl: string;
+    tokenFile: string;
+    caFile?: string | undefined;
+    skipTlsVerify: boolean;
+  },
+  request: KubernetesJsonRequestFn
+): Promise<string> {
+  const authHeaders = await buildKubernetesAuthHeaders(input.tokenFile);
+  const deploymentsUrl = new URL(
+    `/apis/apps/v1/namespaces/${encodeURIComponent(input.namespace)}/deployments`,
+    appendTrailingSlash(input.apiUrl)
+  );
+  deploymentsUrl.searchParams.set("labelSelector", input.labelSelector);
+
+  const response = await request({
+    url: deploymentsUrl.toString(),
+    method: "GET",
+    headers: {
+      ...authHeaders,
+      accept: "application/json"
+    },
+    caFile: input.caFile,
+    skipTlsVerify: input.skipTlsVerify
+  });
+  assertKubernetesSuccess("discover target deployment", response);
+  const deploymentNames = extractDeploymentNames(response.body);
+  if (deploymentNames.length === 0) {
+    throw new Error(`no deployment matched label selector ${input.labelSelector}`);
+  }
+  if (deploymentNames.length > 1) {
+    throw new Error(
+      `label selector ${input.labelSelector} matched multiple deployments: ${deploymentNames.join(", ")}`
+    );
+  }
+
+  return deploymentNames[0]!;
+}
+
 async function buildKubernetesAuthHeaders(tokenFile: string): Promise<Record<string, string>> {
   const token = (await readFile(tokenFile, "utf8")).trim();
   if (!token) {
@@ -336,6 +410,31 @@ function parseReplicas(payload: unknown): number | undefined {
 
   const replicas = Reflect.get(spec, "replicas");
   return typeof replicas === "number" && Number.isFinite(replicas) ? replicas : undefined;
+}
+
+function extractDeploymentNames(payload: unknown): string[] {
+  if (!payload || typeof payload !== "object") {
+    return [];
+  }
+
+  const items = Reflect.get(payload, "items");
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  return items
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return undefined;
+      }
+      const metadata = Reflect.get(item, "metadata");
+      if (!metadata || typeof metadata !== "object") {
+        return undefined;
+      }
+      const name = Reflect.get(metadata, "name");
+      return typeof name === "string" && name.trim().length > 0 ? name : undefined;
+    })
+    .filter((name): name is string => name !== undefined);
 }
 
 function assertKubernetesSuccess(

@@ -6,4 +6,4 @@ resources:
   - controller-rbac.yaml
   - api-server.yaml
   - worker.yaml
-  - worker-controller.yaml
+  - controller.yaml

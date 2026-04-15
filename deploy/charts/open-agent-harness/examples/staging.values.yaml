@@ -1,0 +1,87 @@
+image:
+  tag: staging
+
+commonLabels:
+  environment: staging
+
+apiServer:
+  replicaCount: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  ingress:
+    enabled: true
+    className: nginx
+    hosts:
+      - host: oah-staging.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/instance: oah
+          app.kubernetes.io/name: open-agent-harness
+          app.kubernetes.io/component: api-server
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+worker:
+  replicaCount: 2
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+  priorityClassName: oah-worker-medium
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/instance: oah
+          app.kubernetes.io/name: open-agent-harness
+          app.kubernetes.io/component: worker
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      cpu: "4"
+      memory: 4Gi
+  workspaceVolume:
+    type: persistentVolumeClaim
+    persistentVolumeClaim:
+      claimName: oah-staging-workspaces
+
+controller:
+  replicaCount: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/instance: oah
+          app.kubernetes.io/name: open-agent-harness
+          app.kubernetes.io/component: controller
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+serviceMonitor:
+  enabled: true

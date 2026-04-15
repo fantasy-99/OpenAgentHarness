@@ -25,6 +25,12 @@ interface WorkerHostConfig {
   } | undefined;
 }
 
+export interface WorkerPoolLike {
+  start(): void;
+  snapshot(): RedisRunWorkerPoolSnapshot | null;
+  close(): Promise<void>;
+}
+
 export interface WorkerHost {
   start(): void;
   snapshot(): RedisRunWorkerPoolSnapshot | null;
@@ -47,6 +53,11 @@ export interface EmbeddedWorkerPoolConfig {
   scaleUpMaxReadyAgeMs: number;
 }
 
+export interface WorkerDrainConfig {
+  timeoutMs?: number | undefined;
+  strategy: "wait_forever" | "fail" | "requeue_running" | "requeue_all";
+}
+
 function readPositiveIntEnv(name: string, fallback: number): number {
   const raw = process.env[name];
   if (!raw || raw.trim().length === 0) {
@@ -65,6 +76,25 @@ function readNonNegativeIntEnv(name: string, fallback: number): number {
 
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+export function resolveWorkerDrainConfig(): WorkerDrainConfig {
+  const timeoutRaw = process.env.OAH_WORKER_DRAIN_TIMEOUT_MS;
+  const parsedTimeout = timeoutRaw ? Number.parseInt(timeoutRaw, 10) : NaN;
+  const timeoutMs = Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? parsedTimeout : undefined;
+  const strategyRaw = process.env.OAH_WORKER_DRAIN_TIMEOUT_STRATEGY?.trim();
+  const strategy =
+    strategyRaw === "fail" ||
+    strategyRaw === "requeue_running" ||
+    strategyRaw === "requeue_all" ||
+    strategyRaw === "wait_forever"
+      ? strategyRaw
+      : "wait_forever";
+
+  return {
+    timeoutMs,
+    strategy
+  };
 }
 
 export function summarizeActiveWorkers(activeWorkers: RedisWorkerRegistryEntry[]) {
@@ -152,18 +182,24 @@ export function createWorkerHost(options: {
   startWorker: boolean;
   processKind: "api" | "worker";
   runtimeInstanceId?: string | undefined;
+  ownerBaseUrl?: string | undefined;
   config: WorkerHostConfig;
   redisRunQueue?: SessionRunQueue | undefined;
   redisWorkerRegistry?: WorkerRegistry | undefined;
   runtimeService: {
     processQueuedRun(runId: string): Promise<void>;
     getRun?(runId: string): Promise<{ workspaceId: string }>;
+    recoverRunAfterDrainTimeout?(
+      runId: string,
+      strategy: Exclude<WorkerDrainConfig["strategy"], "wait_forever">
+    ): Promise<"failed" | "requeued" | "ignored">;
     recoverStaleRuns?(options?: {
       staleBefore?: string | undefined;
       limit?: number | undefined;
     }): Promise<{ recoveredRunIds: string[]; requeuedRunIds?: string[] }>;
   };
   logger?: RedisRunWorkerLogger | undefined;
+  poolFactory?: ((options: ConstructorParameters<typeof RedisRunWorkerPool>[0]) => WorkerPoolLike) | undefined;
 }): WorkerHost {
   if (!options.startWorker || !options.redisRunQueue || !options.config.storage.redis_url) {
     return {
@@ -191,7 +227,7 @@ export function createWorkerHost(options: {
   });
   const getRun = options.runtimeService.getRun;
   const recoverStaleRuns = options.runtimeService.recoverStaleRuns;
-  const pool = new RedisRunWorkerPool({
+  const poolOptions: ConstructorParameters<typeof RedisRunWorkerPool>[0] = {
     queue: options.redisRunQueue,
     queueFactory: () =>
       createRedisSessionRunQueue({
@@ -216,6 +252,7 @@ export function createWorkerHost(options: {
     },
     processKind: options.processKind === "worker" ? "standalone" : "embedded",
     ...(options.runtimeInstanceId ? { runtimeInstanceId: options.runtimeInstanceId } : {}),
+    ...(options.ownerBaseUrl ? { ownerBaseUrl: options.ownerBaseUrl } : {}),
     registry: options.redisWorkerRegistry,
     minWorkers: poolConfig.minWorkers,
     maxWorkers: poolConfig.maxWorkers,
@@ -229,14 +266,51 @@ export function createWorkerHost(options: {
     scaleUpBusyRatioThreshold: poolConfig.scaleUpBusyRatioThreshold,
     scaleUpMaxReadyAgeMs: poolConfig.scaleUpMaxReadyAgeMs,
     logger: options.logger
-  });
+  };
+  const pool = (options.poolFactory ? options.poolFactory(poolOptions) : new RedisRunWorkerPool(poolOptions)) satisfies WorkerPoolLike;
   let draining = false;
   let closePromise: Promise<void> | undefined;
+  const drainConfig = resolveWorkerDrainConfig();
 
   const closePool = () => {
     if (!closePromise) {
       draining = true;
-      closePromise = pool.close();
+      const gracefulClose = pool.close();
+      gracefulClose.catch((error) => {
+        options.logger?.warn("Worker pool close failed during drain.", error);
+      });
+      const timeoutStrategy = drainConfig.strategy;
+
+      if (
+        timeoutStrategy === "wait_forever" ||
+        !drainConfig.timeoutMs ||
+        !options.runtimeService.recoverRunAfterDrainTimeout
+      ) {
+        closePromise = gracefulClose;
+      } else {
+        closePromise = new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            void forceRecoverActiveRunsOnDrainTimeout({
+              pool,
+              strategy: timeoutStrategy,
+              recoverRunAfterDrainTimeout: options.runtimeService.recoverRunAfterDrainTimeout!,
+              logger: options.logger
+            }).finally(resolve);
+          }, drainConfig.timeoutMs);
+          timeout.unref?.();
+
+          gracefulClose.then(
+            () => {
+              clearTimeout(timeout);
+              resolve();
+            },
+            (error) => {
+              clearTimeout(timeout);
+              reject(error);
+            }
+          );
+        });
+      }
     }
 
     return closePromise;
@@ -263,4 +337,31 @@ export function createWorkerHost(options: {
       await closePool();
     }
   };
+}
+
+async function forceRecoverActiveRunsOnDrainTimeout(input: {
+  pool: WorkerPoolLike;
+  strategy: Exclude<WorkerDrainConfig["strategy"], "wait_forever">;
+  recoverRunAfterDrainTimeout: (
+    runId: string,
+    strategy: Exclude<WorkerDrainConfig["strategy"], "wait_forever">
+  ) => Promise<"failed" | "requeued" | "ignored">;
+  logger?: RedisRunWorkerLogger | undefined;
+}): Promise<void> {
+  const slots = input.pool.snapshot()?.slots ?? [];
+  const activeRunIds = [...new Set(slots.filter((slot) => slot.state === "busy" && slot.currentRunId).map((slot) => slot.currentRunId!))];
+
+  input.logger?.warn(
+    `Worker drain timed out; applying ${input.strategy} recovery to ${activeRunIds.length} active run(s).`
+  );
+
+  await Promise.all(
+    activeRunIds.map(async (runId) => {
+      try {
+        await input.recoverRunAfterDrainTimeout(runId, input.strategy);
+      } catch (error) {
+        input.logger?.warn(`Failed to recover run ${runId} after worker drain timeout.`, error);
+      }
+    })
+  );
 }

@@ -25,58 +25,122 @@ Two workspace kinds:
 - **Identity Externalized** -- No built-in user system; consumes external identity and access context.
 - **Auditable by Default** -- All runs, tool calls, action runs, and hook runs produce structured records.
 - **Central Truth, Local Runtime State** -- PostgreSQL is the central source of truth; workspace `history.db` only stores local runtime data and is not a cross-process sync path.
-- **Embedded by Default, Split in Production** -- Default single-process API + embedded worker; production supports API-only + standalone worker split.
+- **Embedded by Default, Controlled in Production** -- Default single-process API + embedded worker; production uses a split `API Server + Worker + Controller` topology.
 
-## 3. Layered Architecture
+## 3. Formal Terms
+
+### API Server
+
+- The unified external entry point for OAH
+- Owns OpenAPI, SSE, caller context, auth integration, metadata persistence, and owner routing
+- Can run with an embedded worker or in `api-only` mode
+
+### Worker
+
+- The unified execution runtime role in OAH
+- Owns run execution, session-serial boundaries, the tool loop, workspace file access, workspace materialization, and flush / evict
+- `Worker` is a responsibility, not a deployment shape
+
+### Controller
+
+- The control-plane role in OAH
+- Owns workspace placement, user affinity, capacity, drain, recovery, rebalance, and scaling
+- `Controller` does not execute business runs directly
+
+### Sandbox
+
+- The isolated host environment where a worker runs
+- May be a local process, a dedicated Pod, a container, or a future VM / remote executor
+- `Sandbox` describes the execution environment; it does not replace `Worker` as the primary term
+
+### Sandbox Host API
+
+- The stable adapter boundary between the worker and its host environment
+- The first implementation should be OAH's own sandbox pod
+- Future implementations may be compatible with E2B-style remote sandbox providers
+- It carries host lifecycle, file access, and process execution capabilities only; it does not redefine OAH ownership or control-plane semantics
+
+### Workspace Ownership
+
+- `workspace -> owner worker` is the routing truth for execution and file access
+- `userId` is a scheduling affinity key, not an ownership truth key
+- While active, a workspace's read/write truth lives in the owner worker's local copy; after idle flush, truth returns to OSS / external storage
+
+## 4. Layered Architecture
 
 ```mermaid
 flowchart TD
     A[Clients\nWeb / Desktop / CLI / API Consumers] --> B[Identity / Access Service]
-    B --> C[API Gateway]
-    C --> D[Session Orchestrator]
-    D --> E[Context Engine]
-    D --> F[Invocation Dispatcher]
-    F --> G[Native Tool Runtime]
-    F --> H[Action Runtime]
-    F --> I[Skill Runtime]
-    F --> J[External Tool Runtime]
-    D --> K[Hook Runtime]
-    D --> L[Event Bus]
-    D --> M[Storage Layer]
-    G --> N[Execution Backend]
-    H --> N
-    I --> N
-    J --> N
-    N --> O[Local Workspace Backend]
-    N -. future .-> P[Sandbox Backend]
-    M --> Q[(PostgreSQL)]
-    L --> R[(Redis)]
-    N --> T[(Workspace .openharness/data/history.db)]
+    B --> C[API Server]
+    C --> D[Controller]
+    C --> E[Worker Routing / Owner Proxy]
+    C --> F[PostgreSQL]
+    C --> G[Redis]
+    E --> H[Worker]
+    D --> G
+    D --> I[Kubernetes / Runtime Control Plane]
+    H --> J[Runtime Core]
+    J --> K[Context Engine]
+    J --> L[Invocation Dispatcher]
+    J --> M[Hook Runtime]
+    L --> N[Native Tool / Action / Skill / External Tool Runtime]
+    H --> O[Execution Backend]
+    O --> P[Local Backend]
+    O --> Q[Sandbox Host API]
+    Q --> R[Self-Hosted Sandbox Pod]
+    Q -. future / optional .-> S[E2B-Compatible Host Adapter]
+    H --> T[(Workspace Local State)]
+    H --> U[(OSS / Object Storage)]
+    J --> F
+    J --> G
 ```
 
-## 4. Core Modules
+## 5. Core Modules
 
-### API Gateway
+### API Server
 
 - Provides OpenAPI endpoints and SSE event streams
 - Receives / validates caller context from upstream
-- Handles access control, rate limiting, parameter validation
-- Default mode includes embedded worker; `api-only` mode delegates to external workers
+- Handles access control, rate limiting, parameter validation, and metadata persistence
+- Creates workspaces, sessions, messages, and runs
+- Resolves workspace ownership and routes run / file requests to the owner worker
+- Default mode includes an embedded worker; `api-only` mode handles ingress and routing only
 
-### Session Orchestrator
+### Worker
 
-- Creates runs and enqueues them per session
+- Reuses `packages/runtime-core` for business execution logic
+- Consumes runs and drives the model <-> tool loop
 - Enforces per-session serial execution
-- Drives the model <-> tool loop
-- Manages cancellation, timeout, failure recovery
+- Manages cancellation, timeout, and failure recovery
+- Owns workspace materialization, local file access, and flush / evict
+- Can run embedded inside the API Server or standalone in a dedicated Pod
 
-### Context Engine
+### Controller
+
+- Owns workspace placement and worker lifecycle governance
+- Combines `user affinity + workspace ownership + worker health + capacity` into placement decisions
+- Owns drain, rebalance, recovery, and scaling
+- Does not execute business runs directly
+
+### Sandbox Host API
+
+- Unifies the host capabilities a worker depends on
+- It should cover only:
+  - sandbox / session creation and reuse
+  - workspace materialization / mount
+  - file read / write / download
+  - command execution / process management
+  - health, drain, and shutdown
+- The current target is "compatible switching" with E2B, not reshaping OAH around E2B's full native resource model first
+
+### Runtime Core
 
 - Loads workspace config: `AGENTS.md`, `settings.yaml`, agents, models
 - Loads platform-level model / tool / skill directories
 - Assembles system prompt, history messages, and capability catalog
 - `project` workspace: loads all capability types
 - `chat` workspace: loads agents / models / AGENTS.md only; tool catalog is empty
+- Owns the run state machine, session-serial boundaries, tool loop, audit, and recovery closure
 
 ### Invocation Dispatcher
 
@@ -87,7 +151,7 @@ flowchart TD
 ### Execution Backend
 
 - Unified workspace execution environment (shell, file I/O, process management)
-- Abstracts local execution vs. future sandbox execution
+- Abstracts local execution, self-hosted sandbox pods, and future E2B-like host backends
 - `chat` workspaces never create a backend session
 
 ### Hook Runtime
@@ -95,54 +159,56 @@ flowchart TD
 - Executes lifecycle hooks (run events) and interceptor hooks (tool / model events)
 - Allows controlled modification of requests and execution logic within safety bounds
 
-## 5. Process Modes
+## 6. Recommended Deployment Modes
 
 | Mode | Description |
 |------|-------------|
 | API + embedded worker | Default. Single-process, full execution. Uses Redis queue when configured, otherwise in-process. |
-| API only | Interface-only; requires separate worker deployment. |
-| Standalone worker | Consumes Redis queue independently and executes runs. |
+| API only + standalone worker + controller | Main production mode. API Server handles ingress and owner routing, Worker handles execution, Controller handles the control plane. |
+| Standalone worker in sandbox | A worker deployment shape where the worker runs inside a dedicated worker Pod / sandbox Pod. |
+| API only + controller + sandbox-hosted worker | Preferred evolution path. Use OAH's own sandbox pod first, then converge the host interface toward an E2B-compatible boundary. |
 
-## 6. Request Flow
+## 7. Request Flow
 
 ```mermaid
 sequenceDiagram
     participant Client
-    participant API as API Gateway
-    participant Orchestrator
-    participant Context as Context Engine
+    participant API as API Server
+    participant Controller
+    participant Worker
     participant Model as LLM Provider
     participant Dispatcher as Invocation Dispatcher
     participant Runtime as Action/Skill/Tool/Native Runtime
     participant DB as PostgreSQL
     participant Redis
-    participant LocalDb as Workspace history.db
+    participant OSS as Object Storage
 
     Client->>API: POST /sessions/:id/messages
     API->>DB: persist message
     API->>DB: create run
-    API->>Redis: enqueue run by session
+    API->>Redis: enqueue run by session / workspace
+    API->>Controller: resolve or assign owner worker
     API-->>Client: 202 Accepted
 
-    Orchestrator->>Redis: lock session and dequeue run
-    Orchestrator->>Context: build run context
-    Context->>DB: load session and history
-    Context-->>Orchestrator: prompt + capability projection
-    Orchestrator->>Model: start agent loop
-    Model-->>Orchestrator: tool call
-    Orchestrator->>Dispatcher: dispatch tool call
+    API->>Worker: route request to owner worker
+    Worker->>OSS: materialize workspace if needed
+    Worker->>Redis: publish ownership / heartbeat
+    Worker->>DB: load session and history
+    Worker->>Model: start agent loop
+    Model-->>Worker: tool call
+    Worker->>Dispatcher: dispatch tool call
     Dispatcher->>Runtime: execute
     Runtime-->>Dispatcher: result
-    Dispatcher-->>Orchestrator: invocation result
-    Orchestrator->>Model: continue loop
-    Model-->>Orchestrator: final output
-    Orchestrator->>DB: persist result and run status
-    Orchestrator->>Redis: publish events
-    Orchestrator-->>Client: SSE events
-    Orchestrator->>LocalDb: write local runtime state when needed
+    Dispatcher-->>Worker: invocation result
+    Worker->>Model: continue loop
+    Model-->>Worker: final output
+    Worker->>DB: persist result and run status
+    Worker->>Redis: publish events
+    Worker-->>Client: SSE events via API Server
+    Worker->>OSS: flush on idle / drain when needed
 ```
 
-## 7. Key Architecture Decisions
+## 8. Key Architecture Decisions
 
 - No built-in user system -- consumes external identity and access context
 - Workspace is the configuration and capability discovery boundary; `.openharness/settings.yaml` is the entry point
@@ -154,10 +220,15 @@ sequenceDiagram
 - Model / Hook / Tool Server configs use declarative YAML
 - Actions use `actions/*/ACTION.yaml`; Skills use `skills/*/SKILL.md`
 - All capabilities are unified as tool calling for the LLM, but stay separate in domain and governance
-- Default trusted intranet environment -- no container isolation yet
-- PostgreSQL is the central source of truth; `history.db` is only a local runtime state file
+- `Worker` is the unified execution role; `sandbox` is only the worker host environment, not the primary runtime term
+- `Sandbox Host API` is the host compatibility boundary; the first implementation should be the self-hosted sandbox pod, with E2B as a later pluggable backend rather than the primary architecture vocabulary
+- `Controller` is the unified control-plane role; it owns placement, lifecycle, and capacity rather than direct business execution
+- `workspace -> owner worker` is the routing truth for execution and file access; `userId` is used only for affinity scheduling, not as the ownership truth
+- While active, a workspace's read/write truth lives in the owner worker's local copy; after flush / evict, truth returns to OSS / external storage
+- Default trusted intranet environment -- no strong container isolation by default; if the platform is exposed more broadly, sandbox backend hardening should be prioritized
+- PostgreSQL is the central source of truth; local workspace state files do not serve as a cross-process sync mechanism
 
-## 8. Technology
+## 9. Technology
 
 | Layer | Choice |
 |-------|--------|

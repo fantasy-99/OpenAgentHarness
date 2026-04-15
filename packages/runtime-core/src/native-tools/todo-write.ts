@@ -1,5 +1,4 @@
 import path from "node:path";
-import { writeFile } from "node:fs/promises";
 
 import { z } from "zod";
 
@@ -53,7 +52,7 @@ export function createTodoWriteTool(context: NativeToolFactoryContext): RuntimeT
               }
             : rawInput;
         const input = TodoWriteInputSchema.parse(normalizedInput);
-        const oldTodos = await readJsonFile<TodoItem[]>(context.todoPath, []);
+        const oldTodos = await readJsonFile<TodoItem[]>(context.fileSystem, context.todoPath, []);
         const inProgressCount = input.todos.filter((todo) => todo.status === "in_progress").length;
         const allCompleted = input.todos.length > 0 && input.todos.every((todo) => todo.status === "completed");
         if (!allCompleted && input.todos.length > 0 && inProgressCount !== 1) {
@@ -65,8 +64,8 @@ export function createTodoWriteTool(context: NativeToolFactoryContext): RuntimeT
         }
 
         const persistedTodos = allCompleted ? [] : input.todos;
-        await ensureParentDirectory(context.todoPath);
-        await writeFile(context.todoPath, JSON.stringify(persistedTodos, null, 2), "utf8");
+        await ensureParentDirectory(context.fileSystem, context.todoPath);
+        await context.fileSystem.writeFile(context.todoPath, Buffer.from(JSON.stringify(persistedTodos, null, 2), "utf8"));
 
         return formatToolOutput(
           [

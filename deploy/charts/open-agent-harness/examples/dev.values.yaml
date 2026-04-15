@@ -1,0 +1,87 @@
+image:
+  tag: dev
+
+config:
+  serverYaml: |
+    server:
+      host: 0.0.0.0
+      port: 8787
+
+    storage:
+      postgres_url: ${env.DATABASE_URL}
+      redis_url: ${env.REDIS_URL}
+
+    paths:
+      workspace_dir: /var/lib/oah/workspaces
+      chat_dir: /var/lib/oah/chat-workspaces
+      template_dir: /var/lib/oah/templates
+      model_dir: /var/lib/oah/models
+      tool_dir: /var/lib/oah/tools
+      skill_dir: /var/lib/oah/skills
+      archive_dir: /var/lib/oah/archives
+
+    workers:
+      standalone:
+        min_replicas: {{ .Values.worker.replicaCount }}
+        max_replicas: 4
+        slots_per_pod: 1
+        ready_sessions_per_worker: 1
+        reserved_capacity_for_subagent: 0
+      controller:
+        scale_interval_ms: 3000
+        scale_up_window: 2
+        scale_down_window: 2
+        cooldown_ms: 4000
+        scale_up_busy_ratio_threshold: 0.8
+        scale_up_max_ready_age_ms: 3000
+        leader_election:
+          type: kubernetes
+          kubernetes:
+            namespace: {{ .Release.Namespace }}
+            lease_name: {{ include "open-agent-harness.controllerName" . }}
+        scale_target:
+          type: kubernetes
+          allow_scale_down: true
+          kubernetes:
+            namespace: {{ .Release.Namespace }}
+            label_selector: app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=worker
+
+    llm:
+      default_model: openai-default
+
+apiServer:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+worker:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  workspaceVolume:
+    type: emptyDir
+    emptyDir:
+      sizeLimit: 8Gi
+
+controller:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+serviceMonitor:
+  enabled: false

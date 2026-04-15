@@ -2,11 +2,12 @@ import path from "node:path";
 
 import { z } from "zod";
 
-import type { RuntimeToolSet } from "../types.js";
+import type { RuntimeToolSet, WorkspaceRecord } from "../types.js";
 import { MAX_BASH_TIMEOUT_MS } from "./constants.js";
 import { normalizePathForMatch } from "./paths.js";
-import { runShellCommandBackground, runShellCommandForeground } from "./process-utils.js";
 import { getNativeToolRetryPolicy, type NativeToolFactoryContext } from "./types.js";
+import { WorkspaceCommandCancelledError, WorkspaceCommandTimeoutError } from "../workspace-command-executor.js";
+import { AppError } from "../errors.js";
 
 const BASH_DESCRIPTION = `Run a shell command
 
@@ -66,6 +67,38 @@ function formatBackgroundBashOutput(input: {
   return lines.join("\n");
 }
 
+function syntheticWorkspace(workspaceRoot: string): WorkspaceRecord {
+  return {
+    id: "native-tool-workspace",
+    kind: "project",
+    name: "native-tool-workspace",
+    rootPath: workspaceRoot,
+    readOnly: false,
+    historyMirrorEnabled: false,
+    settings: {},
+    workspaceModels: {},
+    agents: {},
+    actions: {},
+    skills: {},
+    toolServers: {},
+    hooks: {},
+    catalog: {
+      workspaceId: "native-tool-workspace",
+      agents: [],
+      models: [],
+      actions: [],
+      skills: [],
+      tools: [],
+      hooks: [],
+      nativeTools: []
+    },
+    executionPolicy: "local",
+    status: "active",
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString()
+  };
+}
+
 export function createBashTool(context: NativeToolFactoryContext): RuntimeToolSet {
   return {
     Bash: {
@@ -86,12 +119,13 @@ export function createBashTool(context: NativeToolFactoryContext): RuntimeToolSe
         const input = BashInputSchema.parse(normalizedInput);
 
         if (input.run_in_background) {
-          const background = await runShellCommandBackground(
-            context.workspaceRoot,
-            input.command,
-            context.sessionId,
-            input.description
-          );
+          const workspace = syntheticWorkspace(context.workspaceRoot);
+          const background = await context.commandExecutor.runBackground({
+            workspace,
+            command: input.command,
+            sessionId: context.sessionId,
+            description: input.description
+          });
           return formatBackgroundBashOutput({
             taskId: background.taskId,
             pid: background.pid,
@@ -100,12 +134,24 @@ export function createBashTool(context: NativeToolFactoryContext): RuntimeToolSe
           });
         }
 
-        const result = await runShellCommandForeground(
-          context.workspaceRoot,
-          input.command,
-          input.timeout,
-          executionContext.abortSignal
-        );
+        let result;
+        try {
+          const workspace = syntheticWorkspace(context.workspaceRoot);
+          result = await context.commandExecutor.runForeground({
+            workspace,
+            command: input.command,
+            timeoutMs: input.timeout,
+            ...(executionContext.abortSignal ? { signal: executionContext.abortSignal } : {})
+          });
+        } catch (error) {
+          if (error instanceof WorkspaceCommandTimeoutError) {
+            throw new AppError(408, "native_tool_timeout", `Bash exceeded ${input.timeout ?? MAX_BASH_TIMEOUT_MS} milliseconds.`);
+          }
+          if (error instanceof WorkspaceCommandCancelledError) {
+            throw new AppError(499, "native_tool_cancelled", "Bash was cancelled.");
+          }
+          throw error;
+        }
         return formatBashOutput({
           description: input.description,
           exitCode: result.exitCode,

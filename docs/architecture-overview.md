@@ -25,58 +25,122 @@ Open Agent Harness 是一个 headless Agent Runtime。不提供 UI，通过 Open
 - **Identity Externalized** -- 不维护用户系统，只消费外部身份与访问上下文。
 - **Auditable by Default** -- 所有 run、tool call、action run、hook run 均有结构化记录。
 - **Central Truth, Local Runtime State** -- PostgreSQL 是中心事实源；workspace 下 `history.db` 仅保存本地运行时数据，不参与跨进程同步。
-- **Embedded by Default, Split in Production** -- 默认 API + embedded worker 单进程运行；生产环境支持 API only + standalone worker 拆分。
+- **Embedded by Default, Controlled in Production** -- 默认 API + embedded worker 单进程运行；生产环境采用 `API Server + Worker + Controller` 拆分部署。
 
-## 3. 分层架构
+## 3. 正式术语
+
+### API Server
+
+- OAH 的统一外部入口
+- 负责 OpenAPI、SSE、caller context、鉴权接入、元数据落库与 owner 路由
+- 可运行 embedded worker，也可运行在 `api-only` 模式
+
+### Worker
+
+- OAH 的统一执行运行时角色
+- 负责 run 执行、session 串行、tool loop、workspace 文件访问、workspace materialization、flush / evict
+- `Worker` 是职责，不是部署形态
+
+### Controller
+
+- OAH 的控制面角色
+- 负责 workspace placement、user affinity、capacity、drain、recovery、rebalance 和扩缩容
+- `Controller` 不直接执行业务 run
+
+### Sandbox
+
+- Worker 所运行的隔离宿主环境
+- 可以是本地进程、独立 Pod、容器或后续 VM / 远程执行器
+- `Sandbox` 描述执行环境，不替代 `Worker`
+
+### Sandbox Host API
+
+- Worker 与宿主环境之间的稳定适配边界
+- 首个实现应是 OAH 自己的 sandbox pod
+- 后续可兼容 E2B 一类远程 sandbox 提供方
+- 只承载宿主生命周期、文件访问、进程执行等能力，不改变 OAH 的 ownership 与控制面语义
+
+### Workspace Ownership
+
+- `workspace -> owner worker` 是运行与文件路由真值
+- `userId` 是调度亲和键，不是 ownership 真值
+- 活跃 workspace 的当前读写真值位于 owner worker 的本地副本；空闲 flush 后再回到 OSS / 外部存储真值
+
+## 4. 分层架构
 
 ```mermaid
 flowchart TD
     A[Clients\nWeb / Desktop / CLI / API Consumers] --> B[Identity / Access Service]
-    B --> C[API Gateway]
-    C --> D[Session Orchestrator]
-    D --> E[Context Engine]
-    D --> F[Invocation Dispatcher]
-    F --> G[Native Tool Runtime]
-    F --> H[Action Runtime]
-    F --> I[Skill Runtime]
-    F --> J[External Tool Runtime]
-    D --> K[Hook Runtime]
-    D --> L[Event Bus]
-    D --> M[Storage Layer]
-    G --> N[Execution Backend]
-    H --> N
-    I --> N
-    J --> N
-    N --> O[Local Workspace Backend]
-    N -. future .-> P[Sandbox Backend]
-    M --> Q[(PostgreSQL)]
-    L --> R[(Redis)]
-    N --> T[(Workspace .openharness/data/history.db)]
+    B --> C[API Server]
+    C --> D[Controller]
+    C --> E[Worker Routing / Owner Proxy]
+    C --> F[PostgreSQL]
+    C --> G[Redis]
+    E --> H[Worker]
+    D --> G
+    D --> I[Kubernetes / Runtime Control Plane]
+    H --> J[Runtime Core]
+    J --> K[Context Engine]
+    J --> L[Invocation Dispatcher]
+    J --> M[Hook Runtime]
+    L --> N[Native Tool / Action / Skill / External Tool Runtime]
+    H --> O[Execution Backend]
+    O --> P[Local Backend]
+    O --> Q[Sandbox Host API]
+    Q --> R[Self-Hosted Sandbox Pod]
+    Q -. future / optional .-> S[E2B-Compatible Host Adapter]
+    H --> T[(Workspace Local State)]
+    H --> U[(OSS / Object Storage)]
+    J --> F
+    J --> G
 ```
 
-## 4. 核心模块
+## 5. 核心模块
 
-### API Gateway
+### API Server
 
 - 提供 OpenAPI 接口和 SSE 事件流
 - 接收 / 校验来自上游的 caller context
-- 访问控制、限流、参数校验
-- 默认含 embedded worker；`api-only` 模式下只承担接口职责
+- 访问控制、限流、参数校验、元数据写入
+- 创建 workspace / session / message / run
+- 查询 workspace owner，并把 run / file 请求路由到 owner worker
+- 默认含 embedded worker；`api-only` 模式下只承担接口与路由职责
 
-### Session Orchestrator
+### Worker
 
-- 创建 run 并投递到 session 队列
+- 复用 `packages/runtime-core` 执行业务逻辑
+- 消费 run、执行模型 <-> 工具循环
 - 保证同 session 串行
-- 驱动模型 <-> 工具循环
 - 管理取消、超时、失败恢复
+- 负责 workspace materialization、本地文件访问、flush / evict
+- 可以 embedded 在 API Server 中，也可以 standalone 运行于独立 Pod
 
-### Context Engine
+### Controller
+
+- 负责 workspace placement 与 worker 生命周期治理
+- 将 `user affinity + workspace ownership + worker health + capacity` 组合为放置决策
+- 负责 drain、rebalance、recovery 与扩缩容
+- 不直接执行业务 run
+
+### Sandbox Host API
+
+- 统一封装 worker 所需的宿主能力
+- 建议只覆盖：
+  - sandbox / session 创建与复用
+  - workspace materialization / mount
+  - 文件读写与下载
+  - 命令执行 / 进程管理
+  - 健康检查、drain、关闭
+- 当前以自家 sandbox pod 为参考实现，对外只追求与 E2B 的“可兼容切换”，不追求先重塑成 E2B 原生资源模型
+
+### Runtime Core
 
 - 加载 workspace 配置：`AGENTS.md`、`settings.yaml`、agents、models
 - 加载平台级 model / tool / skill 目录
 - 组装 system prompt、历史消息和能力清单
 - `project` workspace：完整加载所有能力类型
 - `chat` workspace：只加载 agent / model / AGENTS.md，工具清单为空
+- 负责 run 状态机、session 串行、tool loop、审计与恢复闭环
 
 ### Invocation Dispatcher
 
@@ -87,7 +151,7 @@ flowchart TD
 ### Execution Backend
 
 - 统一封装 workspace 执行环境（shell、文件读写、进程管理）
-- 屏蔽本地执行与未来沙箱执行的差异
+- 屏蔽本地执行、自家 sandbox pod 与未来 E2B 类宿主的差异
 - `chat` workspace 不创建 backend session
 
 ### Hook Runtime
@@ -95,54 +159,56 @@ flowchart TD
 - 执行 lifecycle hook（run 事件）和 interceptor hook（tool / model 事件）
 - 在安全边界内允许改写请求和执行逻辑
 
-## 5. 进程模式
+## 6. 推荐部署模式
 
 | 模式 | 说明 |
 |------|------|
 | API + embedded worker | 默认。单进程完整执行。配置 Redis 时消费 Redis queue，否则 in-process 执行。 |
-| API only | 仅承担接口接入，需配合独立 worker。 |
-| Standalone worker | 独立消费 Redis queue，负责 run 执行。 |
+| API only + standalone worker + controller | 生产主模式。API Server 负责入口与 owner 路由，Worker 负责执行，Controller 负责控制面。 |
+| Standalone worker in sandbox | Worker 的一种部署形态。worker 运行在独立 worker Pod / sandbox Pod 中。 |
+| API only + controller + sandbox-hosted worker | 推荐的演进方向。先使用自家 sandbox pod 承载 worker，再把宿主接口收敛到可兼容 E2B 的边界。 |
 
-## 6. 请求链路
+## 7. 请求链路
 
 ```mermaid
 sequenceDiagram
     participant Client
-    participant API as API Gateway
-    participant Orchestrator
-    participant Context as Context Engine
+    participant API as API Server
+    participant Controller
+    participant Worker
     participant Model as LLM Provider
     participant Dispatcher as Invocation Dispatcher
     participant Runtime as Action/Skill/Tool/Native Runtime
     participant DB as PostgreSQL
     participant Redis
-    participant LocalDb as Workspace history.db
+    participant OSS as Object Storage
 
     Client->>API: POST /sessions/:id/messages
     API->>DB: persist message
     API->>DB: create run
-    API->>Redis: enqueue run by session
+    API->>Redis: enqueue run by session / workspace
+    API->>Controller: resolve or assign owner worker
     API-->>Client: 202 Accepted
 
-    Orchestrator->>Redis: lock session and dequeue run
-    Orchestrator->>Context: build run context
-    Context->>DB: load session and history
-    Context-->>Orchestrator: prompt + capability projection
-    Orchestrator->>Model: start agent loop
-    Model-->>Orchestrator: tool call
-    Orchestrator->>Dispatcher: dispatch tool call
+    API->>Worker: route request to owner worker
+    Worker->>OSS: materialize workspace if needed
+    Worker->>Redis: publish ownership / heartbeat
+    Worker->>DB: load session and history
+    Worker->>Model: start agent loop
+    Model-->>Worker: tool call
+    Worker->>Dispatcher: dispatch tool call
     Dispatcher->>Runtime: execute
     Runtime-->>Dispatcher: result
-    Dispatcher-->>Orchestrator: invocation result
-    Orchestrator->>Model: continue loop
-    Model-->>Orchestrator: final output
-    Orchestrator->>DB: persist result and run status
-    Orchestrator->>Redis: publish events
-    Orchestrator-->>Client: SSE events
-    Orchestrator->>LocalDb: write local runtime state when needed
+    Dispatcher-->>Worker: invocation result
+    Worker->>Model: continue loop
+    Model-->>Worker: final output
+    Worker->>DB: persist result and run status
+    Worker->>Redis: publish events
+    Worker-->>Client: SSE events via API Server
+    Worker->>OSS: flush on idle / drain when needed
 ```
 
-## 7. 关键决策
+## 8. 关键决策
 
 - 不内建用户系统，只消费外部身份上下文
 - Workspace 是配置和能力发现边界；`.openharness/settings.yaml` 是 workspace 总配置入口
@@ -154,10 +220,15 @@ sequenceDiagram
 - Model / Hook / Tool Server 采用 YAML 声明式定义
 - Action 采用 `actions/*/ACTION.yaml`，Skill 采用 `skills/*/SKILL.md`
 - 所有能力对 LLM 统一投影为 tool calling，但在领域层和治理层保持分离
-- 默认可信内网环境，不做强隔离容器执行
-- PostgreSQL 是中心事实源；`history.db` 仅作为本地运行时状态文件
+- `Worker` 是统一执行角色；`sandbox` 只是 worker 的宿主环境，不作为主术语替代 worker
+- `Sandbox Host API` 是宿主兼容边界；首个实现应是自家 sandbox pod，E2B 适合作为后续可插拔后端，而不是先改写 OAH 的主语义
+- `Controller` 是统一控制面角色；负责 placement、lifecycle 与 capacity，不直接执行业务 run
+- `workspace -> owner worker` 是运行与文件访问的路由真值；`userId` 只用于亲和调度，不作为 ownership 真值
+- 活跃 workspace 以 owner worker 本地副本为读写真值；flush / evict 后回到 OSS / 外部存储真值
+- 默认可信内网环境，不做强隔离容器执行；若面向更开放环境，应优先加强 sandbox backend
+- PostgreSQL 是中心事实源；workspace 本地状态文件仅作为本地运行时状态，不承担跨进程同步职责
 
-## 8. 技术栈
+## 9. 技术栈
 
 | 层 | 选型 |
 |----|------|

@@ -15,6 +15,10 @@ import {
   storageRedisKeyPageSchema,
   storageRedisKeyQuerySchema,
   storageRedisKeysQuerySchema,
+  storageRedisWorkerAffinityQuerySchema,
+  storageRedisWorkerAffinitySchema,
+  storageRedisWorkspacePlacementPageSchema,
+  storageRedisWorkspacePlacementQuerySchema,
   storageRedisMaintenanceRequestSchema,
   storageRedisMaintenanceResponseSchema,
   storageTableQuerySchema,
@@ -300,6 +304,30 @@ export function registerPublicRoutes(app: FastifyInstance, dependencies: AppDepe
 
     const query = storageRedisKeyQuerySchema.parse(request.query);
     return reply.send(storageRedisKeyDetailSchema.parse(await dependencies.storageAdmin.redisKeyDetail(query.key)));
+  });
+
+  app.get("/api/v1/storage/redis/worker-affinity", async (request, reply) => {
+    if (!dependencies.storageAdmin) {
+      throw new AppError(501, "storage_admin_unavailable", "Storage admin is unavailable on this server.");
+    }
+
+    const query = storageRedisWorkerAffinityQuerySchema.parse(request.query);
+    return reply.send(
+      storageRedisWorkerAffinitySchema.parse(await dependencies.storageAdmin.redisWorkerAffinity(query))
+    );
+  });
+
+  app.get("/api/v1/storage/redis/workspace-placements", async (request, reply) => {
+    if (!dependencies.storageAdmin) {
+      throw new AppError(501, "storage_admin_unavailable", "Storage admin is unavailable on this server.");
+    }
+
+    const query = storageRedisWorkspacePlacementQuerySchema.parse(request.query);
+    return reply.send(
+      storageRedisWorkspacePlacementPageSchema.parse(
+        await dependencies.storageAdmin.redisWorkspacePlacements(query)
+      )
+    );
   });
 
   app.delete("/api/v1/storage/redis/key", async (request, reply) => {

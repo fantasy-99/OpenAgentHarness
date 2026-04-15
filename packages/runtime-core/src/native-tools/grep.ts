@@ -1,4 +1,3 @@
-import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { z } from "zod";
@@ -7,9 +6,9 @@ import { AppError } from "../errors.js";
 import type { RuntimeToolSet } from "../types.js";
 import { collectWorkspaceFiles } from "./fs-utils.js";
 import { normalizePathForMatch, resolveWorkspacePath } from "./paths.js";
-import { runRipgrep } from "./process-utils.js";
 import { applyHeadLimit, formatGrepOutput, globToRegExp } from "./search-utils.js";
 import { getNativeToolRetryPolicy, type NativeToolFactoryContext } from "./types.js";
+import { WorkspaceCommandCancelledError } from "../workspace-command-executor.js";
 
 const GREP_DESCRIPTION = `A powerful search tool built on ripgrep
 
@@ -55,8 +54,8 @@ export function createGrepTool(context: NativeToolFactoryContext): RuntimeToolSe
             : rawInput;
         const input = GrepInputSchema.parse(normalizedInput);
         const outputMode = input.output_mode ?? "files_with_matches";
-        const root = resolveWorkspacePath(context.workspaceRoot, input.path ?? ".");
-        const entry = await stat(root.absolutePath).catch(() => null);
+        const root = await resolveWorkspacePath(context.fileSystem, context.workspaceRoot, input.path ?? ".");
+        const entry = await context.fileSystem.stat(root.absolutePath).catch(() => null);
         if (!entry) {
           throw new AppError(404, "native_tool_path_not_found", `Path ${input.path ?? "."} was not found.`);
         }
@@ -100,7 +99,40 @@ export function createGrepTool(context: NativeToolFactoryContext): RuntimeToolSe
         rgArgs.push(input.pattern, root.absolutePath);
 
         try {
-          const rgResult = await runRipgrep(context.workspaceRoot, rgArgs, executionContext.abortSignal);
+          const rgResult = await context.commandExecutor.runProcess({
+            workspace: {
+              id: "native-tool-workspace",
+              kind: "project",
+              name: "native-tool-workspace",
+              rootPath: context.workspaceRoot,
+              readOnly: false,
+              historyMirrorEnabled: false,
+              settings: {},
+              workspaceModels: {},
+              agents: {},
+              actions: {},
+              skills: {},
+              toolServers: {},
+              hooks: {},
+              catalog: {
+                workspaceId: "native-tool-workspace",
+                agents: [],
+                models: [],
+                actions: [],
+                skills: [],
+                tools: [],
+                hooks: [],
+                nativeTools: []
+              },
+              executionPolicy: "local",
+              status: "active",
+              createdAt: new Date(0).toISOString(),
+              updatedAt: new Date(0).toISOString()
+            },
+            executable: "rg",
+            args: rgArgs,
+            ...(executionContext.abortSignal ? { signal: executionContext.abortSignal } : {})
+          });
           if (rgResult.exitCode !== 0 && rgResult.exitCode !== 1) {
             throw new AppError(400, "native_tool_grep_failed", rgResult.stderr.trim() || "ripgrep failed.");
           }
@@ -153,6 +185,9 @@ export function createGrepTool(context: NativeToolFactoryContext): RuntimeToolSe
             items: renderedItems
           });
         } catch (error) {
+          if (error instanceof WorkspaceCommandCancelledError) {
+            throw new AppError(499, "native_tool_cancelled", "Grep was cancelled.");
+          }
           if (!(error instanceof Error) || !/ENOENT/.test(error.message)) {
             throw error;
           }
@@ -165,8 +200,8 @@ export function createGrepTool(context: NativeToolFactoryContext): RuntimeToolSe
           }
 
           const includeMatcher = input.glob ? globToRegExp(input.glob) : undefined;
-          const searchFiles = entry.isDirectory()
-            ? await collectWorkspaceFiles(root.absolutePath)
+          const searchFiles = entry.kind === "directory"
+            ? await collectWorkspaceFiles(context.fileSystem, root.absolutePath)
             : [{ absolutePath: root.absolutePath, mtimeMs: 0 }];
           const rows: string[] = [];
 
@@ -176,7 +211,7 @@ export function createGrepTool(context: NativeToolFactoryContext): RuntimeToolSe
               continue;
             }
 
-            const content = await readFile(file.absolutePath, "utf8").catch(() => null);
+            const content = await context.fileSystem.readFile(file.absolutePath).then((buffer) => buffer.toString("utf8")).catch(() => null);
             if (content === null) {
               continue;
             }

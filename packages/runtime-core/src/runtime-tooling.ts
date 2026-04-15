@@ -347,11 +347,13 @@ export interface BuildRuntimeToolsInput {
       task: string;
       handoffSummary?: string | undefined;
       taskId?: string | undefined;
+      notifyParentOnCompletion?: boolean | undefined;
     },
     currentAgentName: string
   ) => Promise<{ childSessionId: string; childRunId: string; targetAgentName: string }>;
   awaitDelegatedRuns: (input: { runIds: string[]; mode: "all" | "any" }) => Promise<string>;
   switchAgent: (targetAgentName: string, currentAgentName: string) => Promise<void>;
+  commandExecutor?: import("./types.js").WorkspaceCommandExecutor | undefined;
 }
 
 export function buildRuntimeTools(input: BuildRuntimeToolsInput): RuntimeToolSet {
@@ -367,7 +369,8 @@ export function buildRuntimeTools(input: BuildRuntimeToolsInput): RuntimeToolSet
       {
         sessionId: session.id,
         modelGateway,
-        webFetchModel: defaultModel
+        webFetchModel: defaultModel,
+        ...(input.commandExecutor ? { commandExecutor: input.commandExecutor } : {})
       }
     ),
     ...createRunActionTool(

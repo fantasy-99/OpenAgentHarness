@@ -109,6 +109,12 @@ export interface CreateRedisWorkspaceLeaseRegistryOptions {
   commands?: RedisClientType | undefined;
 }
 
+export interface CreateRedisWorkspacePlacementRegistryOptions {
+  url: string;
+  keyPrefix?: string | undefined;
+  commands?: RedisClientType | undefined;
+}
+
 export interface RedisRunWorkerLogger {
   info?(message: string): void;
   warn(message: string, error?: unknown): void;
@@ -118,6 +124,7 @@ export interface RedisRunWorkerLogger {
 export interface RedisWorkerLeaseInput {
   workerId: string;
   runtimeInstanceId?: string | undefined;
+  ownerBaseUrl?: string | undefined;
   processKind: "embedded" | "standalone";
   state: "starting" | "idle" | "busy" | "stopping";
   lastSeenAt: string;
@@ -161,11 +168,58 @@ export interface RedisWorkspaceLeaseEntry extends RedisWorkspaceLeaseInput {
   health: "healthy" | "late";
 }
 
+export type RedisWorkspacePlacementState = "unassigned" | "active" | "idle" | "draining" | "evicted";
+
+export interface RedisWorkspacePlacementInput {
+  workspaceId: string;
+  version?: string | undefined;
+  userId?: string | undefined;
+  ownerWorkerId?: string | undefined;
+  ownerBaseUrl?: string | undefined;
+  state: RedisWorkspacePlacementState;
+  sourceKind?: "object_store" | "local_directory" | undefined;
+  localPath?: string | undefined;
+  remotePrefix?: string | undefined;
+  dirty?: boolean | undefined;
+  refCount?: number | undefined;
+  lastActivityAt?: string | undefined;
+  materializedAt?: string | undefined;
+  updatedAt: string;
+}
+
+export interface RedisWorkspacePlacementEntry {
+  workspaceId: string;
+  version: string;
+  userId?: string | undefined;
+  ownerWorkerId?: string | undefined;
+  ownerBaseUrl?: string | undefined;
+  state: RedisWorkspacePlacementState;
+  sourceKind?: "object_store" | "local_directory" | undefined;
+  localPath?: string | undefined;
+  remotePrefix?: string | undefined;
+  dirty?: boolean | undefined;
+  refCount?: number | undefined;
+  lastActivityAt?: string | undefined;
+  materializedAt?: string | undefined;
+  updatedAt: string;
+}
+
 export interface WorkspaceLeaseRegistry {
   heartbeat(entry: RedisWorkspaceLeaseInput, ttlMs: number): Promise<void>;
   remove(workspaceId: string, version: string, ownerWorkerId: string): Promise<void>;
   listActive?(nowMs?: number): Promise<RedisWorkspaceLeaseEntry[]>;
   getByWorkspaceId?(workspaceId: string, nowMs?: number): Promise<RedisWorkspaceLeaseEntry | undefined>;
+}
+
+export interface WorkspacePlacementRegistry {
+  upsert(entry: RedisWorkspacePlacementInput): Promise<void>;
+  assignUser(
+    workspaceId: string,
+    userId: string,
+    options?: { overwrite?: boolean | undefined; updatedAt?: string | undefined }
+  ): Promise<void>;
+  listAll(): Promise<RedisWorkspacePlacementEntry[]>;
+  getByWorkspaceId(workspaceId: string): Promise<RedisWorkspacePlacementEntry | undefined>;
 }
 
 export interface RedisRunWorkerOptions {
@@ -180,6 +234,7 @@ export interface RedisRunWorkerOptions {
   };
   workerId?: string | undefined;
   runtimeInstanceId?: string | undefined;
+  ownerBaseUrl?: string | undefined;
   processKind?: "embedded" | "standalone" | undefined;
   lockTtlMs?: number | undefined;
   pollTimeoutMs?: number | undefined;
@@ -368,6 +423,7 @@ function deriveRedisWorkerRegistryEntry(
   return {
     workerId: entry.workerId,
     ...(entry.runtimeInstanceId ? { runtimeInstanceId: entry.runtimeInstanceId } : {}),
+    ...(entry.ownerBaseUrl ? { ownerBaseUrl: entry.ownerBaseUrl } : {}),
     processKind: entry.processKind,
     state: entry.state,
     lastSeenAt: new Date(lastSeenAtMs).toISOString(),
@@ -453,6 +509,7 @@ export class RedisWorkerRegistry implements WorkerRegistry {
       .hSet(this.#workerKey(entry.workerId), {
         workerId: entry.workerId,
         ...(entry.runtimeInstanceId ? { runtimeInstanceId: entry.runtimeInstanceId } : {}),
+        ...(entry.ownerBaseUrl ? { ownerBaseUrl: entry.ownerBaseUrl } : {}),
         processKind: entry.processKind,
         state: entry.state,
         lastSeenAt: entry.lastSeenAt,
@@ -473,6 +530,9 @@ export class RedisWorkerRegistry implements WorkerRegistry {
     }
     if (!entry.runtimeInstanceId) {
       transaction.hDel(this.#workerKey(entry.workerId), "runtimeInstanceId");
+    }
+    if (!entry.ownerBaseUrl) {
+      transaction.hDel(this.#workerKey(entry.workerId), "ownerBaseUrl");
     }
     await transaction.pExpire(this.#workerKey(entry.workerId), leaseTtlMs).exec();
   }
@@ -508,6 +568,7 @@ export class RedisWorkerRegistry implements WorkerRegistry {
           {
             workerId: record.fields.workerId ?? record.workerId,
             ...(record.fields.runtimeInstanceId ? { runtimeInstanceId: record.fields.runtimeInstanceId } : {}),
+            ...(record.fields.ownerBaseUrl ? { ownerBaseUrl: record.fields.ownerBaseUrl } : {}),
             processKind: record.fields.processKind === "standalone" ? "standalone" : "embedded",
             state:
               record.fields.state === "starting" ||
@@ -737,6 +798,261 @@ export class RedisWorkspaceLeaseRegistry implements WorkspaceLeaseRegistry {
 
   #workspaceIdFromLeaseId(leaseId: string): string | undefined {
     return leaseId.split(":")[0];
+  }
+}
+
+export class RedisWorkspacePlacementRegistry implements WorkspacePlacementRegistry {
+  readonly #commands: RedisClientType;
+  readonly #ownsCommands: boolean;
+  readonly #keyPrefix: string;
+
+  constructor(options: CreateRedisWorkspacePlacementRegistryOptions) {
+    this.#commands = options.commands ?? createClient({ url: options.url });
+    this.#ownsCommands = !options.commands;
+    this.#keyPrefix = options.keyPrefix ?? "oah";
+  }
+
+  async connect(): Promise<void> {
+    if (!this.#commands.isOpen) {
+      await this.#commands.connect();
+    }
+  }
+
+  async upsert(entry: RedisWorkspacePlacementInput): Promise<void> {
+    const key = this.#placementKey(entry.workspaceId);
+    const existing = await this.#commands.hGetAll(key);
+    const next = {
+      workspaceId: entry.workspaceId,
+      version: entry.version?.trim() || existing.version || "live",
+      ...(existing.userId ? { userId: existing.userId } : {}),
+      ...(existing.ownerWorkerId ? { ownerWorkerId: existing.ownerWorkerId } : {}),
+      ...(existing.ownerBaseUrl ? { ownerBaseUrl: existing.ownerBaseUrl } : {}),
+      state: entry.state,
+      ...(existing.sourceKind === "object_store" || existing.sourceKind === "local_directory"
+        ? { sourceKind: existing.sourceKind }
+        : {}),
+      ...(existing.localPath ? { localPath: existing.localPath } : {}),
+      ...(existing.remotePrefix ? { remotePrefix: existing.remotePrefix } : {}),
+      ...(existing.dirty ? { dirty: existing.dirty === "1" } : {}),
+      ...(existing.refCount ? { refCount: Number(existing.refCount) } : {}),
+      ...(existing.lastActivityAt ? { lastActivityAt: existing.lastActivityAt } : {}),
+      ...(existing.materializedAt ? { materializedAt: existing.materializedAt } : {}),
+      updatedAt: entry.updatedAt
+    } satisfies RedisWorkspacePlacementEntry;
+
+    if (entry.userId?.trim()) {
+      next.userId = entry.userId.trim();
+    }
+    if (entry.ownerWorkerId?.trim()) {
+      next.ownerWorkerId = entry.ownerWorkerId.trim();
+    }
+    if (entry.ownerBaseUrl?.trim()) {
+      next.ownerBaseUrl = entry.ownerBaseUrl.trim();
+    }
+    if (entry.sourceKind) {
+      next.sourceKind = entry.sourceKind;
+    }
+    if (entry.localPath?.trim()) {
+      next.localPath = entry.localPath;
+    }
+    if (entry.remotePrefix?.trim()) {
+      next.remotePrefix = entry.remotePrefix;
+    }
+    if (typeof entry.dirty === "boolean") {
+      next.dirty = entry.dirty;
+    }
+    if (typeof entry.refCount === "number") {
+      next.refCount = Math.max(0, Math.floor(entry.refCount));
+    }
+    if (entry.lastActivityAt?.trim()) {
+      next.lastActivityAt = entry.lastActivityAt;
+    }
+    if (entry.materializedAt?.trim()) {
+      next.materializedAt = entry.materializedAt;
+    }
+
+    const transaction = this.#commands.multi().sAdd(this.#registrySetKey(), entry.workspaceId).hSet(key, {
+      workspaceId: next.workspaceId,
+      version: next.version,
+      ...(next.userId ? { userId: next.userId } : {}),
+      ...(next.ownerWorkerId ? { ownerWorkerId: next.ownerWorkerId } : {}),
+      ...(next.ownerBaseUrl ? { ownerBaseUrl: next.ownerBaseUrl } : {}),
+      state: next.state,
+      ...(next.sourceKind ? { sourceKind: next.sourceKind } : {}),
+      ...(next.localPath ? { localPath: next.localPath } : {}),
+      ...(next.remotePrefix ? { remotePrefix: next.remotePrefix } : {}),
+      ...(typeof next.dirty === "boolean" ? { dirty: next.dirty ? "1" : "0" } : {}),
+      ...(typeof next.refCount === "number" ? { refCount: String(next.refCount) } : {}),
+      ...(next.lastActivityAt ? { lastActivityAt: next.lastActivityAt } : {}),
+      ...(next.materializedAt ? { materializedAt: next.materializedAt } : {}),
+      updatedAt: next.updatedAt
+    });
+
+    if (!next.userId) {
+      transaction.hDel(key, "userId");
+    }
+    if (!next.ownerWorkerId) {
+      transaction.hDel(key, "ownerWorkerId");
+    }
+    if (!next.ownerBaseUrl) {
+      transaction.hDel(key, "ownerBaseUrl");
+    }
+    if (!next.sourceKind) {
+      transaction.hDel(key, "sourceKind");
+    }
+    if (!next.localPath) {
+      transaction.hDel(key, "localPath");
+    }
+    if (!next.remotePrefix) {
+      transaction.hDel(key, "remotePrefix");
+    }
+    if (typeof next.dirty !== "boolean") {
+      transaction.hDel(key, "dirty");
+    }
+    if (typeof next.refCount !== "number") {
+      transaction.hDel(key, "refCount");
+    }
+    if (!next.lastActivityAt) {
+      transaction.hDel(key, "lastActivityAt");
+    }
+    if (!next.materializedAt) {
+      transaction.hDel(key, "materializedAt");
+    }
+
+    await transaction.exec();
+  }
+
+  async assignUser(
+    workspaceId: string,
+    userId: string,
+    options?: { overwrite?: boolean | undefined; updatedAt?: string | undefined }
+  ): Promise<void> {
+    const normalizedWorkspaceId = workspaceId.trim();
+    const normalizedUserId = userId.trim();
+    if (normalizedWorkspaceId.length === 0 || normalizedUserId.length === 0) {
+      return;
+    }
+
+    const existing = await this.getByWorkspaceId(normalizedWorkspaceId);
+    if (existing?.userId && !options?.overwrite) {
+      return;
+    }
+
+    await this.upsert({
+      workspaceId: normalizedWorkspaceId,
+      userId: normalizedUserId,
+      state: existing?.state ?? "unassigned",
+      updatedAt: options?.updatedAt ?? new Date().toISOString()
+    });
+  }
+
+  async listAll(): Promise<RedisWorkspacePlacementEntry[]> {
+    const workspaceIds = await this.#commands.sMembers(this.#registrySetKey());
+    if (workspaceIds.length === 0) {
+      return [];
+    }
+
+    const records = await Promise.all(
+      workspaceIds.map(async (workspaceId) => ({
+        workspaceId,
+        fields: await this.#commands.hGetAll(this.#placementKey(workspaceId))
+      }))
+    );
+
+    const items: RedisWorkspacePlacementEntry[] = [];
+    const missingWorkspaceIds: string[] = [];
+
+    for (const record of records) {
+      if (Object.keys(record.fields).length === 0) {
+        missingWorkspaceIds.push(record.workspaceId);
+        continue;
+      }
+
+      items.push({
+        workspaceId: record.fields.workspaceId ?? record.workspaceId,
+        version: record.fields.version ?? "live",
+        ...(record.fields.userId ? { userId: record.fields.userId } : {}),
+        ...(record.fields.ownerWorkerId ? { ownerWorkerId: record.fields.ownerWorkerId } : {}),
+        ...(record.fields.ownerBaseUrl ? { ownerBaseUrl: record.fields.ownerBaseUrl } : {}),
+        state:
+          record.fields.state === "active" ||
+          record.fields.state === "idle" ||
+          record.fields.state === "draining" ||
+          record.fields.state === "evicted"
+            ? record.fields.state
+            : "unassigned",
+        ...(record.fields.sourceKind === "object_store" || record.fields.sourceKind === "local_directory"
+          ? { sourceKind: record.fields.sourceKind }
+          : {}),
+        ...(record.fields.localPath ? { localPath: record.fields.localPath } : {}),
+        ...(record.fields.remotePrefix ? { remotePrefix: record.fields.remotePrefix } : {}),
+        ...(record.fields.dirty ? { dirty: record.fields.dirty === "1" } : {}),
+        ...(record.fields.refCount ? { refCount: Number(record.fields.refCount) } : {}),
+        ...(record.fields.lastActivityAt ? { lastActivityAt: record.fields.lastActivityAt } : {}),
+        ...(record.fields.materializedAt ? { materializedAt: record.fields.materializedAt } : {}),
+        updatedAt: record.fields.updatedAt ?? new Date(0).toISOString()
+      });
+    }
+
+    if (missingWorkspaceIds.length > 0) {
+      await this.#commands.sRem(this.#registrySetKey(), missingWorkspaceIds);
+    }
+
+    return items.sort((left, right) => left.workspaceId.localeCompare(right.workspaceId));
+  }
+
+  async getByWorkspaceId(workspaceId: string): Promise<RedisWorkspacePlacementEntry | undefined> {
+    const fields = await this.#commands.hGetAll(this.#placementKey(workspaceId));
+    if (Object.keys(fields).length === 0) {
+      return undefined;
+    }
+
+    return {
+      workspaceId: fields.workspaceId ?? workspaceId,
+      version: fields.version ?? "live",
+      ...(fields.userId ? { userId: fields.userId } : {}),
+      ...(fields.ownerWorkerId ? { ownerWorkerId: fields.ownerWorkerId } : {}),
+      ...(fields.ownerBaseUrl ? { ownerBaseUrl: fields.ownerBaseUrl } : {}),
+      state:
+        fields.state === "active" ||
+        fields.state === "idle" ||
+        fields.state === "draining" ||
+        fields.state === "evicted"
+          ? fields.state
+          : "unassigned",
+      ...(fields.sourceKind === "object_store" || fields.sourceKind === "local_directory"
+        ? { sourceKind: fields.sourceKind }
+        : {}),
+      ...(fields.localPath ? { localPath: fields.localPath } : {}),
+      ...(fields.remotePrefix ? { remotePrefix: fields.remotePrefix } : {}),
+      ...(fields.dirty ? { dirty: fields.dirty === "1" } : {}),
+      ...(fields.refCount ? { refCount: Number(fields.refCount) } : {}),
+      ...(fields.lastActivityAt ? { lastActivityAt: fields.lastActivityAt } : {}),
+      ...(fields.materializedAt ? { materializedAt: fields.materializedAt } : {}),
+      updatedAt: fields.updatedAt ?? new Date(0).toISOString()
+    };
+  }
+
+  async close(): Promise<void> {
+    if (this.#ownsCommands && this.#commands.isOpen) {
+      await this.#commands.quit();
+    }
+  }
+
+  async ping(): Promise<boolean> {
+    try {
+      return (await this.#commands.ping()) === "PONG";
+    } catch {
+      return false;
+    }
+  }
+
+  #registrySetKey(): string {
+    return `${this.#keyPrefix}:workspace-placements:registry`;
+  }
+
+  #placementKey(workspaceId: string): string {
+    return `${this.#keyPrefix}:workspace-placement:${workspaceId}`;
   }
 }
 
@@ -1130,6 +1446,7 @@ export class RedisRunWorker {
   readonly #runtimeService: RedisRunWorkerOptions["runtimeService"];
   readonly #workerId: string;
   readonly #runtimeInstanceId?: string | undefined;
+  readonly #ownerBaseUrl?: string | undefined;
   readonly #processKind: "embedded" | "standalone";
   readonly #lockTtlMs: number;
   readonly #pollTimeoutMs: number;
@@ -1159,6 +1476,7 @@ export class RedisRunWorker {
     this.#runtimeService = options.runtimeService;
     this.#workerId = options.workerId ?? createId("worker");
     this.#runtimeInstanceId = options.runtimeInstanceId;
+    this.#ownerBaseUrl = options.ownerBaseUrl;
     this.#processKind = options.processKind ?? "embedded";
     this.#lockTtlMs = Math.max(1_000, options.lockTtlMs ?? 30_000);
     this.#pollTimeoutMs = Math.max(250, options.pollTimeoutMs ?? 1_000);
@@ -1302,6 +1620,7 @@ export class RedisRunWorker {
         {
           workerId: this.#workerId,
           ...(this.#runtimeInstanceId ? { runtimeInstanceId: this.#runtimeInstanceId } : {}),
+          ...(this.#ownerBaseUrl ? { ownerBaseUrl: this.#ownerBaseUrl } : {}),
           processKind: this.#processKind,
           state: this.#state,
           lastSeenAt: new Date().toISOString(),
@@ -1366,6 +1685,7 @@ export class RedisRunWorkerPool {
   readonly #queueFactory?: (() => Promise<SessionRunQueue>) | undefined;
   readonly #runtimeService: RedisRunWorkerOptions["runtimeService"];
   readonly #runtimeInstanceId?: string | undefined;
+  readonly #ownerBaseUrl?: string | undefined;
   readonly #processKind: "embedded" | "standalone";
   readonly #lockTtlMs: number;
   readonly #pollTimeoutMs: number;
@@ -1428,6 +1748,7 @@ export class RedisRunWorkerPool {
     this.#queueFactory = options.queueFactory;
     this.#runtimeService = options.runtimeService;
     this.#runtimeInstanceId = options.runtimeInstanceId;
+    this.#ownerBaseUrl = options.ownerBaseUrl;
     this.#processKind = options.processKind ?? "embedded";
     this.#lockTtlMs = Math.max(1_000, options.lockTtlMs ?? 30_000);
     this.#pollTimeoutMs = Math.max(250, options.pollTimeoutMs ?? 1_000);
@@ -1601,6 +1922,7 @@ export class RedisRunWorkerPool {
       const worker = new RedisRunWorker({
         workerId,
         ...(this.#runtimeInstanceId ? { runtimeInstanceId: this.#runtimeInstanceId } : {}),
+        ...(this.#ownerBaseUrl ? { ownerBaseUrl: this.#ownerBaseUrl } : {}),
         queue,
         runtimeService: this.#runtimeService,
         processKind: this.#processKind,
@@ -2069,6 +2391,14 @@ export async function createRedisWorkspaceLeaseRegistry(
   options: CreateRedisWorkspaceLeaseRegistryOptions
 ): Promise<RedisWorkspaceLeaseRegistry> {
   const registry = new RedisWorkspaceLeaseRegistry(options);
+  await registry.connect();
+  return registry;
+}
+
+export async function createRedisWorkspacePlacementRegistry(
+  options: CreateRedisWorkspacePlacementRegistryOptions
+): Promise<RedisWorkspacePlacementRegistry> {
+  const registry = new RedisWorkspacePlacementRegistry(options);
   await registry.connect();
   return registry;
 }

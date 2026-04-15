@@ -1,0 +1,139 @@
+{{- if .Values.worker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "open-agent-harness.workerName" . }}
+  labels:
+    {{- include "open-agent-harness.componentLabels" (dict "root" . "component" "worker") | nindent 4 }}
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  minReadySeconds: {{ .Values.worker.minReadySeconds }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: {{ .Values.worker.strategy.maxUnavailable }}
+      maxSurge: {{ .Values.worker.strategy.maxSurge }}
+  selector:
+    matchLabels:
+      {{- include "open-agent-harness.componentSelectorLabels" (dict "root" . "component" "worker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "open-agent-harness.componentSelectorLabels" (dict "root" . "component" "worker") | nindent 8 }}
+        {{- with .Values.worker.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.worker.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
+      {{- with .Values.worker.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.worker.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["node", "apps/server/dist/worker.js", "--config", "/etc/oah/server.yaml"]
+          env:
+            - name: OAH_CONFIG
+              value: {{ printf "%s/server.yaml" .Values.config.mountPath }}
+            - name: OAH_INTERNAL_BASE_URL
+              value: http://$(HOSTNAME).{{ include "open-agent-harness.workerInternalServiceName" . }}.{{ .Release.Namespace }}.svc.{{ .Values.global.clusterDomain }}:{{ .Values.worker.service.port }}
+            {{- with .Values.worker.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.worker.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - containerPort: {{ .Values.worker.service.port }}
+              name: http
+          readinessProbe:
+            {{- include "open-agent-harness.probe" (dict "probe" .Values.worker.readinessProbe) | nindent 12 }}
+          livenessProbe:
+            {{- include "open-agent-harness.probe" (dict "probe" .Values.worker.livenessProbe) | nindent 12 }}
+          volumeMounts:
+            - name: oah-config
+              mountPath: {{ .Values.config.mountPath }}
+              readOnly: true
+            - name: oah-workspaces
+              mountPath: {{ .Values.worker.workspaceVolume.mountPath }}
+            {{- with .Values.worker.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.worker.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.worker.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: oah-config
+          configMap:
+            name: {{ include "open-agent-harness.configName" . }}
+        {{- if eq .Values.worker.workspaceVolume.type "persistentVolumeClaim" }}
+        - name: oah-workspaces
+          persistentVolumeClaim:
+            claimName: {{ required "worker.workspaceVolume.persistentVolumeClaim.claimName is required when workspaceVolume.type=persistentVolumeClaim" .Values.worker.workspaceVolume.persistentVolumeClaim.claimName }}
+            {{- if .Values.worker.workspaceVolume.persistentVolumeClaim.readOnly }}
+            readOnly: true
+            {{- end }}
+        {{- else }}
+        - name: oah-workspaces
+          emptyDir:
+            {{- toYaml .Values.worker.workspaceVolume.emptyDir | nindent 12 }}
+        {{- end }}
+        {{- with .Values.worker.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "open-agent-harness.workerInternalServiceName" . }}
+  labels:
+    {{- include "open-agent-harness.componentLabels" (dict "root" . "component" "worker") | nindent 4 }}
+  {{- with .Values.worker.serviceAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "open-agent-harness.componentSelectorLabels" (dict "root" . "component" "worker") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.worker.service.port }}
+      targetPort: http
+{{- end }}

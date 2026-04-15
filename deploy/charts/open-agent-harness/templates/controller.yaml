@@ -1,0 +1,138 @@
+{{- if .Values.controller.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "open-agent-harness.controllerName" . }}
+  labels:
+    {{- include "open-agent-harness.componentLabels" (dict "root" . "component" "controller") | nindent 4 }}
+spec:
+  replicas: {{ .Values.controller.replicaCount }}
+  minReadySeconds: {{ .Values.controller.minReadySeconds }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: {{ .Values.controller.strategy.maxUnavailable }}
+      maxSurge: {{ .Values.controller.strategy.maxSurge }}
+  selector:
+    matchLabels:
+      {{- include "open-agent-harness.componentSelectorLabels" (dict "root" . "component" "controller") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "open-agent-harness.componentSelectorLabels" (dict "root" . "component" "controller") | nindent 8 }}
+        {{- with .Values.controller.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.controller.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.controller.terminationGracePeriodSeconds }}
+      {{- with .Values.controller.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.controller.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "open-agent-harness.controllerServiceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: controller
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["node", "apps/controller/dist/index.js", "--config", "/etc/oah/server.yaml"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.controller.service.port }}
+          env:
+            - name: OAH_CONFIG
+              value: {{ printf "%s/server.yaml" .Values.config.mountPath }}
+            - name: OAH_CONTROLLER_LEADER_ELECTION_TYPE
+              value: kubernetes
+            - name: OAH_CONTROLLER_LEASE_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: OAH_CONTROLLER_LEASE_NAME
+              value: {{ include "open-agent-harness.controllerName" . }}
+            - name: OAH_CONTROLLER_TARGET_TYPE
+              value: kubernetes
+            - name: OAH_CONTROLLER_TARGET_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: OAH_CONTROLLER_TARGET_LABEL_SELECTOR
+              value: app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=worker
+            {{- with .Values.controller.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.controller.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          readinessProbe:
+            {{- include "open-agent-harness.probe" (dict "probe" .Values.controller.readinessProbe) | nindent 12 }}
+          livenessProbe:
+            {{- include "open-agent-harness.probe" (dict "probe" .Values.controller.livenessProbe) | nindent 12 }}
+          volumeMounts:
+            - name: oah-config
+              mountPath: {{ .Values.config.mountPath }}
+              readOnly: true
+            {{- with .Values.controller.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.controller.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.controller.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: oah-config
+          configMap:
+            name: {{ include "open-agent-harness.configName" . }}
+        {{- with .Values.controller.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.controller.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "open-agent-harness.controllerName" . }}
+  labels:
+    {{- include "open-agent-harness.componentLabels" (dict "root" . "component" "controller") | nindent 4 }}
+  {{- with .Values.controller.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  selector:
+    {{- include "open-agent-harness.componentSelectorLabels" (dict "root" . "component" "controller") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.controller.service.port }}
+      targetPort: http
+{{- end }}

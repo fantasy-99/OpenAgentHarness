@@ -5,12 +5,17 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { DirectoryObjectStore } from "../apps/server/src/object-storage.ts";
-import { WorkspaceMaterializationManager } from "../apps/server/src/bootstrap/workspace-materialization.ts";
+import {
+  WorkspaceMaterializationAggregateError,
+  WorkspaceMaterializationDrainingError,
+  WorkspaceMaterializationManager
+} from "../apps/server/src/bootstrap/workspace-materialization.ts";
 
 class FakeDirectoryObjectStore implements DirectoryObjectStore {
   readonly bucket = "test-bucket";
   readonly objects = new Map<string, { body: Buffer; lastModified: Date }>();
   getObjectCalls = 0;
+  failPutObject = false;
 
   async listEntries(prefix: string) {
     const normalizedPrefix = prefix ? `${prefix}/` : "";
@@ -34,6 +39,9 @@ class FakeDirectoryObjectStore implements DirectoryObjectStore {
   }
 
   async putObject(key: string, body: Buffer): Promise<void> {
+    if (this.failPutObject) {
+      throw new Error(`put failed for ${key}`);
+    }
     this.objects.set(key, {
       body: Buffer.from(body),
       lastModified: new Date()
@@ -190,6 +198,7 @@ describe("workspace materialization", () => {
     const store = new FakeDirectoryObjectStore();
     await store.putObject("workspace/demo/README.md", Buffer.from("# demo\n"));
     const heartbeats: Array<{ workspaceId: string; dirty: boolean; refCount: number; ownerBaseUrl?: string }> = [];
+    const placements: Array<{ workspaceId: string; state: string; userId?: string; ownerWorkerId?: string }> = [];
     const removals: Array<{ workspaceId: string; version: string; ownerWorkerId: string }> = [];
 
     const manager = new WorkspaceMaterializationManager({
@@ -209,6 +218,25 @@ describe("workspace materialization", () => {
         async remove(workspaceId, version, ownerWorkerId) {
           removals.push({ workspaceId, version, ownerWorkerId });
         }
+      },
+      placementRegistry: {
+        async upsert(entry) {
+          placements.push({
+            workspaceId: entry.workspaceId,
+            state: entry.state,
+            ...(entry.userId ? { userId: entry.userId } : {}),
+            ...(entry.ownerWorkerId ? { ownerWorkerId: entry.ownerWorkerId } : {})
+          });
+        },
+        async assignUser() {
+          return undefined;
+        },
+        async listAll() {
+          return [];
+        },
+        async getByWorkspaceId() {
+          return undefined;
+        }
       }
     });
 
@@ -227,6 +255,9 @@ describe("workspace materialization", () => {
     expect(heartbeats.some((entry) => entry.workspaceId === "ws_1" && entry.refCount === 1)).toBe(true);
     expect(heartbeats.some((entry) => entry.workspaceId === "ws_1" && entry.dirty)).toBe(true);
     expect(heartbeats.some((entry) => entry.workspaceId === "ws_1" && entry.ownerBaseUrl === "http://worker-1.internal:8787")).toBe(true);
+    expect(placements.some((entry) => entry.workspaceId === "ws_1" && entry.state === "active")).toBe(true);
+    expect(placements.some((entry) => entry.workspaceId === "ws_1" && entry.state === "idle")).toBe(true);
+    expect(placements.some((entry) => entry.workspaceId === "ws_1" && entry.state === "evicted")).toBe(true);
     expect(removals).toEqual([{ workspaceId: "ws_1", version: "live", ownerWorkerId: "worker_1" }]);
   });
 
@@ -260,5 +291,141 @@ describe("workspace materialization", () => {
     ]);
 
     await manager.close();
+  });
+
+  it("flushes and evicts idle object-store copies when drain begins", async () => {
+    const cacheRoot = await mkdtemp(path.join(os.tmpdir(), "oah-materialization-cache-"));
+    tempDirs.push(cacheRoot);
+    const store = new FakeDirectoryObjectStore();
+    await store.putObject("workspace/demo/README.md", Buffer.from("# old\n"));
+
+    const manager = new WorkspaceMaterializationManager({
+      cacheRoot,
+      workerId: "worker_1",
+      store
+    });
+
+    const lease = await manager.acquireWorkspace({
+      workspace: {
+        id: "ws_1",
+        rootPath: "/unused",
+        externalRef: "s3://test-bucket/workspace/demo"
+      } as never
+    });
+    const localPath = lease.localPath;
+    await writeFile(path.join(localPath, "README.md"), "# drained\n", "utf8");
+    lease.markDirty();
+    await lease.release();
+
+    const drained = await manager.beginDrain();
+
+    expect(manager.isDraining()).toBe(true);
+    expect(drained.flushed).toHaveLength(1);
+    expect(drained.evicted).toHaveLength(1);
+    expect(store.objects.get("workspace/demo/README.md")?.body.toString("utf8")).toBe("# drained\n");
+    await expect(stat(localPath)).rejects.toThrow();
+    expect(manager.snapshot()).toEqual([]);
+  });
+
+  it("blocks new object-store materializations during drain", async () => {
+    const cacheRoot = await mkdtemp(path.join(os.tmpdir(), "oah-materialization-cache-"));
+    tempDirs.push(cacheRoot);
+    const store = new FakeDirectoryObjectStore();
+    const manager = new WorkspaceMaterializationManager({
+      cacheRoot,
+      workerId: "worker_1",
+      store
+    });
+
+    await manager.beginDrain();
+
+    await expect(
+      manager.acquireWorkspace({
+        workspace: {
+          id: "ws_1",
+          rootPath: "/unused",
+          externalRef: "s3://test-bucket/workspace/demo"
+        } as never
+      })
+    ).rejects.toBeInstanceOf(WorkspaceMaterializationDrainingError);
+  });
+
+  it("allows existing leases to flush and evict themselves when released during drain", async () => {
+    const cacheRoot = await mkdtemp(path.join(os.tmpdir(), "oah-materialization-cache-"));
+    tempDirs.push(cacheRoot);
+    const store = new FakeDirectoryObjectStore();
+    await store.putObject("workspace/demo/README.md", Buffer.from("# old\n"));
+    const manager = new WorkspaceMaterializationManager({
+      cacheRoot,
+      workerId: "worker_1",
+      store
+    });
+
+    const lease = await manager.acquireWorkspace({
+      workspace: {
+        id: "ws_1",
+        rootPath: "/unused",
+        externalRef: "s3://test-bucket/workspace/demo"
+      } as never
+    });
+    const localPath = lease.localPath;
+    await writeFile(path.join(localPath, "README.md"), "# in-flight\n", "utf8");
+    lease.markDirty();
+
+    await manager.beginDrain();
+    await lease.release();
+
+    expect(store.objects.get("workspace/demo/README.md")?.body.toString("utf8")).toBe("# in-flight\n");
+    await expect(stat(localPath)).rejects.toThrow();
+    expect(manager.snapshot()).toEqual([]);
+  });
+
+  it("records drain blockers when flush and eviction fail during drain", async () => {
+    const cacheRoot = await mkdtemp(path.join(os.tmpdir(), "oah-materialization-cache-"));
+    tempDirs.push(cacheRoot);
+    const store = new FakeDirectoryObjectStore();
+    await store.putObject("workspace/demo/README.md", Buffer.from("# old\n"));
+    const manager = new WorkspaceMaterializationManager({
+      cacheRoot,
+      workerId: "worker_1",
+      store
+    });
+
+    const lease = await manager.acquireWorkspace({
+      workspace: {
+        id: "ws_fail",
+        rootPath: "/unused",
+        externalRef: "s3://test-bucket/workspace/demo"
+      } as never
+    });
+    await writeFile(path.join(lease.localPath, "README.md"), "# dirty\n", "utf8");
+    await lease.release({ dirty: true });
+    store.failPutObject = true;
+
+    await expect(manager.beginDrain()).rejects.toBeInstanceOf(WorkspaceMaterializationAggregateError);
+
+    expect(manager.snapshot()).toEqual([
+      expect.objectContaining({
+        workspaceId: "ws_fail",
+        dirty: true,
+        refCount: 0
+      })
+    ]);
+    expect(manager.diagnostics()).toMatchObject({
+      draining: true,
+      cachedCopies: 1,
+      dirtyCopies: 1,
+      failureCount: 1,
+      blockerCount: 1,
+      failures: [
+        expect.objectContaining({
+          workspaceId: "ws_fail",
+          stage: "drain_evict",
+          operation: "flush",
+          dirty: true,
+          refCount: 0
+        })
+      ]
+    });
   });
 });

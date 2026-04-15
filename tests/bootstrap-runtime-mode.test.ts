@@ -11,6 +11,7 @@ import {
   createWorkerRuntimeControl,
   summarizeWorkerRuntimeStatus
 } from "../apps/server/src/bootstrap/worker-runtime.ts";
+import { createWorkerHost, resolveWorkerDrainConfig } from "../apps/server/src/bootstrap/worker-host.ts";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -147,10 +148,13 @@ describe("server runtime process modes", () => {
   });
 
   it("builds a worker runtime control around the shared host lifecycle", async () => {
+    let draining = false;
     const host = {
       start: vi.fn(),
-      isDraining: vi.fn(() => false),
-      beginDrain: vi.fn(async () => undefined),
+      isDraining: vi.fn(() => draining),
+      beginDrain: vi.fn(async () => {
+        draining = true;
+      }),
       snapshot: vi.fn(() => ({
         running: true,
         sessionSerialBoundary: "session",
@@ -244,6 +248,11 @@ describe("server runtime process modes", () => {
     });
     await workerRuntime.beginDrain();
     expect(host.beginDrain).toHaveBeenCalledTimes(1);
+    await expect(workerRuntime.getStatus()).resolves.toMatchObject({
+      draining: true,
+      acceptsNewRuns: false,
+      drainStartedAt: expect.any(String)
+    });
     await workerRuntime.close();
     expect(host.close).toHaveBeenCalledTimes(1);
   });
@@ -330,6 +339,119 @@ describe("server runtime process modes", () => {
       scaleUpBusyRatioThreshold: 0.9,
       scaleUpMaxReadyAgeMs: 3_200
     });
+  });
+
+  it("parses worker drain timeout config from env", () => {
+    expect(resolveWorkerDrainConfig()).toEqual({
+      timeoutMs: undefined,
+      strategy: "wait_forever"
+    });
+
+    vi.stubEnv("OAH_WORKER_DRAIN_TIMEOUT_MS", "2500");
+    vi.stubEnv("OAH_WORKER_DRAIN_TIMEOUT_STRATEGY", "requeue_all");
+
+    expect(resolveWorkerDrainConfig()).toEqual({
+      timeoutMs: 2_500,
+      strategy: "requeue_all"
+    });
+  });
+
+  it("forces drain-timeout recovery for active runs when pool close hangs", async () => {
+    vi.stubEnv("OAH_WORKER_DRAIN_TIMEOUT_MS", "5");
+    vi.stubEnv("OAH_WORKER_DRAIN_TIMEOUT_STRATEGY", "requeue_all");
+
+    const recoverRunAfterDrainTimeout = vi.fn(async () => "requeued" as const);
+    const host = createWorkerHost({
+      startWorker: true,
+      processKind: "worker",
+      config: {
+        storage: {
+          redis_url: "redis://local/0"
+        }
+      },
+      redisRunQueue: {} as never,
+      runtimeService: {
+        async processQueuedRun() {
+          return undefined;
+        },
+        recoverRunAfterDrainTimeout
+      },
+      poolFactory: () => ({
+        start() {
+          return undefined;
+        },
+        snapshot() {
+          return {
+            slots: [
+              {
+                slotId: "slot-1",
+                workerId: "worker-1",
+                processKind: "standalone",
+                state: "busy",
+                currentRunId: "run-1"
+              }
+            ]
+          } as never;
+        },
+        async close() {
+          await new Promise(() => undefined);
+        }
+      })
+    });
+
+    await host.beginDrain();
+
+    expect(host.isDraining()).toBe(true);
+    expect(recoverRunAfterDrainTimeout).toHaveBeenCalledWith("run-1", "requeue_all");
+  });
+
+  it("does not trigger drain-timeout recovery after a graceful close", async () => {
+    vi.stubEnv("OAH_WORKER_DRAIN_TIMEOUT_MS", "20");
+    vi.stubEnv("OAH_WORKER_DRAIN_TIMEOUT_STRATEGY", "fail");
+
+    const recoverRunAfterDrainTimeout = vi.fn(async () => "failed" as const);
+    const host = createWorkerHost({
+      startWorker: true,
+      processKind: "worker",
+      config: {
+        storage: {
+          redis_url: "redis://local/0"
+        }
+      },
+      redisRunQueue: {} as never,
+      runtimeService: {
+        async processQueuedRun() {
+          return undefined;
+        },
+        recoverRunAfterDrainTimeout
+      },
+      poolFactory: () => ({
+        start() {
+          return undefined;
+        },
+        snapshot() {
+          return {
+            slots: [
+              {
+                slotId: "slot-1",
+                workerId: "worker-1",
+                processKind: "standalone",
+                state: "busy",
+                currentRunId: "run-1"
+              }
+            ]
+          } as never;
+        },
+        async close() {
+          return undefined;
+        }
+      })
+    });
+
+    await host.beginDrain();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    expect(recoverRunAfterDrainTimeout).not.toHaveBeenCalled();
   });
 
   it("parses single-workspace startup flags", () => {

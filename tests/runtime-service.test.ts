@@ -4,8 +4,8 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { RuntimeService } from "@oah/runtime-core";
-import type { HookRunAuditRecord, ToolCallAuditRecord, WorkspaceArchiveRecord } from "@oah/runtime-core";
+import { RuntimeService, createLocalWorkspaceFileSystem } from "@oah/runtime-core";
+import type { HookRunAuditRecord, ToolCallAuditRecord, WorkspaceArchiveRecord, WorkspaceFileSystem } from "@oah/runtime-core";
 import { createMemoryRuntimePersistence } from "@oah/storage-memory";
 import type { Message } from "@oah/api-contracts";
 
@@ -22,6 +22,15 @@ async function waitFor(check: () => Promise<boolean> | boolean, timeoutMs = 5_00
   }
 
   throw new Error("Timed out while waiting for condition.");
+}
+
+async function readStreamText(stream: NodeJS.ReadableStream): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  }
+
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 function messageParts(message: Pick<Message, "content">) {
@@ -558,6 +567,90 @@ describe("runtime service", () => {
     }
   });
 
+  it("routes workspace file operations through the injected workspace file system", async () => {
+    const sourceRoot = await mkdtemp(path.join(tmpdir(), "oah-workspace-filesystem-"));
+    const localFileSystem = createLocalWorkspaceFileSystem();
+    const writeCalls: string[] = [];
+    const readCalls: string[] = [];
+    const fileSystem: WorkspaceFileSystem = {
+      ...localFileSystem,
+      async writeFile(targetPath, data) {
+        writeCalls.push(targetPath);
+        await localFileSystem.writeFile(targetPath, data);
+      },
+      async readFile(targetPath) {
+        readCalls.push(targetPath);
+        return localFileSystem.readFile(targetPath);
+      }
+    };
+
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence,
+      workspaceFileSystem: fileSystem,
+      workspaceInitializer: {
+        async initialize(input) {
+          return {
+            rootPath: input.rootPath,
+            settings: {
+              defaultAgent: "default",
+              skillDirs: []
+            },
+            defaultAgent: "default",
+            workspaceModels: {},
+            agents: {},
+            actions: {},
+            skills: {},
+            toolServers: {},
+            hooks: {},
+            catalog: {
+              workspaceId: "template",
+              agents: [],
+              models: [],
+              actions: [],
+              skills: [],
+              tools: [],
+              hooks: [],
+              nativeTools: []
+            }
+          };
+        }
+      }
+    });
+
+    try {
+      const workspace = await runtimeService.createWorkspace({
+        input: {
+          name: "demo",
+          template: "workspace",
+          rootPath: sourceRoot,
+          executionPolicy: "local"
+        }
+      });
+
+      await runtimeService.putWorkspaceFileContent(workspace.id, {
+        path: "README.md",
+        content: "# fs adapter\n",
+        encoding: "utf8",
+        overwrite: true
+      });
+
+      const content = await runtimeService.getWorkspaceFileContent(workspace.id, {
+        path: "README.md",
+        encoding: "utf8"
+      });
+
+      expect(content.content).toBe("# fs adapter\n");
+      expect(writeCalls).toContain(path.join(sourceRoot, "README.md"));
+      expect(readCalls).toContain(path.join(sourceRoot, "README.md"));
+    } finally {
+      await rm(sourceRoot, { recursive: true, force: true });
+    }
+  });
+
   it("keeps a read lease open for workspace downloads until the caller releases it", async () => {
     const sourceRoot = await mkdtemp(path.join(tmpdir(), "oah-workspace-source-"));
     const materializedRoot = await mkdtemp(path.join(tmpdir(), "oah-workspace-materialized-"));
@@ -623,7 +716,8 @@ describe("runtime service", () => {
       });
 
       const handle = await runtimeService.openWorkspaceFileDownload(workspace.id, "README.md");
-      expect(handle.file.absolutePath).toBe(path.join(materializedRoot, "README.md"));
+      expect(handle.file.path).toBe("README.md");
+      expect(await readStreamText(handle.file.openReadStream())).toBe("# download\n");
       expect(releases).toEqual([]);
 
       await handle.release({ dirty: false });
@@ -2894,13 +2988,224 @@ describe("runtime service", () => {
       return run.status === "completed";
     });
 
-    const messages = await runtimeService.listSessionMessages(session.id, 20);
-    const backgroundMessage = messages.items.find((message) => message.role === "tool" && messageToolName(message) === "SubAgent");
+    await waitFor(async () => {
+      const messages = await runtimeService.listSessionMessages(session.id, 50);
+      return messages.items.filter((message) => message.role === "tool" && messageToolName(message) === "SubAgent").length === 2;
+    });
 
+    const messages = await runtimeService.listSessionMessages(session.id, 50);
+    const backgroundMessages = messages.items.filter(
+      (message) => message.role === "tool" && messageToolName(message) === "SubAgent"
+    );
+    const backgroundMessage = backgroundMessages[0];
+    const completionMessage = backgroundMessages.at(-1);
+
+    expect(backgroundMessages).toHaveLength(2);
     expect(messageText(backgroundMessage)).toContain("started: true");
     expect(messageText(backgroundMessage)).toContain("subagent_name: researcher");
     expect(messageText(backgroundMessage)).toContain("description: Research in background");
     expect(messageText(backgroundMessage)).toContain("task_id:");
+    expect(messageText(completionMessage)).toContain("task_id:");
+    expect(messageText(completionMessage)).toContain("run_id:");
+    expect(messageText(completionMessage)).toContain("status: completed");
+    expect(messageText(completionMessage)).toContain("subagent_name: researcher");
+    expect(messageText(completionMessage)).toContain("Background subagent finished its report.");
+    expect(completionMessage?.metadata).toMatchObject({
+      synthetic: true,
+      delegatedUpdate: "completed",
+      toolStatus: "completed",
+      toolSourceType: "agent"
+    });
+  });
+
+  it("can launch multiple background subagents in parallel", async () => {
+    const gateway = new FakeModelGateway(20);
+    gateway.streamScenarioFactory = (input) => {
+      const systemMessages = input.messages?.filter((message) => message.role === "system").map((message) => message.content) ?? [];
+
+      if (systemMessages.some((message) => message.includes("You are the researcher subagent."))) {
+        return {
+          text: "Research background result is ready."
+        };
+      }
+
+      if (systemMessages.some((message) => message.includes("You are the reviewer subagent."))) {
+        return {
+          text: "Review background result is ready."
+        };
+      }
+
+      return {
+        text: "Parent launched two background delegations.",
+        toolBatches: [
+          [
+            {
+              toolName: "SubAgent",
+              input: {
+                description: "Research in background",
+                prompt: "Collect repository facts in the background.",
+                subagent_name: "researcher",
+                run_in_background: true
+              },
+              toolCallId: "call_background_researcher"
+            },
+            {
+              toolName: "SubAgent",
+              input: {
+                description: "Review in background",
+                prompt: "Review the repository in the background.",
+                subagent_name: "reviewer",
+                run_in_background: true
+              },
+              toolCallId: "call_background_reviewer"
+            }
+          ]
+        ]
+      };
+    };
+
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_parallel_background_agents",
+      name: "parallel-background-agents",
+      rootPath: "/tmp/parallel-background-agents",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "plan",
+      settings: {
+        defaultAgent: "plan",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        plan: {
+          name: "plan",
+          mode: "primary",
+          prompt: "You are the planner agent.",
+          tools: {
+            native: [],
+            external: []
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: ["researcher", "reviewer"]
+        },
+        researcher: {
+          name: "researcher",
+          mode: "subagent",
+          prompt: "You are the researcher subagent.",
+          tools: {
+            native: [],
+            external: []
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: []
+        },
+        reviewer: {
+          name: "reviewer",
+          mode: "subagent",
+          prompt: "You are the reviewer subagent.",
+          tools: {
+            native: [],
+            external: []
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_parallel_background_agents",
+        agents: [
+          { name: "plan", mode: "primary", source: "workspace" },
+          { name: "researcher", mode: "subagent", source: "workspace" },
+          { name: "reviewer", mode: "subagent", source: "workspace" }
+        ],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: "project_parallel_background_agents",
+      caller,
+      input: {
+        agentName: "plan"
+      }
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Start two background subagents." }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const parentRun = await runtimeService.getRun(accepted.runId);
+    const delegatedRuns =
+      (parentRun.metadata?.delegatedRuns as Array<{ childRunId: string; childSessionId: string }> | undefined) ?? [];
+
+    expect(delegatedRuns).toHaveLength(2);
+    expect(new Set(delegatedRuns.map((record) => record.childSessionId)).size).toBe(2);
+
+    await Promise.all(
+      delegatedRuns.map(async (record) => {
+        await waitFor(async () => {
+          const childRun = await runtimeService.getRun(record.childRunId);
+          return childRun.status === "completed";
+        });
+      })
+    );
+
+    await waitFor(async () => {
+      const toolMessages = (await runtimeService.listSessionMessages(session.id, 100)).items.filter(
+        (message) => message.role === "tool" && messageToolName(message) === "SubAgent"
+      );
+      return toolMessages.length === 4;
+    });
+
+    const toolMessages = (await runtimeService.listSessionMessages(session.id, 100)).items.filter(
+      (message) => message.role === "tool" && messageToolName(message) === "SubAgent"
+    );
+
+    expect(toolMessages).toHaveLength(4);
+    expect(toolMessages.some((message) => messageText(message).includes("Research background result is ready."))).toBe(true);
+    expect(toolMessages.some((message) => messageText(message).includes("Review background result is ready."))).toBe(true);
+    expect(gateway.maxConcurrentStreams).toBeGreaterThanOrEqual(3);
   });
 
   it("forwards agent sampling settings including topP to the model gateway", async () => {
@@ -3605,6 +3910,8 @@ describe("runtime service", () => {
     });
 
     const run = await runtimeService.getRun(accepted.runId);
+    expect(accepted.sessionId).toBeTruthy();
+    expect(run.sessionId).toBe(accepted.sessionId);
     expect(run.metadata).toMatchObject({
       actionName: "debug.echo",
       stdout: "action-ok"
@@ -3613,6 +3920,180 @@ describe("runtime service", () => {
     const runSteps = await runtimeService.listRunSteps(accepted.runId);
     expect(runSteps.items.some((step) => step.stepType === "tool_call" && step.name === "debug.echo")).toBe(true);
     expect(runSteps.items.some((step) => step.stepType === "system" && step.name === "run.completed")).toBe(true);
+  });
+
+  it("rejects invalid API action input against input_schema before enqueueing the run", async () => {
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_action_validation",
+      name: "action-validation",
+      rootPath: "/tmp/action-validation",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "builder",
+      settings: {
+        defaultAgent: "builder",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {},
+      actions: {
+        "debug.echo": {
+          name: "debug.echo",
+          description: "Echo mode",
+          callableByApi: true,
+          callableByUser: true,
+          exposeToLlm: false,
+          inputSchema: {
+            type: "object",
+            properties: {
+              mode: {
+                type: "string"
+              }
+            },
+            required: ["mode"],
+            additionalProperties: false
+          },
+          directory: "/tmp",
+          entry: {
+            command: "printf validation-ok"
+          }
+        }
+      },
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_action_validation",
+        agents: [],
+        models: [],
+        actions: [
+          {
+            name: "debug.echo",
+            description: "Echo mode",
+            callableByApi: true,
+            callableByUser: true,
+            exposeToLlm: false
+          }
+        ],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    await expect(
+      runtimeService.triggerActionRun({
+        workspaceId: "project_action_validation",
+        actionName: "debug.echo",
+        caller: {
+          subjectRef: "dev:test",
+          authSource: "standalone_server",
+          scopes: [],
+          workspaceAccess: []
+        },
+        input: {
+          mode: 123
+        }
+      })
+    ).rejects.toMatchObject({
+      code: "action_input_invalid",
+      statusCode: 400
+    });
+  });
+
+  it("rejects user-triggered action runs when callableByUser is false", async () => {
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_action_user_guard",
+      name: "action-user-guard",
+      rootPath: "/tmp/action-user-guard",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "builder",
+      settings: {
+        defaultAgent: "builder",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {},
+      actions: {
+        "debug.echo": {
+          name: "debug.echo",
+          description: "Echo mode",
+          callableByApi: true,
+          callableByUser: false,
+          exposeToLlm: false,
+          directory: "/tmp",
+          entry: {
+            command: "printf forbidden"
+          }
+        }
+      },
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_action_user_guard",
+        agents: [],
+        models: [],
+        actions: [
+          {
+            name: "debug.echo",
+            description: "Echo mode",
+            callableByApi: true,
+            callableByUser: false,
+            exposeToLlm: false
+          }
+        ],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    await expect(
+      runtimeService.triggerActionRun({
+        workspaceId: "project_action_user_guard",
+        actionName: "debug.echo",
+        triggerSource: "user",
+        caller: {
+          subjectRef: "dev:test",
+          authSource: "standalone_server",
+          scopes: [],
+          workspaceAccess: []
+        }
+      })
+    ).rejects.toMatchObject({
+      code: "action_not_callable_by_user",
+      statusCode: 403
+    });
   });
 
   it("streams session-attached action runs as tool-call and tool-result messages", async () => {
@@ -4977,6 +5458,249 @@ describe("runtime service", () => {
     });
   });
 
+  it("requeues active runs after a drain timeout when configured to requeue", async () => {
+    const persistence = createMemoryRuntimePersistence();
+    const enqueuedRuns: Array<{ sessionId: string; runId: string }> = [];
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: new FakeModelGateway(),
+      ...persistence,
+      runQueue: {
+        async enqueue(sessionId, runId) {
+          enqueuedRuns.push({ sessionId, runId });
+        }
+      },
+      staleRunRecovery: {
+        strategy: "requeue_all",
+        maxAttempts: 2
+      }
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_run_drain_requeue",
+      name: "run-drain-requeue",
+      rootPath: "/tmp/run-drain-requeue",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: "2026-04-01T00:00:00.000Z",
+      updatedAt: "2026-04-01T00:00:00.000Z",
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "builder",
+      settings: {
+        defaultAgent: "builder",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        builder: {
+          name: "builder",
+          mode: "primary",
+          prompt: "Recover drain-timed-out runs by requeueing safe work.",
+          tools: {
+            native: [],
+            actions: [],
+            skills: [],
+            external: []
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_run_drain_requeue",
+        agents: [{ name: "builder", mode: "primary", source: "workspace" }],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    await persistence.sessionRepository.create({
+      id: "ses_drain_requeue",
+      workspaceId: "project_run_drain_requeue",
+      subjectRef: "dev:test",
+      activeAgentName: "builder",
+      status: "active",
+      createdAt: "2026-04-01T00:00:00.000Z",
+      updatedAt: "2026-04-01T00:00:00.000Z"
+    });
+
+    await persistence.runRepository.create({
+      id: "run_drain_requeue",
+      workspaceId: "project_run_drain_requeue",
+      sessionId: "ses_drain_requeue",
+      initiatorRef: "dev:test",
+      triggerType: "message",
+      triggerRef: "msg_1",
+      agentName: "builder",
+      effectiveAgentName: "builder",
+      switchCount: 0,
+      status: "running",
+      createdAt: "2026-04-01T00:00:00.000Z",
+      startedAt: "2026-04-01T00:00:10.000Z",
+      heartbeatAt: "2026-04-01T00:00:20.000Z"
+    });
+
+    await expect(runtimeService.recoverRunAfterDrainTimeout("run_drain_requeue", "requeue_all")).resolves.toBe("requeued");
+    expect(enqueuedRuns).toEqual([{ sessionId: "ses_drain_requeue", runId: "run_drain_requeue" }]);
+
+    const requeuedRun = await runtimeService.getRun("run_drain_requeue");
+    expect(requeuedRun.status).toBe("queued");
+    expect(requeuedRun.metadata).toMatchObject({
+      recoveryAttempts: 1,
+      recoveredBy: "worker_drain_timeout_requeue",
+      recovery: {
+        state: "requeued",
+        strategy: "requeue_all",
+        attempts: 1,
+        lastOutcome: "requeued",
+        reason: "automatic_requeue"
+      }
+    });
+
+    const events = await runtimeService.listSessionEvents("ses_drain_requeue", undefined, "run_drain_requeue");
+    expect(events.find((event) => event.event === "run.queued")?.data).toMatchObject({
+      status: "queued",
+      recoveredBy: "worker_drain_timeout_requeue",
+      recoveryAttempt: 1,
+      recoveryState: "requeued",
+      recoveryReason: "automatic_requeue",
+      recoveryStrategy: "requeue_all"
+    });
+  });
+
+  it("quarantines waiting_tool runs after a drain timeout when only running requeue is allowed", async () => {
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: new FakeModelGateway(),
+      ...persistence,
+      runQueue: {
+        async enqueue() {
+          return undefined;
+        }
+      },
+      staleRunRecovery: {
+        strategy: "requeue_all",
+        maxAttempts: 2
+      }
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_run_drain_fail",
+      name: "run-drain-fail",
+      rootPath: "/tmp/run-drain-fail",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: "2026-04-01T00:00:00.000Z",
+      updatedAt: "2026-04-01T00:00:00.000Z",
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "builder",
+      settings: {
+        defaultAgent: "builder",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        builder: {
+          name: "builder",
+          mode: "primary",
+          prompt: "Quarantine drain-timeout runs that cannot be safely requeued.",
+          tools: {
+            native: [],
+            actions: [],
+            skills: [],
+            external: []
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_run_drain_fail",
+        agents: [{ name: "builder", mode: "primary", source: "workspace" }],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    await persistence.sessionRepository.create({
+      id: "ses_drain_fail",
+      workspaceId: "project_run_drain_fail",
+      subjectRef: "dev:test",
+      activeAgentName: "builder",
+      status: "active",
+      createdAt: "2026-04-01T00:00:00.000Z",
+      updatedAt: "2026-04-01T00:00:00.000Z"
+    });
+
+    await persistence.runRepository.create({
+      id: "run_drain_fail",
+      workspaceId: "project_run_drain_fail",
+      sessionId: "ses_drain_fail",
+      initiatorRef: "dev:test",
+      triggerType: "message",
+      triggerRef: "msg_1",
+      agentName: "builder",
+      effectiveAgentName: "builder",
+      switchCount: 0,
+      status: "waiting_tool",
+      createdAt: "2026-04-01T00:00:00.000Z",
+      startedAt: "2026-04-01T00:00:10.000Z",
+      heartbeatAt: "2026-04-01T00:00:20.000Z"
+    });
+
+    await expect(runtimeService.recoverRunAfterDrainTimeout("run_drain_fail", "requeue_running")).resolves.toBe("failed");
+
+    const failedRun = await runtimeService.getRun("run_drain_fail");
+    expect(failedRun.status).toBe("failed");
+    expect(failedRun.errorCode).toBe("worker_recovery_failed");
+    expect(failedRun.metadata).toMatchObject({
+      recoveryAttempts: 0,
+      recoveredBy: "worker_drain_timeout",
+      recovery: {
+        state: "quarantined",
+        strategy: "requeue_running",
+        attempts: 0,
+        lastOutcome: "failed",
+        reason: "waiting_tool_manual_resume_required",
+        deadLetter: {
+          status: "quarantined",
+          reason: "waiting_tool_manual_resume_required"
+        }
+      }
+    });
+
+    const events = await runtimeService.listSessionEvents("ses_drain_fail", undefined, "run_drain_fail");
+    expect(events.find((event) => event.event === "run.failed")?.data).toMatchObject({
+      status: "failed",
+      recoveredBy: "worker_drain_timeout",
+      recoveryAttempt: 0,
+      recoveryState: "quarantined",
+      recoveryReason: "waiting_tool_manual_resume_required",
+      recoveryStrategy: "requeue_running"
+    });
+  });
+
   it("keeps runs in waiting_tool until all parallel tool calls finish", async () => {
     const workspaceRoot = await mkdtemp(path.join(tmpdir(), "oah-parallel-tools-"));
     const gateway = new FakeModelGateway();
@@ -5856,6 +6580,152 @@ describe("runtime service", () => {
           mode: "quick"
         }
       }
+    });
+  });
+
+  it("rejects invalid run_action input against the action input_schema", async () => {
+    const gateway = new FakeModelGateway();
+    gateway.streamScenarioFactory = () => ({
+      text: "I attempted the action.",
+      toolSteps: [
+        {
+          toolName: "run_action",
+          input: {
+            name: "debug.echo",
+            input: {
+              mode: 42
+            }
+          },
+          toolCallId: "call_invalid_action"
+        }
+      ]
+    });
+
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_action_tool_invalid",
+      name: "action-tool-invalid",
+      rootPath: "/tmp/action-tool-invalid",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "builder",
+      settings: {
+        defaultAgent: "builder",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        builder: {
+          name: "builder",
+          mode: "primary",
+          prompt: "Use actions when helpful.",
+          tools: {
+            native: [],
+            actions: ["debug.echo"],
+            skills: [],
+            external: []
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {
+        "debug.echo": {
+          name: "debug.echo",
+          description: "Echo the provided mode.",
+          callableByApi: true,
+          callableByUser: true,
+          exposeToLlm: true,
+          retryPolicy: "safe",
+          inputSchema: {
+            type: "object",
+            properties: {
+              mode: {
+                type: "string"
+              }
+            },
+            required: ["mode"],
+            additionalProperties: false
+          },
+          directory: "/tmp",
+          entry: {
+            command:
+              "node -e \"const input = JSON.parse(process.env.OPENHARNESS_ACTION_INPUT || 'null'); process.stdout.write('mode:' + (input?.mode ?? 'none'));\""
+          }
+        }
+      },
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_action_tool_invalid",
+        agents: [{ name: "builder", mode: "primary", source: "workspace" }],
+        models: [],
+        actions: [
+          {
+            name: "debug.echo",
+            description: "Echo the provided mode.",
+            callableByApi: true,
+            callableByUser: true,
+            exposeToLlm: true,
+            retryPolicy: "safe"
+          }
+        ],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: "project_action_tool_invalid",
+      caller,
+      input: {}
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Run the debug action with invalid input." }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status !== "queued" && run.status !== "running" && run.status !== "waiting_tool";
+    });
+
+    const events = await runtimeService.listSessionEvents(session.id, undefined, accepted.runId);
+    expect(events.find((event) => event.event === "tool.failed")?.data).toMatchObject({
+      toolCallId: "call_invalid_action",
+      toolName: "run_action",
+      errorCode: "action_input_invalid"
+    });
+
+    const runSteps = await runtimeService.listRunSteps(accepted.runId);
+    expect(runSteps.items.find((step) => step.stepType === "tool_call" && step.name === "run_action")).toMatchObject({
+      status: "failed",
+      output: expect.objectContaining({
+        errorCode: "action_input_invalid"
+      })
     });
   });
 

@@ -1,0 +1,94 @@
+image:
+  tag: stable
+
+commonLabels:
+  environment: prod
+
+apiServer:
+  replicaCount: 3
+  priorityClassName: oah-api-critical
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+  ingress:
+    enabled: true
+    className: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-body-size: 32m
+    hosts:
+      - host: oah.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/instance: oah
+          app.kubernetes.io/name: open-agent-harness
+          app.kubernetes.io/component: api-server
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      cpu: "4"
+      memory: 4Gi
+
+worker:
+  replicaCount: 4
+  priorityClassName: oah-worker-critical
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 3
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/instance: oah
+          app.kubernetes.io/name: open-agent-harness
+          app.kubernetes.io/component: worker
+  resources:
+    requests:
+      cpu: "2"
+      memory: 4Gi
+    limits:
+      cpu: "8"
+      memory: 8Gi
+  workspaceVolume:
+    type: persistentVolumeClaim
+    persistentVolumeClaim:
+      claimName: oah-prod-workspaces
+
+controller:
+  replicaCount: 2
+  priorityClassName: oah-control-plane
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/instance: oah
+          app.kubernetes.io/name: open-agent-harness
+          app.kubernetes.io/component: controller
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/oah-controller
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+serviceMonitor:
+  enabled: true

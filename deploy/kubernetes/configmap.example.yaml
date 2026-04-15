@@ -39,13 +39,13 @@ data:
           type: kubernetes
           kubernetes:
             namespace: open-agent-harness
-            lease_name: oah-worker-controller
+            lease_name: oah-controller
         scale_target:
           type: kubernetes
-          allow_scale_down: false
+          allow_scale_down: true
           kubernetes:
             namespace: open-agent-harness
-            deployment: oah-worker
+            label_selector: app.kubernetes.io/component=worker
 
     llm:
       default_model: openai-default

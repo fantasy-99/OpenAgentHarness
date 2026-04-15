@@ -1,0 +1,19 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: oah-controller
+  labels:
+    app.kubernetes.io/name: oah-controller
+    app.kubernetes.io/part-of: open-agent-harness
+spec:
+  namespaceSelector:
+    matchNames:
+      - open-agent-harness
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: oah-controller
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 5s

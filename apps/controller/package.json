@@ -1,5 +1,5 @@
 {
-  "name": "@oah/worker-controller",
+  "name": "@oah/controller",
   "version": "0.1.0",
   "private": true,
   "type": "module",

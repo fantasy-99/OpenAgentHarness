@@ -1,11 +1,15 @@
-import { spawn } from "node:child_process";
 import path from "node:path";
 
 import type { Message, Run, RunStep, Session } from "@oah/api-contracts";
 
+import { validateActionInput } from "../action-input-validation.js";
 import { AppError } from "../errors.js";
-import type { ActionDefinition, SessionEvent, SessionRepository, WorkspaceRecord } from "../types.js";
+import type { ActionDefinition, SessionEvent, SessionRepository, WorkspaceCommandExecutor, WorkspaceRecord } from "../types.js";
 import type { ToolMessageService } from "./tool-messages.js";
+import {
+  WorkspaceCommandCancelledError,
+  WorkspaceCommandTimeoutError
+} from "../workspace-command-executor.js";
 
 export interface ActionExecutionResult {
   stdout: string;
@@ -16,6 +20,7 @@ export interface ActionExecutionResult {
 
 export interface ActionRunServiceDependencies {
   defaultModel: string;
+  commandExecutor: WorkspaceCommandExecutor;
   sessionRepository: SessionRepository;
   toolMessages: ToolMessageService;
   startRunStep: (input: {
@@ -69,6 +74,7 @@ function mergeToolMetadata(
 
 export class ActionRunService {
   readonly #defaultModel: string;
+  readonly #commandExecutor: WorkspaceCommandExecutor;
   readonly #sessionRepository: SessionRepository;
   readonly #toolMessages: ToolMessageService;
   readonly #startRunStep: ActionRunServiceDependencies["startRunStep"];
@@ -83,6 +89,7 @@ export class ActionRunService {
 
   constructor(dependencies: ActionRunServiceDependencies) {
     this.#defaultModel = dependencies.defaultModel;
+    this.#commandExecutor = dependencies.commandExecutor;
     this.#sessionRepository = dependencies.sessionRepository;
     this.#toolMessages = dependencies.toolMessages;
     this.#startRunStep = dependencies.startRunStep;
@@ -314,6 +321,8 @@ export class ActionRunService {
       throw new AppError(400, "actions_not_supported", `Workspace ${workspace.id} does not allow action execution.`);
     }
 
+    validateActionInput(action, explicitInput ?? run.metadata?.input ?? null);
+
     const cwd = action.entry.cwd ? path.resolve(action.directory, action.entry.cwd) : action.directory;
     const env = {
       ...process.env,
@@ -325,58 +334,40 @@ export class ActionRunService {
       OPENHARNESS_ACTION_INPUT: JSON.stringify(explicitInput ?? run.metadata?.input ?? null)
     };
 
-    const child = spawn(action.entry.command, {
-      cwd,
-      env,
-      ...(signal ? { signal } : {}),
-      shell: true
-    });
-
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-
-    const timeout =
-      action.entry.timeoutSeconds !== undefined
-        ? setTimeout(() => {
-            timedOut = true;
-            child.kill("SIGTERM");
-          }, action.entry.timeoutSeconds * 1000)
-        : undefined;
-
-    child.stdout.on("data", (chunk: Buffer | string) => {
-      stdout += chunk.toString();
-    });
-
-    child.stderr.on("data", (chunk: Buffer | string) => {
-      stderr += chunk.toString();
-    });
-
-    const exitCode = await new Promise<number>((resolve, reject) => {
-      child.on("error", reject);
-      child.on("close", (code) => resolve(code ?? 0));
-    }).finally(() => {
-      if (timeout) {
-        clearTimeout(timeout);
+    let execution;
+    try {
+      execution = await this.#commandExecutor.runForeground({
+        workspace,
+        command: action.entry.command,
+        cwd,
+        env,
+        ...(action.entry.timeoutSeconds !== undefined ? { timeoutMs: action.entry.timeoutSeconds * 1000 } : {}),
+        ...(signal ? { signal } : {})
+      });
+    } catch (error) {
+      if (error instanceof WorkspaceCommandCancelledError) {
+        throw new Error("aborted");
       }
-    });
+      if (error instanceof WorkspaceCommandTimeoutError) {
+        const timedOutRun = await this.#setRunStatus(run, "timed_out", {
+          endedAt: this.#nowIso(),
+          errorCode: "action_timed_out",
+          errorMessage: `Action ${action.name} timed out.`
+        });
+        await this.#recordSystemStep(timedOutRun, "run.timed_out", {
+          status: timedOutRun.status,
+          errorCode: timedOutRun.errorCode,
+          errorMessage: timedOutRun.errorMessage
+        });
+        throw new AppError(408, "action_timed_out", `Action ${action.name} timed out.`);
+      }
+      throw error;
+    }
+
+    const { stdout, stderr, exitCode } = execution;
 
     if (signal?.aborted) {
       throw new Error("aborted");
-    }
-
-    if (timedOut) {
-      const timedOutRun = await this.#setRunStatus(run, "timed_out", {
-        endedAt: this.#nowIso(),
-        errorCode: "action_timed_out",
-        errorMessage: `Action ${action.name} timed out.`
-      });
-      await this.#recordSystemStep(timedOutRun, "run.timed_out", {
-        status: timedOutRun.status,
-        errorCode: timedOutRun.errorCode,
-        errorMessage: timedOutRun.errorMessage
-      });
-      throw new AppError(408, "action_timed_out", `Action ${action.name} timed out.`);
     }
 
     if (exitCode !== 0) {

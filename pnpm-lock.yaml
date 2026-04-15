@@ -26,6 +26,15 @@ importers:
 
   apps/cli: {}
 
+  apps/controller:
+    dependencies:
+      '@oah/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@oah/storage-redis':
+        specifier: workspace:*
+        version: link:../../packages/storage-redis
+
   apps/server:
     dependencies:
       '@aws-sdk/client-s3':
@@ -135,6 +144,8 @@ importers:
         specifier: 8.0.3
         version: 8.0.3(@emnapi/core@1.9.1)(@emnapi/runtime@1.9.1)(@types/node@25.5.0)(esbuild@0.27.4)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.8.3)
 
+  apps/worker: {}
+
   packages/api-contracts:
     dependencies:
       zod:
@@ -189,6 +200,12 @@ importers:
 
   packages/runtime-core:
     dependencies:
+      ajv:
+        specifier: 8.18.0
+        version: 8.18.0
+      ajv-formats:
+        specifier: 3.0.1
+        version: 3.0.1(ajv@8.18.0)
       drizzle-orm:
         specifier: 0.45.2
         version: 0.45.2(@opentelemetry/api@1.9.0)(@types/pg@8.15.5)(pg@8.16.3)

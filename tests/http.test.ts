@@ -215,6 +215,11 @@ async function createStartedAppWithRuntimeService(
       isLocalOwner: boolean;
     } | undefined>;
     storageAdmin?: StorageAdmin;
+    assignWorkspacePlacementUser?: (input: {
+      workspaceId: string;
+      userId: string;
+      overwrite?: boolean | undefined;
+    }) => Promise<void>;
   }
 ) {
   const app = createApp({
@@ -232,6 +237,9 @@ async function createStartedAppWithRuntimeService(
     ...(options?.resolveCallerContext ? { resolveCallerContext: options.resolveCallerContext } : {}),
     ...(options?.resolveWorkspaceOwnership ? { resolveWorkspaceOwnership: options.resolveWorkspaceOwnership } : {}),
     ...(options?.storageAdmin ? { storageAdmin: options.storageAdmin } : {}),
+    ...(options?.assignWorkspacePlacementUser
+      ? { assignWorkspacePlacementUser: options.assignWorkspacePlacementUser }
+      : {}),
     ...(options?.importWorkspace ? { importWorkspace: options.importWorkspace } : {})
   });
 
@@ -716,6 +724,72 @@ describe("http api", () => {
           value: ["run_1", "run_2"]
         };
       },
+      async redisWorkerAffinity(input) {
+        return {
+          ...(input.ownerWorkerId ? { ownerWorkerId: input.ownerWorkerId } : {}),
+          preferredWorkerId: "worker_1",
+          ...(input.workspaceId === "ws_1" ? { workspaceAffinityWorkerId: "worker_1" } : {}),
+          ...(input.sessionId === "ses_1" ? { sessionAffinityWorkerId: "worker_2" } : {}),
+          ...(input.userId ? { userAffinityWorkerId: "worker_1" } : {}),
+          candidates: [
+            {
+              workerId: "worker_1",
+              processKind: "standalone",
+              state: "idle",
+              health: "healthy",
+              score: 930,
+              slotCapacity: 1,
+              idleSlots: 1,
+              busySlots: 0,
+              matchingSessionSlots: 0,
+              matchingWorkspaceSlots: input.workspaceId === "ws_1" ? 1 : 0,
+              matchingUserWorkspaces: input.userId ? 1 : 0,
+              reasons: ["healthy", "idle_slot_capacity", ...(input.ownerWorkerId === "worker_1" ? ["owner_worker"] : [])]
+            },
+            {
+              workerId: "worker_2",
+              processKind: "embedded",
+              state: "busy",
+              health: "healthy",
+              score: 180,
+              slotCapacity: 1,
+              idleSlots: 0,
+              busySlots: 1,
+              matchingSessionSlots: input.sessionId === "ses_1" ? 1 : 0,
+              matchingWorkspaceSlots: 0,
+              matchingUserWorkspaces: 0,
+              reasons: ["healthy", "slot_saturated", ...(input.sessionId === "ses_1" ? ["same_session"] : [])]
+            }
+          ]
+        };
+      },
+      async redisWorkspacePlacements(input) {
+        const workspaceId = input?.workspaceId;
+        const userId = input?.userId;
+        const ownerWorkerId = input?.ownerWorkerId;
+        const state = input?.state;
+        const items = [
+          {
+            workspaceId: workspaceId ?? "ws_1",
+            version: "live",
+            userId: userId ?? "user_1",
+            ownerWorkerId: ownerWorkerId ?? "worker_1",
+            ownerBaseUrl: "http://worker-1.internal:8787",
+            state: state ?? "idle",
+            sourceKind: "object_store" as const,
+            localPath: "/tmp/materialized/ws_1",
+            remotePrefix: "workspace/demo",
+            dirty: false,
+            refCount: 0,
+            lastActivityAt: "2026-04-15T00:00:00.000Z",
+            materializedAt: "2026-04-14T23:59:00.000Z",
+            updatedAt: "2026-04-15T00:00:01.000Z"
+          }
+        ];
+        return {
+          items
+        };
+      },
       async deleteRedisKey() {
         return {
           key: "oah:runs:ready",
@@ -762,6 +836,8 @@ describe("http api", () => {
       filteredTableResponse,
       keysResponse,
       keyResponse,
+      affinityResponse,
+      placementsResponse,
       deleteResponse,
       batchDeleteResponse,
       clearQueueResponse,
@@ -774,6 +850,10 @@ describe("http api", () => {
       ),
       fetch(`${activeApp.baseUrl}/api/v1/storage/redis/keys?pattern=oah:*`),
       fetch(`${activeApp.baseUrl}/api/v1/storage/redis/key?key=oah:runs:ready`),
+      fetch(
+        `${activeApp.baseUrl}/api/v1/storage/redis/worker-affinity?workspaceId=ws_1&sessionId=ses_1&ownerWorkerId=worker_1`
+      ),
+      fetch(`${activeApp.baseUrl}/api/v1/storage/redis/workspace-placements?workspaceId=ws_1`),
       fetch(`${activeApp.baseUrl}/api/v1/storage/redis/key?key=oah:runs:ready`, {
         method: "DELETE"
       }),
@@ -811,6 +891,8 @@ describe("http api", () => {
     expect(filteredTableResponse.status).toBe(200);
     expect(keysResponse.status).toBe(200);
     expect(keyResponse.status).toBe(200);
+    expect(affinityResponse.status).toBe(200);
+    expect(placementsResponse.status).toBe(200);
     expect(deleteResponse.status).toBe(200);
     expect(batchDeleteResponse.status).toBe(200);
     expect(clearQueueResponse.status).toBe(200);
@@ -863,6 +945,23 @@ describe("http api", () => {
       key: "oah:runs:ready",
       value: ["run_1", "run_2"]
     });
+    await expect(affinityResponse.json()).resolves.toMatchObject({
+      ownerWorkerId: "worker_1",
+      preferredWorkerId: "worker_1",
+      workspaceAffinityWorkerId: "worker_1",
+      sessionAffinityWorkerId: "worker_2",
+      candidates: [{ workerId: "worker_1" }, { workerId: "worker_2" }]
+    });
+    await expect(placementsResponse.json()).resolves.toMatchObject({
+      items: [
+        {
+          workspaceId: "ws_1",
+          userId: "user_1",
+          ownerWorkerId: "worker_1",
+          state: "idle"
+        }
+      ]
+    });
     await expect(deleteResponse.json()).resolves.toEqual({
       key: "oah:runs:ready",
       deleted: true
@@ -899,6 +998,88 @@ describe("http api", () => {
     });
 
     expect(response.status).toBe(201);
+  });
+
+  it("records workspace placement user affinity from workspace creation and session creation", async () => {
+    const assignedUsers: Array<{ workspaceId: string; userId: string; overwrite?: boolean }> = [];
+    const gateway = new FakeModelGateway(20);
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence,
+      workspaceInitializer: {
+        async initialize(input) {
+          return {
+            rootPath: input.rootPath,
+            settings: {
+              defaultAgent: "default",
+              skillDirs: []
+            },
+            defaultAgent: "default",
+            workspaceModels: {},
+            agents: {},
+            actions: {},
+            skills: {},
+            toolServers: {},
+            hooks: {},
+            catalog: {
+              workspaceId: "template",
+              agents: [],
+              models: [],
+              actions: [],
+              skills: [],
+              tools: [],
+              hooks: [],
+              nativeTools: []
+            }
+          };
+        }
+      }
+    });
+
+    activeApp = await createStartedAppWithRuntimeService(runtimeService, gateway, {
+      assignWorkspacePlacementUser: async (input) => {
+        assignedUsers.push(input);
+      }
+    });
+
+    const workspaceResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        name: "placement-user-workspace",
+        template: "workspace",
+        rootPath: "/tmp/placement-user-workspace",
+        userId: "user_explicit"
+      })
+    });
+    expect(workspaceResponse.status).toBe(201);
+    const workspace = (await workspaceResponse.json()) as { id: string };
+
+    const sessionResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}/sessions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({})
+    });
+    expect(sessionResponse.status).toBe(201);
+
+    expect(assignedUsers).toEqual([
+      {
+        workspaceId: workspace.id,
+        userId: "user_explicit",
+        overwrite: true
+      },
+      {
+        workspaceId: workspace.id,
+        userId: "standalone:anonymous",
+        overwrite: false
+      }
+    ]);
   });
 
   it("lists workspaces and sessions over HTTP", async () => {
@@ -2530,8 +2711,9 @@ entry:
     );
 
     expect(response.status).toBe(202);
-    const accepted = (await response.json()) as { runId: string; actionName: string };
+    const accepted = (await response.json()) as { runId: string; actionName: string; sessionId?: string };
     expect(accepted.actionName).toBe("debug.echo");
+    expect(accepted.sessionId).toBeTruthy();
 
     await waitFor(async () => {
       const runResponse = await fetch(`${activeApp.baseUrl}/api/v1/runs/${accepted.runId}`, {
@@ -2561,6 +2743,112 @@ entry:
         })
       ])
     );
+  });
+
+  it("rejects invalid action input over HTTP using input_schema validation", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-http-action-validate-"));
+    await mkdir(path.join(tempDir, ".openharness", "actions", "echo"), { recursive: true });
+
+    await writeFile(
+      path.join(tempDir, ".openharness", "actions", "echo", "ACTION.yaml"),
+      `
+name: debug.echo
+description: Echo over HTTP
+input_schema:
+  type: object
+  properties:
+    mode:
+      type: string
+  required: [mode]
+  additionalProperties: false
+entry:
+  command: printf "http-action-ok"
+`,
+      "utf8"
+    );
+
+    const workspace = await discoverWorkspace(tempDir, "project", {
+      platformModels: {
+        "openai-default": {
+          provider: "openai",
+          name: "gpt-4o-mini"
+        }
+      }
+    });
+
+    activeApp = await createStartedAppWithWorkspace(workspace);
+    const response = await fetch(
+      `${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}/actions/debug.echo/runs`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer token-1",
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          input: {
+            mode: 123
+          }
+        })
+      }
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "action_input_invalid"
+      }
+    });
+  });
+
+  it("rejects user-triggered action runs over HTTP when callable_by_user is false", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-http-action-user-guard-"));
+    await mkdir(path.join(tempDir, ".openharness", "actions", "echo"), { recursive: true });
+
+    await writeFile(
+      path.join(tempDir, ".openharness", "actions", "echo", "ACTION.yaml"),
+      `
+name: debug.echo
+description: Echo over HTTP
+expose:
+  callable_by_user: false
+  callable_by_api: true
+entry:
+  command: printf "http-action-ok"
+`,
+      "utf8"
+    );
+
+    const workspace = await discoverWorkspace(tempDir, "project", {
+      platformModels: {
+        "openai-default": {
+          provider: "openai",
+          name: "gpt-4o-mini"
+        }
+      }
+    });
+
+    activeApp = await createStartedAppWithWorkspace(workspace);
+    const response = await fetch(
+      `${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}/actions/debug.echo/runs`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer token-1",
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          triggerSource: "user"
+        })
+      }
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "action_not_callable_by_user"
+      }
+    });
   });
 
   it("streams tool lifecycle events over HTTP SSE", async () => {

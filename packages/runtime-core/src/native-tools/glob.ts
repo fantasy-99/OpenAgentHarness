@@ -1,4 +1,3 @@
-import { stat } from "node:fs/promises";
 import path from "node:path";
 
 import { z } from "zod";
@@ -34,14 +33,14 @@ export function createGlobTool(context: NativeToolFactoryContext): RuntimeToolSe
         context.assertVisible("Glob");
         const input = GlobInputSchema.parse(rawInput);
         const startedAt = Date.now();
-        const resolved = resolveWorkspacePath(context.workspaceRoot, input.path ?? ".");
-        const entry = await stat(resolved.absolutePath).catch(() => null);
-        if (!entry?.isDirectory()) {
+        const resolved = await resolveWorkspacePath(context.fileSystem, context.workspaceRoot, input.path ?? ".");
+        const entry = await context.fileSystem.stat(resolved.absolutePath).catch(() => null);
+        if (entry?.kind !== "directory") {
           throw new AppError(404, "native_tool_directory_not_found", `Directory ${input.path ?? "."} was not found.`);
         }
 
         const matcher = globToRegExp(input.pattern);
-        const files = await collectWorkspaceFiles(resolved.absolutePath);
+        const files = await collectWorkspaceFiles(context.fileSystem, resolved.absolutePath);
         const matches = files
           .map((file) => ({
             relativePath: normalizePathForMatch(path.relative(resolved.absolutePath, file.absolutePath)),

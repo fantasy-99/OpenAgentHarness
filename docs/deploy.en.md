@@ -57,10 +57,21 @@ The API process handles HTTP requests only. Worker processes consume the Redis q
 
 The repository now includes a minimal Kubernetes split-deployment skeleton:
 
+- [`Dockerfile`](/Users/wumengsong/Code/OpenAgentHarness/Dockerfile)
+- [`.github/workflows/publish-image.yml`](/Users/wumengsong/Code/OpenAgentHarness/.github/workflows/publish-image.yml)
 - [`deploy/kubernetes/kustomization.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/kubernetes/kustomization.yaml)
+- [`deploy/charts/open-agent-harness/Chart.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/charts/open-agent-harness/Chart.yaml)
+- [`deploy/charts/open-agent-harness/values.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/charts/open-agent-harness/values.yaml)
+- [`deploy/charts/open-agent-harness/README.md`](/Users/wumengsong/Code/OpenAgentHarness/deploy/charts/open-agent-harness/README.md)
+- [`deploy/charts/open-agent-harness/examples/dev.values.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/charts/open-agent-harness/examples/dev.values.yaml)
+- [`deploy/charts/open-agent-harness/examples/staging.values.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/charts/open-agent-harness/examples/staging.values.yaml)
+- [`deploy/charts/open-agent-harness/examples/prod.values.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/charts/open-agent-harness/examples/prod.values.yaml)
 - [`deploy/kubernetes/api-server.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/kubernetes/api-server.yaml)
 - [`deploy/kubernetes/worker.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/kubernetes/worker.yaml)
-- [`deploy/kubernetes/worker-controller.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/kubernetes/worker-controller.yaml)
+- [`deploy/kubernetes/controller.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/kubernetes/controller.yaml)
+- [`deploy/kubernetes/controller-servicemonitor.example.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/kubernetes/controller-servicemonitor.example.yaml)
+- [`deploy/kustomization.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/kustomization.yaml)
+- [`deploy/controller-servicemonitor.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/controller-servicemonitor.yaml)
 - [`deploy/kubernetes/controller-rbac.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/kubernetes/controller-rbac.yaml)
 - [`deploy/kubernetes/configmap.example.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/kubernetes/configmap.example.yaml)
 
@@ -72,15 +83,63 @@ kubectl apply -f ./deploy/kubernetes/configmap.example.yaml
 kubectl apply -f ./deploy/kubernetes/controller-rbac.yaml
 kubectl apply -f ./deploy/kubernetes/api-server.yaml
 kubectl apply -f ./deploy/kubernetes/worker.yaml
-kubectl apply -f ./deploy/kubernetes/worker-controller.yaml
+kubectl apply -f ./deploy/kubernetes/controller.yaml
 ```
+
+Or install the same split-deployment skeleton via Helm:
+
+```bash
+helm upgrade --install oah ./deploy/charts/open-agent-harness \
+  --namespace open-agent-harness \
+  --create-namespace \
+  --set image.repository=ghcr.io/open-agent-harness/open-agent-harness \
+  --set image.tag=latest
+```
+
+If you do not want to assemble values from scratch, you can also start from a shipped environment example:
+
+```bash
+helm upgrade --install oah ./deploy/charts/open-agent-harness \
+  --namespace open-agent-harness \
+  --create-namespace \
+  -f ./deploy/charts/open-agent-harness/examples/staging.values.yaml
+```
+
+The repository now also includes a minimal GHCR publishing path for production images:
+
+```bash
+git push origin master
+```
+
+Notes:
+
+- [`.github/workflows/publish-image.yml`](/Users/wumengsong/Code/OpenAgentHarness/.github/workflows/publish-image.yml) builds the production [`Dockerfile`](/Users/wumengsong/Code/OpenAgentHarness/Dockerfile) on `master` and `v*` tags
+- By default it publishes to `ghcr.io/<repo-owner>/open-agent-harness`
+- If you need a different package path, set the GitHub repository variable `OAH_IMAGE_NAME`
+- If you want to match the repository's shipped example manifests/chart defaults, set `OAH_IMAGE_NAME=open-agent-harness/open-agent-harness`
 
 This baseline already includes:
 
-- Separate Deployments for `api-server`, `worker`, and `worker-controller`
-- Kubernetes Lease based leader election for `worker-controller`
-- Replica reconciliation through the `Deployment /scale` subresource
-- `allow_scale_down = false` by default so automatic scale-up is enabled before automatic scale-down is trusted
+- Separate Deployments for `api-server`, `worker`, and `controller`
+- A dedicated ClusterIP Service for `controller` exposing `/healthz`, `/readyz`, `/snapshot`, and `/metrics`
+- Kubernetes Lease based leader election for `controller`
+- Replica reconciliation through the `Deployment /scale` subresource, with optional target discovery via `label_selector`
+- `controller-rbac.yaml` now includes the `leases`, `deployments`, and `deployments/scale` permissions needed for leader election, label-selector discovery, and replica reconciliation
+- Automatic scale-down is now enabled when safety conditions are met; the real scale-down guardrail comes from controller health probes against worker `/healthz`
+- Workers now enter a drain phase on shutdown so readiness drops before the current run is allowed to finish
+- Drain now also flushes and evicts idle workspace copies and blocks new object-store materialization from starting
+- All three Deployments now declare explicit rollout strategy settings; `api-server` / `worker` use `maxUnavailable: 0`, and `worker` keeps a longer `terminationGracePeriodSeconds` window so drain has time to converge
+- The `controller` Service ships with basic `prometheus.io/*` scrape annotations; fuller ServiceMonitor / Prometheus Operator integration is still better handled in production overlays or Helm charts
+- The repository also ships [`controller-servicemonitor.example.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/kubernetes/controller-servicemonitor.example.yaml) as a Prometheus Operator example; it is intentionally not included in the default `kustomization.yaml`
+- The repository now also ships a directly usable Prometheus Operator kustomization:
+  [`deploy/kustomization.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/kustomization.yaml)
+  It layers [`deploy/controller-servicemonitor.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/controller-servicemonitor.yaml) on top of the base `deploy/kubernetes` skeleton, so Prometheus Operator users can enable the `controller` `ServiceMonitor` with `kubectl apply -k ./deploy`
+- The repository now also ships a minimal Helm chart so the split deployment, RBAC, ConfigMap, and optional `ServiceMonitor` can be managed together by Helm
+- The Helm chart now also supports existing ConfigMaps, worker PVC-backed workspace volumes, and per-component resources / securityContext / envFrom / scheduling settings
+- The Helm chart now also supports `PodDisruptionBudget`, `topologySpreadConstraints`, `priorityClassName`, and direct `api-server` Ingress generation
+- The chart directory now also ships `dev / staging / prod` values examples, so teams can start from environment-specific presets instead of building everything from scratch
+- The repository now also ships a production `Dockerfile` and minimal GHCR publishing workflow, so the K8S manifests/chart are no longer assuming some external image pipeline already exists
+- The GHCR workflow now also emits `sbom/provenance` and performs Cosign keyless signing
 
 ---
 

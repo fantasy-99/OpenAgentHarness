@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { CircleSlash2, Download } from "lucide-react";
 
 import type {
@@ -14,6 +14,9 @@ import type {
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import { Textarea } from "../components/ui/textarea";
 import { cn } from "../lib/utils";
 
 import {
@@ -29,6 +32,11 @@ import {
   type ModelCallTraceToolServer
 } from "./support";
 import {
+  buildStructuredActionInput,
+  deriveStructuredActionInputSpec,
+  initializeStructuredActionInputValues
+} from "./action-input-form";
+import {
   CatalogLine,
   compactPreviewText,
   EmptyState,
@@ -39,6 +47,8 @@ import {
   PayloadValueView,
   modelMessageTone
 } from "./primitives";
+
+const ACTION_INPUT_UNSET_VALUE = "__unset__";
 
 function InspectorPanelHeader(props: { title: string; description: string; action?: ReactNode }) {
   return (
@@ -1331,12 +1341,22 @@ function WorkspaceWorkbench(props: {
   runtimeToolNames: string[];
   activeToolNames: string[];
   toolServers: ModelCallTraceToolServer[];
+  triggerWorkspaceAction: (input: { workspaceId: string; actionName: string; input?: unknown }) => Promise<boolean>;
   refreshWorkspace: (targetId: string) => void;
 }) {
   const [panel, setPanel] = useState<"snapshot" | "catalog" | "records">("snapshot");
+  const [selectedUserActionName, setSelectedUserActionName] = useState("");
+  const [actionInputMode, setActionInputMode] = useState<"structured" | "json">("json");
+  const [actionInputText, setActionInputText] = useState("");
+  const [structuredActionInputValues, setStructuredActionInputValues] = useState<Record<string, string>>({});
+  const [actionInputError, setActionInputError] = useState("");
+  const [actionRunBusy, setActionRunBusy] = useState(false);
   const workspaceKind = props.workspace?.kind ?? "n/a";
   const workspaceId = props.workspace?.id ?? "n/a";
   const selectedRunId = props.run?.id ?? "n/a";
+  const userCallableActions = (props.catalog?.actions ?? []).filter((action) => action.callableByUser !== false);
+  const selectedUserAction = userCallableActions.find((action) => action.name === selectedUserActionName) ?? userCallableActions[0];
+  const selectedUserActionFormSpec = deriveStructuredActionInputSpec(selectedUserAction?.inputSchema);
   const inventoryRows = props.catalog
     ? [
         { label: "agents", value: props.catalog.agents.length },
@@ -1349,6 +1369,73 @@ function WorkspaceWorkbench(props: {
         { label: "nativeTools", value: props.catalog.nativeTools.length }
       ]
     : [];
+  const userCallableActionNamesKey = userCallableActions.map((action) => action.name).join("|");
+  const selectedUserActionKey = `${selectedUserAction?.name ?? ""}:${JSON.stringify(selectedUserAction?.inputSchema ?? null)}`;
+
+  useEffect(() => {
+    if (userCallableActions.length === 0) {
+      if (selectedUserActionName) {
+        setSelectedUserActionName("");
+      }
+      return;
+    }
+
+    if (!userCallableActions.some((action) => action.name === selectedUserActionName)) {
+      setSelectedUserActionName(userCallableActions[0]!.name);
+    }
+  }, [selectedUserActionName, userCallableActionNamesKey, userCallableActions]);
+
+  useEffect(() => {
+    setActionInputError("");
+    setActionInputText("");
+    if (selectedUserActionFormSpec) {
+      setActionInputMode("structured");
+      setStructuredActionInputValues(initializeStructuredActionInputValues(selectedUserActionFormSpec));
+      return;
+    }
+
+    setActionInputMode("json");
+    setStructuredActionInputValues({});
+  }, [selectedUserActionKey, selectedUserActionFormSpec]);
+
+  async function handleRunWorkspaceAction() {
+    if (!props.workspace?.id || !selectedUserAction) {
+      return;
+    }
+
+    const trimmedInput = actionInputText.trim();
+    let parsedInput: unknown;
+    if (selectedUserActionFormSpec && actionInputMode === "structured") {
+      const builtInput = buildStructuredActionInput(selectedUserActionFormSpec, structuredActionInputValues);
+      if (!builtInput.ok) {
+        setActionInputError(builtInput.error);
+        return;
+      }
+      parsedInput = builtInput.value;
+    } else if (trimmedInput.length > 0) {
+      try {
+        parsedInput = JSON.parse(trimmedInput);
+      } catch {
+        setActionInputError("Action input must be valid JSON.");
+        return;
+      }
+    }
+
+    setActionInputError("");
+    setActionRunBusy(true);
+    try {
+      const triggered = await props.triggerWorkspaceAction({
+        workspaceId: props.workspace.id,
+        actionName: selectedUserAction.name,
+        ...(trimmedInput.length > 0 ? { input: parsedInput } : {})
+      });
+      if (triggered) {
+        setActionInputText("");
+      }
+    } finally {
+      setActionRunBusy(false);
+    }
+  }
 
   return (
     <section className="space-y-4">
@@ -1379,6 +1466,197 @@ function WorkspaceWorkbench(props: {
                   <Button variant="ghost" size="sm" onClick={() => props.refreshWorkspace(props.workspace!.id)}>
                     Refresh
                   </Button>
+                </div>
+                <div className="mt-4 rounded-[16px] border border-border/70 bg-muted/10 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Run Action</p>
+                    {selectedUserAction?.retryPolicy ? <Badge variant="outline">{selectedUserAction.retryPolicy}</Badge> : null}
+                  </div>
+                  {userCallableActions.length > 0 ? (
+                    <>
+                      <div className="mt-3">
+                        <Select value={selectedUserAction?.name ?? ""} onValueChange={setSelectedUserActionName}>
+                          <SelectTrigger className="h-9 w-full text-sm" aria-label="User action">
+                            <SelectValue placeholder="Select action" />
+                          </SelectTrigger>
+                          <SelectContent align="start">
+                            {userCallableActions.map((action) => (
+                              <SelectItem key={action.name} value={action.name}>
+                                {action.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      {selectedUserAction?.description ? (
+                        <p className="mt-2 text-xs leading-5 text-muted-foreground">{selectedUserAction.description}</p>
+                      ) : null}
+                      {selectedUserAction?.inputSchema ? (
+                        <div className="mt-3">
+                          <JsonBlock title="Input Schema" value={selectedUserAction.inputSchema} />
+                        </div>
+                      ) : null}
+                      {selectedUserActionFormSpec ? (
+                        <div className="mt-3 space-y-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant={actionInputMode === "structured" ? "secondary" : "outline"}
+                              onClick={() => setActionInputMode("structured")}
+                            >
+                              Structured
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant={actionInputMode === "json" ? "secondary" : "outline"}
+                              onClick={() => setActionInputMode("json")}
+                            >
+                              Raw JSON
+                            </Button>
+                          </div>
+                          {actionInputMode === "structured" ? (
+                            selectedUserActionFormSpec.fields.length > 0 ? (
+                              <div className="grid gap-3 sm:grid-cols-2">
+                                {selectedUserActionFormSpec.fields.map((field) => (
+                                  <div key={field.name} className={cn("space-y-2", field.kind === "boolean" ? "sm:col-span-2" : "")}>
+                                    <Label>
+                                      {field.label}
+                                      {field.required ? " *" : ""}
+                                    </Label>
+                                    {field.kind === "string" ? (
+                                      <Input
+                                        value={structuredActionInputValues[field.name] ?? ""}
+                                        onChange={(event) => {
+                                          setStructuredActionInputValues((current) => ({
+                                            ...current,
+                                            [field.name]: event.target.value
+                                          }));
+                                          if (actionInputError) {
+                                            setActionInputError("");
+                                          }
+                                        }}
+                                        placeholder={field.description ?? field.label}
+                                      />
+                                    ) : field.kind === "number" || field.kind === "integer" ? (
+                                      <Input
+                                        type="number"
+                                        step={field.kind === "integer" ? "1" : "any"}
+                                        value={structuredActionInputValues[field.name] ?? ""}
+                                        onChange={(event) => {
+                                          setStructuredActionInputValues((current) => ({
+                                            ...current,
+                                            [field.name]: event.target.value
+                                          }));
+                                          if (actionInputError) {
+                                            setActionInputError("");
+                                          }
+                                        }}
+                                        placeholder={field.kind === "integer" ? "0" : "0.0"}
+                                      />
+                                    ) : field.kind === "boolean" ? (
+                                      <Select
+                                        value={structuredActionInputValues[field.name] || ACTION_INPUT_UNSET_VALUE}
+                                        onValueChange={(value) => {
+                                          setStructuredActionInputValues((current) => ({
+                                            ...current,
+                                            [field.name]: value === ACTION_INPUT_UNSET_VALUE ? "" : value
+                                          }));
+                                          if (actionInputError) {
+                                            setActionInputError("");
+                                          }
+                                        }}
+                                      >
+                                        <SelectTrigger className="h-9 w-full text-sm" aria-label={field.label}>
+                                          <SelectValue placeholder={field.required ? "Select true or false" : "Not set"} />
+                                        </SelectTrigger>
+                                        <SelectContent align="start">
+                                          {!field.required ? <SelectItem value={ACTION_INPUT_UNSET_VALUE}>Not set</SelectItem> : null}
+                                          <SelectItem value="true">true</SelectItem>
+                                          <SelectItem value="false">false</SelectItem>
+                                        </SelectContent>
+                                      </Select>
+                                    ) : field.kind === "string_enum" ? (
+                                      <Select
+                                        value={structuredActionInputValues[field.name] || ACTION_INPUT_UNSET_VALUE}
+                                        onValueChange={(value) => {
+                                          setStructuredActionInputValues((current) => ({
+                                            ...current,
+                                            [field.name]: value === ACTION_INPUT_UNSET_VALUE ? "" : value
+                                          }));
+                                          if (actionInputError) {
+                                            setActionInputError("");
+                                          }
+                                        }}
+                                      >
+                                        <SelectTrigger className="h-9 w-full text-sm" aria-label={field.label}>
+                                          <SelectValue placeholder={field.required ? "Select a value" : "Not set"} />
+                                        </SelectTrigger>
+                                        <SelectContent align="start">
+                                          {!field.required ? <SelectItem value={ACTION_INPUT_UNSET_VALUE}>Not set</SelectItem> : null}
+                                          {field.options.map((option: string) => (
+                                            <SelectItem key={option} value={option}>
+                                              {option}
+                                            </SelectItem>
+                                          ))}
+                                        </SelectContent>
+                                      </Select>
+                                    ) : null}
+                                    {field.description ? <p className="text-xs leading-5 text-muted-foreground">{field.description}</p> : null}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-xs leading-5 text-muted-foreground">
+                                This action accepts an object input with no predefined fields. Structured mode will submit an empty object.
+                              </p>
+                            )
+                          ) : (
+                            <Textarea
+                              value={actionInputText}
+                              onChange={(event) => {
+                                setActionInputText(event.target.value);
+                                if (actionInputError) {
+                                  setActionInputError("");
+                                }
+                              }}
+                              placeholder='Optional JSON input, for example {"mode":"quick"}'
+                              className="min-h-[108px] text-xs leading-6"
+                            />
+                          )}
+                        </div>
+                      ) : (
+                        <Textarea
+                          value={actionInputText}
+                          onChange={(event) => {
+                            setActionInputText(event.target.value);
+                            if (actionInputError) {
+                              setActionInputError("");
+                            }
+                          }}
+                          placeholder='Optional JSON input, for example {"mode":"quick"}'
+                          className="mt-3 min-h-[108px] text-xs leading-6"
+                        />
+                      )}
+                      <p className={cn("mt-2 text-xs leading-5", actionInputError ? "text-rose-600" : "text-muted-foreground")}>
+                        {actionInputError ||
+                          (props.session?.workspaceId === props.workspace.id
+                            ? `This run will attach to the current session ${props.session.id}.`
+                            : "No active session is attached to this workspace. Running the action will create a temporary session automatically.")}
+                      </p>
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <Button size="sm" disabled={actionRunBusy || !selectedUserAction} onClick={() => void handleRunWorkspaceAction()}>
+                          {actionRunBusy ? "Running..." : "Run Action"}
+                        </Button>
+                        <Badge variant="secondary">{selectedUserAction?.name ?? "no action selected"}</Badge>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="mt-3 text-xs leading-5 text-muted-foreground">
+                      No user-callable actions are exposed in this workspace catalog.
+                    </p>
+                  )}
                 </div>
                 <p className="mt-3 text-xs leading-6 text-muted-foreground">
                   Use Snapshot for quick environment checks. Switch to Catalog or Records only when you need the full detail.

@@ -23,11 +23,15 @@ import { createSQLiteRuntimePersistence, sqliteWorkspaceHistoryDbPath } from "@o
 import {
   FanoutSessionEventStore,
   createRedisWorkerRegistry,
+  createRedisWorkspacePlacementRegistry,
   createRedisWorkspaceLeaseRegistry,
   createRedisSessionEventBus,
   createRedisSessionRunQueue
 } from "@oah/storage-redis";
-import { WorkspaceMaterializationManager } from "./bootstrap/workspace-materialization.js";
+import {
+  WorkspaceMaterializationManager
+} from "./bootstrap/workspace-materialization.js";
+import { createMaterializationSandboxHost, type SandboxHost } from "./bootstrap/sandbox-host.js";
 import { createWorkerRuntimeControl, type WorkerRuntimeStatus } from "./bootstrap/worker-runtime.js";
 import { createDirectoryObjectStore, ObjectStorageMirrorController } from "./object-storage.js";
 import { appendRuntimeLogEvent, buildRuntimeConsoleLogger } from "./runtime-console.js";
@@ -343,6 +347,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     await objectStorageMirror.initialize();
   }
   let workspaceMaterializationManager: WorkspaceMaterializationManager | undefined;
+  let sandboxHost: SandboxHost | undefined;
   const modelDir = config.paths.model_dir;
   const toolDir = config.paths.tool_dir;
   const logModelLoadError = (filePath: string, error: unknown): void => {
@@ -444,6 +449,17 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
           return undefined;
         })
       : undefined;
+  const redisWorkspacePlacementRegistry =
+    config.storage.redis_url && config.storage.redis_url.trim().length > 0
+      ? await createRedisWorkspacePlacementRegistry({
+          url: config.storage.redis_url
+        }).catch((error: unknown) => {
+          console.warn(
+            `Redis workspace placement registry unavailable (${error instanceof Error ? error.message : "unknown error"}); continuing without workspace placement state.`
+          );
+          return undefined;
+        })
+      : undefined;
   workspaceMaterializationManager = config.object_storage
     ? new WorkspaceMaterializationManager({
         cacheRoot: path.join(config.paths.workspace_dir, ".openharness", "__materialized__"),
@@ -451,10 +467,16 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         ...(ownerBaseUrl ? { ownerBaseUrl } : {}),
         store: createDirectoryObjectStore(config.object_storage),
         leaseRegistry: redisWorkspaceLeaseRegistry,
+        placementRegistry: redisWorkspacePlacementRegistry,
         logger: (message) => {
           console.info(message);
         }
-      })
+        })
+      : undefined;
+  sandboxHost = workspaceMaterializationManager
+    ? createMaterializationSandboxHost({
+      materializationManager: workspaceMaterializationManager
+    })
     : undefined;
   const redisConfigured = Boolean(config.storage.redis_url && config.storage.redis_url.trim().length > 0);
   const storageAdmin = createStorageAdmin({
@@ -463,6 +485,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     redisAvailable: redisConfigured,
     redisEventBusEnabled: Boolean(redisBus),
     redisRunQueueEnabled: Boolean(redisRunQueue),
+    ...(redisWorkspacePlacementRegistry ? { workspacePlacementRegistry: redisWorkspacePlacementRegistry } : {}),
     archiveExportEnabled: false,
     archiveExportRoot: config.paths.archive_dir
   });
@@ -772,15 +795,13 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     void reloadPlatformModels();
   }, 2_000);
   platformModelsPollTimer.unref?.();
-  if (workspaceMaterializationManager) {
+  if (sandboxHost) {
     workspaceMaterializationMaintenanceTimer = setInterval(() => {
       const idleBefore = new Date(
         Date.now() - parsePositiveIntEnv("OAH_WORKSPACE_MATERIALIZATION_IDLE_TTL_MS", 60_000)
       ).toISOString();
-      void workspaceMaterializationManager
-        .refreshLeases()
-        .then(() => workspaceMaterializationManager.flushIdleCopies({ idleBefore }))
-        .then(() => workspaceMaterializationManager.evictIdleCopies({ idleBefore }))
+      void sandboxHost
+        .maintain({ idleBefore })
         .catch((error) => {
           console.warn("Workspace materialization maintenance failed.", error);
         });
@@ -805,42 +826,12 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     runRepository,
     sessionEventStore,
     runQueue: redisRunQueue,
-    ...(workspaceMaterializationManager
+    ...(sandboxHost
       ? {
-          workspaceExecutionProvider: {
-            async acquire({ workspace }: { workspace: WorkspaceRecord }) {
-              const lease = await workspaceMaterializationManager.acquireWorkspace({
-                workspace
-              });
-
-              return {
-                workspace: {
-                  ...workspace,
-                  rootPath: lease.localPath
-                },
-                async release(options?: { dirty?: boolean | undefined }) {
-                  await lease.release(options);
-                }
-              };
-            }
-          },
-          workspaceFileAccessProvider: {
-            async acquire({ workspace }: { workspace: WorkspaceRecord }) {
-              const lease = await workspaceMaterializationManager.acquireWorkspace({
-                workspace
-              });
-
-              return {
-                workspace: {
-                  ...workspace,
-                  rootPath: lease.localPath
-                },
-                async release(options?: { dirty?: boolean | undefined }) {
-                  await lease.release(options);
-                }
-              };
-            }
-          }
+          workspaceCommandExecutor: sandboxHost.workspaceCommandExecutor,
+          workspaceFileSystem: sandboxHost.workspaceFileSystem,
+          workspaceExecutionProvider: sandboxHost.workspaceExecutionProvider,
+          workspaceFileAccessProvider: sandboxHost.workspaceFileAccessProvider
         }
       : {}),
     ...(singleWorkspace === undefined
@@ -904,6 +895,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     startWorker,
     processKind,
     runtimeInstanceId,
+    ownerBaseUrl,
     config,
     redisRunQueue,
     redisWorkerRegistry,
@@ -1026,6 +1018,20 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
           }
         }
       : {}),
+    ...(redisWorkspacePlacementRegistry
+      ? {
+          assignWorkspacePlacementUser: async (input: {
+            workspaceId: string;
+            userId: string;
+            overwrite?: boolean | undefined;
+          }) => {
+            await redisWorkspacePlacementRegistry.assignUser(input.workspaceId, input.userId, {
+              overwrite: input.overwrite,
+              updatedAt: new Date().toISOString()
+            });
+          }
+        }
+      : {}),
     ...(redisWorkspaceLeaseRegistry
       ? {
           resolveWorkspaceOwnership: async (workspaceId: string) => {
@@ -1055,6 +1061,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     },
     async healthReport() {
       const workerStatus = await workerRuntime.getStatus();
+      const materializationDiagnostics = sandboxHost?.diagnostics().materialization;
       const checks = {
         postgres: await postgresCheck(),
         redisEvents: await redisEventsCheck(),
@@ -1062,7 +1069,10 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       };
 
       return {
-        status: Object.values(checks).some((value) => value === "down") ? "degraded" : "ok",
+        status:
+          Object.values(checks).some((value) => value === "down") || (materializationDiagnostics?.failureCount ?? 0) > 0
+            ? "degraded"
+            : "ok",
         storage: {
           primary: primaryStorageMode,
           events: redisBus ? "redis" : "memory",
@@ -1070,7 +1080,10 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         },
         process: runtimeProcess,
         checks,
-        worker: workerStatus
+        worker: {
+          ...workerStatus,
+          ...(materializationDiagnostics ? { materialization: materializationDiagnostics } : {})
+        }
       };
     },
     async readinessReport() {
@@ -1089,6 +1102,11 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       };
     },
     async beginDrain() {
+      if (workspaceMaterializationMaintenanceTimer) {
+        clearInterval(workspaceMaterializationMaintenanceTimer);
+        workspaceMaterializationMaintenanceTimer = undefined;
+      }
+      await sandboxHost?.beginDrain();
       await workerRuntime.beginDrain();
     },
     async close() {
@@ -1098,9 +1116,10 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         redisBus?.close() ?? Promise.resolve(),
         redisWorkerRegistry?.close() ?? Promise.resolve(),
         redisWorkspaceLeaseRegistry?.close() ?? Promise.resolve(),
+        redisWorkspacePlacementRegistry?.close() ?? Promise.resolve(),
         redisRunQueue?.close() ?? Promise.resolve()
       ]);
-      await workspaceMaterializationManager?.close();
+      await sandboxHost?.close();
       await closePersistence();
       await objectStorageMirror?.close();
       if (workspaceSyncTimer) {

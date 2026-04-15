@@ -11,6 +11,8 @@ export * from "./runtime-service.js";
 export * from "./skill-activation.js";
 export * from "./types.js";
 export * from "./utils.js";
+export * from "./workspace-command-executor.js";
+export * from "./workspace-file-system.js";
 export type { Message, Run, RunStep, Session, Workspace } from "@oah/api-contracts";
 export type {
   RuntimeMessage,

@@ -87,12 +87,17 @@ export function createWorkerRuntimeControl(options: {
   startWorker: boolean;
   processKind: "api" | "worker";
   runtimeInstanceId?: string | undefined;
+  ownerBaseUrl?: string | undefined;
   config: WorkerHostConfig;
   redisRunQueue?: SessionRunQueue | undefined;
   redisWorkerRegistry?: WorkerRegistry | undefined;
   runtimeService: {
     processQueuedRun(runId: string): Promise<void>;
     getRun?(runId: string): Promise<{ workspaceId: string }>;
+    recoverRunAfterDrainTimeout?(
+      runId: string,
+      strategy: "fail" | "requeue_running" | "requeue_all"
+    ): Promise<"failed" | "requeued" | "ignored">;
     recoverStaleRuns?(options?: {
       staleBefore?: string | undefined;
       limit?: number | undefined;
@@ -110,6 +115,7 @@ export function createWorkerRuntimeControl(options: {
     startWorker: options.startWorker,
     processKind: options.processKind,
     ...(options.runtimeInstanceId ? { runtimeInstanceId: options.runtimeInstanceId } : {}),
+    ...(options.ownerBaseUrl ? { ownerBaseUrl: options.ownerBaseUrl } : {}),
     config: options.config,
     redisRunQueue: options.redisRunQueue,
     redisWorkerRegistry: options.redisWorkerRegistry,

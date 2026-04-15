@@ -1,6 +1,14 @@
-# Worker Control Plane
+# Controller And Worker Runtime
 
-本文描述当前 Redis worker 调度、恢复与运维控制面的真实状态。它对应当前代码基线的“V1.5”阶段能力：本地弹性池、全局负载感知、stale run 自动恢复。
+本文描述当前 Redis worker 执行层与 `Controller` 控制面的真实状态。它对应当前代码基线的“V1.5”阶段能力：本地弹性池、全局负载感知、stale run 自动恢复。
+
+本文档中的正式控制面术语统一使用 `Controller`。当前主要保留的是少量 legacy env var / metric / chart values 兼容项，而不是新的主命名。
+
+补充约束：
+
+- 当前优先路线不是“直接改造成 E2B 原生架构”
+- 当前优先路线是“保留 OAH 自己的 worker + sandbox pod 语义，同时把宿主能力收敛到稳定适配层”
+- 后续如果接 E2B，应通过宿主适配器切入，而不是改写 `workspace -> owner worker`、OSS flush / evict、owner proxy 这些核心语义
 
 ## 1. 目标
 
@@ -23,16 +31,39 @@
 - 当 ownership 真值存在但 owner 暂时不可达时，API 文件入口会回退为带 routing hint 的 `409 workspace_owned_by_another_worker`
 - queued run 的 execution lease 当前会按 materialized 本地目录 fingerprint 判定真实 dirty，避免长期维持“project run 一律 dirty”的保守 flush
 - standalone worker 当前已具备 internal-only HTTP 面，只暴露健康探针与 internal routes，供 split 部署下的 owner worker 文件转发使用
+- `Controller` 当前也已经补上独立 HTTP observability 面，提供 `/healthz`、`/readyz`、`/snapshot`、`/metrics`
+- `runtime-core` 当前已经通过 `workspaceExecutionProvider` 与 `workspaceFileAccessProvider` 把“worker 如何拿到可执行 / 可读写 workspace”收敛成宿主适配缝隙；这就是后续接 sandbox host API 的首个实现落点
 
-随着路线图进入 Phase 5，仓库里还新增了独立的 `worker-controller` 控制面入口：
+随着路线图进入 Phase 5，仓库里还新增了独立的 `Controller` 控制面入口：
 
 - controller 当前从 Redis queue pressure 与 worker registry 读取 backlog / busy slot / ready age 等信号
 - standalone worker lease 现在会额外发布 `runtimeInstanceId`，让 controller 能把同一 Pod 内多个 slot 正确聚合为一个 replica
 - controller 当前会输出 `suggestedReplicas`、`desiredReplicas`、pressure streak、cooldown remaining 和 scale reason
 - controller 当前已经具备可插拔 `scale target` 抽象，并已支持 Kubernetes `Deployment /scale` 子资源 reconcile
 - controller 当前已经具备基于 Kubernetes Lease 的 leader election，只有 leader controller 会真正执行 reconcile
-- 第一版 target 默认仍保持 `allow_scale_down = false`，先把自动扩容打通，再把自动缩容显式挂到 drain / graceful shutdown 完成度上
-- 当前已经补出一套最小 `deploy/kubernetes` Deployment / Service / RBAC 骨架，但自动缩容护栏、drain 契约和更完整的生产清单仍需继续收敛
+- `allow_scale_down` 现在仍保留为显式 override 开关，但默认已经切换为允许缩容，真正的缩容护栏改为 controller 动态探测 worker drain / blocker 状态
+- 当前已经补出一套最小 `deploy/kubernetes` Deployment / Service / RBAC 骨架，controller 也已支持通过 `label_selector` 自动发现目标 worker Deployment；对应 RBAC 现已覆盖 `leases`、`deployments`、`deployments/scale`。Prometheus Operator 侧现在也已有可直接 `kubectl apply -k ./deploy` 复用的 `ServiceMonitor` kustomization，同时也已补出最小 Helm chart 和生产 `Dockerfile`/GHCR workflow 作为生产分发入口；其中 chart 也已开始支持 existing ConfigMap、PVC workspace volume、PDB、topology spread、Ingress 等常见生产参数，并已附带 `dev / staging / prod` values 样例，workflow 也已接上 `sbom/provenance` 与 Cosign keyless signing
+- `api-server` / `worker` / `controller` 三个 Deployment 当前也都已经显式声明 rollout 策略与 shutdown 窗口，减少升级期间对 K8S 默认行为的依赖
+
+与此同时，worker runtime 现在也已经补上了第一层 drain 生命周期：
+
+- 收到退出信号时，runtime 会先触发 `beginDrain()`，而不是立刻把进程当作硬退出处理
+- drain 开始后，worker pool 会停止继续 claim 新任务，并等待当前运行中的 run 自然结束
+- `/readyz` 会在 drain 期间返回 `not_ready`，并带出 `draining` 标记，帮助 K8S 尽快把实例从就绪端点摘除
+- `/healthz` 的 worker 段当前也会暴露 `draining`、`acceptsNewRuns`、`drainStartedAt`
+- workspace materialization 在 drain 开始时会立刻 `flush + evict` 空闲 object-store 副本，并阻止新的 object-store materialization 启动
+- drain 期间仍持有中的 materialization lease，会在 release 时自动执行 flush / evict 收敛
+- drain timeout 当前也已经具备显式策略，可通过 `OAH_WORKER_DRAIN_TIMEOUT_MS` 和 `OAH_WORKER_DRAIN_TIMEOUT_STRATEGY` 控制 `wait_forever` / `fail` / `requeue_running` / `requeue_all`
+- timeout 命中后，worker host 会基于当前活跃 slot 做恢复闭合；runtime-service 会中断本地执行，并把 `recoveredBy` / recovery metadata / event / system step 正常写回
+- materialization flush / evict / materialize 失败当前会记录结构化 diagnostics，并在 worker health 中暴露 `failureCount`、`blockerCount` 和失败明细
+- drain / close 当前会尽量尝试完所有副本的收敛动作，再统一抛出 aggregate failure；失败副本不会被静默丢弃，而会保留为显式 blocker
+- standalone worker lease 当前也会携带 `ownerBaseUrl`，controller 会按 replica 维度探测 worker `/healthz`
+- scale-down 当前已经接入动态 gating：worker 正在 draining、缺少 `ownerBaseUrl`、health probe 失败、materialization blocker/failure 都会阻止 controller 缩容
+
+当前仍未完成的部分是：
+
+- 更细粒度的组织内部 chart values/overlay 约定与样例治理
+- 把现有 workspace lease / materialization 语义再向上收敛成更明确的 sandbox host API，便于后续接自家 sandbox pod 之外的宿主实现
 
 ## 2. 组件关系
 

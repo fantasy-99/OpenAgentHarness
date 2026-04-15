@@ -1,5 +1,3 @@
-import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { Run, RunStep, Session } from "@oah/api-contracts";
@@ -12,8 +10,13 @@ import type {
   ModelDefinition,
   ModelGateway,
   SessionEvent,
+  WorkspaceCommandExecutor,
+  WorkspaceFileSystem,
   WorkspaceRecord
 } from "../types.js";
+import {
+  WorkspaceCommandTimeoutError
+} from "../workspace-command-executor.js";
 
 export interface HookEnvelope {
   workspace_id: string;
@@ -128,6 +131,8 @@ interface HookAuditRecordInput {
 export interface HookServiceDependencies {
   defaultModel: string;
   modelGateway: ModelGateway;
+  commandExecutor: WorkspaceCommandExecutor;
+  fileSystem: WorkspaceFileSystem;
   hookRunAuditRepository?: HookRunAuditRepository | undefined;
   startRunStep: (input: HookStepInput) => Promise<RunStep>;
   completeRunStep: (
@@ -150,6 +155,8 @@ export interface HookServiceDependencies {
 export class HookService {
   readonly #defaultModel: string;
   readonly #modelGateway: ModelGateway;
+  readonly #commandExecutor: WorkspaceCommandExecutor;
+  readonly #fileSystem: WorkspaceFileSystem;
   readonly #hookRunAuditRepository?: HookRunAuditRepository | undefined;
   readonly #startRunStep: HookServiceDependencies["startRunStep"];
   readonly #completeRunStep: HookServiceDependencies["completeRunStep"];
@@ -163,6 +170,8 @@ export class HookService {
   constructor(dependencies: HookServiceDependencies) {
     this.#defaultModel = dependencies.defaultModel;
     this.#modelGateway = dependencies.modelGateway;
+    this.#commandExecutor = dependencies.commandExecutor;
+    this.#fileSystem = dependencies.fileSystem;
     this.#hookRunAuditRepository = dependencies.hookRunAuditRepository;
     this.#startRunStep = dependencies.startRunStep;
     this.#completeRunStep = dependencies.completeRunStep;
@@ -270,48 +279,27 @@ export class HookService {
 
     const cwd =
       typeof handler.cwd === "string" ? path.resolve(workspace.rootPath, handler.cwd) : workspace.rootPath;
-    const child = spawn(handler.command, {
-      cwd,
-      env: {
-        ...process.env,
-        ...(handler.environment && typeof handler.environment === "object"
-          ? (handler.environment as Record<string, string>)
-          : {})
-      },
-      shell: true
-    });
     const timeoutMs = this.#timeoutMsFromSeconds(handler.timeout_seconds);
-
     let stdout = "";
     let stderr = "";
-    let timedOut = false;
-    child.stdin.write(JSON.stringify(envelope));
-    child.stdin.end();
-    child.stdout.on("data", (chunk: Buffer | string) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk: Buffer | string) => {
-      stderr += chunk.toString();
-    });
-    const killTimer =
-      timeoutMs !== undefined
-        ? setTimeout(() => {
-            timedOut = true;
-            child.kill("SIGTERM");
-          }, timeoutMs)
-        : undefined;
-
-    const exitCode = await new Promise<number>((resolve, reject) => {
-      child.on("error", reject);
-      child.on("close", (code) => resolve(code ?? 0));
-    }).finally(() => {
-      if (killTimer) {
-        clearTimeout(killTimer);
+    let exitCode = 0;
+    try {
+      ({ stdout, stderr, exitCode } = await this.#commandExecutor.runForeground({
+        workspace,
+        command: handler.command,
+        cwd,
+        env:
+          handler.environment && typeof handler.environment === "object"
+            ? (handler.environment as Record<string, string>)
+            : undefined,
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        stdinText: JSON.stringify(envelope)
+      }));
+    } catch (error) {
+      if (error instanceof WorkspaceCommandTimeoutError) {
+        throw new Error(`Command hook timed out after ${timeoutMs}ms.`);
       }
-    });
-
-    if (timedOut) {
-      throw new Error(`Command hook timed out after ${timeoutMs}ms.`);
+      throw error;
     }
 
     if (exitCode === 2) {
@@ -503,7 +491,7 @@ export class HookService {
     }
 
     if (typeof promptSource.file === "string") {
-      return readFile(path.resolve(workspace.rootPath, promptSource.file), "utf8");
+      return this.#fileSystem.readFile(path.resolve(workspace.rootPath, promptSource.file)).then((buffer) => buffer.toString("utf8"));
     }
 
     return undefined;

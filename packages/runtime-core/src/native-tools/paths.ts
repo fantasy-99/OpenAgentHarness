@@ -1,33 +1,37 @@
-import { realpathSync } from "node:fs";
 import path from "node:path";
 
 import { AppError } from "../errors.js";
+import type { WorkspaceFileSystem } from "../types.js";
 
 export function normalizePathForMatch(value: string): string {
   return value.split(path.sep).join("/");
 }
 
-export function resolveWorkspacePath(workspaceRoot: string, targetPath: string): { absolutePath: string; relativePath: string } {
+export async function resolveWorkspacePath(
+  fileSystem: WorkspaceFileSystem,
+  workspaceRoot: string,
+  targetPath: string
+): Promise<{ absolutePath: string; relativePath: string }> {
   const absolutePath = path.resolve(workspaceRoot, targetPath);
 
   // Resolve symlinks to prevent symlink-based path traversal.
   let realWorkspaceRoot: string;
   try {
-    realWorkspaceRoot = realpathSync(workspaceRoot);
+    realWorkspaceRoot = await fileSystem.realpath(workspaceRoot);
   } catch {
     realWorkspaceRoot = workspaceRoot;
   }
 
   let realAbsolutePath: string;
   try {
-    realAbsolutePath = realpathSync(absolutePath);
+    realAbsolutePath = await fileSystem.realpath(absolutePath);
   } catch {
     // Target doesn't exist — resolve the deepest existing ancestor
     let current = absolutePath;
     const trailingParts: string[] = [];
     while (true) {
       try {
-        const resolved = realpathSync(current);
+        const resolved = await fileSystem.realpath(current);
         realAbsolutePath = trailingParts.length > 0 ? path.join(resolved, ...trailingParts) : resolved;
         break;
       } catch {

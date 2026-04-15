@@ -1,6 +1,7 @@
 import { startTransition, useDeferredValue, useEffect, useEffectEvent, useRef, useState } from "react";
 
 import {
+  type ActionRunAccepted,
   healthReportSchema,
   readinessReportSchema,
   type Message,
@@ -834,6 +835,54 @@ export function useAppController() {
     } catch (error) {
       reportError(error);
       openConsoleForErrors();
+    }
+  }
+
+  async function triggerWorkspaceAction(input: {
+    workspaceId: string;
+    actionName: string;
+    input?: unknown;
+  }): Promise<boolean> {
+    const targetWorkspaceId = input.workspaceId.trim();
+    const targetActionName = input.actionName.trim();
+    if (!targetWorkspaceId || !targetActionName) {
+      return false;
+    }
+
+    try {
+      const attachedSessionId =
+        session?.workspaceId === targetWorkspaceId && session.id.trim().length > 0 ? session.id : undefined;
+      const accepted = await request<ActionRunAccepted>(
+        `/api/v1/workspaces/${targetWorkspaceId}/actions/${encodeURIComponent(targetActionName)}/runs`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json"
+          },
+          body: JSON.stringify({
+            ...(attachedSessionId ? { sessionId: attachedSessionId } : {}),
+            ...(input.input !== undefined ? { input: input.input } : {}),
+            triggerSource: "user"
+          })
+        }
+      );
+
+      if (accepted.sessionId && accepted.sessionId !== sessionId) {
+        await navigationActions.refreshSession(accepted.sessionId, true);
+      } else if (accepted.sessionId) {
+        await refreshSessionRuns(true, { includeSteps: true });
+      }
+
+      startTransition(() => {
+        setSelectedRunId(accepted.runId);
+      });
+      await Promise.all([refreshRun(accepted.runId, true), refreshRunSteps(accepted.runId, true)]);
+      setActivity(`Action 已入队，run=${accepted.runId}`);
+      clearActiveError();
+      return true;
+    } catch (error) {
+      reportError(error);
+      return false;
     }
   }
 
@@ -1748,6 +1797,7 @@ export function useAppController() {
       pendingSessionModelRef,
       isSwitchingSessionModel: switchingSessionModelId === session?.id,
       updateSessionModel: (targetId: string, modelRef: string | null) => void updateSessionModel(targetId, modelRef),
+      triggerWorkspaceAction,
       refreshWorkspace: (targetId: string) => void navigationActions.refreshWorkspace(targetId, true),
       streamState,
       isRunning: !isTerminalRunStatus(run?.status) && run?.status != null,

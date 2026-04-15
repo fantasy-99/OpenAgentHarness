@@ -2,8 +2,18 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: oah-worker
+  labels:
+    app.kubernetes.io/name: oah-worker
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: open-agent-harness
 spec:
   replicas: 2
+  minReadySeconds: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: oah-worker
@@ -11,7 +21,10 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: oah-worker
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/part-of: open-agent-harness
     spec:
+      terminationGracePeriodSeconds: 120
       containers:
         - name: worker
           image: ghcr.io/open-agent-harness/open-agent-harness:latest

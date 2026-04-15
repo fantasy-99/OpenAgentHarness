@@ -9,6 +9,7 @@ import type {
 } from "@oah/api-contracts";
 
 import { AppError } from "./errors.js";
+import { validateActionInput } from "./action-input-validation.js";
 import { HookApplicationService } from "./runtime/hook-application.js";
 import { HookService } from "./runtime/hooks.js";
 import { AgentCoordinationService } from "./runtime/agent-coordination.js";
@@ -91,6 +92,8 @@ import {
   type RuntimeToolSet,
   type TriggerActionRunParams,
   type ModelDefinition,
+  type WorkspaceCommandExecutor,
+  type WorkspaceFileSystem,
   type RunStepListResult,
   type SessionListResult,
   type RunStepStatus,
@@ -105,6 +108,8 @@ import {
 } from "./types.js";
 import { createId, nowIso, parseCursor } from "./utils.js";
 import type { RuntimeMessage } from "./runtime/runtime-messages.js";
+import { createLocalWorkspaceCommandExecutor } from "./workspace-command-executor.js";
+import { createLocalWorkspaceFileSystem } from "./workspace-file-system.js";
 
 interface RunExecutionContext {
   currentAgentName: string;
@@ -196,6 +201,15 @@ function createAbortError(): Error {
   return error;
 }
 
+type AutomaticRecoveryStrategy = "fail" | "requeue_running" | "requeue_all";
+
+type RecoveryActor =
+  | "worker_startup"
+  | "worker_startup_requeue"
+  | "worker_drain_timeout"
+  | "worker_drain_timeout_requeue"
+  | "manual_operator_requeue";
+
 export class RuntimeService {
   readonly #defaultModel: string;
   readonly #modelGateway: RuntimeServiceOptions["modelGateway"];
@@ -218,6 +232,8 @@ export class RuntimeService {
   readonly #workspaceInitializer: RuntimeServiceOptions["workspaceInitializer"];
   readonly #workspaceExecutionProvider: RuntimeServiceOptions["workspaceExecutionProvider"];
   readonly #workspaceFileAccessProvider: RuntimeServiceOptions["workspaceFileAccessProvider"];
+  readonly #workspaceFileSystem: WorkspaceFileSystem;
+  readonly #workspaceCommandExecutor: WorkspaceCommandExecutor;
   readonly #workspaceFiles: WorkspaceFileService;
   readonly #sessionHistory: SessionHistoryService;
   readonly #runSteps: RunStepService;
@@ -235,6 +251,7 @@ export class RuntimeService {
   readonly #sessionChains = new Map<string, Promise<void>>();
   readonly #runtimeMessageSyncChains = new Map<string, Promise<void>>();
   readonly #runAbortControllers = new Map<string, AbortController>();
+  readonly #drainTimeoutRecoveredRuns = new Set<string>();
 
   constructor(options: RuntimeServiceOptions) {
     this.#defaultModel = options.defaultModel;
@@ -258,7 +275,9 @@ export class RuntimeService {
     this.#workspaceInitializer = options.workspaceInitializer;
     this.#workspaceExecutionProvider = options.workspaceExecutionProvider;
     this.#workspaceFileAccessProvider = options.workspaceFileAccessProvider;
-    this.#workspaceFiles = new WorkspaceFileService();
+    this.#workspaceFileSystem = options.workspaceFileSystem ?? createLocalWorkspaceFileSystem();
+    this.#workspaceCommandExecutor = options.workspaceCommandExecutor ?? createLocalWorkspaceCommandExecutor();
+    this.#workspaceFiles = new WorkspaceFileService(this.#workspaceFileSystem);
     this.#sessionHistory = new SessionHistoryService({
       messageRepository: this.#messageRepository,
       logger: this.#logger
@@ -285,6 +304,8 @@ export class RuntimeService {
     this.#hooks = new HookService({
       defaultModel: this.#defaultModel,
       modelGateway: this.#modelGateway,
+      commandExecutor: this.#workspaceCommandExecutor,
+      fileSystem: this.#workspaceFileSystem,
       hookRunAuditRepository: options.hookRunAuditRepository,
       startRunStep: (input) => this.#runSteps.startRunStep(input),
       completeRunStep: (step, status, output) => this.#runSteps.completeRunStep(step, status, output),
@@ -353,6 +374,7 @@ export class RuntimeService {
     });
     this.#actions = new ActionRunService({
       defaultModel: this.#defaultModel,
+      commandExecutor: this.#workspaceCommandExecutor,
       sessionRepository: this.#sessionRepository,
       toolMessages: this.#toolMessages,
       startRunStep: (input) => this.#runSteps.startRunStep(input),
@@ -930,7 +952,8 @@ export class RuntimeService {
     actionName,
     sessionId,
     agentName,
-    input
+    input,
+    triggerSource
   }: TriggerActionRunParams): Promise<ActionRunAcceptedResult> {
     const workspace = await this.getWorkspaceRecord(workspaceId);
     if (workspace.kind === "chat") {
@@ -942,9 +965,18 @@ export class RuntimeService {
       throw new AppError(404, "action_not_found", `Action ${actionName} was not found in workspace ${workspaceId}.`);
     }
 
-    if (!action.callableByApi) {
-      throw new AppError(403, "action_not_callable_by_api", `Action ${actionName} cannot be triggered by API.`);
+    const resolvedTriggerSource = triggerSource ?? "api";
+    if (resolvedTriggerSource === "user" ? !action.callableByUser : !action.callableByApi) {
+      throw new AppError(
+        403,
+        resolvedTriggerSource === "user" ? "action_not_callable_by_user" : "action_not_callable_by_api",
+        resolvedTriggerSource === "user"
+          ? `Action ${actionName} cannot be triggered by a user.`
+          : `Action ${actionName} cannot be triggered by API.`
+      );
     }
+
+    validateActionInput(action, input ?? null);
 
     let session: Session | undefined;
     if (sessionId) {
@@ -963,13 +995,24 @@ export class RuntimeService {
       throw new AppError(404, "agent_not_found", `Agent ${resolvedAgentName} was not found in workspace ${workspaceId}.`);
     }
 
+    if (!session) {
+      session = await this.createSession({
+        workspaceId,
+        caller,
+        input: {
+          agentName: resolvedAgentName ?? "default",
+          title: `Action · ${actionName}`
+        }
+      });
+    }
+
     const now = nowIso();
     const run: Run = {
       id: createId("run"),
       workspaceId,
-      ...(session ? { sessionId: session.id } : {}),
+      sessionId: session.id,
       initiatorRef: caller.subjectRef,
-      triggerType: "api_action",
+      triggerType: resolvedTriggerSource === "user" ? "manual_action" : "api_action",
       triggerRef: actionName,
       ...(resolvedAgentName ? { agentName: resolvedAgentName, effectiveAgentName: resolvedAgentName } : { effectiveAgentName: "default" }),
       switchCount: 0,
@@ -982,33 +1025,25 @@ export class RuntimeService {
     };
 
     await this.#runRepository.create(run);
-    if (session) {
-      await this.#appendEvent({
-        sessionId: session.id,
+    await this.#appendEvent({
+      sessionId: session.id,
+      runId: run.id,
+      event: "run.queued",
+      data: {
         runId: run.id,
-        event: "run.queued",
-        data: {
-          runId: run.id,
-          sessionId: session.id,
-          status: "queued"
-        }
-      });
-    }
+        sessionId: session.id,
+        status: "queued"
+      }
+    });
 
-    await this.#enqueueRun(session?.id ?? run.id, run.id);
+    await this.#enqueueRun(session.id, run.id);
 
-    return session
-      ? {
-          runId: run.id,
-          status: "queued",
-          actionName,
-          sessionId: session.id
-        }
-      : {
-          runId: run.id,
-          status: "queued",
-          actionName
-        };
+    return {
+      runId: run.id,
+      status: "queued",
+      actionName,
+      sessionId: session.id
+    };
   }
 
   async getRun(runId: string): Promise<Run> {
@@ -1112,6 +1147,84 @@ export class RuntimeService {
     };
   }
 
+  async recoverRunAfterDrainTimeout(
+    runId: string,
+    strategy: AutomaticRecoveryStrategy
+  ): Promise<"failed" | "requeued" | "ignored"> {
+    const run = await this.#runRepository.getById(runId);
+    if (!run || (run.status !== "running" && run.status !== "waiting_tool")) {
+      return "ignored";
+    }
+
+    const abortController = this.#runAbortControllers.get(run.id);
+    if (abortController) {
+      this.#drainTimeoutRecoveredRuns.add(run.id);
+      abortController.abort();
+    }
+
+    if (strategy !== "fail") {
+      if (
+        await this.#tryRequeueRecoveredRun(run, {
+          strategy,
+          recoveredBy: "worker_drain_timeout_requeue"
+        })
+      ) {
+        return "requeued";
+      }
+    }
+
+    const endedAt = nowIso();
+    const failureContext = this.#resolveRecoveryFailureContext(run, strategy);
+    const failedRun = await this.#updateRun(run, {
+      status: "failed",
+      endedAt,
+      errorCode: "worker_recovery_failed",
+      errorMessage: "Run was recovered as failed after worker drain timed out.",
+      metadata: this.#buildRecoveryMetadata(run, {
+        attempts: failureContext.recoveryAttempts,
+        outcome: "failed",
+        recoveredBy: "worker_drain_timeout",
+        recoveredAt: endedAt,
+        reason: failureContext.reason,
+        quarantined: failureContext.quarantined,
+        strategy
+      })
+    });
+
+    if (failedRun.sessionId) {
+      await this.#appendEvent({
+        sessionId: failedRun.sessionId,
+        runId: failedRun.id,
+        event: "run.failed",
+        data: {
+          runId: failedRun.id,
+          sessionId: failedRun.sessionId,
+          status: failedRun.status,
+          errorCode: failedRun.errorCode,
+          errorMessage: failedRun.errorMessage,
+          recoveredBy: "worker_drain_timeout",
+          recoveryAttempt: failureContext.recoveryAttempts,
+          recoveryState: failureContext.quarantined ? "quarantined" : "failed",
+          recoveryReason: failureContext.reason,
+          recoveryStrategy: strategy
+        }
+      });
+    }
+
+    await this.#recordSystemStep(failedRun, "run.failed", {
+      status: failedRun.status,
+      errorCode: failedRun.errorCode,
+      errorMessage: failedRun.errorMessage,
+      recoveredBy: "worker_drain_timeout",
+      recoveryAttempt: failureContext.recoveryAttempts,
+      recoveryState: failureContext.quarantined ? "quarantined" : "failed",
+      recoveryReason: failureContext.reason,
+      recoveryStrategy: strategy
+    });
+
+    return "failed";
+  }
+
   async listSessionEvents(sessionId: string, cursor?: string, runId?: string): Promise<SessionEvent[]> {
     await this.getSession(sessionId);
     return this.#sessionEventStore.listSince(sessionId, cursor, runId);
@@ -1140,13 +1253,20 @@ export class RuntimeService {
         continue;
       }
 
-      if (await this.#tryRequeueRecoveredRun(currentRun)) {
-        requeuedRunIds.push(currentRun.id);
-        continue;
+      if (this.#staleRunRecoveryStrategy !== "fail") {
+        if (
+          await this.#tryRequeueRecoveredRun(currentRun, {
+            strategy: this.#staleRunRecoveryStrategy,
+            recoveredBy: "worker_startup_requeue"
+          })
+        ) {
+          requeuedRunIds.push(currentRun.id);
+          continue;
+        }
       }
 
       const endedAt = nowIso();
-      const failureContext = this.#resolveStaleRunFailureContext(currentRun);
+      const failureContext = this.#resolveRecoveryFailureContext(currentRun, this.#staleRunRecoveryStrategy);
       const failedRun = await this.#updateRun(currentRun, {
         status: "failed",
         endedAt,
@@ -1264,16 +1384,18 @@ export class RuntimeService {
     this.#sessionChains.set(sessionId, next);
   }
 
-  async #tryRequeueRecoveredRun(run: Run): Promise<boolean> {
+  async #tryRequeueRecoveredRun(
+    run: Run,
+    input: {
+      strategy: Exclude<AutomaticRecoveryStrategy, "fail">;
+      recoveredBy: Extract<RecoveryActor, "worker_startup_requeue" | "worker_drain_timeout_requeue">;
+    }
+  ): Promise<boolean> {
     if (!this.#runQueue || !run.sessionId) {
       return false;
     }
 
-    if (this.#staleRunRecoveryStrategy === "fail") {
-      return false;
-    }
-
-    if (this.#staleRunRecoveryStrategy === "requeue_running" && run.status !== "running") {
+    if (input.strategy === "requeue_running" && run.status !== "running") {
       return false;
     }
 
@@ -1295,11 +1417,11 @@ export class RuntimeService {
       metadata: this.#buildRecoveryMetadata(run, {
         attempts: nextRecoveryAttempt,
         outcome: "requeued",
-        recoveredBy: "worker_startup_requeue",
+        recoveredBy: input.recoveredBy,
         recoveredAt,
         reason: "automatic_requeue",
         quarantined: false,
-        strategy: this.#staleRunRecoveryStrategy
+        strategy: input.strategy
       })
     });
 
@@ -1311,20 +1433,20 @@ export class RuntimeService {
         runId: queuedRun.id,
         sessionId: run.sessionId,
         status: queuedRun.status,
-        recoveredBy: "worker_startup_requeue",
+        recoveredBy: input.recoveredBy,
         recoveryAttempt: nextRecoveryAttempt,
         recoveryState: "requeued",
         recoveryReason: "automatic_requeue",
-        recoveryStrategy: this.#staleRunRecoveryStrategy
+        recoveryStrategy: input.strategy
       }
     });
     await this.#recordSystemStep(queuedRun, "run.requeued", {
       status: queuedRun.status,
-      recoveredBy: "worker_startup_requeue",
+      recoveredBy: input.recoveredBy,
       recoveryAttempt: nextRecoveryAttempt,
       recoveryState: "requeued",
       recoveryReason: "automatic_requeue",
-      recoveryStrategy: this.#staleRunRecoveryStrategy
+      recoveryStrategy: input.strategy
     });
     await this.#enqueueRun(run.sessionId, queuedRun.id);
     return true;
@@ -1340,7 +1462,7 @@ export class RuntimeService {
       : 0;
   }
 
-  #resolveStaleRunFailureContext(run: Run): {
+  #resolveRecoveryFailureContext(run: Run, strategy: AutomaticRecoveryStrategy): {
     recoveryAttempts: number;
     reason:
       | "fail_closed"
@@ -1352,7 +1474,7 @@ export class RuntimeService {
     quarantined: boolean;
   } {
     const recoveryAttempts = this.#readRecoveryAttempts(run.metadata);
-    if (this.#staleRunRecoveryStrategy === "fail") {
+    if (strategy === "fail") {
       return {
         recoveryAttempts,
         reason: "fail_closed",
@@ -1376,7 +1498,7 @@ export class RuntimeService {
       };
     }
 
-    if (this.#staleRunRecoveryStrategy === "requeue_running" && run.status === "waiting_tool") {
+    if (strategy === "requeue_running" && run.status === "waiting_tool") {
       return {
         recoveryAttempts,
         reason: "waiting_tool_manual_resume_required",
@@ -1404,11 +1526,11 @@ export class RuntimeService {
     input: {
       attempts: number;
       outcome: "failed" | "requeued";
-      recoveredBy: "worker_startup" | "worker_startup_requeue" | "manual_operator_requeue";
+      recoveredBy: RecoveryActor;
       recoveredAt: string;
       reason: string;
       quarantined: boolean;
-      strategy: "fail" | "requeue_running" | "requeue_all" | "manual";
+      strategy: AutomaticRecoveryStrategy | "manual";
       requestedBy?: string | undefined;
     }
   ): Record<string, unknown> {
@@ -1717,6 +1839,9 @@ export class RuntimeService {
       }
 
       const completed = await response.completed;
+      if (this.#drainTimeoutRecoveredRuns.has(run.id)) {
+        return;
+      }
       const latestRun = await this.getRun(run.id);
       const hookedCompleted = await this.#applyAfterModelHooks(
         executionWorkspace,
@@ -1743,6 +1868,10 @@ export class RuntimeService {
         );
       }
       if (abortController.signal.aborted) {
+        if (this.#drainTimeoutRecoveredRuns.has(run.id)) {
+          return;
+        }
+
         if (runTimedOut) {
           this.#logger?.error?.("Runtime run timed out.", {
             workspaceId: executionWorkspace.id,
@@ -1775,6 +1904,10 @@ export class RuntimeService {
         return;
       }
 
+      if (this.#drainTimeoutRecoveredRuns.has(run.id)) {
+        return;
+      }
+
       const currentRun = await this.getRun(run.id);
       this.#logger?.error?.("Runtime run failed.", {
         workspaceId: executionWorkspace.id,
@@ -1798,6 +1931,7 @@ export class RuntimeService {
         clearTimeout(runTimeout);
       }
       this.#runAbortControllers.delete(run.id);
+      this.#drainTimeoutRecoveredRuns.delete(run.id);
       if (executionLease) {
         try {
           await executionLease.release({
@@ -2035,9 +2169,10 @@ export class RuntimeService {
       getCurrentAgentName: () => executionContext.currentAgentName,
       modelGateway: this.#modelGateway,
       defaultModel: this.#defaultModel,
+      commandExecutor: this.#workspaceCommandExecutor,
       executeAction: async (action, input, context) =>
         this.#executeAction(workspace, action, run, context.abortSignal, input),
-      delegateAgent: async ({ targetAgentName, task, handoffSummary, taskId }, currentAgentName) => {
+      delegateAgent: async ({ targetAgentName, task, handoffSummary, taskId, notifyParentOnCompletion }, currentAgentName) => {
         const accepted = await this.#agentCoordination.delegateAgentRun({
           workspace,
           parentSession: session,
@@ -2046,7 +2181,8 @@ export class RuntimeService {
           targetAgentName,
           task,
           handoffSummary,
-          taskId
+          taskId,
+          notifyParentOnCompletion
         });
         executionContext.delegatedRunIds.push(accepted.childRunId);
         return accepted;

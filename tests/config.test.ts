@@ -225,7 +225,7 @@ llm:
   });
 
   it("loads standalone worker and controller settings from server config", async () => {
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-config-worker-controller-"));
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-config-controller-"));
     tempDirs.push(tempDir);
 
     for (const dirName of ["workspaces", "chat", "templates", "models", "tools", "skills"]) {
@@ -266,7 +266,7 @@ workers:
       type: kubernetes
       kubernetes:
         namespace: open-agent-harness
-        lease_name: oah-worker-controller
+        lease_name: oah-controller
         api_url: https://kubernetes.default.svc
         token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
         ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
@@ -279,7 +279,7 @@ workers:
       allow_scale_down: false
       kubernetes:
         namespace: open-agent-harness
-        deployment: oah-worker
+        label_selector: app.kubernetes.io/component=worker
         api_url: https://kubernetes.default.svc
         token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
         ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
@@ -308,7 +308,7 @@ llm:
         type: "kubernetes",
         kubernetes: {
           namespace: "open-agent-harness",
-          lease_name: "oah-worker-controller",
+          lease_name: "oah-controller",
           api_url: "https://kubernetes.default.svc",
           token_file: "/var/run/secrets/kubernetes.io/serviceaccount/token",
           ca_file: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
@@ -323,7 +323,7 @@ llm:
         allow_scale_down: false,
         kubernetes: {
           namespace: "open-agent-harness",
-          deployment: "oah-worker",
+          label_selector: "app.kubernetes.io/component=worker",
           api_url: "https://kubernetes.default.svc",
           token_file: "/var/run/secrets/kubernetes.io/serviceaccount/token",
           ca_file: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
@@ -802,6 +802,12 @@ expose:
   callable_by_api: true
 recovery:
   retry_policy: safe
+input_schema:
+  type: object
+  properties:
+    mode:
+      type: string
+  additionalProperties: false
 entry:
   command: printf "action-ok"
 `,
@@ -951,7 +957,16 @@ default_agent: assistant
         exposeToLlm: false,
         callableByUser: true,
         callableByApi: true,
-        retryPolicy: "safe"
+        retryPolicy: "safe",
+        inputSchema: {
+          type: "object",
+          properties: {
+            mode: {
+              type: "string"
+            }
+          },
+          additionalProperties: false
+        }
       }
     ]);
     expect(project?.catalog.skills).toEqual([

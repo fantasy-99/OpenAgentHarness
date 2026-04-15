@@ -1,4 +1,3 @@
-import { createReadStream } from "node:fs";
 import { Readable } from "node:stream";
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -272,7 +271,7 @@ async function handleDownloadWorkspaceFile(
   reply.header("ETag", file.etag);
   reply.header("Last-Modified", file.updatedAt);
   reply.header("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`);
-  const stream = createReadStream(file.absolutePath);
+  const stream = file.openReadStream();
   stream.once("close", () => {
     void releaseHandle();
   });
@@ -372,6 +371,13 @@ export function registerWorkspaceRoutes(
 
     const input = createWorkspaceRequestSchema.parse(request.body);
     const workspace = await dependencies.runtimeService.createWorkspace({ input });
+    if (input.userId) {
+      await dependencies.assignWorkspacePlacementUser?.({
+        workspaceId: workspace.id,
+        userId: input.userId,
+        overwrite: true
+      });
+    }
     return reply.status(201).send(workspace);
   });
 
@@ -389,12 +395,21 @@ export function registerWorkspaceRoutes(
     const kind = body?.kind === "chat" ? "chat" : "project";
     const name = typeof body?.name === "string" ? body.name : undefined;
     const externalRef = typeof body?.externalRef === "string" ? body.externalRef : undefined;
+    const userId = typeof body?.userId === "string" && body.userId.trim().length > 0 ? body.userId.trim() : undefined;
     const workspace = await dependencies.importWorkspace({
       rootPath,
       kind,
       ...(name ? { name } : {}),
-      ...(externalRef ? { externalRef } : {})
+      ...(externalRef ? { externalRef } : {}),
+      ...(userId ? { userId } : {})
     });
+    if (userId) {
+      await dependencies.assignWorkspacePlacementUser?.({
+        workspaceId: workspace.id,
+        userId,
+        overwrite: true
+      });
+    }
     return reply.status(201).send(workspace);
   });
 
@@ -511,6 +526,11 @@ export function registerWorkspaceRoutes(
       caller,
       input
     });
+    await dependencies.assignWorkspacePlacementUser?.({
+      workspaceId: params.workspaceId,
+      userId: caller.subjectRef,
+      overwrite: false
+    });
 
     return reply.status(201).send(session);
   });
@@ -527,14 +547,20 @@ export function registerWorkspaceRoutes(
     const params = createParamsSchema("workspaceId", "actionName").parse(request.params);
     const caller = toCallerContext(request);
     assertWorkspaceAccess(caller, params.workspaceId);
-    const input = createActionRunRequestSchema.parse(request.body);
+    const input = createActionRunRequestSchema.parse(request.body) as {
+      sessionId?: string;
+      agentName?: string;
+      input?: unknown;
+      triggerSource?: "api" | "user";
+    };
     const accepted = await dependencies.runtimeService.triggerActionRun({
       workspaceId: params.workspaceId,
       actionName: params.actionName,
       caller,
       sessionId: input.sessionId,
       agentName: input.agentName,
-      input: input.input
+      input: input.input,
+      triggerSource: input.triggerSource
     });
     return reply.status(202).send(accepted);
   });

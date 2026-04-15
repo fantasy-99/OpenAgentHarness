@@ -15,4 +15,10 @@
 
 ## 仓库路线图
 
-- [ROADMAP.md](https://github.com/fairyshine/OpenAgentHarness/blob/master/ROADMAP.md)
+仓库根目录不再单独维护 `ROADMAP.md`。
+
+当前进度与后续方向以本站点内文档为准：
+
+- 本页负责描述当前状态与近期重点
+- [实施路线](./implementation-roadmap.md) 保留历史实施顺序
+- [Runtime / Worker 执行层成熟化路线图](./runtime/worker-scaling-roadmap.md) 继续承载 worker / 扩缩容 / 控制面相关专题演进

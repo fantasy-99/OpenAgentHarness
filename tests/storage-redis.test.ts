@@ -5,6 +5,7 @@ import {
   RedisRunWorker,
   RedisRunWorkerPool,
   RedisWorkspaceLeaseRegistry,
+  RedisWorkspacePlacementRegistry,
   RedisWorkerRegistry,
   appendRedisRunWorkerPoolDecision,
   buildRedisWorkerAffinitySummary,
@@ -401,6 +402,7 @@ describe("storage redis", () => {
       {
         workerId: "worker_1",
         runtimeInstanceId: "worker-pod-a",
+        ownerBaseUrl: "http://worker-pod-a.internal:8787",
         processKind: "embedded",
         state: "busy",
         lastSeenAt: "2026-04-01T00:00:00.000Z",
@@ -416,6 +418,7 @@ describe("storage redis", () => {
     expect(entry).toMatchObject({
       workerId: "worker_1",
       runtimeInstanceId: "worker-pod-a",
+      ownerBaseUrl: "http://worker-pod-a.internal:8787",
       processKind: "embedded",
       state: "busy",
       currentSessionId: "ses_1",
@@ -427,6 +430,7 @@ describe("storage redis", () => {
       health: "late"
     });
     expect(redis.hashes.get("test:worker:worker_1")).toMatchObject({
+      ownerBaseUrl: "http://worker-pod-a.internal:8787",
       leaseTtlMs: "6000",
       expiresAt: "2026-04-01T00:00:06.000Z"
     });
@@ -477,6 +481,64 @@ describe("storage redis", () => {
       health: "healthy"
     });
     expect(redis.expiries.get("test:workspace-lease:ws_1:live:worker_1")).toBe(9_000);
+  });
+
+  it("stores first-class workspace placement state and preserves assigned user affinity", async () => {
+    const redis = createInMemoryRedisCommands();
+    const registry = new RedisWorkspacePlacementRegistry({
+      url: "redis://unused",
+      keyPrefix: "test",
+      commands: redis.commands
+    });
+
+    await registry.assignUser("ws_1", "user_1", {
+      updatedAt: "2026-04-01T00:00:00.000Z"
+    });
+    await registry.upsert({
+      workspaceId: "ws_1",
+      version: "live",
+      ownerWorkerId: "worker_1",
+      ownerBaseUrl: "http://worker-1.internal:8787",
+      state: "active",
+      sourceKind: "object_store",
+      localPath: "/tmp/materialized/ws_1",
+      remotePrefix: "workspace/demo",
+      dirty: true,
+      refCount: 2,
+      lastActivityAt: "2026-04-01T00:00:03.000Z",
+      materializedAt: "2026-04-01T00:00:01.000Z",
+      updatedAt: "2026-04-01T00:00:04.000Z"
+    });
+    await registry.assignUser("ws_1", "user_2", {
+      overwrite: false,
+      updatedAt: "2026-04-01T00:00:05.000Z"
+    });
+    await registry.upsert({
+      workspaceId: "ws_1",
+      state: "evicted",
+      refCount: 0,
+      dirty: false,
+      updatedAt: "2026-04-01T00:00:06.000Z"
+    });
+
+    const entry = await registry.getByWorkspaceId("ws_1");
+
+    expect(entry).toMatchObject({
+      workspaceId: "ws_1",
+      version: "live",
+      userId: "user_1",
+      ownerWorkerId: "worker_1",
+      ownerBaseUrl: "http://worker-1.internal:8787",
+      state: "evicted",
+      sourceKind: "object_store",
+      localPath: "/tmp/materialized/ws_1",
+      remotePrefix: "workspace/demo",
+      dirty: false,
+      refCount: 0,
+      materializedAt: "2026-04-01T00:00:01.000Z",
+      updatedAt: "2026-04-01T00:00:06.000Z"
+    });
+    await expect(registry.listAll()).resolves.toEqual([entry]);
   });
 
   it("prefers a workspace-affine worker when it still has idle slot capacity", () => {
@@ -550,6 +612,41 @@ describe("storage redis", () => {
     expect(affinity.candidates.map((candidate) => candidate.workerId)).toEqual(["worker_2", "worker_1"]);
   });
 
+  it("prefers a same-user worker when sibling workspaces already live there", () => {
+    const affinity = buildRedisWorkerAffinitySummary({
+      workspaceId: "ws_3",
+      userId: "user_1",
+      workerUserAffinities: [
+        {
+          workerId: "worker_1",
+          workspaceCount: 2
+        }
+      ],
+      activeWorkers: [
+        {
+          workerId: "worker_1",
+          processKind: "standalone",
+          state: "busy",
+          health: "healthy"
+        },
+        {
+          workerId: "worker_2",
+          processKind: "standalone",
+          state: "idle",
+          health: "healthy"
+        }
+      ]
+    });
+
+    expect(affinity.userAffinityWorkerId).toBe("worker_1");
+    expect(affinity.preferredWorkerId).toBe("worker_1");
+    expect(affinity.candidates[0]).toMatchObject({
+      workerId: "worker_1",
+      matchingUserWorkspaces: 2
+    });
+    expect(affinity.candidates[0]?.reasons).toContain("same_user");
+  });
+
   it("publishes worker leases and removes them on shutdown", async () => {
     let claims = 0;
     const dequeuedRuns = ["run_1"];
@@ -559,6 +656,7 @@ describe("storage redis", () => {
     });
     const heartbeats: Array<{
       workerId: string;
+      ownerBaseUrl?: string;
       processKind: "embedded" | "standalone";
       state: "starting" | "idle" | "busy" | "stopping";
       currentSessionId?: string;
@@ -581,10 +679,12 @@ describe("storage redis", () => {
     const worker = new RedisRunWorker({
       queue,
       processKind: "embedded",
+      ownerBaseUrl: "http://embedded.internal:8787",
       registry: {
         async heartbeat(entry) {
           heartbeats.push({
             workerId: entry.workerId,
+            ...(entry.ownerBaseUrl ? { ownerBaseUrl: entry.ownerBaseUrl } : {}),
             processKind: entry.processKind,
             state: entry.state,
             ...(entry.currentSessionId ? { currentSessionId: entry.currentSessionId } : {}),
@@ -613,6 +713,7 @@ describe("storage redis", () => {
     worker.start();
     await new Promise((resolve) => setTimeout(resolve, 25));
     expect(heartbeats.some((entry) => entry.state === "starting")).toBe(true);
+    expect(heartbeats.some((entry) => entry.ownerBaseUrl === "http://embedded.internal:8787")).toBe(true);
     expect(heartbeats.some((entry) => entry.state === "idle")).toBe(true);
     expect(
       heartbeats.some(

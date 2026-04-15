@@ -4,7 +4,7 @@ import * as https from "node:https";
 
 import type { ServerConfig } from "@oah/config";
 
-export interface WorkerControllerLeaderElectionStatus {
+export interface ControllerLeaderElectionStatus {
   running: boolean;
   kind: "noop" | "kubernetes";
   leader: boolean;
@@ -17,15 +17,15 @@ export interface WorkerControllerLeaderElectionStatus {
   lastError?: string | undefined;
 }
 
-export interface WorkerControllerLeaderElectionLogger {
+export interface ControllerLeaderElectionLogger {
   info?(message: string): void;
   warn(message: string, error?: unknown): void;
 }
 
-export interface WorkerControllerLeaderElector {
+export interface ControllerLeaderElector {
   readonly kind: "noop" | "kubernetes";
   start(): void;
-  snapshot(): WorkerControllerLeaderElectionStatus;
+  snapshot(): ControllerLeaderElectionStatus;
   close(): Promise<void>;
 }
 
@@ -47,7 +47,7 @@ interface ControllerLeaderElectionConfigShape {
     | undefined;
 }
 
-export type ResolvedWorkerControllerLeaderElectionConfig =
+export type ResolvedControllerLeaderElectionConfig =
   | {
       type: "noop";
       identity: string;
@@ -83,13 +83,24 @@ export type KubernetesLeaseRequestFn = (
   text: string;
 }>;
 
-function readBoolEnv(name: string, fallback: boolean): boolean {
-  const raw = process.env[name];
-  if (!raw || raw.trim().length === 0) {
+function readEnv(names: string | string[]): string | undefined {
+  for (const name of Array.isArray(names) ? names : [names]) {
+    const raw = process.env[name];
+    if (raw && raw.trim().length > 0) {
+      return raw.trim();
+    }
+  }
+
+  return undefined;
+}
+
+function readBoolEnv(names: string | string[], fallback: boolean): boolean {
+  const raw = readEnv(names);
+  if (!raw) {
     return fallback;
   }
 
-  const normalized = raw.trim().toLowerCase();
+  const normalized = raw.toLowerCase();
   if (["1", "true", "yes", "on"].includes(normalized)) {
     return true;
   }
@@ -99,18 +110,13 @@ function readBoolEnv(name: string, fallback: boolean): boolean {
   return fallback;
 }
 
-function readStringEnv(name: string, fallback?: string | undefined): string | undefined {
-  const raw = process.env[name];
-  if (!raw || raw.trim().length === 0) {
-    return fallback;
-  }
-
-  return raw.trim();
+function readStringEnv(names: string | string[], fallback?: string | undefined): string | undefined {
+  return readEnv(names) ?? fallback;
 }
 
-function readPositiveIntEnv(name: string, fallback: number, minimum: number): number {
-  const raw = process.env[name];
-  if (!raw || raw.trim().length === 0) {
+function readPositiveIntEnv(names: string | string[], fallback: number, minimum: number): number {
+  const raw = readEnv(names);
+  if (!raw) {
     return fallback;
   }
 
@@ -132,8 +138,8 @@ function resolveKubernetesApiUrl(raw?: string | undefined): string | undefined {
   return `https://${host}:${port}`;
 }
 
-function resolveLeaderIdentity(fallbackPrefix = "worker-controller"): string {
-  const explicit = readStringEnv("OAH_WORKER_CONTROLLER_IDENTITY");
+function resolveLeaderIdentity(fallbackPrefix = "controller"): string {
+  const explicit = readStringEnv("OAH_CONTROLLER_IDENTITY");
   if (explicit) {
     return explicit;
   }
@@ -146,14 +152,14 @@ function resolveLeaderIdentity(fallbackPrefix = "worker-controller"): string {
   return `${fallbackPrefix}:${process.pid}`;
 }
 
-export function resolveWorkerControllerLeaderElectionConfig(
+export function resolveControllerLeaderElectionConfig(
   config: ServerConfig
-): ResolvedWorkerControllerLeaderElectionConfig {
+): ResolvedControllerLeaderElectionConfig {
   const controllerConfig = (config.workers?.controller ?? {}) as NonNullable<ServerConfig["workers"]>["controller"] & {
     leader_election?: ControllerLeaderElectionConfigShape | undefined;
   };
   const leaderElection = controllerConfig.leader_election;
-  const typeRaw = readStringEnv("OAH_WORKER_CONTROLLER_LEADER_ELECTION_TYPE", leaderElection?.type ?? "noop");
+  const typeRaw = readStringEnv("OAH_CONTROLLER_LEADER_ELECTION_TYPE", leaderElection?.type ?? "noop");
   const type = typeRaw === "kubernetes" ? "kubernetes" : "noop";
 
   if (type === "noop") {
@@ -164,49 +170,34 @@ export function resolveWorkerControllerLeaderElectionConfig(
   }
 
   const kubernetes = leaderElection?.kubernetes;
-  const namespace = readStringEnv("OAH_WORKER_CONTROLLER_LEASE_NAMESPACE", kubernetes?.namespace);
-  const leaseName = readStringEnv("OAH_WORKER_CONTROLLER_LEASE_NAME", kubernetes?.lease_name ?? "oah-worker-controller");
-  const apiUrl = resolveKubernetesApiUrl(readStringEnv("OAH_WORKER_CONTROLLER_LEASE_API_URL", kubernetes?.api_url));
+  const namespace = readStringEnv("OAH_CONTROLLER_LEASE_NAMESPACE", kubernetes?.namespace);
+  const leaseName = readStringEnv("OAH_CONTROLLER_LEASE_NAME", kubernetes?.lease_name ?? "oah-controller");
+  const apiUrl = resolveKubernetesApiUrl(readStringEnv("OAH_CONTROLLER_LEASE_API_URL", kubernetes?.api_url));
   const tokenFile = readStringEnv(
-    "OAH_WORKER_CONTROLLER_LEASE_TOKEN_FILE",
+    "OAH_CONTROLLER_LEASE_TOKEN_FILE",
     kubernetes?.token_file ?? "/var/run/secrets/kubernetes.io/serviceaccount/token"
   );
   const caFile = readStringEnv(
-    "OAH_WORKER_CONTROLLER_LEASE_CA_FILE",
+    "OAH_CONTROLLER_LEASE_CA_FILE",
     kubernetes?.ca_file ?? "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
   );
-  const skipTlsVerify = readBoolEnv(
-    "OAH_WORKER_CONTROLLER_LEASE_SKIP_TLS_VERIFY",
-    kubernetes?.skip_tls_verify ?? false
-  );
-  const leaseDurationMs = readPositiveIntEnv(
-    "OAH_WORKER_CONTROLLER_LEASE_DURATION_MS",
-    kubernetes?.lease_duration_ms ?? 15_000,
-    1_000
-  );
-  const renewIntervalMs = readPositiveIntEnv(
-    "OAH_WORKER_CONTROLLER_LEASE_RENEW_INTERVAL_MS",
-    kubernetes?.renew_interval_ms ?? 5_000,
-    250
-  );
-  const retryIntervalMs = readPositiveIntEnv(
-    "OAH_WORKER_CONTROLLER_LEASE_RETRY_INTERVAL_MS",
-    kubernetes?.retry_interval_ms ?? 2_000,
-    250
-  );
-  const identity = readStringEnv("OAH_WORKER_CONTROLLER_LEASE_IDENTITY", kubernetes?.identity) ?? resolveLeaderIdentity();
+  const skipTlsVerify = readBoolEnv("OAH_CONTROLLER_LEASE_SKIP_TLS_VERIFY", kubernetes?.skip_tls_verify ?? false);
+  const leaseDurationMs = readPositiveIntEnv("OAH_CONTROLLER_LEASE_DURATION_MS", kubernetes?.lease_duration_ms ?? 15_000, 1_000);
+  const renewIntervalMs = readPositiveIntEnv("OAH_CONTROLLER_LEASE_RENEW_INTERVAL_MS", kubernetes?.renew_interval_ms ?? 5_000, 250);
+  const retryIntervalMs = readPositiveIntEnv("OAH_CONTROLLER_LEASE_RETRY_INTERVAL_MS", kubernetes?.retry_interval_ms ?? 2_000, 250);
+  const identity = readStringEnv("OAH_CONTROLLER_LEASE_IDENTITY", kubernetes?.identity) ?? resolveLeaderIdentity();
 
   if (!namespace) {
-    throw new Error("worker-controller kubernetes leader election requires namespace.");
+    throw new Error("controller kubernetes leader election requires namespace.");
   }
   if (!leaseName) {
-    throw new Error("worker-controller kubernetes leader election requires lease_name.");
+    throw new Error("controller kubernetes leader election requires lease_name.");
   }
   if (!apiUrl) {
-    throw new Error("worker-controller kubernetes leader election requires api_url or in-cluster service env.");
+    throw new Error("controller kubernetes leader election requires api_url or in-cluster service env.");
   }
   if (!tokenFile) {
-    throw new Error("worker-controller kubernetes leader election requires token_file.");
+    throw new Error("controller kubernetes leader election requires token_file.");
   }
 
   return {
@@ -224,23 +215,23 @@ export function resolveWorkerControllerLeaderElectionConfig(
   };
 }
 
-export function createWorkerControllerLeaderElector(
-  config: ResolvedWorkerControllerLeaderElectionConfig,
+export function createControllerLeaderElector(
+  config: ResolvedControllerLeaderElectionConfig,
   options: {
     onGainedLeadership: () => Promise<void> | void;
     onLostLeadership: () => Promise<void> | void;
-    logger?: WorkerControllerLeaderElectionLogger | undefined;
+    logger?: ControllerLeaderElectionLogger | undefined;
     request?: KubernetesLeaseRequestFn | undefined;
   }
-): WorkerControllerLeaderElector {
+): ControllerLeaderElector {
   if (config.type === "kubernetes") {
-    return new KubernetesWorkerControllerLeaderElector(config, options);
+    return new KubernetesControllerLeaderElector(config, options);
   }
 
-  return new NoopWorkerControllerLeaderElector(config, options);
+  return new NoopControllerLeaderElector(config, options);
 }
 
-class NoopWorkerControllerLeaderElector implements WorkerControllerLeaderElector {
+class NoopControllerLeaderElector implements ControllerLeaderElector {
   readonly kind = "noop" as const;
   readonly #identity: string;
   readonly #onGainedLeadership: () => Promise<void> | void;
@@ -248,7 +239,7 @@ class NoopWorkerControllerLeaderElector implements WorkerControllerLeaderElector
   #leader = false;
 
   constructor(
-    config: Extract<ResolvedWorkerControllerLeaderElectionConfig, { type: "noop" }>,
+    config: Extract<ResolvedControllerLeaderElectionConfig, { type: "noop" }>,
     options: {
       onGainedLeadership: () => Promise<void> | void;
     }
@@ -267,7 +258,7 @@ class NoopWorkerControllerLeaderElector implements WorkerControllerLeaderElector
     void Promise.resolve(this.#onGainedLeadership());
   }
 
-  snapshot(): WorkerControllerLeaderElectionStatus {
+  snapshot(): ControllerLeaderElectionStatus {
     return {
       running: this.#running,
       kind: this.kind,
@@ -282,27 +273,27 @@ class NoopWorkerControllerLeaderElector implements WorkerControllerLeaderElector
   }
 }
 
-class KubernetesWorkerControllerLeaderElector implements WorkerControllerLeaderElector {
+class KubernetesControllerLeaderElector implements ControllerLeaderElector {
   readonly kind = "kubernetes" as const;
-  readonly #config: Extract<ResolvedWorkerControllerLeaderElectionConfig, { type: "kubernetes" }>;
+  readonly #config: Extract<ResolvedControllerLeaderElectionConfig, { type: "kubernetes" }>;
   readonly #request: KubernetesLeaseRequestFn;
   readonly #onGainedLeadership: () => Promise<void> | void;
   readonly #onLostLeadership: () => Promise<void> | void;
-  readonly #logger?: WorkerControllerLeaderElectionLogger | undefined;
+  readonly #logger?: ControllerLeaderElectionLogger | undefined;
   readonly #leaseUrl: string;
   readonly #leaseCollectionUrl: string;
   #running = false;
   #closed = false;
   #leader = false;
   #timer: NodeJS.Timeout | undefined;
-  #status: WorkerControllerLeaderElectionStatus;
+  #status: ControllerLeaderElectionStatus;
 
   constructor(
-    config: Extract<ResolvedWorkerControllerLeaderElectionConfig, { type: "kubernetes" }>,
+    config: Extract<ResolvedControllerLeaderElectionConfig, { type: "kubernetes" }>,
     options: {
       onGainedLeadership: () => Promise<void> | void;
       onLostLeadership: () => Promise<void> | void;
-      logger?: WorkerControllerLeaderElectionLogger | undefined;
+      logger?: ControllerLeaderElectionLogger | undefined;
       request?: KubernetesLeaseRequestFn | undefined;
     }
   ) {
@@ -339,7 +330,7 @@ class KubernetesWorkerControllerLeaderElector implements WorkerControllerLeaderE
     void this.#tick();
   }
 
-  snapshot(): WorkerControllerLeaderElectionStatus {
+  snapshot(): ControllerLeaderElectionStatus {
     return {
       ...this.#status
     };
@@ -376,7 +367,7 @@ class KubernetesWorkerControllerLeaderElector implements WorkerControllerLeaderE
       leader = await this.#acquireOrRenewLeadership(attemptAt);
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
-      this.#logger?.warn("[worker-controller] leader election attempt failed", error);
+      this.#logger?.warn("[controller] leader election attempt failed", error);
     }
 
     const wasLeader = this.#leader;
@@ -391,12 +382,12 @@ class KubernetesWorkerControllerLeaderElector implements WorkerControllerLeaderE
 
     if (!wasLeader && leader) {
       this.#logger?.info?.(
-        `[worker-controller] leadership acquired lease=${this.#config.leaseName} identity=${this.#config.identity}`
+        `[controller] leadership acquired lease=${this.#config.leaseName} identity=${this.#config.identity}`
       );
       await Promise.resolve(this.#onGainedLeadership());
     } else if (wasLeader && !leader) {
       this.#logger?.warn(
-        `[worker-controller] leadership lost lease=${this.#config.leaseName} identity=${this.#config.identity}${
+        `[controller] leadership lost lease=${this.#config.leaseName} identity=${this.#config.identity}${
           lastError ? ` error=${lastError}` : ""
         }`
       );

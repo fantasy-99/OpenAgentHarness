@@ -12,11 +12,23 @@ import type {
   StorageRedisDeleteKeysResponse,
   StorageRedisKeyDetail,
   StorageRedisKeyPage,
+  StorageRedisWorkerAffinity,
+  StorageRedisWorkspacePlacementPage,
   StorageRedisMaintenanceResponse
 } from "@oah/api-contracts";
+import {
+  buildRedisWorkerAffinitySummary,
+  createRedisWorkerRegistry,
+  type WorkspacePlacementRegistry,
+  type RedisWorkerRegistryEntry
+} from "@oah/storage-redis";
 
 type RedisInspectorClient = ReturnType<typeof createClient>;
 type PostgresTableConfigName = keyof typeof POSTGRES_TABLE_CONFIG;
+type WorkerRegistryInspector = {
+  listActive(nowMs?: number): Promise<RedisWorkerRegistryEntry[]>;
+  close?(): Promise<void>;
+};
 
 const POSTGRES_TABLE_CONFIG = {
   workspaces: {
@@ -280,6 +292,18 @@ export interface StorageAdmin {
   ): Promise<StoragePostgresTablePage>;
   redisKeys(pattern: string, cursor: string | undefined, pageSize: number): Promise<StorageRedisKeyPage>;
   redisKeyDetail(key: string): Promise<StorageRedisKeyDetail>;
+  redisWorkerAffinity(input: {
+    sessionId?: string | undefined;
+    workspaceId?: string | undefined;
+    userId?: string | undefined;
+    ownerWorkerId?: string | undefined;
+  }): Promise<StorageRedisWorkerAffinity>;
+  redisWorkspacePlacements(input?: {
+    workspaceId?: string | undefined;
+    userId?: string | undefined;
+    ownerWorkerId?: string | undefined;
+    state?: "unassigned" | "active" | "idle" | "draining" | "evicted" | undefined;
+  }): Promise<StorageRedisWorkspacePlacementPage>;
   deleteRedisKey(key: string): Promise<StorageRedisDeleteKeyResponse>;
   deleteRedisKeys(keys: string[]): Promise<StorageRedisDeleteKeysResponse>;
   clearRedisSessionQueue(key: string): Promise<StorageRedisMaintenanceResponse>;
@@ -298,12 +322,15 @@ export function createStorageAdmin(options: {
   archiveExportEnabled?: boolean | undefined;
   archiveExportRoot?: string | undefined;
   keyPrefix?: string | undefined;
+  workerRegistry?: WorkerRegistryInspector | undefined;
+  workspacePlacementRegistry?: WorkspacePlacementRegistry | undefined;
 }): StorageAdmin {
   const keyPrefix = options.keyPrefix ?? "oah";
   const postgresPool = options.postgresPool;
   const postgresConfigured = Boolean(postgresPool);
   const postgresPrimary = Boolean(postgresPool);
   let redisClientPromise: Promise<RedisInspectorClient | undefined> | undefined;
+  let workerRegistryPromise: Promise<WorkerRegistryInspector | undefined> | undefined;
 
   async function getRedisClient(): Promise<RedisInspectorClient | undefined> {
     if (!options.redisUrl) {
@@ -342,6 +369,28 @@ export function createStorageAdmin(options: {
     }
 
     return client;
+  }
+
+  async function getWorkerRegistry(): Promise<WorkerRegistryInspector | undefined> {
+    if (options.workerRegistry) {
+      return options.workerRegistry;
+    }
+
+    if (!workerRegistryPromise) {
+      workerRegistryPromise = (async () => {
+        const redisUrl = options.redisUrl;
+        if (!redisUrl) {
+          return undefined;
+        }
+
+        return createRedisWorkerRegistry({
+          url: redisUrl,
+          keyPrefix
+        });
+      })().catch(() => undefined);
+    }
+
+    return workerRegistryPromise;
   }
 
   return {
@@ -710,6 +759,114 @@ export function createStorageAdmin(options: {
       };
     },
 
+    async redisWorkerAffinity(input) {
+      const registry = await getWorkerRegistry();
+      if (!registry) {
+        throw new AppError(501, "redis_storage_unavailable", "Redis worker affinity is unavailable on this server.");
+      }
+
+      const activeWorkers = await registry.listActive(Date.now());
+      const normalizedWorkspaceId = input.workspaceId?.trim();
+      let normalizedUserId = input.userId?.trim();
+      let normalizedOwnerWorkerId = input.ownerWorkerId?.trim();
+      let workerUserAffinities:
+        | Array<{
+            workerId: string;
+            workspaceCount: number;
+          }>
+        | undefined;
+
+      if (options.workspacePlacementRegistry) {
+        const targetPlacement = normalizedWorkspaceId
+          ? await options.workspacePlacementRegistry.getByWorkspaceId(normalizedWorkspaceId)
+          : undefined;
+
+        normalizedUserId ||= targetPlacement?.userId?.trim();
+        normalizedOwnerWorkerId ||= targetPlacement?.ownerWorkerId?.trim();
+
+        if (normalizedUserId) {
+          const workerCounts = new Map<string, number>();
+          for (const placement of await options.workspacePlacementRegistry.listAll()) {
+            if (placement.userId !== normalizedUserId) {
+              continue;
+            }
+            if (!placement.ownerWorkerId || placement.state === "evicted" || placement.state === "unassigned") {
+              continue;
+            }
+            if (normalizedWorkspaceId && placement.workspaceId === normalizedWorkspaceId) {
+              continue;
+            }
+
+            workerCounts.set(placement.ownerWorkerId, (workerCounts.get(placement.ownerWorkerId) ?? 0) + 1);
+          }
+
+          workerUserAffinities = [...workerCounts.entries()].map(([workerId, workspaceCount]) => ({
+            workerId,
+            workspaceCount
+          }));
+        }
+      }
+
+      return buildRedisWorkerAffinitySummary({
+        activeWorkers,
+        slots: activeWorkers.map((worker) => ({
+          workerId: worker.workerId,
+          state: worker.state,
+          ...(worker.currentSessionId ? { currentSessionId: worker.currentSessionId } : {}),
+          ...(worker.currentWorkspaceId ? { currentWorkspaceId: worker.currentWorkspaceId } : {})
+        })),
+        ...(input.sessionId?.trim() ? { sessionId: input.sessionId.trim() } : {}),
+        ...(normalizedWorkspaceId ? { workspaceId: normalizedWorkspaceId } : {}),
+        ...(normalizedUserId ? { userId: normalizedUserId } : {}),
+        ...(workerUserAffinities ? { workerUserAffinities } : {}),
+        ...(normalizedOwnerWorkerId ? { ownerWorkerId: normalizedOwnerWorkerId } : {})
+      });
+    },
+
+    async redisWorkspacePlacements(input) {
+      const registry = options.workspacePlacementRegistry;
+      if (!registry) {
+        throw new AppError(501, "redis_storage_unavailable", "Redis workspace placement state is unavailable on this server.");
+      }
+
+      const normalizedWorkspaceId = input?.workspaceId?.trim();
+      const normalizedUserId = input?.userId?.trim();
+      const normalizedOwnerWorkerId = input?.ownerWorkerId?.trim();
+      const normalizedState = input?.state;
+
+      if (normalizedWorkspaceId) {
+        const entry = await registry.getByWorkspaceId(normalizedWorkspaceId);
+        const items =
+          entry &&
+          (!normalizedUserId || entry.userId === normalizedUserId) &&
+          (!normalizedOwnerWorkerId || entry.ownerWorkerId === normalizedOwnerWorkerId) &&
+          (!normalizedState || entry.state === normalizedState)
+            ? [entry]
+            : [];
+
+        return {
+          items
+        };
+      }
+
+      const items = (await registry.listAll()).filter((entry) => {
+        if (normalizedUserId && entry.userId !== normalizedUserId) {
+          return false;
+        }
+        if (normalizedOwnerWorkerId && entry.ownerWorkerId !== normalizedOwnerWorkerId) {
+          return false;
+        }
+        if (normalizedState && entry.state !== normalizedState) {
+          return false;
+        }
+        return true;
+      });
+
+      return {
+        items
+      };
+    },
+
     async deleteRedisKey(key) {
       const client = await requireRedisClient();
       const deleted = (await client.del(key)) > 0;
@@ -769,6 +926,11 @@ export function createStorageAdmin(options: {
     },
 
     async close() {
+      const workerRegistry = await getWorkerRegistry();
+      if (workerRegistry && workerRegistry !== options.workerRegistry && typeof workerRegistry.close === "function") {
+        await workerRegistry.close();
+      }
+
       const client = await getRedisClient();
       if (client?.isOpen) {
         await client.quit();

@@ -222,4 +222,274 @@ describe("storage admin", () => {
 
     await storageAdmin.close();
   });
+
+  it("builds worker affinity summaries from the worker registry", async () => {
+    const storageAdmin = createStorageAdmin({
+      redisAvailable: true,
+      redisEventBusEnabled: true,
+      redisRunQueueEnabled: true,
+      workerRegistry: {
+        async listActive() {
+          return [
+            {
+              workerId: "worker_1",
+              processKind: "standalone",
+              state: "idle",
+              health: "healthy",
+              lastSeenAt: "2026-04-15T00:00:00.000Z",
+              leaseTtlMs: 15_000,
+              expiresAt: "2026-04-15T00:00:15.000Z",
+              lastSeenAgeMs: 250,
+              currentWorkspaceId: "ws_1"
+            },
+            {
+              workerId: "worker_2",
+              processKind: "embedded",
+              state: "busy",
+              health: "healthy",
+              lastSeenAt: "2026-04-15T00:00:01.000Z",
+              leaseTtlMs: 15_000,
+              expiresAt: "2026-04-15T00:00:16.000Z",
+              lastSeenAgeMs: 150,
+              currentSessionId: "ses_1",
+              currentWorkspaceId: "ws_2"
+            }
+          ];
+        },
+        async close() {}
+      }
+    });
+
+    const affinity = await storageAdmin.redisWorkerAffinity({
+      workspaceId: "ws_1",
+      ownerWorkerId: "worker_1"
+    });
+
+    expect(affinity.preferredWorkerId).toBe("worker_1");
+    expect(affinity.workspaceAffinityWorkerId).toBe("worker_1");
+    expect(affinity.ownerWorkerId).toBe("worker_1");
+    expect(affinity.candidates[0]).toMatchObject({
+      workerId: "worker_1",
+      matchingWorkspaceSlots: 1
+    });
+    expect(affinity.candidates[0]?.reasons).toContain("owner_worker");
+    expect(affinity.candidates[0]?.reasons).toContain("same_workspace");
+
+    await storageAdmin.close();
+  });
+
+  it("derives same-user worker affinity from workspace placement state", async () => {
+    const storageAdmin = createStorageAdmin({
+      redisAvailable: true,
+      redisEventBusEnabled: true,
+      redisRunQueueEnabled: true,
+      workerRegistry: {
+        async listActive() {
+          return [
+            {
+              workerId: "worker_1",
+              processKind: "standalone",
+              state: "busy",
+              health: "healthy",
+              lastSeenAt: "2026-04-15T00:00:00.000Z",
+              leaseTtlMs: 15_000,
+              expiresAt: "2026-04-15T00:00:15.000Z",
+              lastSeenAgeMs: 250
+            },
+            {
+              workerId: "worker_2",
+              processKind: "standalone",
+              state: "idle",
+              health: "healthy",
+              lastSeenAt: "2026-04-15T00:00:01.000Z",
+              leaseTtlMs: 15_000,
+              expiresAt: "2026-04-15T00:00:16.000Z",
+              lastSeenAgeMs: 150
+            }
+          ];
+        },
+        async close() {}
+      },
+      workspacePlacementRegistry: {
+        async upsert() {
+          return undefined;
+        },
+        async assignUser() {
+          return undefined;
+        },
+        async listAll() {
+          return [
+            {
+              workspaceId: "ws_1",
+              version: "live",
+              userId: "user_1",
+              ownerWorkerId: "worker_1",
+              state: "idle" as const,
+              updatedAt: "2026-04-15T00:00:00.000Z"
+            },
+            {
+              workspaceId: "ws_2",
+              version: "live",
+              userId: "user_1",
+              ownerWorkerId: "worker_1",
+              state: "active" as const,
+              updatedAt: "2026-04-15T00:00:01.000Z"
+            },
+            {
+              workspaceId: "ws_3",
+              version: "live",
+              userId: "user_1",
+              state: "unassigned" as const,
+              updatedAt: "2026-04-15T00:00:02.000Z"
+            }
+          ];
+        },
+        async getByWorkspaceId(workspaceId) {
+          return workspaceId === "ws_3"
+            ? {
+                workspaceId,
+                version: "live",
+                userId: "user_1",
+                state: "unassigned" as const,
+                updatedAt: "2026-04-15T00:00:02.000Z"
+              }
+            : undefined;
+        }
+      }
+    });
+
+    const affinity = await storageAdmin.redisWorkerAffinity({
+      workspaceId: "ws_3"
+    });
+
+    expect(affinity.userAffinityWorkerId).toBe("worker_1");
+    expect(affinity.preferredWorkerId).toBe("worker_1");
+    expect(affinity.candidates[0]).toMatchObject({
+      workerId: "worker_1",
+      matchingUserWorkspaces: 2
+    });
+    expect(affinity.candidates[0]?.reasons).toContain("same_user");
+
+    await storageAdmin.close();
+  });
+
+  it("lists workspace placement state from the placement registry", async () => {
+    const storageAdmin = createStorageAdmin({
+      redisAvailable: true,
+      redisEventBusEnabled: true,
+      redisRunQueueEnabled: true,
+      workspacePlacementRegistry: {
+        async upsert() {
+          return undefined;
+        },
+        async assignUser() {
+          return undefined;
+        },
+        async listAll() {
+          return [
+            {
+              workspaceId: "ws_1",
+              version: "live",
+              userId: "user_1",
+              ownerWorkerId: "worker_1",
+              state: "idle" as const,
+              updatedAt: "2026-04-15T00:00:00.000Z"
+            },
+            {
+              workspaceId: "ws_2",
+              version: "live",
+              userId: "user_2",
+              ownerWorkerId: "worker_2",
+              state: "active" as const,
+              updatedAt: "2026-04-15T00:00:01.000Z"
+            }
+          ];
+        },
+        async getByWorkspaceId(workspaceId) {
+          return workspaceId === "ws_1"
+            ? {
+                workspaceId,
+                version: "live",
+                userId: "user_1",
+                ownerWorkerId: "worker_1",
+                state: "idle" as const,
+                updatedAt: "2026-04-15T00:00:00.000Z"
+              }
+            : undefined;
+        }
+      }
+    });
+
+    await expect(storageAdmin.redisWorkspacePlacements()).resolves.toEqual({
+      items: [
+        {
+          workspaceId: "ws_1",
+          version: "live",
+          userId: "user_1",
+          ownerWorkerId: "worker_1",
+          state: "idle",
+          updatedAt: "2026-04-15T00:00:00.000Z"
+        },
+        {
+          workspaceId: "ws_2",
+          version: "live",
+          userId: "user_2",
+          ownerWorkerId: "worker_2",
+          state: "active",
+          updatedAt: "2026-04-15T00:00:01.000Z"
+        }
+      ]
+    });
+    await expect(
+      storageAdmin.redisWorkspacePlacements({
+        workspaceId: "ws_1"
+      })
+    ).resolves.toEqual({
+      items: [
+        {
+          workspaceId: "ws_1",
+          version: "live",
+          userId: "user_1",
+          ownerWorkerId: "worker_1",
+          state: "idle",
+          updatedAt: "2026-04-15T00:00:00.000Z"
+        }
+      ]
+    });
+    await expect(
+      storageAdmin.redisWorkspacePlacements({
+        userId: "user_2"
+      })
+    ).resolves.toEqual({
+      items: [
+        {
+          workspaceId: "ws_2",
+          version: "live",
+          userId: "user_2",
+          ownerWorkerId: "worker_2",
+          state: "active",
+          updatedAt: "2026-04-15T00:00:01.000Z"
+        }
+      ]
+    });
+    await expect(
+      storageAdmin.redisWorkspacePlacements({
+        ownerWorkerId: "worker_1",
+        state: "idle"
+      })
+    ).resolves.toEqual({
+      items: [
+        {
+          workspaceId: "ws_1",
+          version: "live",
+          userId: "user_1",
+          ownerWorkerId: "worker_1",
+          state: "idle",
+          updatedAt: "2026-04-15T00:00:00.000Z"
+        }
+      ]
+    });
+
+    await storageAdmin.close();
+  });
 });

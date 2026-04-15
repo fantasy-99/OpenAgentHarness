@@ -1,5 +1,3 @@
-import { readFile, stat } from "node:fs/promises";
-
 import { z } from "zod";
 
 import { AppError } from "../errors.js";
@@ -46,9 +44,9 @@ export function createReadTool(context: NativeToolFactoryContext): RuntimeToolSe
               }
             : rawInput;
         const input = ReadInputSchema.parse(normalizedInput);
-        const resolved = resolveWorkspacePath(context.workspaceRoot, input.file_path);
-        const entry = await stat(resolved.absolutePath).catch(() => null);
-        if (!entry?.isFile()) {
+        const resolved = await resolveWorkspacePath(context.fileSystem, context.workspaceRoot, input.file_path);
+        const entry = await context.fileSystem.stat(resolved.absolutePath).catch(() => null);
+        if (entry?.kind !== "file") {
           throw new AppError(404, "native_tool_file_not_found", `File ${input.file_path} was not found.`);
         }
 
@@ -56,7 +54,7 @@ export function createReadTool(context: NativeToolFactoryContext): RuntimeToolSe
           throw new AppError(501, "native_tool_pdf_pages_unsupported", "Read pages is not implemented for PDF files in this runtime.");
         }
 
-        const content = await readFile(resolved.absolutePath, "utf8");
+        const content = (await context.fileSystem.readFile(resolved.absolutePath)).toString("utf8");
         const offset = input.offset ?? 0;
         const limit = input.limit ?? DEFAULT_READ_LIMIT;
         const { rendered, truncated, totalLines } = formatReadLines(content, offset, limit);

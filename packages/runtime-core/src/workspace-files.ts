@@ -1,9 +1,9 @@
-import { realpathSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { Readable } from "node:stream";
 
 import { AppError } from "./errors.js";
-import type { WorkspaceRecord } from "./types.js";
+import { createLocalWorkspaceFileSystem } from "./workspace-file-system.js";
+import type { WorkspaceFileStat, WorkspaceFileSystem, WorkspaceRecord } from "./types.js";
 import { parseCursor } from "./utils.js";
 
 export type WorkspaceEntrySortBy = "name" | "updatedAt" | "sizeBytes" | "type";
@@ -51,13 +51,13 @@ export interface WorkspaceFileContentResult {
 export interface WorkspaceFileDownloadResult {
   workspaceId: string;
   path: string;
-  absolutePath: string;
   name: string;
   sizeBytes: number;
   mimeType?: string | undefined;
   etag: string;
   updatedAt: string;
   readOnly: boolean;
+  openReadStream(): Readable;
 }
 
 interface ResolvedWorkspacePath {
@@ -69,11 +69,12 @@ function normalizeRelativePath(value: string): string {
   return value.split(path.sep).join("/");
 }
 
-function resolveWorkspaceFsPath(
+async function resolveWorkspaceFsPath(
+  fileSystem: WorkspaceFileSystem,
   workspaceRoot: string,
   targetPath: string,
   options?: { allowRoot?: boolean; defaultPath?: string }
-): ResolvedWorkspacePath {
+): Promise<ResolvedWorkspacePath> {
   const normalizedTarget = targetPath.trim().length > 0 ? targetPath.trim() : (options?.defaultPath ?? ".");
   const absolutePath = path.resolve(workspaceRoot, normalizedTarget);
 
@@ -82,21 +83,21 @@ function resolveWorkspaceFsPath(
   // resolve the nearest existing ancestor and validate that, then re-append the remainder.
   let realWorkspaceRoot: string;
   try {
-    realWorkspaceRoot = realpathSync(workspaceRoot);
+    realWorkspaceRoot = await fileSystem.realpath(workspaceRoot);
   } catch {
     realWorkspaceRoot = workspaceRoot;
   }
 
   let realAbsolutePath: string;
   try {
-    realAbsolutePath = realpathSync(absolutePath);
+    realAbsolutePath = await fileSystem.realpath(absolutePath);
   } catch {
     // Target doesn't exist — resolve the deepest existing ancestor
     let current = absolutePath;
     const trailingParts: string[] = [];
     while (true) {
       try {
-        const resolved = realpathSync(current);
+        const resolved = await fileSystem.realpath(current);
         realAbsolutePath = trailingParts.length > 0 ? path.join(resolved, ...trailingParts) : resolved;
         break;
       } catch {
@@ -127,7 +128,7 @@ function resolveWorkspaceFsPath(
   };
 }
 
-function createStatEtag(entry: { size: number; mtimeMs: number; ino?: number | bigint }): string {
+function createStatEtag(entry: { size: number; mtimeMs: number; ino?: number | bigint | undefined }): string {
   const ino = typeof entry.ino === "bigint" ? Number(entry.ino) : (entry.ino ?? 0);
   return `W/"${entry.size.toString(16)}-${Math.floor(entry.mtimeMs).toString(16)}-${ino.toString(16)}"`;
 }
@@ -187,6 +188,12 @@ function compareNumbers(left: number | undefined, right: number | undefined): nu
 }
 
 export class WorkspaceFileService {
+  readonly #fileSystem: WorkspaceFileSystem;
+
+  constructor(fileSystem: WorkspaceFileSystem = createLocalWorkspaceFileSystem()) {
+    this.#fileSystem = fileSystem;
+  }
+
   assertWorkspaceMutable(workspace: WorkspaceRecord): void {
     if (workspace.readOnly || workspace.kind === "chat") {
       throw new AppError(403, "workspace_read_only", `Workspace ${workspace.id} is read-only.`);
@@ -194,7 +201,7 @@ export class WorkspaceFileService {
   }
 
   async buildWorkspaceEntry(workspace: WorkspaceRecord, resolved: ResolvedWorkspacePath): Promise<WorkspaceEntry> {
-    const entry = await stat(resolved.absolutePath).catch(() => null);
+    const entry = await this.#fileSystem.stat(resolved.absolutePath).catch(() => null);
     if (!entry) {
       throw new AppError(404, "workspace_entry_not_found", `Path ${resolved.relativePath} was not found.`);
     }
@@ -202,16 +209,16 @@ export class WorkspaceFileService {
     return {
       path: resolved.relativePath,
       name: resolved.relativePath === "." ? path.basename(workspace.rootPath) : path.basename(resolved.absolutePath),
-      type: entry.isDirectory() ? "directory" : "file",
-      ...(entry.isFile()
+      type: entry.kind === "directory" ? "directory" : "file",
+      ...(entry.kind === "file"
         ? {
             sizeBytes: entry.size,
             mimeType: guessMimeType(resolved.absolutePath),
             etag: createStatEtag(entry)
           }
         : {}),
-      updatedAt: entry.mtime.toISOString(),
-      createdAt: entry.birthtime.toISOString(),
+      updatedAt: new Date(entry.mtimeMs).toISOString(),
+      createdAt: new Date(entry.birthtimeMs).toISOString(),
       readOnly: workspace.readOnly
     };
   }
@@ -226,15 +233,15 @@ export class WorkspaceFileService {
     }
   ): Promise<WorkspaceEntry> {
     this.assertWorkspaceMutable(workspace);
-    const resolved = resolveWorkspaceFsPath(workspace.rootPath, input.path);
-    const existing = await stat(resolved.absolutePath).catch(() => null);
+    const resolved = await resolveWorkspaceFsPath(this.#fileSystem, workspace.rootPath, input.path);
+    const existing = await this.#fileSystem.stat(resolved.absolutePath).catch(() => null);
 
-    if (existing?.isDirectory()) {
+    if (existing?.kind === "directory") {
       throw new AppError(409, "workspace_entry_conflict", `Path ${resolved.relativePath} already exists as a directory.`);
     }
 
     if (input.ifMatch !== undefined) {
-      if (!existing?.isFile()) {
+      if (existing?.kind !== "file") {
         throw new AppError(
           412,
           "workspace_precondition_failed",
@@ -252,12 +259,12 @@ export class WorkspaceFileService {
       }
     }
 
-    if (existing?.isFile() && input.overwrite === false) {
+    if (existing?.kind === "file" && input.overwrite === false) {
       throw new AppError(409, "workspace_entry_exists", `Path ${resolved.relativePath} already exists.`);
     }
 
-    await mkdir(path.dirname(resolved.absolutePath), { recursive: true });
-    await writeFile(resolved.absolutePath, input.bytes);
+    await this.#fileSystem.mkdir(path.dirname(resolved.absolutePath), { recursive: true });
+    await this.#fileSystem.writeFile(resolved.absolutePath, input.bytes);
     return this.buildWorkspaceEntry(workspace, resolved);
   }
 
@@ -271,13 +278,16 @@ export class WorkspaceFileService {
       sortOrder: SortOrder;
     }
   ): Promise<WorkspaceEntryPage> {
-    const resolved = resolveWorkspaceFsPath(workspace.rootPath, input.path ?? ".", { allowRoot: true, defaultPath: "." });
-    const directoryEntry = await stat(resolved.absolutePath).catch(() => null);
-    if (!directoryEntry?.isDirectory()) {
+    const resolved = await resolveWorkspaceFsPath(this.#fileSystem, workspace.rootPath, input.path ?? ".", {
+      allowRoot: true,
+      defaultPath: "."
+    });
+    const directoryEntry = await this.#fileSystem.stat(resolved.absolutePath).catch(() => null);
+    if (directoryEntry?.kind !== "directory") {
       throw new AppError(404, "workspace_directory_not_found", `Directory ${resolved.relativePath} was not found.`);
     }
 
-    const entries = await readdir(resolved.absolutePath, { withFileTypes: true });
+    const entries = await this.#fileSystem.readdir(resolved.absolutePath);
     const items = await Promise.all(
       entries.map(async (entry) =>
         this.buildWorkspaceEntry(workspace, {
@@ -342,13 +352,13 @@ export class WorkspaceFileService {
     workspace: WorkspaceRecord,
     input: { path: string; encoding: "utf8" | "base64"; maxBytes?: number | undefined }
   ): Promise<WorkspaceFileContentResult> {
-    const resolved = resolveWorkspaceFsPath(workspace.rootPath, input.path);
-    const entry = await stat(resolved.absolutePath).catch(() => null);
-    if (!entry?.isFile()) {
+    const resolved = await resolveWorkspaceFsPath(this.#fileSystem, workspace.rootPath, input.path);
+    const entry = await this.#fileSystem.stat(resolved.absolutePath).catch(() => null);
+    if (entry?.kind !== "file") {
       throw new AppError(404, "workspace_file_not_found", `File ${resolved.relativePath} was not found.`);
     }
 
-    const raw = await readFile(resolved.absolutePath);
+    const raw = await this.#fileSystem.readFile(resolved.absolutePath);
     const truncated = input.maxBytes !== undefined && raw.length > input.maxBytes;
     const contentBytes = truncated ? raw.subarray(0, input.maxBytes) : raw;
     return {
@@ -360,7 +370,7 @@ export class WorkspaceFileService {
       sizeBytes: raw.length,
       mimeType: guessMimeType(resolved.absolutePath),
       etag: createStatEtag(entry),
-      updatedAt: entry.mtime.toISOString(),
+      updatedAt: new Date(entry.mtimeMs).toISOString(),
       readOnly: workspace.readOnly
     };
   }
@@ -400,14 +410,14 @@ export class WorkspaceFileService {
     input: { path: string; createParents: boolean }
   ): Promise<WorkspaceEntry> {
     this.assertWorkspaceMutable(workspace);
-    const resolved = resolveWorkspaceFsPath(workspace.rootPath, input.path);
-    const existing = await stat(resolved.absolutePath).catch(() => null);
+    const resolved = await resolveWorkspaceFsPath(this.#fileSystem, workspace.rootPath, input.path);
+    const existing = await this.#fileSystem.stat(resolved.absolutePath).catch(() => null);
 
-    if (existing?.isFile()) {
+    if (existing?.kind === "file") {
       throw new AppError(409, "workspace_entry_conflict", `Path ${resolved.relativePath} already exists as a file.`);
     }
 
-    await mkdir(resolved.absolutePath, { recursive: input.createParents });
+    await this.#fileSystem.mkdir(resolved.absolutePath, { recursive: input.createParents });
     return this.buildWorkspaceEntry(workspace, resolved);
   }
 
@@ -416,15 +426,15 @@ export class WorkspaceFileService {
     input: { path: string; recursive: boolean }
   ): Promise<WorkspaceDeleteResult> {
     this.assertWorkspaceMutable(workspace);
-    const resolved = resolveWorkspaceFsPath(workspace.rootPath, input.path);
-    const existing = await stat(resolved.absolutePath).catch(() => null);
+    const resolved = await resolveWorkspaceFsPath(this.#fileSystem, workspace.rootPath, input.path);
+    const existing = await this.#fileSystem.stat(resolved.absolutePath).catch(() => null);
     if (!existing) {
       throw new AppError(404, "workspace_entry_not_found", `Path ${resolved.relativePath} was not found.`);
     }
 
-    const type = existing.isDirectory() ? "directory" : "file";
-    if (existing.isDirectory() && !input.recursive) {
-      const children = await readdir(resolved.absolutePath);
+    const type = existing.kind === "directory" ? "directory" : "file";
+    if (existing.kind === "directory" && !input.recursive) {
+      const children = await this.#fileSystem.readdir(resolved.absolutePath);
       if (children.length > 0) {
         throw new AppError(
           409,
@@ -434,7 +444,7 @@ export class WorkspaceFileService {
       }
     }
 
-    await rm(resolved.absolutePath, {
+    await this.#fileSystem.rm(resolved.absolutePath, {
       recursive: input.recursive,
       force: false
     });
@@ -452,10 +462,10 @@ export class WorkspaceFileService {
     input: { sourcePath: string; targetPath: string; overwrite: boolean }
   ): Promise<WorkspaceEntry> {
     this.assertWorkspaceMutable(workspace);
-    const source = resolveWorkspaceFsPath(workspace.rootPath, input.sourcePath);
-    const target = resolveWorkspaceFsPath(workspace.rootPath, input.targetPath);
+    const source = await resolveWorkspaceFsPath(this.#fileSystem, workspace.rootPath, input.sourcePath);
+    const target = await resolveWorkspaceFsPath(this.#fileSystem, workspace.rootPath, input.targetPath);
 
-    const existingSource = await stat(source.absolutePath).catch(() => null);
+    const existingSource = await this.#fileSystem.stat(source.absolutePath).catch(() => null);
     if (!existingSource) {
       throw new AppError(404, "workspace_entry_not_found", `Path ${source.relativePath} was not found.`);
     }
@@ -464,40 +474,40 @@ export class WorkspaceFileService {
       return this.buildWorkspaceEntry(workspace, target);
     }
 
-    const existingTarget = await stat(target.absolutePath).catch(() => null);
+    const existingTarget = await this.#fileSystem.stat(target.absolutePath).catch(() => null);
     if (existingTarget && !input.overwrite) {
       throw new AppError(409, "workspace_entry_exists", `Path ${target.relativePath} already exists.`);
     }
 
     if (existingTarget) {
-      await rm(target.absolutePath, {
+      await this.#fileSystem.rm(target.absolutePath, {
         recursive: true,
         force: true
       });
     }
 
-    await mkdir(path.dirname(target.absolutePath), { recursive: true });
-    await rename(source.absolutePath, target.absolutePath);
+    await this.#fileSystem.mkdir(path.dirname(target.absolutePath), { recursive: true });
+    await this.#fileSystem.rename(source.absolutePath, target.absolutePath);
     return this.buildWorkspaceEntry(workspace, target);
   }
 
   async getFileDownload(workspace: WorkspaceRecord, targetPath: string): Promise<WorkspaceFileDownloadResult> {
-    const resolved = resolveWorkspaceFsPath(workspace.rootPath, targetPath);
-    const entry = await stat(resolved.absolutePath).catch(() => null);
-    if (!entry?.isFile()) {
+    const resolved = await resolveWorkspaceFsPath(this.#fileSystem, workspace.rootPath, targetPath);
+    const entry = await this.#fileSystem.stat(resolved.absolutePath).catch(() => null);
+    if (entry?.kind !== "file") {
       throw new AppError(404, "workspace_file_not_found", `File ${resolved.relativePath} was not found.`);
     }
 
     return {
       workspaceId: workspace.id,
       path: resolved.relativePath,
-      absolutePath: resolved.absolutePath,
       name: path.basename(resolved.absolutePath),
       sizeBytes: entry.size,
       mimeType: guessMimeType(resolved.absolutePath),
       etag: createStatEtag(entry),
-      updatedAt: entry.mtime.toISOString(),
-      readOnly: workspace.readOnly
+      updatedAt: new Date(entry.mtimeMs).toISOString(),
+      readOnly: workspace.readOnly,
+      openReadStream: () => this.#fileSystem.openReadStream(resolved.absolutePath)
     };
   }
 }

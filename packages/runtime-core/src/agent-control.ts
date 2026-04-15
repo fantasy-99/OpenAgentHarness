@@ -94,6 +94,7 @@ export function createSubAgentTool(
       task: string;
       handoffSummary?: string | undefined;
       taskId?: string | undefined;
+      notifyParentOnCompletion?: boolean | undefined;
     },
     currentAgentName: string
   ) => Promise<{
@@ -173,7 +174,8 @@ export function createSubAgentTool(
             ...(targetAgentName ? { targetAgentName } : {}),
             task: prompt,
             handoffSummary: description,
-            ...(taskId ? { taskId } : {})
+            ...(taskId ? { taskId } : {}),
+            ...(shouldRunInBackground ? { notifyParentOnCompletion: true } : {})
           },
           currentAgentName
         );

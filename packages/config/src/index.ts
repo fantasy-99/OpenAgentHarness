@@ -133,6 +133,7 @@ export interface ServerConfig {
               | {
                   namespace?: string | undefined;
                   deployment?: string | undefined;
+                  label_selector?: string | undefined;
                   api_url?: string | undefined;
                   token_file?: string | undefined;
                   ca_file?: string | undefined;
@@ -530,7 +531,8 @@ function toActionCatalogItems(actions: Record<string, DiscoveredAction>): Action
     exposeToLlm: action.exposeToLlm,
     callableByUser: action.callableByUser,
     callableByApi: action.callableByApi,
-    ...(action.retryPolicy ? { retryPolicy: action.retryPolicy } : {})
+    ...(action.retryPolicy ? { retryPolicy: action.retryPolicy } : {}),
+    ...(action.inputSchema ? { inputSchema: action.inputSchema } : {})
   }));
 }
 

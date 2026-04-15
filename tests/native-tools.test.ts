@@ -5,6 +5,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createNativeToolSet } from "../packages/runtime-core/src/native-tools.ts";
+import { createLocalWorkspaceFileSystem } from "../packages/runtime-core/src/workspace-file-system.ts";
+import type { WorkspaceCommandExecutor, WorkspaceFileSystem } from "../packages/runtime-core/src/types.ts";
 
 const tempDirs: string[] = [];
 
@@ -170,6 +172,109 @@ describe("native tools", () => {
     }
 
     expect(output).toContain("background-ok");
+  });
+
+  it("routes Bash through the injected workspace command executor", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-native-tools-command-executor-"));
+    tempDirs.push(workspaceRoot);
+
+    const commandExecutor: WorkspaceCommandExecutor = {
+      runForeground: vi.fn(async () => ({
+        stdout: "executor-ok",
+        stderr: "",
+        exitCode: 0
+      })),
+      runProcess: vi.fn(async () => ({
+        stdout: `${path.join(workspaceRoot, "src", "app.ts")}:1:export const value = 1;`,
+        stderr: "",
+        exitCode: 0
+      })),
+      runBackground: vi.fn(async () => ({
+        outputPath: path.join(workspaceRoot, ".openharness", "state", "background", "session-executor", "task.log"),
+        taskId: "task-executor",
+        pid: 1234
+      }))
+    };
+
+    await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
+    await writeFile(path.join(workspaceRoot, "src", "app.ts"), "export const value = 1;\n", "utf8");
+
+    const tools = createNativeToolSet(workspaceRoot, () => ["Bash", "Grep"], {
+      sessionId: "session-executor",
+      commandExecutor
+    });
+
+    const foreground = String(await tools.Bash.execute({ command: "printf ignored" }, {}));
+    expect(foreground).toContain("executor-ok");
+    expect(commandExecutor.runForeground).toHaveBeenCalledTimes(1);
+
+    const background = String(
+      await tools.Bash.execute({ command: "printf ignored", run_in_background: true }, {})
+    );
+    expect(background).toContain("task_id: task-executor");
+    expect(commandExecutor.runBackground).toHaveBeenCalledTimes(1);
+
+    const grep = String(await tools.Grep.execute({ pattern: "value", path: "src", output_mode: "content" }, {}));
+    expect(grep).toContain("src/app.ts:1:export const value = 1;");
+    expect(commandExecutor.runProcess).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes native tool file access through the injected workspace file system", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-native-tools-filesystem-"));
+    tempDirs.push(workspaceRoot);
+
+    const localFileSystem = createLocalWorkspaceFileSystem();
+    const statCalls: string[] = [];
+    const readCalls: string[] = [];
+    const readdirCalls: string[] = [];
+    const writeCalls: string[] = [];
+    const fileSystem: WorkspaceFileSystem = {
+      ...localFileSystem,
+      async stat(targetPath) {
+        statCalls.push(targetPath);
+        return localFileSystem.stat(targetPath);
+      },
+      async readFile(targetPath) {
+        readCalls.push(targetPath);
+        return localFileSystem.readFile(targetPath);
+      },
+      async readdir(targetPath) {
+        readdirCalls.push(targetPath);
+        return localFileSystem.readdir(targetPath);
+      },
+      async writeFile(targetPath, data) {
+        writeCalls.push(targetPath);
+        await localFileSystem.writeFile(targetPath, data);
+      }
+    };
+
+    const tools = createNativeToolSet(workspaceRoot, () => ["Read", "Write", "Edit", "TodoWrite", "Glob"], {
+      sessionId: "session-fs",
+      fileSystem
+    });
+
+    await tools.Write.execute({ file_path: "notes.txt", content: "one\n" }, {});
+    await tools.Read.execute({ file_path: "notes.txt" }, {});
+    await tools.Edit.execute(
+      { file_path: "notes.txt", old_string: "one", new_string: "two" },
+      {}
+    );
+    await tools.Glob.execute({ pattern: "**/*.txt" }, {});
+    await tools.TodoWrite.execute(
+      {
+        todos: [{ content: "Ship", activeForm: "Shipping", status: "in_progress" }]
+      },
+      {}
+    );
+
+    expect(writeCalls).toContain(path.join(workspaceRoot, "notes.txt"));
+    expect(writeCalls).toContain(
+      path.join(workspaceRoot, ".openharness", "state", "todos", "session-fs.json")
+    );
+    expect(readCalls).toContain(path.join(workspaceRoot, "notes.txt"));
+    expect(statCalls).toContain(path.join(workspaceRoot, "notes.txt"));
+    expect(readdirCalls).toContain(workspaceRoot);
+    expect(await readFile(path.join(workspaceRoot, "notes.txt"), "utf8")).toBe("two\n");
   });
 
   it("fetches and searches the web with Title Case tools", async () => {

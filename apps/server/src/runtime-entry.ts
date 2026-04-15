@@ -2,8 +2,10 @@ import { createApp, type AppDependencies } from "./app.js";
 import { bootstrapRuntime, installSignalHandlers, shouldStartEmbeddedWorker, type BootstrappedRuntime } from "./bootstrap.js";
 
 function buildAppDependencies(runtime: BootstrappedRuntime): AppDependencies {
+  const runtimeService = runtime.runtimeService as unknown as AppDependencies["runtimeService"];
+
   return {
-    runtimeService: runtime.runtimeService,
+    runtimeService,
     modelGateway: runtime.modelGateway,
     defaultModel: runtime.config.llm.default_model,
     workspaceMode: runtime.workspaceMode.kind,

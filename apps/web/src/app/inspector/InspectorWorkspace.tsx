@@ -109,6 +109,7 @@ export function InspectorWorkspace(props: RuntimeProps) {
                 runtimeToolNames={props.allRuntimeToolNames}
                 activeToolNames={props.allAdvertisedToolNames}
                 toolServers={props.allToolServers}
+                triggerWorkspaceAction={props.triggerWorkspaceAction}
                 refreshWorkspace={props.refreshWorkspace}
               />
             </TabsContent>

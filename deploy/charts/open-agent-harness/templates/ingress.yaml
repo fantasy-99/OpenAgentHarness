@@ -1,0 +1,35 @@
+{{- if and .Values.apiServer.enabled .Values.apiServer.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "open-agent-harness.apiServerName" . }}
+  labels:
+    {{- include "open-agent-harness.componentLabels" (dict "root" . "component" "api-server") | nindent 4 }}
+  {{- with .Values.apiServer.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.apiServer.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    {{- range .Values.apiServer.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "open-agent-harness.apiServerName" $ }}
+                port:
+                  name: http
+          {{- end }}
+    {{- end }}
+  {{- with .Values.apiServer.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

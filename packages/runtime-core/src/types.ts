@@ -1,3 +1,4 @@
+import type { Readable } from "node:stream";
 import type {
   ActionCatalogItem,
   ChatMessage,
@@ -326,6 +327,13 @@ export interface WorkspaceExecutionLease {
   release(options?: { dirty?: boolean | undefined }): Promise<void> | void;
 }
 
+/**
+ * Host-adapter seam for run execution.
+ *
+ * The current server bootstrap wires this to local workspace materialization,
+ * but the same boundary can later be backed by a sandbox host implementation
+ * such as a self-hosted sandbox pod or an E2B-compatible adapter.
+ */
 export interface WorkspaceExecutionProvider {
   acquire(input: {
     workspace: WorkspaceRecord;
@@ -339,12 +347,86 @@ export interface WorkspaceFileAccessLease {
   release(options?: { dirty?: boolean | undefined }): Promise<void> | void;
 }
 
+/**
+ * Host-adapter seam for workspace file access.
+ *
+ * This keeps runtime-core independent from whether the live workspace copy is
+ * provided by local disk, a self-hosted sandbox pod, or a future compatible
+ * remote sandbox backend.
+ */
 export interface WorkspaceFileAccessProvider {
   acquire(input: {
     workspace: WorkspaceRecord;
     access: "read" | "write";
     path?: string | undefined;
   }): Promise<WorkspaceFileAccessLease>;
+}
+
+export interface WorkspaceForegroundCommandExecutionResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
+export interface WorkspaceBackgroundCommandExecutionResult {
+  outputPath: string;
+  taskId: string;
+  pid: number;
+}
+
+export interface WorkspaceFileStat {
+  kind: "file" | "directory" | "other";
+  size: number;
+  mtimeMs: number;
+  birthtimeMs: number;
+  ino?: number | bigint | undefined;
+}
+
+export interface WorkspaceFileSystemEntry {
+  name: string;
+  kind: "file" | "directory" | "other";
+}
+
+export interface WorkspaceFileSystem {
+  realpath(targetPath: string): Promise<string>;
+  stat(targetPath: string): Promise<WorkspaceFileStat>;
+  readFile(targetPath: string): Promise<Buffer>;
+  openReadStream(targetPath: string): Readable;
+  readdir(targetPath: string): Promise<WorkspaceFileSystemEntry[]>;
+  mkdir(targetPath: string, options?: { recursive?: boolean | undefined }): Promise<void>;
+  writeFile(targetPath: string, data: Buffer): Promise<void>;
+  rm(targetPath: string, options?: { recursive?: boolean | undefined; force?: boolean | undefined }): Promise<void>;
+  rename(sourcePath: string, targetPath: string): Promise<void>;
+}
+
+export interface WorkspaceCommandExecutor {
+  runForeground(input: {
+    workspace: WorkspaceRecord;
+    command: string;
+    cwd?: string | undefined;
+    env?: Record<string, string> | undefined;
+    timeoutMs?: number | undefined;
+    stdinText?: string | undefined;
+    signal?: AbortSignal | undefined;
+  }): Promise<WorkspaceForegroundCommandExecutionResult>;
+  runProcess(input: {
+    workspace: WorkspaceRecord;
+    executable: string;
+    args: string[];
+    cwd?: string | undefined;
+    env?: Record<string, string> | undefined;
+    timeoutMs?: number | undefined;
+    stdinText?: string | undefined;
+    signal?: AbortSignal | undefined;
+  }): Promise<WorkspaceForegroundCommandExecutionResult>;
+  runBackground(input: {
+    workspace: WorkspaceRecord;
+    command: string;
+    sessionId: string;
+    description?: string | undefined;
+    cwd?: string | undefined;
+    env?: Record<string, string> | undefined;
+  }): Promise<WorkspaceBackgroundCommandExecutionResult>;
 }
 
 export type ToolCallSourceType = "action" | "skill" | "agent" | "tool" | "native";
@@ -499,6 +581,8 @@ export interface RuntimeServiceOptions {
   workspaceInitializer?: WorkspaceInitializer | undefined;
   workspaceExecutionProvider?: WorkspaceExecutionProvider | undefined;
   workspaceFileAccessProvider?: WorkspaceFileAccessProvider | undefined;
+  workspaceFileSystem?: WorkspaceFileSystem | undefined;
+  workspaceCommandExecutor?: WorkspaceCommandExecutor | undefined;
 }
 
 export type RunQueuePriority = "normal" | "subagent";
@@ -588,7 +672,8 @@ export interface TriggerActionRunParams {
   actionName: string;
   sessionId?: string | undefined;
   agentName?: string | undefined;
-  input?: Record<string, unknown> | null | undefined;
+  input?: unknown;
+  triggerSource?: "api" | "user" | undefined;
 }
 
 export interface CancelRunResult {
