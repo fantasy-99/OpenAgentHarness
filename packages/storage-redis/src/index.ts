@@ -117,6 +117,7 @@ export interface RedisRunWorkerLogger {
 
 export interface RedisWorkerLeaseInput {
   workerId: string;
+  runtimeInstanceId?: string | undefined;
   processKind: "embedded" | "standalone";
   state: "starting" | "idle" | "busy" | "stopping";
   lastSeenAt: string;
@@ -178,6 +179,7 @@ export interface RedisRunWorkerOptions {
     }): Promise<{ recoveredRunIds: string[]; requeuedRunIds?: string[] }>;
   };
   workerId?: string | undefined;
+  runtimeInstanceId?: string | undefined;
   processKind?: "embedded" | "standalone" | undefined;
   lockTtlMs?: number | undefined;
   pollTimeoutMs?: number | undefined;
@@ -365,6 +367,7 @@ function deriveRedisWorkerRegistryEntry(
 
   return {
     workerId: entry.workerId,
+    ...(entry.runtimeInstanceId ? { runtimeInstanceId: entry.runtimeInstanceId } : {}),
     processKind: entry.processKind,
     state: entry.state,
     lastSeenAt: new Date(lastSeenAtMs).toISOString(),
@@ -449,6 +452,7 @@ export class RedisWorkerRegistry implements WorkerRegistry {
       .sAdd(this.#registrySetKey(), entry.workerId)
       .hSet(this.#workerKey(entry.workerId), {
         workerId: entry.workerId,
+        ...(entry.runtimeInstanceId ? { runtimeInstanceId: entry.runtimeInstanceId } : {}),
         processKind: entry.processKind,
         state: entry.state,
         lastSeenAt: entry.lastSeenAt,
@@ -466,6 +470,9 @@ export class RedisWorkerRegistry implements WorkerRegistry {
     }
     if (!entry.currentWorkspaceId) {
       transaction.hDel(this.#workerKey(entry.workerId), "currentWorkspaceId");
+    }
+    if (!entry.runtimeInstanceId) {
+      transaction.hDel(this.#workerKey(entry.workerId), "runtimeInstanceId");
     }
     await transaction.pExpire(this.#workerKey(entry.workerId), leaseTtlMs).exec();
   }
@@ -500,6 +507,7 @@ export class RedisWorkerRegistry implements WorkerRegistry {
         ...deriveRedisWorkerRegistryEntry(
           {
             workerId: record.fields.workerId ?? record.workerId,
+            ...(record.fields.runtimeInstanceId ? { runtimeInstanceId: record.fields.runtimeInstanceId } : {}),
             processKind: record.fields.processKind === "standalone" ? "standalone" : "embedded",
             state:
               record.fields.state === "starting" ||
@@ -1121,6 +1129,7 @@ export class RedisRunWorker {
   readonly #queue: SessionRunQueue;
   readonly #runtimeService: RedisRunWorkerOptions["runtimeService"];
   readonly #workerId: string;
+  readonly #runtimeInstanceId?: string | undefined;
   readonly #processKind: "embedded" | "standalone";
   readonly #lockTtlMs: number;
   readonly #pollTimeoutMs: number;
@@ -1149,6 +1158,7 @@ export class RedisRunWorker {
     this.#queue = options.queue;
     this.#runtimeService = options.runtimeService;
     this.#workerId = options.workerId ?? createId("worker");
+    this.#runtimeInstanceId = options.runtimeInstanceId;
     this.#processKind = options.processKind ?? "embedded";
     this.#lockTtlMs = Math.max(1_000, options.lockTtlMs ?? 30_000);
     this.#pollTimeoutMs = Math.max(250, options.pollTimeoutMs ?? 1_000);
@@ -1291,6 +1301,7 @@ export class RedisRunWorker {
       await this.#registry.heartbeat(
         {
           workerId: this.#workerId,
+          ...(this.#runtimeInstanceId ? { runtimeInstanceId: this.#runtimeInstanceId } : {}),
           processKind: this.#processKind,
           state: this.#state,
           lastSeenAt: new Date().toISOString(),
@@ -1354,6 +1365,7 @@ export class RedisRunWorkerPool {
   readonly #queue: SessionRunQueue;
   readonly #queueFactory?: (() => Promise<SessionRunQueue>) | undefined;
   readonly #runtimeService: RedisRunWorkerOptions["runtimeService"];
+  readonly #runtimeInstanceId?: string | undefined;
   readonly #processKind: "embedded" | "standalone";
   readonly #lockTtlMs: number;
   readonly #pollTimeoutMs: number;
@@ -1415,6 +1427,7 @@ export class RedisRunWorkerPool {
     this.#queue = options.queue;
     this.#queueFactory = options.queueFactory;
     this.#runtimeService = options.runtimeService;
+    this.#runtimeInstanceId = options.runtimeInstanceId;
     this.#processKind = options.processKind ?? "embedded";
     this.#lockTtlMs = Math.max(1_000, options.lockTtlMs ?? 30_000);
     this.#pollTimeoutMs = Math.max(250, options.pollTimeoutMs ?? 1_000);
@@ -1587,6 +1600,7 @@ export class RedisRunWorkerPool {
       const workerId = createId("worker");
       const worker = new RedisRunWorker({
         workerId,
+        ...(this.#runtimeInstanceId ? { runtimeInstanceId: this.#runtimeInstanceId } : {}),
         queue,
         runtimeService: this.#runtimeService,
         processKind: this.#processKind,

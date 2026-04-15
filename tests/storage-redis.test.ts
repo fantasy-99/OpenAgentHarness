@@ -400,6 +400,7 @@ describe("storage redis", () => {
     await registry.heartbeat(
       {
         workerId: "worker_1",
+        runtimeInstanceId: "worker-pod-a",
         processKind: "embedded",
         state: "busy",
         lastSeenAt: "2026-04-01T00:00:00.000Z",
@@ -414,6 +415,7 @@ describe("storage redis", () => {
 
     expect(entry).toMatchObject({
       workerId: "worker_1",
+      runtimeInstanceId: "worker-pod-a",
       processKind: "embedded",
       state: "busy",
       currentSessionId: "ses_1",

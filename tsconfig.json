@@ -11,6 +11,7 @@
     { "path": "./packages/model-gateway" },
     { "path": "./apps/cli" },
     { "path": "./apps/server" },
-    { "path": "./apps/worker" }
+    { "path": "./apps/worker" },
+    { "path": "./apps/worker-controller" }
   ]
 }

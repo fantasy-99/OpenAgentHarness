@@ -209,6 +209,20 @@ function resolveInternalBaseUrl(config: Pick<ServerConfig, "server">): string | 
   return `http://${host}:${config.server.port}`;
 }
 
+function resolveRuntimeInstanceId(processKind: "api" | "worker"): string {
+  const explicit = process.env.OAH_RUNTIME_INSTANCE_ID?.trim();
+  if (explicit) {
+    return explicit;
+  }
+
+  const hostname = process.env.HOSTNAME?.trim();
+  if (hostname) {
+    return `${processKind}:${hostname}`;
+  }
+
+  return `${processKind}:${process.pid}`;
+}
+
 type PlatformModelRegistry = Awaited<ReturnType<typeof loadPlatformModels>>;
 interface PlatformModelSnapshot {
   revision: number;
@@ -298,6 +312,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   const currentWorkerId = `${process.pid}`;
   const startWorker = options.startWorker ?? false;
   const processKind = options.processKind ?? "api";
+  const runtimeInstanceId = resolveRuntimeInstanceId(processKind);
   const singleWorkspace = parseSingleWorkspaceOptions(argv);
   const requestedConfig = parseConfigPath(argv);
   const config =
@@ -887,6 +902,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   const workerRuntime = createWorkerRuntimeControl({
     startWorker,
     processKind,
+    runtimeInstanceId,
     config,
     redisRunQueue,
     redisWorkerRegistry,

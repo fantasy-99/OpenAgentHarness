@@ -211,6 +211,108 @@
               "minimum": 0
             }
           }
+        },
+        "standalone": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "min_replicas": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_replicas": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "slots_per_pod": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "ready_sessions_per_worker": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "reserved_capacity_for_subagent": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "controller": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "scale_interval_ms": {
+              "type": "integer",
+              "minimum": 250
+            },
+            "scale_up_window": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "scale_down_window": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "cooldown_ms": {
+              "type": "integer",
+              "minimum": 250
+            },
+            "scale_up_busy_ratio_threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "scale_up_max_ready_age_ms": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "scale_target": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "noop",
+                    "kubernetes"
+                  ]
+                },
+                "allow_scale_down": {
+                  "type": "boolean"
+                },
+                "kubernetes": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "namespace": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "deployment": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "api_url": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "token_file": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "ca_file": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "skip_tls_verify": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },

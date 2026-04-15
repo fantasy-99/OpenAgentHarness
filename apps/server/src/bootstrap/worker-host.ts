@@ -149,6 +149,7 @@ export function resolveEmbeddedWorkerPoolConfig(options: {
 export function createWorkerHost(options: {
   startWorker: boolean;
   processKind: "api" | "worker";
+  runtimeInstanceId?: string | undefined;
   config: WorkerHostConfig;
   redisRunQueue?: SessionRunQueue | undefined;
   redisWorkerRegistry?: WorkerRegistry | undefined;
@@ -206,6 +207,7 @@ export function createWorkerHost(options: {
         : {})
     },
     processKind: options.processKind === "worker" ? "standalone" : "embedded",
+    ...(options.runtimeInstanceId ? { runtimeInstanceId: options.runtimeInstanceId } : {}),
     registry: options.redisWorkerRegistry,
     minWorkers: poolConfig.minWorkers,
     maxWorkers: poolConfig.maxWorkers,

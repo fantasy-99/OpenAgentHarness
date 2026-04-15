@@ -415,6 +415,19 @@ OAH 当前只负责：
 - OAH 可以在 K8S 中独立决定 worker 副本数
 - 同一 worker workload 不再同时受多个 autoscaler 控制
 
+当前落点：
+
+- `done` 已新增独立 `apps/worker-controller` app 包，作为 worker 控制面独立入口
+- `done` controller 当前已能从 `workers.standalone` / `workers.controller` 读取最小副本、最大副本、每 Pod slot 数、sample window、cooldown 和 scale-up 阈值配置
+- `done` standalone worker registry lease 现在会携带 `runtimeInstanceId`，便于把同一 Pod 内多个 slot 聚合为一个 replica
+- `done` controller 当前已经能基于 Redis queue pressure、busy slot、ready session backlog、oldest ready age 和 replica/slot 聚合关系计算 `suggestedReplicas` / `desiredReplicas`
+- `done` controller snapshot 当前已保留 `recentDecisions`、cooldown remaining、pressure streak 和 scale reason，作为后续接 K8S 执行器的决策基线
+- `done` controller 现在已经有可插拔 `scale target` 抽象，并已接上 Kubernetes `Deployment /scale` 子资源适配器
+- `done` controller 现在支持 `noop` / `kubernetes` 两类 target，并会把 target reconcile 结果写回 snapshot
+- `done` 第一版 K8S target 默认保留 `allow_scale_down = false` 的安全语义，避免在 drain / graceful shutdown 尚未完成前贸然自动缩容
+- `partial` 当前 controller 仍未接入 leader election，也还没有 workload discovery / manifest / RBAC 一体化落地
+- `next` 下一步优先补 controller 的 leader election、只扩不缩/可缩容 gating 的显式运维开关，以及 deployment manifests / RBAC 模板
+
 ### Phase 6: 完成自动缩容与优雅下线
 
 - 完成 draining、graceful shutdown、缩容保护和回队/失败收敛语义

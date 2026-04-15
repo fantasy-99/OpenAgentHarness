@@ -92,6 +92,37 @@ export interface ServerConfig {
       cooldown_ms?: number | undefined;
       reserved_capacity_for_subagent?: number | undefined;
     } | undefined;
+    standalone?: {
+      min_replicas?: number | undefined;
+      max_replicas?: number | undefined;
+      slots_per_pod?: number | undefined;
+      ready_sessions_per_worker?: number | undefined;
+      reserved_capacity_for_subagent?: number | undefined;
+    } | undefined;
+    controller?: {
+      scale_interval_ms?: number | undefined;
+      scale_up_window?: number | undefined;
+      scale_down_window?: number | undefined;
+      cooldown_ms?: number | undefined;
+      scale_up_busy_ratio_threshold?: number | undefined;
+      scale_up_max_ready_age_ms?: number | undefined;
+      scale_target?:
+        | {
+            type?: "noop" | "kubernetes" | undefined;
+            allow_scale_down?: boolean | undefined;
+            kubernetes?:
+              | {
+                  namespace?: string | undefined;
+                  deployment?: string | undefined;
+                  api_url?: string | undefined;
+                  token_file?: string | undefined;
+                  ca_file?: string | undefined;
+                  skip_tls_verify?: boolean | undefined;
+                }
+              | undefined;
+          }
+        | undefined;
+    } | undefined;
   } | undefined;
   llm: {
     default_model: string;

@@ -224,6 +224,88 @@ llm:
     });
   });
 
+  it("loads standalone worker and controller settings from server config", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-config-worker-controller-"));
+    tempDirs.push(tempDir);
+
+    for (const dirName of ["workspaces", "chat", "templates", "models", "tools", "skills"]) {
+      await mkdir(path.join(tempDir, dirName), { recursive: true });
+    }
+
+    const configPath = path.join(tempDir, "server.yaml");
+    await writeFile(
+      configPath,
+      `
+server:
+  host: 127.0.0.1
+  port: 8787
+storage:
+  redis_url: redis://local/0
+paths:
+  workspace_dir: ./workspaces
+  chat_dir: ./chat
+  template_dir: ./templates
+  model_dir: ./models
+  tool_dir: ./tools
+  skill_dir: ./skills
+workers:
+  standalone:
+    min_replicas: 2
+    max_replicas: 9
+    slots_per_pod: 3
+    ready_sessions_per_worker: 2
+    reserved_capacity_for_subagent: 4
+  controller:
+    scale_interval_ms: 1200
+    scale_up_window: 2
+    scale_down_window: 5
+    cooldown_ms: 4000
+    scale_up_busy_ratio_threshold: 0.85
+    scale_up_max_ready_age_ms: 2500
+    scale_target:
+      type: kubernetes
+      allow_scale_down: false
+      kubernetes:
+        namespace: open-agent-harness
+        deployment: oah-worker
+        api_url: https://kubernetes.default.svc
+        token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+llm:
+  default_model: openai-default
+`,
+      "utf8"
+    );
+
+    const config = await loadServerConfig(configPath);
+    expect(config.workers?.standalone).toEqual({
+      min_replicas: 2,
+      max_replicas: 9,
+      slots_per_pod: 3,
+      ready_sessions_per_worker: 2,
+      reserved_capacity_for_subagent: 4
+    });
+    expect(config.workers?.controller).toEqual({
+      scale_interval_ms: 1200,
+      scale_up_window: 2,
+      scale_down_window: 5,
+      cooldown_ms: 4000,
+      scale_up_busy_ratio_threshold: 0.85,
+      scale_up_max_ready_age_ms: 2500,
+      scale_target: {
+        type: "kubernetes",
+        allow_scale_down: false,
+        kubernetes: {
+          namespace: "open-agent-harness",
+          deployment: "oah-worker",
+          api_url: "https://kubernetes.default.svc",
+          token_file: "/var/run/secrets/kubernetes.io/serviceaccount/token",
+          ca_file: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+        }
+      }
+    });
+  });
+
   it("requires model_dir and tool_dir in server config", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-config-missing-required-paths-"));
     tempDirs.push(tempDir);

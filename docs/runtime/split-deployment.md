@@ -13,8 +13,10 @@
   - 复用 `apps/server` 里的共享 runtime 装配逻辑
   - 只暴露 internal-only HTTP surface 和健康探针
 - `worker-controller`
-  - 当前尚未落地
-  - 后续在 Phase 5 引入
+  - 独立控制面入口
+  - 当前负责读取 Redis queue / worker registry 并计算 `desiredReplicas`
+  - 当前已可通过可插拔 `scale target` 把目标副本数 reconcile 到 Kubernetes `Deployment /scale`
+  - 第一版默认保持禁缩容安全语义，避免在 drain contract 完成前自动缩容
 
 ## 启动方式
 
@@ -88,6 +90,5 @@ worker Pod 侧至少需要保证这些目录可用：
 
 当前仍未完成：
 
-- `apps/worker-controller`
 - K8S deployment / service / probe manifests
-- drain / autoscaling / leader election
+- drain / autoscaling / leader election / RBAC

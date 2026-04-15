@@ -77,6 +77,7 @@ export function summarizeWorkerRuntimeStatus(input: {
 export function createWorkerRuntimeControl(options: {
   startWorker: boolean;
   processKind: "api" | "worker";
+  runtimeInstanceId?: string | undefined;
   config: WorkerHostConfig;
   redisRunQueue?: SessionRunQueue | undefined;
   redisWorkerRegistry?: WorkerRegistry | undefined;
@@ -99,6 +100,7 @@ export function createWorkerRuntimeControl(options: {
   const host = (options.hostFactory ?? createWorkerHost)({
     startWorker: options.startWorker,
     processKind: options.processKind,
+    ...(options.runtimeInstanceId ? { runtimeInstanceId: options.runtimeInstanceId } : {}),
     config: options.config,
     redisRunQueue: options.redisRunQueue,
     redisWorkerRegistry: options.redisWorkerRegistry,
