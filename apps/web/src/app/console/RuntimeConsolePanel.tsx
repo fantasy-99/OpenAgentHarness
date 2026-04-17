@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Download, Search, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -8,6 +8,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 
+import { useUiStore } from "../stores/ui-store";
 import { downloadJsonFile, formatTimestamp, prettyJson, toneBadgeClass, type ConsoleFilter, type RuntimeConsoleEntry } from "../support";
 
 const filters: Array<{ id: ConsoleFilter; label: string }> = [
@@ -35,16 +36,16 @@ function levelBadgeClass(level: RuntimeConsoleEntry["level"]) {
 
 interface RuntimeConsolePanelProps {
   isOpen: boolean;
-  height: number;
-  onHeightChange: (height: number) => void;
-  onClose: () => void;
-  filter: ConsoleFilter;
-  onFilterChange: (filter: ConsoleFilter) => void;
   entries: RuntimeConsoleEntry[];
   onEntryInspect: (entry: RuntimeConsoleEntry) => void;
 }
 
-export function RuntimeConsolePanel(props: RuntimeConsolePanelProps) {
+function RuntimeConsolePanelImpl(props: RuntimeConsolePanelProps) {
+  const height = useUiStore((state) => state.consoleHeight);
+  const onHeightChange = useUiStore((state) => state.setConsoleHeight);
+  const filter = useUiStore((state) => state.consoleFilter);
+  const onFilterChange = useUiStore((state) => state.setConsoleFilter);
+  const setConsoleOpen = useUiStore((state) => state.setConsoleOpen);
   const [search, setSearch] = useState("");
   const [autoScroll, setAutoScroll] = useState(true);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
@@ -56,17 +57,17 @@ export function RuntimeConsolePanel(props: RuntimeConsolePanelProps) {
     const searchQuery = search.trim().toLowerCase();
     return props.entries.filter((entry) => {
       const filterMatches =
-        props.filter === "all"
+        filter === "all"
           ? true
-          : props.filter === "errors"
+          : filter === "errors"
             ? entry.level === "error" || entry.level === "warn"
-            : props.filter === "runs"
+            : filter === "runs"
               ? entry.category === "run" || entry.category === "agent"
-              : props.filter === "tools"
+              : filter === "tools"
                 ? entry.category === "tool"
-                : props.filter === "hooks"
+                : filter === "hooks"
                   ? entry.category === "hook"
-                  : props.filter === "model"
+                  : filter === "model"
                     ? entry.category === "model"
                     : entry.category === "system" || entry.category === "http";
 
@@ -81,7 +82,7 @@ export function RuntimeConsolePanel(props: RuntimeConsolePanelProps) {
       const searchable = `${entry.message}\n${entry.details ? prettyJson(entry.details) : ""}`.toLowerCase();
       return searchable.includes(searchQuery);
     });
-  }, [props.entries, props.filter, search]);
+  }, [props.entries, filter, search]);
 
   useEffect(() => {
     if (autoScroll && props.isOpen) {
@@ -99,7 +100,7 @@ export function RuntimeConsolePanel(props: RuntimeConsolePanelProps) {
       const minHeight = 170;
       const maxHeight = Math.max(minHeight, Math.floor(window.innerHeight * 0.72));
       const nextHeight = dragState.startHeight + (dragState.startY - event.clientY);
-      props.onHeightChange(Math.min(maxHeight, Math.max(minHeight, nextHeight)));
+      onHeightChange(Math.min(maxHeight, Math.max(minHeight, nextHeight)));
     };
 
     const handlePointerUp = () => {
@@ -115,21 +116,21 @@ export function RuntimeConsolePanel(props: RuntimeConsolePanelProps) {
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
     };
-  }, [props]);
+  }, [onHeightChange]);
 
   if (!props.isOpen) {
     return null;
   }
 
   return (
-    <section className="console-surface" style={{ height: props.height }}>
+    <section className="console-surface" style={{ height }}>
       <div
         className={cn(
           "console-resizer h-2 cursor-ns-resize transition-colors",
           dragging ? "console-resizer-active" : undefined
         )}
         onPointerDown={(event) => {
-          dragStateRef.current = { startY: event.clientY, startHeight: props.height };
+          dragStateRef.current = { startY: event.clientY, startHeight: height };
           setDragging(true);
           document.body.style.cursor = "ns-resize";
           document.body.style.userSelect = "none";
@@ -143,19 +144,19 @@ export function RuntimeConsolePanel(props: RuntimeConsolePanelProps) {
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5">
-            {filters.map((filter) => (
+            {filters.map((option) => (
               <button
-                key={filter.id}
+                key={option.id}
                 type="button"
-                onClick={() => props.onFilterChange(filter.id)}
+                onClick={() => onFilterChange(option.id)}
                 className={cn(
                   "rounded-full border px-2.5 py-1 text-[11px] transition",
-                  props.filter === filter.id
+                  filter === option.id
                     ? "console-filter-chip-active"
                     : "console-filter-chip"
                 )}
               >
-                {filter.label}
+                {option.label}
               </button>
             ))}
           </div>
@@ -178,7 +179,7 @@ export function RuntimeConsolePanel(props: RuntimeConsolePanelProps) {
               <Download className="h-3.5 w-3.5" />
               Export
             </Button>
-            <Button type="button" variant="ghost" size="icon" onClick={props.onClose} aria-label="Close console">
+            <Button type="button" variant="ghost" size="icon" onClick={() => setConsoleOpen(false)} aria-label="Close console">
               <X className="h-4 w-4" />
             </Button>
           </div>
@@ -265,3 +266,5 @@ export function RuntimeConsolePanel(props: RuntimeConsolePanelProps) {
     </section>
   );
 }
+
+export const RuntimeConsolePanel = memo(RuntimeConsolePanelImpl);
