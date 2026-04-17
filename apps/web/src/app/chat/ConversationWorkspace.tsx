@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from "react";
+import { memo, useEffect, useRef, useCallback, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Bot, ChevronRight, Folder, Loader2, RefreshCw, Send, Square, Wrench, CornerDownRight } from "lucide-react";
@@ -6,6 +6,8 @@ import { Bot, ChevronRight, Folder, Loader2, RefreshCw, Send, Square, Wrench, Co
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 
+import { useStreamStore } from "../stores/stream-store";
+import { useUiStore } from "../stores/ui-store";
 import { formatTimestamp, statusTone, toneBadgeClass, toneTextClass } from "../support";
 import type { Message } from "@oah/api-contracts";
 import type { useAppController } from "../use-app-controller";
@@ -446,7 +448,14 @@ function MessageContent({
 /** Persist scroll positions per session across component re-mounts */
 const scrollPositions = new Map<string, number>();
 
-export function ConversationWorkspace(props: RuntimeProps) {
+function ConversationWorkspaceImpl(props: RuntimeProps) {
+  const run = useStreamStore((state) => state.run);
+  const runSteps = useStreamStore((state) => state.runSteps);
+  const draftMessage = useStreamStore((state) => state.draftMessage);
+  const setDraftMessage = useStreamStore((state) => state.setDraftMessage);
+  const setSelectedRunId = useStreamStore((state) => state.setSelectedRunId);
+  const setMainViewMode = useUiStore((state) => state.setMainViewMode);
+  const setInspectorTab = useUiStore((state) => state.setInspectorTab);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
   const prevMessageCountRef = useRef(0);
@@ -457,7 +466,7 @@ export function ConversationWorkspace(props: RuntimeProps) {
   const messageCount = props.messageFeed.length;
   const hasStreamingMessage = props.messageFeed.some((m) => m.id.startsWith("live:"));
   const isRunning = props.isRunning;
-  const canSend = !isRunning && props.draftMessage.trim().length > 0;
+  const canSend = !isRunning && draftMessage.trim().length > 0;
   const inputPlaceholder = isRunning
     ? "Agent is running…"
     : props.isSwitchingSessionAgent
@@ -530,7 +539,7 @@ export function ConversationWorkspace(props: RuntimeProps) {
       textarea.style.height = "auto";
       textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
     }
-  }, [props.draftMessage]);
+  }, [draftMessage]);
 
   // Enter to send, Shift+Enter for newline
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -555,16 +564,16 @@ export function ConversationWorkspace(props: RuntimeProps) {
         onScroll={handleScroll}
       >
         {/* Sticky status bar */}
-        {props.hasActiveSession && (isRunning || props.run?.status) ? (
+        {props.hasActiveSession && (isRunning || run?.status) ? (
           <div className="sticky top-0 z-10 flex items-center justify-end gap-2 px-4 py-1.5 pointer-events-none min-h-[36px]">
             {isRunning ? (
               <Badge variant="secondary" className="pointer-events-auto animate-pulse gap-1.5">
                 <Loader2 className="h-3 w-3 animate-spin" />
-                {props.run?.effectiveAgentName ?? "running"}
+                {run?.effectiveAgentName ?? "running"}
               </Badge>
-            ) : props.run?.status ? (
-              <Badge className={`pointer-events-auto ${statusTone(props.run.status)}`}>
-                {props.run.status}
+            ) : run?.status ? (
+              <Badge className={`pointer-events-auto ${statusTone(run.status)}`}>
+                {run.status}
               </Badge>
             ) : null}
           </div>
@@ -599,8 +608,8 @@ export function ConversationWorkspace(props: RuntimeProps) {
               const messageAgentInfo = resolveMessageAgentInfo({
                 message,
                 catalog: props.catalog,
-                runSteps: props.runSteps,
-                run: props.run,
+                runSteps: runSteps,
+                run,
                 session: props.session,
                 sessionEvents: props.sessionEvents
               });
@@ -639,9 +648,9 @@ export function ConversationWorkspace(props: RuntimeProps) {
                           size="sm"
                           className="h-5 rounded-md px-1.5 text-[10px]"
                           onClick={() => {
-                            props.setSelectedRunId(message.runId ?? "");
-                            props.setMainViewMode("inspector");
-                            props.setInspectorTab("timeline");
+                            setSelectedRunId(message.runId ?? "");
+                            setMainViewMode("inspector");
+                            setInspectorTab("timeline");
                             props.refreshRunById(message.runId ?? "");
                             props.refreshRunStepsById(message.runId ?? "");
                           }}
@@ -701,8 +710,8 @@ export function ConversationWorkspace(props: RuntimeProps) {
 
                 <Textarea
                   ref={textareaRef}
-                  value={props.draftMessage}
-                  onChange={(event) => props.setDraftMessage(event.target.value)}
+                  value={draftMessage}
+                  onChange={(event) => setDraftMessage(event.target.value)}
                   onKeyDown={handleKeyDown}
                   placeholder={inputPlaceholder}
                   disabled={isRunning}
@@ -741,3 +750,5 @@ export function ConversationWorkspace(props: RuntimeProps) {
     </div>
   );
 }
+
+export const ConversationWorkspace = memo(ConversationWorkspaceImpl);
