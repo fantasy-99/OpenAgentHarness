@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from "react";
+import { memo, useRef, useState, type ReactNode } from "react";
 
 import {
   Bot,
@@ -30,6 +30,11 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 
+import { useHealthStore } from "../stores/health-store";
+import { useModelsStore } from "../stores/models-store";
+import { useSettingsStore } from "../stores/settings-store";
+import { useStreamStore } from "../stores/stream-store";
+import { useUiStore } from "../stores/ui-store";
 import { probeTone, streamTone, toneBadgeClass, type SavedSessionRecord, type StatusSemanticTone } from "../support";
 import type { useAppController } from "../use-app-controller";
 import { SessionNavItem, WorkspaceNavItem } from "./sidebar-items";
@@ -206,6 +211,13 @@ function ToggleRow(props: { label: string; checked: boolean; onCheckedChange: (c
 }
 
 function RuntimeSidebar(props: SidebarProps) {
+  const workspaceBlueprintFilter = useSettingsStore((state) => state.workspaceBlueprintFilter);
+  const setWorkspaceBlueprintFilter = useSettingsStore((state) => state.setWorkspaceBlueprintFilter);
+  const serviceScope = useSettingsStore((state) => state.serviceScope);
+  const autoStream = useUiStore((state) => state.autoStream);
+  const setAutoStream = useUiStore((state) => state.setAutoStream);
+  const filterSelectedRun = useUiStore((state) => state.filterSelectedRun);
+  const setFilterSelectedRun = useUiStore((state) => state.setFilterSelectedRun);
   const showFilteredWorkspaceCount = props.filteredSavedWorkspaces.length !== props.orderedSavedWorkspaces.length;
   const workspaceCountLabel = showFilteredWorkspaceCount
     ? `${props.filteredSavedWorkspaces.length} of ${props.orderedSavedWorkspaces.length} workspaces`
@@ -329,8 +341,8 @@ function RuntimeSidebar(props: SidebarProps) {
           <label className="space-y-1 px-2">
             <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Blueprint</span>
             <Select
-              value={props.workspaceBlueprintFilter || "__all_blueprints__"}
-              onValueChange={(value) => props.setWorkspaceBlueprintFilter(value === "__all_blueprints__" ? "" : value)}
+              value={workspaceBlueprintFilter || "__all_blueprints__"}
+              onValueChange={(value) => setWorkspaceBlueprintFilter(value === "__all_blueprints__" ? "" : value)}
             >
               <SelectTrigger className="h-8 w-full rounded-xl border-black/10 bg-white/68 text-xs shadow-none" aria-label="Workspace blueprint filter">
                 <SelectValue placeholder="All blueprints" />
@@ -348,12 +360,12 @@ function RuntimeSidebar(props: SidebarProps) {
           {props.filteredSavedWorkspaces.length === 0 ? (
             <div className="rounded-xl border border-dashed border-black/12 bg-white/32 px-4 py-8 text-center">
               <p className="text-sm font-medium text-foreground">
-                {props.workspaceBlueprintFilter ? "No matching workspaces" : "No workspaces"}
+                {workspaceBlueprintFilter ? "No matching workspaces" : "No workspaces"}
               </p>
               <p className="mt-1 text-sm text-muted-foreground">
-                {props.workspaceBlueprintFilter
+                {workspaceBlueprintFilter
                   ? "Try another blueprint or service filter."
-                  : props.serviceScope !== "__all__"
+                  : serviceScope !== "__all__"
                     ? "Switch service scope or create a workspace in this service."
                     : "Create or load one."}
               </p>
@@ -421,8 +433,8 @@ function RuntimeSidebar(props: SidebarProps) {
 
       <div className="shrink-0 space-y-3 border-t border-black/8 px-3 py-3">
         <div className="grid gap-2">
-          <ToggleRow label="Auto SSE" checked={props.autoStream} onCheckedChange={(checked) => props.setAutoStream(checked)} />
-          <ToggleRow label="Current Run" checked={props.filterSelectedRun} onCheckedChange={(checked) => props.setFilterSelectedRun(checked)} />
+          <ToggleRow label="Auto SSE" checked={autoStream} onCheckedChange={(checked) => setAutoStream(checked)} />
+          <ToggleRow label="Current Run" checked={filterSelectedRun} onCheckedChange={(checked) => setFilterSelectedRun(checked)} />
         </div>
       </div>
     </div>
@@ -430,6 +442,8 @@ function RuntimeSidebar(props: SidebarProps) {
 }
 
 function StorageSidebar(props: SidebarProps) {
+  const healthReport = useHealthStore((state) => state.healthReport);
+  const serviceScope = useSettingsStore((state) => state.serviceScope);
   const postgresAvailable = props.storageOverview?.postgres.available ?? false;
   const redisAvailable = props.storageOverview?.redis.available ?? false;
   const postgresTableCount = props.storageOverview?.postgres.tables.length ?? 0;
@@ -448,11 +462,11 @@ function StorageSidebar(props: SidebarProps) {
     (props.storageOverview?.redis.sessionQueues.length ?? 0) +
     (props.storageOverview?.redis.sessionLocks.length ?? 0) +
     (props.storageOverview?.redis.eventBuffers.length ?? 0);
-  const activeWorkerCount = props.healthReport?.worker.summary.active ?? props.healthReport?.worker.activeWorkers.length ?? 0;
-  const targetWorkerCount = props.healthReport?.worker.pool?.desiredWorkers ?? activeWorkerCount;
+  const activeWorkerCount = healthReport?.worker.summary.active ?? healthReport?.worker.activeWorkers.length ?? 0;
+  const targetWorkerCount = healthReport?.worker.pool?.desiredWorkers ?? activeWorkerCount;
   const lateWorkerCount =
-    props.healthReport?.worker.summary.late ??
-    props.healthReport?.worker.activeWorkers.filter((entry) => entry.health === "late").length ??
+    healthReport?.worker.summary.late ??
+    healthReport?.worker.activeWorkers.filter((entry) => entry.health === "late").length ??
     0;
   const storageModeItems = props.storageRedisEnabled
     ? [
@@ -476,8 +490,8 @@ function StorageSidebar(props: SidebarProps) {
           <SidebarMetric
             label="Scope"
             value={props.selectedServiceScopeLabel}
-            detail={props.serviceScope === "__all__" ? "cross-service" : "active scope"}
-            tone={props.serviceScope === "__all__" ? "sky" : "emerald"}
+            detail={serviceScope === "__all__" ? "cross-service" : "active scope"}
+            tone={serviceScope === "__all__" ? "sky" : "emerald"}
             compact
           />
           <SidebarMetric
@@ -739,7 +753,16 @@ function StorageSidebar(props: SidebarProps) {
 }
 
 function ProviderSidebar(props: SidebarProps) {
-  const defaultModel = props.platformModels.find((model) => model.isDefault);
+  const connection = useSettingsStore((state) => state.connection);
+  const modelDraft = useSettingsStore((state) => state.modelDraft);
+  const setModelDraft = useSettingsStore((state) => state.setModelDraft);
+  const healthStatus = useHealthStore((state) => state.healthStatus);
+  const readinessReport = useHealthStore((state) => state.readinessReport);
+  const modelProviders = useModelsStore((state) => state.modelProviders);
+  const platformModels = useModelsStore((state) => state.platformModels);
+  const streamState = useStreamStore((state) => state.streamState);
+  const setStreamRevision = useUiStore((state) => state.setStreamRevision);
+  const defaultModel = platformModels.find((model) => model.isDefault);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -747,17 +770,17 @@ function ProviderSidebar(props: SidebarProps) {
         <div className="space-y-5">
           <div className="space-y-3 border-b border-black/8 pb-4">
             <div className="grid grid-cols-2 gap-2">
-              <SidebarMetric label="Health" value={props.healthStatus} tone={probeTone(props.healthStatus)} />
-              <SidebarMetric label="Stream" value={props.streamState} tone={streamTone(props.streamState)} />
-              <SidebarMetric label="Models" value={String(props.platformModels.length)} tone="emerald" />
-              <SidebarMetric label="Providers" value={String(props.modelProviders.length)} tone="sky" />
+              <SidebarMetric label="Health" value={healthStatus} tone={probeTone(healthStatus)} />
+              <SidebarMetric label="Stream" value={streamState} tone={streamTone(streamState)} />
+              <SidebarMetric label="Models" value={String(platformModels.length)} tone="emerald" />
+              <SidebarMetric label="Providers" value={String(modelProviders.length)} tone="sky" />
             </div>
             <div className="space-y-2 border-l border-black/8 pl-3">
               <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Base URL</p>
-              <p className="truncate text-xs text-foreground">{props.connection.baseUrl || "not configured"}</p>
+              <p className="truncate text-xs text-foreground">{connection.baseUrl || "not configured"}</p>
               <div className="flex flex-wrap gap-1.5">
-                <Badge variant="outline" className={toneBadgeClass(probeTone(props.readinessReport?.status ?? "unknown"))}>
-                  {`ready ${props.readinessReport?.status ?? "unknown"}`}
+                <Badge variant="outline" className={toneBadgeClass(probeTone(readinessReport?.status ?? "unknown"))}>
+                  {`ready ${readinessReport?.status ?? "unknown"}`}
                 </Badge>
                 {defaultModel ? <Badge variant="outline">default {defaultModel.id}</Badge> : null}
               </div>
@@ -770,7 +793,7 @@ function ProviderSidebar(props: SidebarProps) {
                 <Network className="h-4 w-4" />
                 Health
               </Button>
-              <Button variant="outline" className="h-10 justify-start rounded-2xl" onClick={() => props.setStreamRevision((current) => current + 1)}>
+              <Button variant="outline" className="h-10 justify-start rounded-2xl" onClick={() => setStreamRevision((current) => current + 1)}>
                 <Orbit className="h-4 w-4" />
                 SSE
               </Button>
@@ -787,10 +810,10 @@ function ProviderSidebar(props: SidebarProps) {
 
           <SidebarSection title="Models" description="点击切换当前 Playground 模型。">
             <div className="space-y-1.5">
-              {props.platformModels.length === 0 ? (
+              {platformModels.length === 0 ? (
                 <p className="text-sm text-muted-foreground">当前还没有加载到平台模型。</p>
               ) : (
-                props.platformModels.map((model) => (
+                platformModels.map((model) => (
                   <SidebarActionItem
                     key={model.id}
                     icon={<Workflow className="h-4 w-4" />}
@@ -801,8 +824,8 @@ function ProviderSidebar(props: SidebarProps) {
                       model.hasKey ? "key ready" : "no key"
                     ].join(" · ")}
                     badge={model.isDefault ? "default" : model.provider}
-                    active={props.modelDraft.model === model.id}
-                    onClick={() => props.setModelDraft((current) => ({ ...current, model: model.id }))}
+                    active={modelDraft.model === model.id}
+                    onClick={() => setModelDraft((current) => ({ ...current, model: model.id }))}
                   />
                 ))
               )}
@@ -814,7 +837,8 @@ function ProviderSidebar(props: SidebarProps) {
   );
 }
 
-export function AppSidebar(props: SidebarProps) {
+function AppSidebarImpl(props: SidebarProps) {
+  const surfaceMode = useUiStore((state) => state.surfaceMode);
   const uploadTemplateInputRef = useRef<HTMLInputElement>(null);
   const [uploadTemplateName, setUploadTemplateName] = useState("");
   const [uploadTemplateOverwrite, setUploadTemplateOverwrite] = useState(false);
@@ -822,12 +846,12 @@ export function AppSidebar(props: SidebarProps) {
   const [showUploadTemplateDialog, setShowUploadTemplateDialog] = useState(false);
 
   const icon =
-    props.surfaceMode === "storage" ? <Table2 className="h-4 w-4" /> : props.surfaceMode === "provider" ? <Network className="h-4 w-4" /> : <Bot className="h-4 w-4" />;
-  const title = props.surfaceMode === "storage" ? "Storage" : props.surfaceMode === "provider" ? "Provider" : "Runtime";
+    surfaceMode === "storage" ? <Table2 className="h-4 w-4" /> : surfaceMode === "provider" ? <Network className="h-4 w-4" /> : <Bot className="h-4 w-4" />;
+  const title = surfaceMode === "storage" ? "Storage" : surfaceMode === "provider" ? "Provider" : "Runtime";
   const subtitle =
-    props.surfaceMode === "storage"
+    surfaceMode === "storage"
       ? "Inspect Postgres tables and Redis keyspace."
-      : props.surfaceMode === "provider"
+      : surfaceMode === "provider"
         ? "Connection, health, and provider registry."
         : "Navigate workspaces and sessions.";
 
@@ -845,7 +869,7 @@ export function AppSidebar(props: SidebarProps) {
                 <p className="mt-1 text-xs leading-5 text-muted-foreground">{subtitle}</p>
               </div>
             </div>
-            {props.surfaceMode === "storage" ? (
+            {surfaceMode === "storage" ? (
               <Button
                 variant="ghost"
                 size="icon"
@@ -861,11 +885,11 @@ export function AppSidebar(props: SidebarProps) {
         </div>
 
         <div className="min-h-0 flex-1 overflow-hidden">
-          {props.surfaceMode === "storage" ? (
+          {surfaceMode === "storage" ? (
             <div className="h-full overflow-y-auto overflow-x-hidden">
               <StorageSidebar {...props} />
             </div>
-          ) : props.surfaceMode === "provider" ? (
+          ) : surfaceMode === "provider" ? (
             <div className="h-full overflow-y-auto overflow-x-hidden">
               <ProviderSidebar {...props} />
             </div>
@@ -1060,3 +1084,5 @@ export function AppSidebar(props: SidebarProps) {
     </>
   );
 }
+
+export const AppSidebar = memo(AppSidebarImpl);
