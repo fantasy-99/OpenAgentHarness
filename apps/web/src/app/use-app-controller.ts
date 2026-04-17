@@ -66,6 +66,10 @@ import { buildRuntimeViewModel } from "./runtime-view-model";
 import { useNavigationState } from "./use-navigation-state";
 import { useStorageController } from "./use-storage-controller";
 import { useWorkspaceFileManager } from "./use-workspace-file-manager";
+import { useHealthStore } from "./stores/health-store";
+import { useModelsStore } from "./stores/models-store";
+import { useSessionAgentStore } from "./stores/session-agent-store";
+import { useUiStore } from "./stores/ui-store";
 
 const COMPLETED_RUN_RESULT_POLL_LIMIT = 5;
 
@@ -91,35 +95,57 @@ export function useAppController() {
   const [runSteps, setRunSteps] = useState<RunStep[]>([]);
   const [draftMessage, setDraftMessage] = useState("");
   const [liveMessagesByKey, setLiveMessagesByKey] = useState<Record<string, LiveConversationMessageRecord>>({});
-  const [healthStatus, setHealthStatus] = useState("idle");
-  const [healthReport, setHealthReport] = useState<HealthReportResponse | null>(null);
-  const [readinessReport, setReadinessReport] = useState<ReadinessReportResponse | null>(null);
-  const [modelProviders, setModelProviders] = useState<ModelProviderRecord[]>([]);
-  const [platformModels, setPlatformModels] = useState<PlatformModelRecord[]>([]);
+  const { healthStatus, healthReport, readinessReport, setHealthStatus, setHealthReport, setReadinessReport } = useHealthStore();
+  const { modelProviders, platformModels, setModelProviders, setPlatformModels } = useModelsStore();
   const [streamState, setStreamState] = useState<"idle" | "connecting" | "listening" | "open" | "error">("idle");
-  const [activity, setActivity] = useState("等待连接");
-  const [errorMessage, setErrorMessage] = useState("");
-  const [activeError, setActiveError] = useState<AppRequestErrorSummary | null>(null);
   const [generateOutput, setGenerateOutput] = useState<ModelGenerateResponse | null>(null);
   const [generateBusy, setGenerateBusy] = useState(false);
-  const [autoStream, setAutoStream] = useState(true);
-  const [filterSelectedRun, setFilterSelectedRun] = useState(false);
-  const [streamRevision, setStreamRevision] = useState(0);
-  const [surfaceMode, setSurfaceMode] = useState<SurfaceMode>("runtime");
-  const [mainViewMode, setMainViewMode] = useState<MainViewMode>("conversation");
-  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("overview");
-  const [selectedTraceId, setSelectedTraceId] = useState("");
-  const [selectedMessageId, setSelectedMessageId] = useState("");
-  const [selectedStepId, setSelectedStepId] = useState("");
-  const [selectedEventId, setSelectedEventId] = useState("");
-  const [timelineInspectorMode, setTimelineInspectorMode] = useState<"all" | "execution" | "messages" | "calls" | "steps" | "events">("all");
-  const [consoleOpen, setConsoleOpen] = useState(false);
-  const [consoleHeight, setConsoleHeight] = useState(280);
-  const [consoleFilter, setConsoleFilter] = useState<ConsoleFilter>("all");
-  const [pendingSessionAgentName, setPendingSessionAgentName] = useState<string | null>(null);
-  const [switchingSessionAgentId, setSwitchingSessionAgentId] = useState<string | null>(null);
-  const [pendingSessionModelRef, setPendingSessionModelRef] = useState<string | null>(null);
-  const [switchingSessionModelId, setSwitchingSessionModelId] = useState<string | null>(null);
+  const {
+    surfaceMode,
+    mainViewMode,
+    inspectorTab,
+    timelineInspectorMode,
+    selectedTraceId,
+    selectedMessageId,
+    selectedStepId,
+    selectedEventId,
+    consoleOpen,
+    consoleHeight,
+    consoleFilter,
+    activity,
+    errorMessage,
+    activeError,
+    streamRevision,
+    autoStream,
+    filterSelectedRun,
+    setSurfaceMode,
+    setMainViewMode,
+    setInspectorTab,
+    setTimelineInspectorMode,
+    setSelectedTraceId,
+    setSelectedMessageId,
+    setSelectedStepId,
+    setSelectedEventId,
+    setConsoleOpen,
+    setConsoleHeight,
+    setConsoleFilter,
+    setActivity,
+    setErrorMessage,
+    setActiveError,
+    setStreamRevision,
+    setAutoStream,
+    setFilterSelectedRun
+  } = useUiStore();
+  const {
+    pendingSessionAgentName,
+    switchingSessionAgentId,
+    pendingSessionModelRef,
+    switchingSessionModelId,
+    setPendingSessionAgentName,
+    setSwitchingSessionAgentId,
+    setPendingSessionModelRef,
+    setSwitchingSessionModelId
+  } = useSessionAgentStore();
   const navigation = useNavigationState();
   const {
     workspaceDraft,
