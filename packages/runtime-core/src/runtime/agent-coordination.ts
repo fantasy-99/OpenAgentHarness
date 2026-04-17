@@ -1,9 +1,14 @@
 import type { Message, Run, RunStep, Session } from "@oah/api-contracts";
 
 import { AppError } from "../errors.js";
-import { textContent, toolErrorResultContent, toolResultContent } from "../runtime-message-content.js";
+import { textContent } from "../runtime-message-content.js";
 import { canDelegateFromAgent } from "../runtime-tooling.js";
-import { formatToolOutput } from "../tool-output.js";
+import {
+  buildDelegatedRunCompletedMessage,
+  buildDelegatedRunFailedMessage,
+  buildDelegatedTaskMessage,
+  renderAwaitedRunSummary
+} from "./agent-delegation-messages.js";
 import type {
   MessageRepository,
   RunQueuePriority,
@@ -25,10 +30,13 @@ export interface AwaitedRunSummary {
   outputContent?: string | undefined;
 }
 
-export interface AgentCoordinationServiceDependencies {
-  sessionRepository: SessionRepository;
-  messageRepository: MessageRepository;
-  runRepository: RunRepository;
+export interface AgentCoordinationPersistence {
+  sessions: Pick<SessionRepository, "getById" | "create" | "update">;
+  messages: Pick<MessageRepository, "create" | "listBySessionId">;
+  runs: Pick<RunRepository, "create" | "getById">;
+}
+
+export interface AgentCoordinationLifecycle {
   getRun: (runId: string) => Promise<Run>;
   startRunStep: (input: {
     runId: string;
@@ -45,6 +53,9 @@ export interface AgentCoordinationServiceDependencies {
   updateRun: (run: Run, patch: Partial<Run>) => Promise<Run>;
   appendEvent: (input: Omit<SessionEvent, "id" | "cursor" | "createdAt">) => Promise<SessionEvent>;
   enqueueRun: (sessionId: string, runId: string, options?: { priority?: RunQueuePriority | undefined }) => Promise<void>;
+}
+
+export interface AgentCoordinationHelpers {
   resolveModelForRun: (
     workspace: WorkspaceRecord,
     modelRef?: string | undefined
@@ -55,37 +66,21 @@ export interface AgentCoordinationServiceDependencies {
   nowIso: () => string;
 }
 
+export interface AgentCoordinationServiceDependencies {
+  persistence: AgentCoordinationPersistence;
+  lifecycle: AgentCoordinationLifecycle;
+  helpers: AgentCoordinationHelpers;
+}
+
 export class AgentCoordinationService {
-  readonly #sessionRepository: SessionRepository;
-  readonly #messageRepository: MessageRepository;
-  readonly #runRepository: RunRepository;
-  readonly #getRun: AgentCoordinationServiceDependencies["getRun"];
-  readonly #startRunStep: AgentCoordinationServiceDependencies["startRunStep"];
-  readonly #completeRunStep: AgentCoordinationServiceDependencies["completeRunStep"];
-  readonly #updateRun: AgentCoordinationServiceDependencies["updateRun"];
-  readonly #appendEvent: AgentCoordinationServiceDependencies["appendEvent"];
-  readonly #enqueueRun: AgentCoordinationServiceDependencies["enqueueRun"];
-  readonly #resolveModelForRun: AgentCoordinationServiceDependencies["resolveModelForRun"];
-  readonly #extractMessageDisplayText: AgentCoordinationServiceDependencies["extractMessageDisplayText"];
-  readonly #hasMeaningfulText: AgentCoordinationServiceDependencies["hasMeaningfulText"];
-  readonly #createId: AgentCoordinationServiceDependencies["createId"];
-  readonly #nowIso: AgentCoordinationServiceDependencies["nowIso"];
+  readonly #persistence: AgentCoordinationPersistence;
+  readonly #lifecycle: AgentCoordinationLifecycle;
+  readonly #helpers: AgentCoordinationHelpers;
 
   constructor(dependencies: AgentCoordinationServiceDependencies) {
-    this.#sessionRepository = dependencies.sessionRepository;
-    this.#messageRepository = dependencies.messageRepository;
-    this.#runRepository = dependencies.runRepository;
-    this.#getRun = dependencies.getRun;
-    this.#startRunStep = dependencies.startRunStep;
-    this.#completeRunStep = dependencies.completeRunStep;
-    this.#updateRun = dependencies.updateRun;
-    this.#appendEvent = dependencies.appendEvent;
-    this.#enqueueRun = dependencies.enqueueRun;
-    this.#resolveModelForRun = dependencies.resolveModelForRun;
-    this.#extractMessageDisplayText = dependencies.extractMessageDisplayText;
-    this.#hasMeaningfulText = dependencies.hasMeaningfulText;
-    this.#createId = dependencies.createId;
-    this.#nowIso = dependencies.nowIso;
+    this.#persistence = dependencies.persistence;
+    this.#lifecycle = dependencies.lifecycle;
+    this.#helpers = dependencies.helpers;
   }
 
   delegatedRunRecords(run: Run): DelegatedRunRecord[] {
@@ -123,7 +118,7 @@ export class AgentCoordinationService {
     currentAgentName: string;
     targetAgentName: string;
   }): Promise<{ switchCount: number }> {
-    const switchStep = await this.#startRunStep({
+    const switchStep = await this.#lifecycle.startRunStep({
       runId: input.run.id,
       stepType: "agent_switch",
       name: `${input.currentAgentName}->${input.targetAgentName}`,
@@ -133,7 +128,7 @@ export class AgentCoordinationService {
         toAgent: input.targetAgentName
       }
     });
-    await this.#appendEvent({
+    await this.#lifecycle.appendEvent({
       sessionId: input.session.id,
       runId: input.run.id,
       event: "agent.switch.requested",
@@ -145,19 +140,19 @@ export class AgentCoordinationService {
       }
     });
 
-    const latestRun = await this.#getRun(input.run.id);
+    const latestRun = await this.#lifecycle.getRun(input.run.id);
     const nextSwitchCount = (latestRun.switchCount ?? 0) + 1;
-    await this.#updateRun(latestRun, {
+    await this.#lifecycle.updateRun(latestRun, {
       effectiveAgentName: input.targetAgentName,
       switchCount: nextSwitchCount
     });
-    await this.#completeRunStep(switchStep, "completed", {
+    await this.#lifecycle.completeRunStep(switchStep, "completed", {
       fromAgent: input.currentAgentName,
       toAgent: input.targetAgentName,
       switchCount: nextSwitchCount
     });
 
-    await this.#appendEvent({
+    await this.#lifecycle.appendEvent({
       sessionId: input.session.id,
       runId: input.run.id,
       event: "agent.switched",
@@ -192,7 +187,7 @@ export class AgentCoordinationService {
       );
     }
 
-    const resumedSession = input.taskId ? await this.#sessionRepository.getById(input.taskId) : null;
+    const resumedSession = input.taskId ? await this.#persistence.sessions.getById(input.taskId) : null;
     if (input.taskId && !resumedSession) {
       throw new AppError(404, "task_not_found", `Subagent task ${input.taskId} was not found.`);
     }
@@ -250,9 +245,9 @@ export class AgentCoordinationService {
       );
     }
 
-    const latestParentRun = await this.#getRun(input.parentRun.id);
+    const latestParentRun = await this.#lifecycle.getRun(input.parentRun.id);
     await this.#enforceSubagentConcurrencyLimit(input.workspace, latestParentRun, input.currentAgentName);
-    const delegateStep = await this.#startRunStep({
+    const delegateStep = await this.#lifecycle.startRunStep({
       runId: input.parentRun.id,
       stepType: "agent_delegate",
       name: resolvedTargetAgentName,
@@ -265,10 +260,10 @@ export class AgentCoordinationService {
       }
     });
 
-    const now = this.#nowIso();
-    const childSessionId = resumedSession?.id ?? this.#createId("ses");
-    const childRunId = this.#createId("run");
-    const parentModelRef = this.#resolveModelForRun(
+    const now = this.#helpers.nowIso();
+    const childSessionId = resumedSession?.id ?? this.#helpers.createId("ses");
+    const childRunId = this.#helpers.createId("run");
+    const parentModelRef = this.#helpers.resolveModelForRun(
       input.workspace,
       input.parentSession.modelRef ?? input.workspace.agents[input.currentAgentName]?.modelRef
     ).canonicalModelRef;
@@ -286,11 +281,11 @@ export class AgentCoordinationService {
       updatedAt: now
     };
     const childMessage: Message = {
-      id: this.#createId("msg"),
+      id: this.#helpers.createId("msg"),
       sessionId: childSessionId,
       role: "user",
       content: textContent(
-        this.#buildDelegatedTaskMessage(
+        buildDelegatedTaskMessage(
           input.currentAgentName,
           resolvedTargetAgentName,
           input.task,
@@ -330,16 +325,16 @@ export class AgentCoordinationService {
     };
 
     if (resumedSession) {
-      await this.#sessionRepository.update({
+      await this.#persistence.sessions.update({
         ...childSession,
         status: "active",
         updatedAt: now
       });
     } else {
-      await this.#sessionRepository.create(childSession);
+      await this.#persistence.sessions.create(childSession);
     }
-    await this.#messageRepository.create(childMessage);
-    await this.#runRepository.create(childRun);
+    await this.#persistence.messages.create(childMessage);
+    await this.#persistence.runs.create(childRun);
 
     await this.#appendDelegatedRunRecord(input.parentRun.id, {
       childRunId,
@@ -348,7 +343,7 @@ export class AgentCoordinationService {
       parentAgentName: input.currentAgentName
     });
 
-    await this.#appendEvent({
+    await this.#lifecycle.appendEvent({
       sessionId: input.parentSession.id,
       runId: input.parentRun.id,
       event: "agent.delegate.started",
@@ -362,14 +357,14 @@ export class AgentCoordinationService {
         ...(input.taskId ? { taskId: input.taskId, resumed: true } : {})
       }
     });
-    await this.#completeRunStep(delegateStep, "completed", {
+    await this.#lifecycle.completeRunStep(delegateStep, "completed", {
       targetAgent: resolvedTargetAgentName,
       childSessionId,
       childRunId,
       ...(input.taskId ? { taskId: input.taskId, resumed: true } : {})
     });
 
-    await this.#enqueueRun(childSessionId, childRunId, {
+    await this.#lifecycle.enqueueRun(childSessionId, childRunId, {
       priority: "subagent"
     });
     void this.#monitorDelegatedRun({
@@ -394,7 +389,7 @@ export class AgentCoordinationService {
         ? [await this.#waitForAnyRunTerminalState(runIds)]
         : await Promise.all(runIds.map(async (runId) => this.#waitForRunTerminalState(runId)));
     const summaries = await Promise.all(awaitedRuns.map(async (run) => this.#collectAwaitedRunSummary(run.id)));
-    const rendered = summaries.map((summary) => this.#renderAwaitedRunSummary(summary));
+    const rendered = summaries.map((summary) => renderAwaitedRunSummary(summary));
 
     if (rendered.length === 1) {
       return rendered[0] ?? "";
@@ -414,7 +409,7 @@ export class AgentCoordinationService {
     }
 
     const childRuns = await Promise.all(
-      this.delegatedRunRecords(parentRun).map(async (record) => this.#runRepository.getById(record.childRunId))
+      this.delegatedRunRecords(parentRun).map(async (record) => this.#persistence.runs.getById(record.childRunId))
     );
     const activeRuns = childRuns.filter(
       (run): run is Run => run !== null && (run.status === "queued" || run.status === "running" || run.status === "waiting_tool")
@@ -427,22 +422,6 @@ export class AgentCoordinationService {
         `Agent ${currentAgentName} reached max_concurrent_subagents=${maxConcurrentSubagents}.`
       );
     }
-  }
-
-  #buildDelegatedTaskMessage(
-    currentAgentName: string,
-    targetAgentName: string,
-    task: string,
-    handoffSummary?: string | undefined
-  ): string {
-    return [
-      `<delegated_task from_agent="${currentAgentName}" to_agent="${targetAgentName}">`,
-      "<task>",
-      task,
-      "</task>",
-      ...(handoffSummary ? ["<handoff_summary>", handoffSummary, "</handoff_summary>"] : []),
-      "</delegated_task>"
-    ].join("\n");
   }
 
   async #monitorDelegatedRun(input: {
@@ -465,7 +444,7 @@ export class AgentCoordinationService {
           childSummary
         });
       }
-      await this.#appendEvent({
+      await this.#lifecycle.appendEvent({
         sessionId: input.parentSessionId,
         runId: input.parentRunId,
         event: "agent.delegate.completed",
@@ -490,7 +469,7 @@ export class AgentCoordinationService {
         childRun
       });
     }
-    await this.#appendEvent({
+    await this.#lifecycle.appendEvent({
       sessionId: input.parentSessionId,
       runId: input.parentRunId,
       event: "agent.delegate.failed",
@@ -509,7 +488,7 @@ export class AgentCoordinationService {
 
   async #waitForRunTerminalState(runId: string): Promise<Run> {
     while (true) {
-      const run = await this.#getRun(runId);
+      const run = await this.#lifecycle.getRun(runId);
       if (this.#isRunTerminal(run.status)) {
         return run;
       }
@@ -520,7 +499,7 @@ export class AgentCoordinationService {
 
   async #waitForAnyRunTerminalState(runIds: string[]): Promise<Run> {
     while (true) {
-      const runs = await Promise.all(runIds.map(async (runId) => this.#getRun(runId)));
+      const runs = await Promise.all(runIds.map(async (runId) => this.#lifecycle.getRun(runId)));
       const completedRun = runs.find((run) => this.#isRunTerminal(run.status));
       if (completedRun) {
         return completedRun;
@@ -535,17 +514,17 @@ export class AgentCoordinationService {
   }
 
   async #collectAwaitedRunSummary(runId: string): Promise<AwaitedRunSummary> {
-    const run = await this.#getRun(runId);
+    const run = await this.#lifecycle.getRun(runId);
     if (!run.sessionId) {
       return { run };
     }
 
-    const messages = await this.#messageRepository.listBySessionId(run.sessionId);
+    const messages = await this.#persistence.messages.listBySessionId(run.sessionId);
     const runMessages = messages.filter((message) => message.runId === run.id);
     const assistantMessage = [...runMessages].reverse().find((message) => message.role === "assistant");
-    const assistantContent = assistantMessage ? this.#extractMessageDisplayText(assistantMessage) : undefined;
+    const assistantContent = assistantMessage ? this.#helpers.extractMessageDisplayText(assistantMessage) : undefined;
 
-    if (this.#hasMeaningfulText(assistantContent)) {
+    if (this.#helpers.hasMeaningfulText(assistantContent)) {
       return {
         run,
         outputContent: assistantContent
@@ -553,62 +532,31 @@ export class AgentCoordinationService {
     }
 
     const toolMessage = [...runMessages].reverse().find((message) => message.role === "tool");
-    const toolContent = toolMessage ? this.#extractMessageDisplayText(toolMessage) : undefined;
+    const toolContent = toolMessage ? this.#helpers.extractMessageDisplayText(toolMessage) : undefined;
 
     return {
       run,
-      ...(this.#hasMeaningfulText(toolContent) ? { outputContent: toolContent } : {})
+      ...(this.#helpers.hasMeaningfulText(toolContent) ? { outputContent: toolContent } : {})
     };
-  }
-
-  #renderAwaitedRunSummary(summary: AwaitedRunSummary): string {
-    return formatToolOutput(
-      [
-        ["task_id", summary.run.sessionId],
-        ["run_id", summary.run.id],
-        ["status", summary.run.status],
-        ["subagent_name", summary.run.effectiveAgentName]
-      ],
-      [
-        ...(summary.outputContent
-          ? [
-              {
-                title: "output",
-                lines: summary.outputContent.split(/\r?\n/),
-                emptyText: "(empty output)"
-              }
-            ]
-          : []),
-        ...(summary.run.errorMessage
-          ? [
-              {
-                title: "error_message",
-                lines: summary.run.errorMessage.split(/\r?\n/),
-                emptyText: "(empty error)"
-              }
-            ]
-          : [])
-      ]
-    );
   }
 
   async #appendDelegatedRunRecord(parentRunId: string, record: DelegatedRunRecord): Promise<void> {
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      const currentParentRun = await this.#getRun(parentRunId);
+      const currentParentRun = await this.#lifecycle.getRun(parentRunId);
       const currentRecords = this.delegatedRunRecords(currentParentRun);
       if (currentRecords.some((existing) => existing.childRunId === record.childRunId)) {
         return;
       }
 
       const nextRecords = [...currentRecords, record];
-      await this.#updateRun(currentParentRun, {
+      await this.#lifecycle.updateRun(currentParentRun, {
         metadata: {
           ...(currentParentRun.metadata ?? {}),
           delegatedRuns: nextRecords
         }
       });
 
-      const persistedParentRun = await this.#getRun(parentRunId);
+      const persistedParentRun = await this.#lifecycle.getRun(parentRunId);
       if (this.delegatedRunRecords(persistedParentRun).some((existing) => existing.childRunId === record.childRunId)) {
         return;
       }
@@ -623,31 +571,18 @@ export class AgentCoordinationService {
     parentAgentName: string;
     childSummary: AwaitedRunSummary;
   }): Promise<void> {
-    const renderedSummary = this.#renderAwaitedRunSummary(input.childSummary);
-    const message = await this.#messageRepository.create({
-      id: this.#createId("msg"),
-      sessionId: input.parentSessionId,
-      runId: input.parentRunId,
-      role: "tool",
-      content: toolResultContent({
-        toolCallId: `delegate_${input.childSummary.run.id}`,
-        toolName: "SubAgent",
-        output: renderedSummary
-      }),
-      metadata: {
-        agentName: input.parentAgentName,
-        effectiveAgentName: input.parentAgentName,
-        toolStatus: "completed",
-        toolSourceType: "agent",
-        synthetic: true,
-        delegatedUpdate: "completed",
-        delegatedChildRunId: input.childSummary.run.id,
-        delegatedChildSessionId: input.childSummary.run.sessionId
-      },
-      createdAt: this.#nowIso()
-    });
+    const message = await this.#persistence.messages.create(
+      buildDelegatedRunCompletedMessage({
+        createId: this.#helpers.createId,
+        nowIso: this.#helpers.nowIso,
+        parentSessionId: input.parentSessionId,
+        parentRunId: input.parentRunId,
+        parentAgentName: input.parentAgentName,
+        childSummary: input.childSummary
+      })
+    );
 
-    await this.#appendEvent({
+    await this.#lifecycle.appendEvent({
       sessionId: input.parentSessionId,
       runId: input.parentRunId,
       event: "message.completed",
@@ -668,48 +603,18 @@ export class AgentCoordinationService {
     parentAgentName: string;
     childRun: Run;
   }): Promise<void> {
-    const message = await this.#messageRepository.create({
-      id: this.#createId("msg"),
-      sessionId: input.parentSessionId,
-      runId: input.parentRunId,
-      role: "tool",
-      content: toolErrorResultContent({
-        toolCallId: `delegate_${input.childRun.id}`,
-        toolName: "SubAgent",
-        error: formatToolOutput(
-          [
-            ["task_id", input.childRun.sessionId],
-            ["run_id", input.childRun.id],
-            ["status", input.childRun.status],
-            ["subagent_name", input.childRun.effectiveAgentName]
-          ],
-          [
-            ...(input.childRun.errorMessage
-              ? [
-                  {
-                    title: "error_message",
-                    lines: input.childRun.errorMessage.split(/\r?\n/),
-                    emptyText: "(empty error)"
-                  }
-                ]
-              : [])
-          ]
-        )
-      }),
-      metadata: {
-        agentName: input.parentAgentName,
-        effectiveAgentName: input.parentAgentName,
-        toolStatus: "failed",
-        toolSourceType: "agent",
-        synthetic: true,
-        delegatedUpdate: "failed",
-        delegatedChildRunId: input.childRun.id,
-        delegatedChildSessionId: input.childRun.sessionId
-      },
-      createdAt: this.#nowIso()
-    });
+    const message = await this.#persistence.messages.create(
+      buildDelegatedRunFailedMessage({
+        createId: this.#helpers.createId,
+        nowIso: this.#helpers.nowIso,
+        parentSessionId: input.parentSessionId,
+        parentRunId: input.parentRunId,
+        parentAgentName: input.parentAgentName,
+        childRun: input.childRun
+      })
+    );
 
-    await this.#appendEvent({
+    await this.#lifecycle.appendEvent({
       sessionId: input.parentSessionId,
       runId: input.parentRunId,
       event: "message.completed",

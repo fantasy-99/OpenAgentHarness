@@ -125,58 +125,48 @@ interface HookAuditRecordInput {
 }
 
 export interface HookServiceDependencies {
-  defaultModel: string;
-  modelGateway: ModelGateway;
-  commandExecutor: WorkspaceCommandExecutor;
-  fileSystem: WorkspaceFileSystem;
-  hookRunAuditRepository?: HookRunAuditRepository | undefined;
-  startRunStep: (input: HookStepInput) => Promise<RunStep>;
-  completeRunStep: (
-    step: RunStep,
-    status: "completed" | "failed" | "cancelled",
-    output?: Record<string, unknown> | undefined
-  ) => Promise<RunStep>;
-  appendEvent: (input: Omit<SessionEvent, "id" | "cursor" | "createdAt">) => Promise<SessionEvent>;
-  resolveModelForRun: (workspace: WorkspaceRecord, modelRef: string | undefined) => ResolvedHookModel;
-  createId: (prefix: string) => string;
-  timeoutMsFromSeconds: (value: unknown) => number | undefined;
-  withTimeout: <T>(
-    operation: (signal: AbortSignal | undefined) => Promise<T>,
-    timeoutMs: number | undefined,
-    timeoutMessage: string
-  ) => Promise<T>;
-  isAbortError: (error: unknown) => boolean;
+  execution: {
+    defaultModel: string;
+    modelGateway: ModelGateway;
+    commandExecutor: WorkspaceCommandExecutor;
+    fileSystem: WorkspaceFileSystem;
+    resolveModelForRun: (workspace: WorkspaceRecord, modelRef: string | undefined) => ResolvedHookModel;
+  };
+  steps: {
+    startRunStep: (input: HookStepInput) => Promise<RunStep>;
+    completeRunStep: (
+      step: RunStep,
+      status: "completed" | "failed" | "cancelled",
+      output?: Record<string, unknown> | undefined
+    ) => Promise<RunStep>;
+    appendEvent: (input: Omit<SessionEvent, "id" | "cursor" | "createdAt">) => Promise<SessionEvent>;
+  };
+  audit: {
+    hookRunAuditRepository?: HookRunAuditRepository | undefined;
+    createId: (prefix: string) => string;
+  };
+  timing: {
+    timeoutMsFromSeconds: (value: unknown) => number | undefined;
+    withTimeout: <T>(
+      operation: (signal: AbortSignal | undefined) => Promise<T>,
+      timeoutMs: number | undefined,
+      timeoutMessage: string
+    ) => Promise<T>;
+    isAbortError: (error: unknown) => boolean;
+  };
 }
 
 export class HookService {
-  readonly #defaultModel: string;
-  readonly #modelGateway: ModelGateway;
-  readonly #commandExecutor: WorkspaceCommandExecutor;
-  readonly #fileSystem: WorkspaceFileSystem;
-  readonly #hookRunAuditRepository?: HookRunAuditRepository | undefined;
-  readonly #startRunStep: HookServiceDependencies["startRunStep"];
-  readonly #completeRunStep: HookServiceDependencies["completeRunStep"];
-  readonly #appendEvent: HookServiceDependencies["appendEvent"];
-  readonly #resolveModelForRun: HookServiceDependencies["resolveModelForRun"];
-  readonly #createId: HookServiceDependencies["createId"];
-  readonly #timeoutMsFromSeconds: HookServiceDependencies["timeoutMsFromSeconds"];
-  readonly #withTimeout: HookServiceDependencies["withTimeout"];
-  readonly #isAbortError: HookServiceDependencies["isAbortError"];
+  readonly #execution: HookServiceDependencies["execution"];
+  readonly #steps: HookServiceDependencies["steps"];
+  readonly #audit: HookServiceDependencies["audit"];
+  readonly #timing: HookServiceDependencies["timing"];
 
   constructor(dependencies: HookServiceDependencies) {
-    this.#defaultModel = dependencies.defaultModel;
-    this.#modelGateway = dependencies.modelGateway;
-    this.#commandExecutor = dependencies.commandExecutor;
-    this.#fileSystem = dependencies.fileSystem;
-    this.#hookRunAuditRepository = dependencies.hookRunAuditRepository;
-    this.#startRunStep = dependencies.startRunStep;
-    this.#completeRunStep = dependencies.completeRunStep;
-    this.#appendEvent = dependencies.appendEvent;
-    this.#resolveModelForRun = dependencies.resolveModelForRun;
-    this.#createId = dependencies.createId;
-    this.#timeoutMsFromSeconds = dependencies.timeoutMsFromSeconds;
-    this.#withTimeout = dependencies.withTimeout;
-    this.#isAbortError = dependencies.isAbortError;
+    this.#execution = dependencies.execution;
+    this.#steps = dependencies.steps;
+    this.#audit = dependencies.audit;
+    this.#timing = dependencies.timing;
   }
 
   async executeHook(
@@ -191,7 +181,7 @@ export class HookService {
       return undefined;
     }
 
-    const hookStep = await this.#startRunStep({
+    const hookStep = await this.#steps.startRunStep({
       runId: run.id,
       stepType: "hook",
       name: hook.name,
@@ -223,7 +213,7 @@ export class HookService {
           break;
       }
 
-      const completedHookStep = await this.#completeRunStep(hookStep, "completed", serializeHookResult(result));
+      const completedHookStep = await this.#steps.completeRunStep(hookStep, "completed", serializeHookResult(result));
       await this.#recordHookRunAudit({
         hook,
         envelope,
@@ -233,7 +223,7 @@ export class HookService {
       });
       return result;
     } catch (error) {
-      const failedHookStep = await this.#completeRunStep(hookStep, "failed", {
+      const failedHookStep = await this.#steps.completeRunStep(hookStep, "failed", {
         errorMessage: error instanceof Error ? error.message : "Unknown hook execution error."
       });
       await this.#recordHookRunAudit({
@@ -245,7 +235,7 @@ export class HookService {
       });
       if (session) {
         const errorCode = error instanceof AppError ? error.code : "hook_execution_failed";
-        await this.#appendEvent({
+        await this.#steps.appendEvent({
           sessionId: session.id,
           runId: run.id,
           event: "hook.notice",
@@ -275,12 +265,12 @@ export class HookService {
 
     const cwd =
       typeof handler.cwd === "string" ? path.resolve(workspace.rootPath, handler.cwd) : workspace.rootPath;
-    const timeoutMs = this.#timeoutMsFromSeconds(handler.timeout_seconds);
+    const timeoutMs = this.#timing.timeoutMsFromSeconds(handler.timeout_seconds);
     let stdout = "";
     let stderr = "";
     let exitCode = 0;
     try {
-      ({ stdout, stderr, exitCode } = await this.#commandExecutor.runForeground({
+      ({ stdout, stderr, exitCode } = await this.#execution.commandExecutor.runForeground({
         workspace,
         command: handler.command,
         cwd,
@@ -326,7 +316,7 @@ export class HookService {
       return undefined;
     }
 
-    const timeoutMs = this.#timeoutMsFromSeconds(handler.timeout_seconds);
+    const timeoutMs = this.#timing.timeoutMsFromSeconds(handler.timeout_seconds);
     const abortController = timeoutMs !== undefined ? new AbortController() : undefined;
     const abortTimer =
       timeoutMs !== undefined && abortController
@@ -345,7 +335,7 @@ export class HookService {
       ...(abortController ? { signal: abortController.signal } : {})
     })
       .catch((error) => {
-        if (this.#isAbortError(error)) {
+        if (this.#timing.isAbortError(error)) {
           throw new Error(`HTTP hook timed out after ${timeoutMs}ms.`);
         }
 
@@ -385,37 +375,22 @@ export class HookService {
       return undefined;
     }
 
-    const resolvedModel = this.#resolveModelForRun(
+    return this.#executeGeneratedHookPrompt(
       workspace,
-      typeof handler.model_ref === "string" ? handler.model_ref : this.#defaultModel
-    );
-    const timeoutMs = this.#timeoutMsFromSeconds(handler.timeout_seconds);
-    const result = await this.#withTimeout(
-      async (signal) => {
-        const request = {
-          model: resolvedModel.model,
-          ...(resolvedModel.modelDefinition ? { modelDefinition: resolvedModel.modelDefinition } : {}),
-          prompt: [
-            prompt,
-            "Return only JSON matching the Open Agent Harness hook output protocol.",
-            JSON.stringify({
-              hook: hook.name,
-              envelope
-            })
-          ].join("\n\n")
-        };
-        return this.#modelGateway.generate(request, signal ? { signal } : undefined);
+      typeof handler.model_ref === "string" ? handler.model_ref : this.#execution.defaultModel,
+      {
+        prompt: [
+          prompt,
+          "Return only JSON matching the Open Agent Harness hook output protocol.",
+          JSON.stringify({
+            hook: hook.name,
+            envelope
+          })
+        ].join("\n\n")
       },
-      timeoutMs,
-      `Prompt hook timed out after ${timeoutMs}ms.`
+      handler.timeout_seconds,
+      "Prompt hook returned invalid JSON output."
     );
-
-    const parsed = this.#parseHookResult(result.text);
-    if (!parsed) {
-      throw new Error("Prompt hook returned invalid JSON output.");
-    }
-
-    return parsed;
   }
 
   async #executeAgentHook(
@@ -438,40 +413,28 @@ export class HookService {
       return undefined;
     }
 
-    const resolvedModel = this.#resolveModelForRun(workspace, agent.modelRef);
-    const timeoutMs = this.#timeoutMsFromSeconds(handler.timeout_seconds);
-    const result = await this.#withTimeout(
-      async (signal) => {
-        const request: GenerateModelInput = {
-          model: resolvedModel.model,
-          ...(resolvedModel.modelDefinition ? { modelDefinition: resolvedModel.modelDefinition } : {}),
-          ...(agent.maxTokens !== undefined ? { maxTokens: agent.maxTokens } : {}),
-          ...(agent.temperature !== undefined ? { temperature: agent.temperature } : {}),
-          ...(agent.topP !== undefined ? { topP: agent.topP } : {}),
-          messages: [
-            { role: "system", content: agent.prompt },
-            { role: "user", content: task },
-            {
-              role: "user",
-              content: `Return only JSON matching the Open Agent Harness hook output protocol.\n\n${JSON.stringify({
-                hook: hook.name,
-                envelope
-              })}`
-            }
-          ]
-        };
-        return this.#modelGateway.generate(request, signal ? { signal } : undefined);
+    return this.#executeGeneratedHookPrompt(
+      workspace,
+      agent.modelRef,
+      {
+        ...(agent.maxTokens !== undefined ? { maxTokens: agent.maxTokens } : {}),
+        ...(agent.temperature !== undefined ? { temperature: agent.temperature } : {}),
+        ...(agent.topP !== undefined ? { topP: agent.topP } : {}),
+        messages: [
+          { role: "system", content: agent.prompt },
+          { role: "user", content: task },
+          {
+            role: "user",
+            content: `Return only JSON matching the Open Agent Harness hook output protocol.\n\n${JSON.stringify({
+              hook: hook.name,
+              envelope
+            })}`
+          }
+        ]
       },
-      timeoutMs,
-      `Agent hook timed out after ${timeoutMs}ms.`
+      handler.timeout_seconds,
+      "Agent hook returned invalid JSON output."
     );
-
-    const parsed = this.#parseHookResult(result.text);
-    if (!parsed) {
-      throw new Error("Agent hook returned invalid JSON output.");
-    }
-
-    return parsed;
   }
 
   async #resolveHookPromptSource(
@@ -487,10 +450,42 @@ export class HookService {
     }
 
     if (typeof promptSource.file === "string") {
-      return this.#fileSystem.readFile(path.resolve(workspace.rootPath, promptSource.file)).then((buffer) => buffer.toString("utf8"));
+      return this.#execution.fileSystem
+        .readFile(path.resolve(workspace.rootPath, promptSource.file))
+        .then((buffer) => buffer.toString("utf8"));
     }
 
     return undefined;
+  }
+
+  async #executeGeneratedHookPrompt(
+    workspace: WorkspaceRecord,
+    modelRef: string | undefined,
+    requestInput: Omit<GenerateModelInput, "model" | "modelDefinition">,
+    timeoutSeconds: unknown,
+    invalidOutputMessage: string
+  ): Promise<HookResult | undefined> {
+    const resolvedModel = this.#execution.resolveModelForRun(workspace, modelRef);
+    const timeoutMs = this.#timing.timeoutMsFromSeconds(timeoutSeconds);
+    const result = await this.#timing.withTimeout(
+      async (signal) => {
+        const request: GenerateModelInput = {
+          model: resolvedModel.model,
+          ...(resolvedModel.modelDefinition ? { modelDefinition: resolvedModel.modelDefinition } : {}),
+          ...requestInput
+        };
+        return this.#execution.modelGateway.generate(request, signal ? { signal } : undefined);
+      },
+      timeoutMs,
+      `Hook model execution timed out after ${timeoutMs}ms.`
+    );
+
+    const parsed = this.#parseHookResult(result.text);
+    if (!parsed) {
+      throw new Error(invalidOutputMessage);
+    }
+
+    return parsed;
   }
 
   #parseHookResult(rawOutput: string): HookResult | undefined {
@@ -514,7 +509,7 @@ export class HookService {
   async #recordHookRunAudit(input: HookAuditRecordInput): Promise<void> {
     const { hook, envelope, step, status, result, error } = input;
 
-    if (!this.#hookRunAuditRepository || !step.endedAt) {
+    if (!this.#audit.hookRunAuditRepository || !step.endedAt) {
       return;
     }
 
@@ -523,8 +518,8 @@ export class HookService {
         ? (result.hookSpecificOutput.patch as Record<string, unknown>)
         : undefined;
 
-    await this.#hookRunAuditRepository.create({
-      id: this.#createId("hookrun"),
+    await this.#audit.hookRunAuditRepository.create({
+      id: this.#audit.createId("hookrun"),
       runId: step.runId,
       hookName: hook.name,
       eventName: envelope.hook_event_name,

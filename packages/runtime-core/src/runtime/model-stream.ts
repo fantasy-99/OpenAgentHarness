@@ -81,17 +81,7 @@ function buildAgentEventMetadata(workspace: WorkspaceRecord, agentName: string):
   };
 }
 
-export interface ModelStreamCoordinatorDependencies<TModelInput extends ModelExecutionInputSnapshot> {
-  workspace: WorkspaceRecord;
-  session: Session;
-  run: Run;
-  executionContext: RunExecutionContextLike;
-  allMessages: Message[];
-  initialModelInput: TModelInput;
-  runtimeTools: RuntimeToolSet;
-  activeToolServers: WorkspaceRecord["toolServers"][string][];
-  runtimeToolNames: string[];
-  logger?: RuntimeLogger | undefined;
+export interface ModelStreamPlanningCapabilities<TModelInput extends ModelExecutionInputSnapshot> {
   buildModelInput: (
     workspace: WorkspaceRecord,
     session: Session,
@@ -108,6 +98,9 @@ export interface ModelStreamCoordinatorDependencies<TModelInput extends ModelExe
   ) => Promise<TModelInput>;
   getRun: (runId: string) => Promise<Run>;
   getActiveToolNames: (agentName: string) => string[] | undefined;
+}
+
+export interface ModelStreamStepCapabilities {
   startRunStep: (input: {
     runId: string;
     stepType: RunStep["stepType"];
@@ -121,6 +114,15 @@ export interface ModelStreamCoordinatorDependencies<TModelInput extends ModelExe
     output?: Record<string, unknown> | undefined
   ) => Promise<RunStep>;
   setRunStatusIfPossible: (runId: string, nextStatus: Run["status"]) => Promise<void>;
+  recordToolCallAuditFromStep: (
+    step: RunStep,
+    toolName: string,
+    status: "completed" | "failed" | "cancelled"
+  ) => Promise<void>;
+  runStepRetryPolicy: (step: RunStep) => ActionRetryPolicy | undefined;
+}
+
+export interface ModelStreamMessageCapabilities {
   ensureAssistantMessage: (
     session: Session,
     run: Run,
@@ -162,6 +164,9 @@ export interface ModelStreamCoordinatorDependencies<TModelInput extends ModelExe
     data: Record<string, unknown>;
   }) => Promise<unknown>;
   updateMessageContent: (message: AssistantMessage, content: string) => Promise<AssistantMessage>;
+}
+
+export interface ModelStreamSerializationCapabilities<TModelInput extends ModelExecutionInputSnapshot> {
   serializeModelCallStepInput: (
     modelInput: TModelInput,
     activeToolNames: string[] | undefined,
@@ -180,15 +185,26 @@ export interface ModelStreamCoordinatorDependencies<TModelInput extends ModelExe
     modelInput: Pick<TModelInput, "messages">,
     modelCallStep?: Pick<RunStep, "id" | "seq"> | undefined
   ) => Record<string, unknown>;
-  recordToolCallAuditFromStep: (
-    step: RunStep,
-    toolName: string,
-    status: "completed" | "failed" | "cancelled"
-  ) => Promise<void>;
-  runStepRetryPolicy: (step: RunStep) => ActionRetryPolicy | undefined;
   normalizeJsonObject: (value: unknown) => Record<string, unknown>;
   resolveToolSourceType: (toolName: string) => "action" | "skill" | "agent" | "tool" | "native";
   previewValue: (value: unknown, maxLength?: number) => string;
+}
+
+export interface ModelStreamCoordinatorDependencies<TModelInput extends ModelExecutionInputSnapshot> {
+  workspace: WorkspaceRecord;
+  session: Session;
+  run: Run;
+  executionContext: RunExecutionContextLike;
+  allMessages: Message[];
+  initialModelInput: TModelInput;
+  runtimeTools: RuntimeToolSet;
+  activeToolServers: WorkspaceRecord["toolServers"][string][];
+  runtimeToolNames: string[];
+  logger?: RuntimeLogger | undefined;
+  planning: ModelStreamPlanningCapabilities<TModelInput>;
+  steps: ModelStreamStepCapabilities;
+  messages: ModelStreamMessageCapabilities;
+  serialization: ModelStreamSerializationCapabilities<TModelInput>;
 }
 
 export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnapshot> {
@@ -201,28 +217,10 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
   readonly #activeToolServers: WorkspaceRecord["toolServers"][string][];
   readonly #runtimeToolNames: string[];
   readonly #logger?: RuntimeLogger | undefined;
-  readonly #buildModelInput: ModelStreamCoordinatorDependencies<TModelInput>["buildModelInput"];
-  readonly #applyBeforeModelHooks: ModelStreamCoordinatorDependencies<TModelInput>["applyBeforeModelHooks"];
-  readonly #getRun: ModelStreamCoordinatorDependencies<TModelInput>["getRun"];
-  readonly #getActiveToolNames: ModelStreamCoordinatorDependencies<TModelInput>["getActiveToolNames"];
-  readonly #startRunStep: ModelStreamCoordinatorDependencies<TModelInput>["startRunStep"];
-  readonly #completeRunStep: ModelStreamCoordinatorDependencies<TModelInput>["completeRunStep"];
-  readonly #setRunStatusIfPossible: ModelStreamCoordinatorDependencies<TModelInput>["setRunStatusIfPossible"];
-  readonly #ensureAssistantMessage: ModelStreamCoordinatorDependencies<TModelInput>["ensureAssistantMessage"];
-  readonly #persistAssistantStepText: ModelStreamCoordinatorDependencies<TModelInput>["persistAssistantStepText"];
-  readonly #persistAssistantToolCalls: ModelStreamCoordinatorDependencies<TModelInput>["persistAssistantToolCalls"];
-  readonly #persistToolResults: ModelStreamCoordinatorDependencies<TModelInput>["persistToolResults"];
-  readonly #appendEvent: ModelStreamCoordinatorDependencies<TModelInput>["appendEvent"];
-  readonly #updateMessageContent: ModelStreamCoordinatorDependencies<TModelInput>["updateMessageContent"];
-  readonly #serializeModelCallStepInput: ModelStreamCoordinatorDependencies<TModelInput>["serializeModelCallStepInput"];
-  readonly #serializeModelCallStepOutput: ModelStreamCoordinatorDependencies<TModelInput>["serializeModelCallStepOutput"];
-  readonly #extractFailedToolResults: ModelStreamCoordinatorDependencies<TModelInput>["extractFailedToolResults"];
-  readonly #buildGeneratedMessageMetadata: ModelStreamCoordinatorDependencies<TModelInput>["buildGeneratedMessageMetadata"];
-  readonly #recordToolCallAuditFromStep: ModelStreamCoordinatorDependencies<TModelInput>["recordToolCallAuditFromStep"];
-  readonly #runStepRetryPolicy: ModelStreamCoordinatorDependencies<TModelInput>["runStepRetryPolicy"];
-  readonly #normalizeJsonObject: ModelStreamCoordinatorDependencies<TModelInput>["normalizeJsonObject"];
-  readonly #resolveToolSourceType: ModelStreamCoordinatorDependencies<TModelInput>["resolveToolSourceType"];
-  readonly #previewValue: ModelStreamCoordinatorDependencies<TModelInput>["previewValue"];
+  readonly #planning: ModelStreamPlanningCapabilities<TModelInput>;
+  readonly #steps: ModelStreamStepCapabilities;
+  readonly #messages: ModelStreamMessageCapabilities;
+  readonly #serialization: ModelStreamSerializationCapabilities<TModelInput>;
 
   readonly #toolCallStartedAt = new Map<string, number>();
   readonly #toolCallSteps = new Map<string, RunStep>();
@@ -251,28 +249,10 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
     this.#activeToolServers = dependencies.activeToolServers;
     this.#runtimeToolNames = dependencies.runtimeToolNames;
     this.#logger = dependencies.logger;
-    this.#buildModelInput = dependencies.buildModelInput;
-    this.#applyBeforeModelHooks = dependencies.applyBeforeModelHooks;
-    this.#getRun = dependencies.getRun;
-    this.#getActiveToolNames = dependencies.getActiveToolNames;
-    this.#startRunStep = dependencies.startRunStep;
-    this.#completeRunStep = dependencies.completeRunStep;
-    this.#setRunStatusIfPossible = dependencies.setRunStatusIfPossible;
-    this.#ensureAssistantMessage = dependencies.ensureAssistantMessage;
-    this.#persistAssistantStepText = dependencies.persistAssistantStepText;
-    this.#persistAssistantToolCalls = dependencies.persistAssistantToolCalls;
-    this.#persistToolResults = dependencies.persistToolResults;
-    this.#appendEvent = dependencies.appendEvent;
-    this.#updateMessageContent = dependencies.updateMessageContent;
-    this.#serializeModelCallStepInput = dependencies.serializeModelCallStepInput;
-    this.#serializeModelCallStepOutput = dependencies.serializeModelCallStepOutput;
-    this.#extractFailedToolResults = dependencies.extractFailedToolResults;
-    this.#buildGeneratedMessageMetadata = dependencies.buildGeneratedMessageMetadata;
-    this.#recordToolCallAuditFromStep = dependencies.recordToolCallAuditFromStep;
-    this.#runStepRetryPolicy = dependencies.runStepRetryPolicy;
-    this.#normalizeJsonObject = dependencies.normalizeJsonObject;
-    this.#resolveToolSourceType = dependencies.resolveToolSourceType;
-    this.#previewValue = dependencies.previewValue;
+    this.#planning = dependencies.planning;
+    this.#steps = dependencies.steps;
+    this.#messages = dependencies.messages;
+    this.#serialization = dependencies.serialization;
   }
 
   get toolCallStartedAt(): Map<string, number> {
@@ -310,14 +290,14 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
   buildStreamOptions(): Pick<ModelStreamOptions, "prepareStep" | "onToolCallStart" | "onToolCallFinish" | "onStepFinish"> {
     return {
       prepareStep: async (stepNumber) => {
-        const activeToolNames = this.#getActiveToolNames(this.#executionContext.currentAgentName);
+        const activeToolNames = this.#planning.getActiveToolNames(this.#executionContext.currentAgentName);
         if (stepNumber === 0) {
-          const initialModelCallStep = await this.#startRunStep({
+          const initialModelCallStep = await this.#steps.startRunStep({
             runId: this.#run.id,
             stepType: "model_call",
             name: this.#latestHookedModelInput.model,
             agentName: this.#executionContext.currentAgentName,
-            input: this.#serializeModelCallStepInput(
+            input: this.#serialization.serializeModelCallStepInput(
               this.#latestHookedModelInput,
               activeToolNames,
               this.#activeToolServers,
@@ -326,7 +306,7 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
             )
           });
           this.#modelCallSteps.set(stepNumber, initialModelCallStep);
-          this.#latestMessageGenerationMetadata = this.#buildGeneratedMessageMetadata(
+          this.#latestMessageGenerationMetadata = this.#serialization.buildGeneratedMessageMetadata(
             this.#workspace,
             this.#executionContext.currentAgentName,
             this.#latestHookedModelInput,
@@ -348,8 +328,8 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
           return activeToolNames ? { activeToolNames } : undefined;
         }
 
-        const latestRun = await this.#getRun(this.#run.id);
-        const nextInput = await this.#buildModelInput(
+        const latestRun = await this.#planning.getRun(this.#run.id);
+        const nextInput = await this.#planning.buildModelInput(
           this.#workspace,
           this.#session,
           latestRun,
@@ -357,15 +337,15 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
           this.#executionContext.currentAgentName,
           this.#executionContext.injectSystemReminder
         );
-        const hookedNextInput = await this.#applyBeforeModelHooks(this.#workspace, this.#session, latestRun, nextInput);
+        const hookedNextInput = await this.#planning.applyBeforeModelHooks(this.#workspace, this.#session, latestRun, nextInput);
         this.#latestHookedModelInput = hookedNextInput;
         this.#executionContext.injectSystemReminder = false;
-        const followupModelCallStep = await this.#startRunStep({
+        const followupModelCallStep = await this.#steps.startRunStep({
           runId: this.#run.id,
           stepType: "model_call",
           name: hookedNextInput.model,
           agentName: this.#executionContext.currentAgentName,
-          input: this.#serializeModelCallStepInput(
+          input: this.#serialization.serializeModelCallStepInput(
             hookedNextInput,
             activeToolNames,
             this.#activeToolServers,
@@ -374,7 +354,7 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
           )
         });
         this.#modelCallSteps.set(stepNumber, followupModelCallStep);
-        this.#latestMessageGenerationMetadata = this.#buildGeneratedMessageMetadata(
+        this.#latestMessageGenerationMetadata = this.#serialization.buildGeneratedMessageMetadata(
           this.#workspace,
           this.#executionContext.currentAgentName,
           hookedNextInput,
@@ -411,7 +391,7 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
           agentName: this.#executionContext.currentAgentName,
           toolCallId: toolCall.toolCallId,
           toolName: toolCall.toolName,
-          inputPreview: this.#previewValue(toolCall.input)
+          inputPreview: this.#serialization.previewValue(toolCall.input)
         });
         await this.#syncRunStatusFromActiveTools();
       },
@@ -421,24 +401,24 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
         this.#activeToolCallIds.delete(toolResult.toolCallId);
         const toolStep = this.#toolCallSteps.get(toolResult.toolCallId);
         const toolAgentName = toolStep?.agentName ?? this.#executionContext.currentAgentName;
-        const toolSourceType = this.#resolveToolSourceType(toolResult.toolName);
-        const retryPolicy = toolStep ? this.#runStepRetryPolicy(toolStep) : undefined;
+        const toolSourceType = this.#serialization.resolveToolSourceType(toolResult.toolName);
+        const retryPolicy = toolStep ? this.#steps.runStepRetryPolicy(toolStep) : undefined;
         this.#toolMessageMetadataByCallId.set(toolResult.toolCallId, {
           toolStatus: "completed",
           toolSourceType,
           ...(startedAt !== undefined ? { toolDurationMs: Date.now() - startedAt } : {})
         });
         if (toolStep) {
-          const completedToolStep = await this.#completeRunStep(toolStep, "completed", {
+          const completedToolStep = await this.#steps.completeRunStep(toolStep, "completed", {
             sourceType: toolSourceType,
             ...(retryPolicy ? { retryPolicy } : {}),
-            output: this.#normalizeJsonObject(toolResult.output),
+            output: this.#serialization.normalizeJsonObject(toolResult.output),
             ...(startedAt !== undefined ? { durationMs: Date.now() - startedAt } : {})
           });
-          await this.#recordToolCallAuditFromStep(completedToolStep, toolResult.toolName, "completed");
+          await this.#steps.recordToolCallAuditFromStep(completedToolStep, toolResult.toolName, "completed");
           this.#toolCallSteps.delete(toolResult.toolCallId);
         }
-        await this.#appendEvent({
+        await this.#messages.appendEvent({
           sessionId: this.#session.id,
           runId: this.#run.id,
           event: "tool.completed",
@@ -461,7 +441,7 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
           agentName: this.#executionContext.currentAgentName,
           toolCallId: toolResult.toolCallId,
           toolName: toolResult.toolName,
-          outputPreview: this.#previewValue(toolResult.output),
+          outputPreview: this.#serialization.previewValue(toolResult.output),
           ...(startedAt !== undefined ? { durationMs: Date.now() - startedAt } : {})
         });
         await this.#syncRunStatusFromActiveTools();
@@ -469,11 +449,11 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
       onStepFinish: async (step) => {
         const messageMetadata =
           this.#modelCallMessageMetadata.get(this.#completedModelStepCount) ?? this.#latestMessageGenerationMetadata;
-        const failedToolResults = this.#extractFailedToolResults(step);
+        const failedToolResults = this.#serialization.extractFailedToolResults(step);
         for (const toolError of failedToolResults) {
           this.#toolMessageMetadataByCallId.set(toolError.toolCallId, {
             toolStatus: "failed",
-            toolSourceType: this.#resolveToolSourceType(toolError.toolName)
+            toolSourceType: this.#serialization.resolveToolSourceType(toolError.toolName)
           });
           this.#toolCallStartedAt.delete(toolError.toolCallId);
           this.#toolCallSteps.delete(toolError.toolCallId);
@@ -482,10 +462,10 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
         await this.#syncRunStatusFromActiveTools();
         const modelCallStep = this.#modelCallSteps.get(this.#completedModelStepCount);
         if (modelCallStep) {
-          await this.#completeRunStep(
+          await this.#steps.completeRunStep(
             modelCallStep,
             "completed",
-            this.#serializeModelCallStepOutput(step, failedToolResults)
+            this.#serialization.serializeModelCallStepOutput(step, failedToolResults)
           );
           this.#modelCallSteps.delete(this.#completedModelStepCount);
         }
@@ -510,7 +490,7 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
           this.#finalAssistantStep = step;
         }
         if (step.toolCalls.length > 0) {
-          await this.#persistAssistantStepText(
+          await this.#messages.persistAssistantStepText(
             this.#session,
             this.#run,
             step,
@@ -521,7 +501,7 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
           this.#assistantMessage = undefined;
           this.#accumulatedText = "";
         }
-        await this.#persistAssistantToolCalls(
+        await this.#messages.persistAssistantToolCalls(
           this.#session,
           this.#run,
           step,
@@ -529,7 +509,7 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
           messageMetadata,
           this.#toolMessageMetadataByCallId
         );
-        await this.#persistToolResults(
+        await this.#messages.persistToolResults(
           this.#session,
           this.#run,
           step,
@@ -555,7 +535,7 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
   async consumeChunk(chunk: string): Promise<AssistantMessage> {
     const currentMetadata =
       this.#modelCallMessageMetadata.get(this.#completedModelStepCount) ?? this.#latestMessageGenerationMetadata;
-    const message = await this.#ensureAssistantMessage(
+    const message = await this.#messages.ensureAssistantMessage(
       this.#session,
       this.#run,
       this.#assistantMessage,
@@ -564,11 +544,11 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
       currentMetadata
     );
     this.#accumulatedText += chunk;
-    const updatedMessage = await this.#updateMessageContent(message, this.#accumulatedText);
+    const updatedMessage = await this.#messages.updateMessageContent(message, this.#accumulatedText);
     this.#assistantMessage = updatedMessage;
     const deltaEventMetadata = buildDeltaEventMetadata(updatedMessage.metadata, this.#latestDeltaSystemMessageSignature);
     this.#latestDeltaSystemMessageSignature = deltaEventMetadata.systemMessageSignature;
-    await this.#appendEvent({
+    await this.#messages.appendEvent({
       sessionId: this.#session.id,
       runId: this.#run.id,
       event: "message.delta",
@@ -587,12 +567,12 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
     errorMessage?: string | undefined
   ): Promise<void> {
     for (const step of this.#modelCallSteps.values()) {
-      await this.#completeRunStep(step, status, errorMessage ? { errorMessage } : undefined);
+      await this.#steps.completeRunStep(step, status, errorMessage ? { errorMessage } : undefined);
     }
   }
 
   #syncRunStatusFromActiveTools(): Promise<void> {
-    return this.#setRunStatusIfPossible(
+    return this.#steps.setRunStatusIfPossible(
       this.#run.id,
       this.#activeToolCallIds.size > 0 ? "waiting_tool" : "running"
     );

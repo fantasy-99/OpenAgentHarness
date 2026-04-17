@@ -199,24 +199,20 @@ export class RuntimeService {
       sessionEventStore: this.#sessionEventStore,
       ...(options.runtimeMessageRepository ? { runtimeMessageRepository: options.runtimeMessageRepository } : {})
     });
-    this.#runProcessor = new RunProcessorService({
+    this.#modelInputs = new ModelInputService({
+      defaultModel: this.#defaultModel,
+      platformModels: this.#platformModels,
+      applyContextHooks: (workspace, session, run, eventName, messages) =>
+        this.#applyContextHooks(workspace, session, run, eventName, messages),
+      collapseLeadingSystemMessages: (messages) => collapseLeadingSystemMessages(messages)
+    });
+    this.#modelRunExecutor = new ModelRunExecutor({
       logger: this.#logger,
       modelGateway: this.#modelGateway,
       messageRepository: this.#messageRepository,
-      ...(this.#workspaceExecutionProvider ? { workspaceExecutionProvider: this.#workspaceExecutionProvider } : {}),
       runtimeMessageSync: this.#runtimeMessageSync,
-      runAbortControllers: this.#runAbortControllers,
-      drainTimeoutRecoveredRuns: this.#drainTimeoutRecoveredRuns,
-      runHeartbeatIntervalMs: this.#runHeartbeatIntervalMs,
       ensureExecutionServices: () => this.#ensureExecutionServices(),
       getRun: (runId) => this.getRun(runId),
-      getSession: (sessionId) => this.getSession(sessionId),
-      getWorkspaceRecord: (workspaceId) => this.getWorkspaceRecord(workspaceId),
-      setRunStatus: (run, nextStatus, patch) => this.#runState.setRunStatus(run, nextStatus, patch),
-      markRunCancelled: (sessionId, run) => this.#runState.markRunCancelled(sessionId, run),
-      refreshRunHeartbeat: (runId) => this.#runState.refreshRunHeartbeat(runId),
-      recordSystemStep: (run, name, output) => this.#runSteps.recordSystemStep(run, name, output),
-      appendEvent: (input) => this.#appendEvent(input),
       repairSessionHistoryIfNeeded: (sessionId, messages) => this.#sessionHistory.repairSessionHistoryIfNeeded(sessionId, messages),
       buildModelInput: (workspace, session, run, runtimeMessages, activeAgentName, forceSystemReminder) =>
         this.#modelInputs.buildModelInput(workspace, session, run, runtimeMessages, activeAgentName, forceSystemReminder),
@@ -276,6 +272,7 @@ export class RuntimeService {
           metadata,
           toolMetadataByCallId
         ),
+      appendEvent: (input) => this.#appendEvent(input),
       serializeModelCallStepInput: (modelInput, activeToolNames, toolServers, runtimeToolNames, runtimeTools) =>
         serializeModelCallStepInput(modelInput, activeToolNames, toolServers, runtimeToolNames, runtimeTools),
       serializeModelCallStepOutput: (step, failedToolResults) =>
@@ -297,16 +294,26 @@ export class RuntimeService {
           completed,
           finalAssistantStep,
           messageMetadata
-        }),
+        })
+    });
+    this.#runProcessor = new RunProcessorService({
+      logger: this.#logger,
+      ...(this.#workspaceExecutionProvider ? { workspaceExecutionProvider: this.#workspaceExecutionProvider } : {}),
+      runAbortControllers: this.#runAbortControllers,
+      drainTimeoutRecoveredRuns: this.#drainTimeoutRecoveredRuns,
+      runHeartbeatIntervalMs: this.#runHeartbeatIntervalMs,
+      ensureExecutionServices: () => this.#ensureExecutionServices(),
+      getRun: (runId) => this.getRun(runId),
+      getSession: (sessionId) => this.getSession(sessionId),
+      getWorkspaceRecord: (workspaceId) => this.getWorkspaceRecord(workspaceId),
+      setRunStatus: (run, nextStatus, patch) => this.#runState.setRunStatus(run, nextStatus, patch),
+      markRunCancelled: (sessionId, run) => this.#runState.markRunCancelled(sessionId, run),
+      refreshRunHeartbeat: (runId) => this.#runState.refreshRunHeartbeat(runId),
+      recordSystemStep: (run, name, output) => this.#runSteps.recordSystemStep(run, name, output),
+      appendEvent: (input) => this.#appendEvent(input),
+      modelRunExecutor: this.#modelRunExecutor,
       processActionRun: (workspace, run, session, signal) =>
         this.#ensureExecutionServices().actions.processActionRun(workspace, run, session, signal)
-    });
-    this.#modelInputs = new ModelInputService({
-      defaultModel: this.#defaultModel,
-      platformModels: this.#platformModels,
-      applyContextHooks: (workspace, session, run, eventName, messages) =>
-        this.#applyContextHooks(workspace, session, run, eventName, messages),
-      collapseLeadingSystemMessages: (messages) => collapseLeadingSystemMessages(messages)
     });
     this.#runtimeMessageProjector = new RuntimeMessageProjector();
     this.#sessionRuntime = new SessionRuntimeService({

@@ -76,19 +76,27 @@ export function createRuntimeExecutionServices(
   dependencies: CreateRuntimeExecutionServicesDependencies
 ): RuntimeExecutionServices {
   const hooks = new HookService({
-    defaultModel: dependencies.defaultModel,
-    modelGateway: dependencies.modelGateway,
-    commandExecutor: dependencies.workspaceCommandExecutor,
-    fileSystem: dependencies.workspaceFileSystem,
-    hookRunAuditRepository: dependencies.hookRunAuditRepository,
-    startRunStep: (input) => dependencies.startRunStep(input),
-    completeRunStep: (step, status, output) => dependencies.completeRunStep(step, status, output),
-    appendEvent: (input) => dependencies.appendEvent(input),
-    resolveModelForRun: (workspace, modelRef) => dependencies.resolveModelForRun(workspace, modelRef),
-    createId,
-    timeoutMsFromSeconds,
-    withTimeout,
-    isAbortError
+    execution: {
+      defaultModel: dependencies.defaultModel,
+      modelGateway: dependencies.modelGateway,
+      commandExecutor: dependencies.workspaceCommandExecutor,
+      fileSystem: dependencies.workspaceFileSystem,
+      resolveModelForRun: (workspace, modelRef) => dependencies.resolveModelForRun(workspace, modelRef)
+    },
+    steps: {
+      startRunStep: (input) => dependencies.startRunStep(input),
+      completeRunStep: (step, status, output) => dependencies.completeRunStep(step, status, output),
+      appendEvent: (input) => dependencies.appendEvent(input)
+    },
+    audit: {
+      hookRunAuditRepository: dependencies.hookRunAuditRepository,
+      createId
+    },
+    timing: {
+      timeoutMsFromSeconds,
+      withTimeout,
+      isAbortError
+    }
   });
   const hookApplications = new HookApplicationService<ModelExecutionInput>({
     executeHook: (workspace, session, run, hook, envelope) => hooks.executeHook(workspace, session, run, hook, envelope),
@@ -167,20 +175,26 @@ export function createRuntimeExecutionServices(
     normalizeJsonObject: (value) => normalizeJsonObject(value)
   });
   const agentCoordination = new AgentCoordinationService({
-    sessionRepository: dependencies.sessionRepository,
-    messageRepository: dependencies.messageRepository,
-    runRepository: dependencies.runRepository,
-    getRun: (runId) => dependencies.getRun(runId),
-    startRunStep: (input) => dependencies.startRunStep(input),
-    completeRunStep: (step, status, output) => dependencies.completeRunStep(step, status, output),
-    updateRun: (run, patch) => dependencies.updateRun(run, patch),
-    appendEvent: (input) => dependencies.appendEvent(input),
-    enqueueRun: (sessionId, runId, options) => dependencies.enqueueRun(sessionId, runId, options),
-    resolveModelForRun: (workspace, modelRef) => dependencies.resolveModelForRun(workspace, modelRef),
-    extractMessageDisplayText: (message) => extractMessageDisplayText(message),
-    hasMeaningfulText: (value) => hasMeaningfulText(value),
-    createId,
-    nowIso
+    persistence: {
+      sessions: dependencies.sessionRepository,
+      messages: dependencies.messageRepository,
+      runs: dependencies.runRepository
+    },
+    lifecycle: {
+      getRun: (runId) => dependencies.getRun(runId),
+      startRunStep: (input) => dependencies.startRunStep(input),
+      completeRunStep: (step, status, output) => dependencies.completeRunStep(step, status, output),
+      updateRun: (run, patch) => dependencies.updateRun(run, patch),
+      appendEvent: (input) => dependencies.appendEvent(input),
+      enqueueRun: (sessionId, runId, options) => dependencies.enqueueRun(sessionId, runId, options)
+    },
+    helpers: {
+      resolveModelForRun: (workspace, modelRef) => dependencies.resolveModelForRun(workspace, modelRef),
+      extractMessageDisplayText: (message) => extractMessageDisplayText(message),
+      hasMeaningfulText: (value) => hasMeaningfulText(value),
+      createId,
+      nowIso
+    }
   });
   const runFinalization = new RunFinalizationService({
     sessionRepository: dependencies.sessionRepository,
