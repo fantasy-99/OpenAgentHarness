@@ -1,7 +1,7 @@
 import { createReadStream } from "node:fs";
 import { mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 
-import type { WorkspaceFileStat, WorkspaceFileSystem, WorkspaceFileSystemEntry } from "./types.js";
+import type { WorkspaceFileStat, WorkspaceFileSystem, WorkspaceFileSystemEntry } from "../types.js";
 
 function toWorkspaceFileStat(entry: Awaited<ReturnType<typeof stat>>): WorkspaceFileStat {
   return {

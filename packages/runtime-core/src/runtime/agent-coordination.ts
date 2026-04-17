@@ -2,7 +2,7 @@ import type { Message, Run, RunStep, Session } from "@oah/api-contracts";
 
 import { AppError } from "../errors.js";
 import { textContent } from "../runtime-message-content.js";
-import { canDelegateFromAgent } from "../runtime-tooling.js";
+import { canDelegateFromAgent } from "../capabilities/runtime-capabilities.js";
 import {
   buildDelegatedRunCompletedMessage,
   buildDelegatedRunFailedMessage,

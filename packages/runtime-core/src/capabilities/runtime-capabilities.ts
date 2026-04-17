@@ -2,13 +2,13 @@ import type { Run, Session } from "@oah/api-contracts";
 
 import { createRunActionTool } from "./action-dispatch.js";
 import { createAgentSwitchTool, createSubAgentTool } from "./agent-control.js";
-import { AppError } from "./errors.js";
+import { AppError } from "../errors.js";
 import {
   createNativeToolSet,
   getNativeToolRetryPolicy,
   isNativeToolName,
   NATIVE_TOOL_NAMES
-} from "./native-tools.js";
+} from "../native-tools.js";
 import { createDynamicActivateSkillTool } from "./skill-activation.js";
 import type {
   ActionDefinition,
@@ -19,7 +19,7 @@ import type {
   SkillDefinition,
   ToolServerDefinition,
   WorkspaceRecord
-} from "./types.js";
+} from "../types.js";
 
 export type RuntimeToolSourceType = "action" | "skill" | "agent" | "tool" | "native";
 
@@ -325,7 +325,7 @@ export interface BuildRuntimeToolsInput {
   ) => Promise<{ childSessionId: string; childRunId: string; targetAgentName: string }>;
   awaitDelegatedRuns: (input: { runIds: string[]; mode: "all" | "any" }) => Promise<string>;
   switchAgent: (targetAgentName: string, currentAgentName: string) => Promise<void>;
-  commandExecutor?: import("./types.js").WorkspaceCommandExecutor | undefined;
+  commandExecutor?: import("../types.js").WorkspaceCommandExecutor | undefined;
 }
 
 export function buildRuntimeTools(input: BuildRuntimeToolsInput): RuntimeToolSet {

@@ -2,7 +2,7 @@ import path from "node:path";
 
 import { z } from "zod";
 
-import { formatToolOutput } from "../tool-output.js";
+import { formatToolOutput } from "../capabilities/tool-output.js";
 import type { RuntimeToolSet } from "../types.js";
 import { resolveWorkspacePath } from "./paths.js";
 import { getNativeToolRetryPolicy, type NativeToolFactoryContext } from "./types.js";

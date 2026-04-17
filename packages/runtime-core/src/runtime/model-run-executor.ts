@@ -5,7 +5,7 @@ import {
   activeToolNamesForAgent as resolveActiveToolNamesForAgent,
   visibleEnabledToolServers as listVisibleEnabledToolServers,
   toolSourceType as resolveToolSourceType
-} from "../runtime-tooling.js";
+} from "../capabilities/runtime-capabilities.js";
 import type {
   ModelStepResult,
   RunStepStatus,

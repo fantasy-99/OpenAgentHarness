@@ -1,5 +1,5 @@
 import { AppError } from "../errors.js";
-import { formatToolOutput } from "../tool-output.js";
+import { formatToolOutput } from "../capabilities/tool-output.js";
 import { DEFAULT_GREP_LIMIT } from "./constants.js";
 import { normalizePathForMatch } from "./paths.js";
 

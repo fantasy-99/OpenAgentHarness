@@ -1,14 +1,14 @@
 import type { ChatMessage } from "@oah/api-contracts";
 
-import { buildAvailableAgentSwitchesMessage, buildAvailableSubagentsMessage } from "../agent-control.js";
-import { buildAvailableActionsMessage } from "../action-dispatch.js";
-import { buildAvailableSkillsMessage } from "../skill-activation.js";
+import { buildAvailableAgentSwitchesMessage, buildAvailableSubagentsMessage } from "../capabilities/agent-control.js";
+import { buildAvailableActionsMessage } from "../capabilities/action-dispatch.js";
+import { buildAvailableSkillsMessage } from "../capabilities/skill-activation.js";
 import {
   buildEnvironmentMessage as composeEnvironmentMessage,
   canDelegateFromAgent,
   visibleLlmActions,
   visibleLlmSkills
-} from "../runtime-tooling.js";
+} from "../capabilities/runtime-capabilities.js";
 import type { WorkspaceRecord } from "../types.js";
 import type { RuntimeMessage } from "./runtime-messages.js";
 import type { ResolvedRunModel } from "./model-resolver.js";

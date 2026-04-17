@@ -1,8 +1,8 @@
 import { z } from "zod";
 
-import { AppError } from "./errors.js";
+import { AppError } from "../errors.js";
 import { formatToolOutput } from "./tool-output.js";
-import type { AgentDefinition, RuntimeToolSet } from "./types.js";
+import type { AgentDefinition, RuntimeToolSet } from "../types.js";
 
 function escapeXml(value: string): string {
   return value

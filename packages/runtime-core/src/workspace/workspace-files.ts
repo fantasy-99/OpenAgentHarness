@@ -1,10 +1,10 @@
 import path from "node:path";
 import type { Readable } from "node:stream";
 
-import { AppError } from "./errors.js";
+import { AppError } from "../errors.js";
 import { createLocalWorkspaceFileSystem } from "./workspace-file-system.js";
-import type { WorkspaceFileStat, WorkspaceFileSystem, WorkspaceRecord } from "./types.js";
-import { parseCursor } from "./utils.js";
+import type { WorkspaceFileStat, WorkspaceFileSystem, WorkspaceRecord } from "../types.js";
+import { parseCursor } from "../utils.js";
 
 export type WorkspaceEntrySortBy = "name" | "updatedAt" | "sizeBytes" | "type";
 export type SortOrder = "asc" | "desc";

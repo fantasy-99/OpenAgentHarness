@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { formatToolOutput } from "./tool-output.js";
-import type { ActionDefinition, RuntimeToolExecutionContext, RuntimeToolSet } from "./types.js";
+import type { ActionDefinition, RuntimeToolExecutionContext, RuntimeToolSet } from "../types.js";
 
 export interface ActionExecutionResult {
   stdout: string;

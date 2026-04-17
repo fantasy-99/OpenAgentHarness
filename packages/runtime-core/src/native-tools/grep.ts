@@ -8,7 +8,7 @@ import { collectWorkspaceFiles } from "./fs-utils.js";
 import { normalizePathForMatch, resolveWorkspacePath } from "./paths.js";
 import { applyHeadLimit, formatGrepOutput, globToRegExp } from "./search-utils.js";
 import { getNativeToolRetryPolicy, type NativeToolFactoryContext } from "./types.js";
-import { WorkspaceCommandCancelledError } from "../workspace-command-executor.js";
+import { WorkspaceCommandCancelledError } from "../workspace/workspace-command-executor.js";
 
 const GREP_DESCRIPTION = `A powerful search tool built on ripgrep
 

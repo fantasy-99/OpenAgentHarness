@@ -2,7 +2,7 @@ import path from "node:path";
 
 import { z } from "zod";
 
-import { formatToolOutput } from "../tool-output.js";
+import { formatToolOutput } from "../capabilities/tool-output.js";
 import type { RuntimeToolSet } from "../types.js";
 import { ensureParentDirectory, readJsonFile } from "./fs-utils.js";
 import { normalizePathForMatch } from "./paths.js";

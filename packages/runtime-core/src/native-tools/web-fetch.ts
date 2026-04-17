@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { formatToolOutput } from "../tool-output.js";
+import { formatToolOutput } from "../capabilities/tool-output.js";
 import type { RuntimeToolSet } from "../types.js";
 import { DEFAULT_BASH_TIMEOUT_MS } from "./constants.js";
 import { getNativeToolRetryPolicy, type NativeToolFactoryContext } from "./types.js";

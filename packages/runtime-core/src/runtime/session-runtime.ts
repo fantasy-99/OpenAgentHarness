@@ -1,6 +1,6 @@
 import type { Message, Run, Session } from "@oah/api-contracts";
 
-import { validateActionInput } from "../action-input-validation.js";
+import { validateActionInput } from "../capabilities/action-input-validation.js";
 import { AppError } from "../errors.js";
 import {
   extractTextFromContent,

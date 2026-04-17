@@ -12,8 +12,8 @@ import { ensureParentDirectory, readJsonFile } from "./fs-utils.js";
 import { createTodoWriteTool } from "./todo-write.js";
 import { createWebFetchTool } from "./web-fetch.js";
 import { createWriteTool } from "./write.js";
-import { createLocalWorkspaceCommandExecutor } from "../workspace-command-executor.js";
-import { createLocalWorkspaceFileSystem } from "../workspace-file-system.js";
+import { createLocalWorkspaceCommandExecutor } from "../workspace/workspace-command-executor.js";
+import { createLocalWorkspaceFileSystem } from "../workspace/workspace-file-system.js";
 import {
   type NativeToolFactoryContext,
   type NativeToolSetOptions,

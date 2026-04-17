@@ -1,7 +1,7 @@
 import type { Message, Run, RunStep, Session } from "@oah/api-contracts";
 
 import { createId, nowIso } from "../utils.js";
-import { toolRetryPolicy as resolveToolRetryPolicy, toolSourceType as resolveToolSourceType } from "../runtime-tooling.js";
+import { toolRetryPolicy as resolveToolRetryPolicy, toolSourceType as resolveToolSourceType } from "../capabilities/runtime-capabilities.js";
 import type {
   RunQueuePriority,
   RuntimeServiceOptions,

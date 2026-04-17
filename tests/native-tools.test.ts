@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createNativeToolSet } from "../packages/runtime-core/src/native-tools.ts";
-import { createLocalWorkspaceFileSystem } from "../packages/runtime-core/src/workspace-file-system.ts";
+import { createLocalWorkspaceFileSystem } from "../packages/runtime-core/src/workspace/workspace-file-system.ts";
 import type { WorkspaceCommandExecutor, WorkspaceFileSystem } from "../packages/runtime-core/src/types.ts";
 
 const tempDirs: string[] = [];

@@ -26,14 +26,12 @@ import { RunStepService } from "./runtime/run-steps.js";
 import { RunRecoveryService } from "./runtime/run-recovery.js";
 import { RunProcessorService } from "./runtime/run-processor.js";
 import { RuntimeMessageSyncService } from "./runtime/runtime-message-sync.js";
+import { RuntimeLifecycleService } from "./runtime/runtime-lifecycle.js";
 import { SessionRuntimeService } from "./runtime/session-runtime.js";
 import { createRuntimeExecutionServices, type RuntimeExecutionServices } from "./runtime/execution-services.js";
 import { buildGeneratedMessageMetadata, normalizeJsonObject } from "./runtime/execution-support.js";
 import { ModelRunExecutor } from "./runtime/model-run-executor.js";
 import { WorkspaceRuntimeService } from "./runtime/workspace-runtime.js";
-import {
-  doesSessionEventAffectRuntimeMessages
-} from "./runtime/runtime-messages.js";
 import {
   RuntimeMessageProjector
 } from "./runtime/message-projections.js";
@@ -46,10 +44,10 @@ import {
   type WorkspaceFileContentResult,
   type WorkspaceFileDownloadResult,
   WorkspaceFileService
-} from "./workspace-files.js";
+} from "./workspace/workspace-files.js";
 import {
   buildRuntimeTools as createWorkspaceRuntimeTools,
-} from "./runtime-tooling.js";
+} from "./capabilities/runtime-capabilities.js";
 import {
   type ActionRunAcceptedResult,
   type CancelRunResult,
@@ -69,15 +67,13 @@ import {
   type WorkspaceFileSystem,
   type RunStepListResult,
   type SessionListResult,
-  type RunQueuePriority,
   type WorkspaceListResult,
   type RunListResult,
-  type WorkspaceActivityTracker,
   type WorkspaceRecord
 } from "./types.js";
 import { createId, nowIso } from "./utils.js";
-import { createLocalWorkspaceCommandExecutor } from "./workspace-command-executor.js";
-import { createLocalWorkspaceFileSystem } from "./workspace-file-system.js";
+import { createLocalWorkspaceCommandExecutor } from "./workspace/workspace-command-executor.js";
+import { createLocalWorkspaceFileSystem } from "./workspace/workspace-file-system.js";
 import {
   type AutomaticRecoveryStrategy,
   type RunExecutionContext
@@ -87,7 +83,6 @@ export class RuntimeService {
   readonly #defaultModel: string;
   readonly #modelGateway: RuntimeServiceOptions["modelGateway"];
   readonly #logger: RuntimeServiceOptions["logger"];
-  readonly #workspaceActivityTracker: WorkspaceActivityTracker | undefined;
   readonly #executionServicesMode: NonNullable<RuntimeServiceOptions["executionServicesMode"]>;
   readonly #runHeartbeatIntervalMs: number;
   readonly #staleRunRecoveryStrategy: "fail" | "requeue_running" | "requeue_all";
@@ -119,10 +114,10 @@ export class RuntimeService {
   readonly #modelRunExecutor: ModelRunExecutor;
   readonly #runProcessor: RunProcessorService;
   readonly #runtimeMessageSync: RuntimeMessageSyncService;
+  readonly #runtimeLifecycle: RuntimeLifecycleService;
   readonly #modelInputs: ModelInputService;
   readonly #runtimeMessageProjector: RuntimeMessageProjector;
   #executionServices: RuntimeExecutionServices | undefined;
-  readonly #sessionChains = new Map<string, Promise<void>>();
   readonly #runAbortControllers = new Map<string, AbortController>();
   readonly #drainTimeoutRecoveredRuns = new Set<string>();
 
@@ -130,7 +125,6 @@ export class RuntimeService {
     this.#defaultModel = options.defaultModel;
     this.#modelGateway = options.modelGateway;
     this.#logger = options.logger;
-    this.#workspaceActivityTracker = options.workspaceActivityTracker;
     this.#executionServicesMode = options.executionServicesMode ?? "eager";
     this.#runHeartbeatIntervalMs = Math.max(50, options.runHeartbeatIntervalMs ?? 5_000);
     this.#staleRunRecoveryStrategy = options.staleRunRecovery?.strategy ?? "fail";
@@ -165,7 +159,7 @@ export class RuntimeService {
     this.#runState = new RunStateService({
       runRepository: this.#runRepository,
       getRun: (runId) => this.getRun(runId),
-      appendEvent: (input) => this.#appendEvent(input),
+      appendEvent: (input) => this.#runtimeLifecycle.appendEvent(input),
       recordSystemStep: (run, name, output) => this.#runSteps.recordSystemStep(run, name, output),
       nowIso
     });
@@ -185,9 +179,9 @@ export class RuntimeService {
       runRepository: this.#runRepository,
       ...(this.#runQueue ? { runQueue: this.#runQueue } : {}),
       updateRun: (run, patch) => this.#runState.updateRun(run, patch),
-      appendEvent: (input) => this.#appendEvent(input),
+      appendEvent: (input) => this.#runtimeLifecycle.appendEvent(input),
       recordSystemStep: (run, name, output) => this.#runSteps.recordSystemStep(run, name, output),
-      enqueueRun: (sessionId, runId) => this.#enqueueRun(sessionId, runId),
+      enqueueRun: (sessionId, runId) => this.#runtimeLifecycle.enqueueRun(sessionId, runId),
       runAbortControllers: this.#runAbortControllers,
       drainTimeoutRecoveredRuns: this.#drainTimeoutRecoveredRuns,
       runHeartbeatIntervalMs: this.#runHeartbeatIntervalMs,
@@ -272,7 +266,7 @@ export class RuntimeService {
           metadata,
           toolMetadataByCallId
         ),
-      appendEvent: (input) => this.#appendEvent(input),
+      appendEvent: (input) => this.#runtimeLifecycle.appendEvent(input),
       serializeModelCallStepInput: (modelInput, activeToolNames, toolServers, runtimeToolNames, runtimeTools) =>
         serializeModelCallStepInput(modelInput, activeToolNames, toolServers, runtimeToolNames, runtimeTools),
       serializeModelCallStepOutput: (step, failedToolResults) =>
@@ -310,10 +304,19 @@ export class RuntimeService {
       markRunCancelled: (sessionId, run) => this.#runState.markRunCancelled(sessionId, run),
       refreshRunHeartbeat: (runId) => this.#runState.refreshRunHeartbeat(runId),
       recordSystemStep: (run, name, output) => this.#runSteps.recordSystemStep(run, name, output),
-      appendEvent: (input) => this.#appendEvent(input),
+      appendEvent: (input) => this.#runtimeLifecycle.appendEvent(input),
       modelRunExecutor: this.#modelRunExecutor,
       processActionRun: (workspace, run, session, signal) =>
         this.#ensureExecutionServices().actions.processActionRun(workspace, run, session, signal)
+    });
+    this.#runtimeLifecycle = new RuntimeLifecycleService({
+      sessionEventStore: this.#sessionEventStore,
+      runtimeMessageSync: this.#runtimeMessageSync,
+      workspaceActivityTracker: options.workspaceActivityTracker,
+      runRepository: this.#runRepository,
+      sessionRepository: this.#sessionRepository,
+      ...(this.#runQueue ? { runQueue: this.#runQueue } : {}),
+      processRun: (runId) => this.#runProcessor.processRun(runId)
     });
     this.#runtimeMessageProjector = new RuntimeMessageProjector();
     this.#sessionRuntime = new SessionRuntimeService({
@@ -327,8 +330,8 @@ export class RuntimeService {
       runtimeMessageProjector: this.#runtimeMessageProjector,
       getWorkspaceRecord: (workspaceId) => this.#workspaceRuntime.getWorkspaceRecord(workspaceId),
       getRun: (runId) => this.getRun(runId),
-      appendEvent: (input) => this.#appendEvent(input),
-      enqueueRun: (sessionId, runId) => this.#enqueueRun(sessionId, runId)
+      appendEvent: (input) => this.#runtimeLifecycle.appendEvent(input),
+      enqueueRun: (sessionId, runId) => this.#runtimeLifecycle.enqueueRun(sessionId, runId)
     });
     if (this.#executionServicesMode === "eager") {
       this.#executionServices = this.#createExecutionServices();
@@ -356,9 +359,9 @@ export class RuntimeService {
       markRunTimedOut: (run, runTimeoutMs) => this.#runState.markRunTimedOut(run, runTimeoutMs),
       markRunCancelled: (sessionId, run) => this.#runState.markRunCancelled(sessionId, run),
       resolveModelForRun: (workspace, modelRef) => this.#modelInputs.resolveModelForRun(workspace, modelRef),
-      appendEvent: (input) => this.#appendEvent(input),
+      appendEvent: (input) => this.#runtimeLifecycle.appendEvent(input),
       getRun: (runId) => this.getRun(runId),
-      enqueueRun: (sessionId, runId, options) => this.#enqueueRun(sessionId, runId, options)
+      enqueueRun: (sessionId, runId, options) => this.#runtimeLifecycle.enqueueRun(sessionId, runId, options)
     });
   }
 
@@ -643,69 +646,6 @@ export class RuntimeService {
     limit?: number | undefined;
   }): Promise<{ recoveredRunIds: string[]; requeuedRunIds: string[] }> {
     return this.#runRecovery.recoverStaleRuns(options);
-  }
-
-  async #appendEvent(input: Omit<SessionEvent, "id" | "cursor" | "createdAt">): Promise<SessionEvent> {
-    const event = await this.#sessionEventStore.append(input);
-    await this.#touchWorkspaceActivityForEvent(input);
-    if (doesSessionEventAffectRuntimeMessages(event)) {
-      await this.#runtimeMessageSync.scheduleRuntimeMessageSync(input.sessionId);
-    }
-    return event;
-  }
-
-  async #touchWorkspaceActivity(workspaceId: string): Promise<void> {
-    await this.#workspaceActivityTracker?.touchWorkspace(workspaceId);
-  }
-
-  async #touchWorkspaceActivityForEvent(input: Omit<SessionEvent, "id" | "cursor" | "createdAt">): Promise<void> {
-    if (
-      input.event !== "run.queued" &&
-      input.event !== "run.started" &&
-      input.event !== "run.completed" &&
-      input.event !== "run.failed" &&
-      input.event !== "run.cancelled"
-    ) {
-      return;
-    }
-
-    if (input.runId) {
-      const run = await this.#runRepository.getById(input.runId);
-      if (run) {
-        await this.#touchWorkspaceActivity(run.workspaceId);
-        return;
-      }
-    }
-
-    const session = await this.#sessionRepository.getById(input.sessionId);
-    if (session) {
-      await this.#touchWorkspaceActivity(session.workspaceId);
-    }
-  }
-
-  async #enqueueRun(
-    sessionId: string,
-    runId: string,
-    options?: { priority?: RunQueuePriority | undefined }
-  ): Promise<void> {
-    if (this.#runQueue) {
-      await this.#runQueue.enqueue(sessionId, runId, options);
-      return;
-    }
-
-    const previous = this.#sessionChains.get(sessionId) ?? Promise.resolve();
-    const next = previous
-      .catch(() => undefined)
-      .then(async () => {
-        await this.#runProcessor.processRun(runId);
-      })
-      .finally(() => {
-        if (this.#sessionChains.get(sessionId) === next) {
-          this.#sessionChains.delete(sessionId);
-        }
-      });
-
-    this.#sessionChains.set(sessionId, next);
   }
 
   #buildRuntimeTools(

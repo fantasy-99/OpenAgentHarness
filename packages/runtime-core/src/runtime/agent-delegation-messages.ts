@@ -1,7 +1,7 @@
 import type { Message, Run } from "@oah/api-contracts";
 
 import { toolErrorResultContent, toolResultContent } from "../runtime-message-content.js";
-import { formatToolOutput } from "../tool-output.js";
+import { formatToolOutput } from "../capabilities/tool-output.js";
 
 export interface AwaitedRunSummaryView {
   run: Run;

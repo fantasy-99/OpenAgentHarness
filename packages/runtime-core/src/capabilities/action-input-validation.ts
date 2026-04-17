@@ -1,7 +1,7 @@
 import type { ErrorObject, ValidateFunction } from "ajv";
 
-import { AppError } from "./errors.js";
-import type { ActionDefinition } from "./types.js";
+import { AppError } from "../errors.js";
+import type { ActionDefinition } from "../types.js";
 
 const { Ajv2020 } = await import("ajv/dist/2020.js");
 const addFormats = (await import("ajv-formats")).default as unknown as typeof import("ajv-formats").default;

@@ -2,13 +2,13 @@ import { spawn } from "node:child_process";
 import { mkdir, open, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { BACKGROUND_STATE_DIRECTORY } from "./native-tools/constants.js";
-import { normalizePathForMatch } from "./native-tools/paths.js";
+import { BACKGROUND_STATE_DIRECTORY } from "../native-tools/constants.js";
+import { normalizePathForMatch } from "../native-tools/paths.js";
 import type {
   WorkspaceBackgroundCommandExecutionResult,
   WorkspaceCommandExecutor,
   WorkspaceForegroundCommandExecutionResult
-} from "./types.js";
+} from "../types.js";
 
 export class WorkspaceCommandTimeoutError extends Error {
   constructor(message: string) {

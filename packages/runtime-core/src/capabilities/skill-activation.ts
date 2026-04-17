@@ -4,7 +4,7 @@ import path from "node:path";
 import { z } from "zod";
 
 import { formatToolOutput } from "./tool-output.js";
-import type { RuntimeToolSet, SkillDefinition } from "./types.js";
+import type { RuntimeToolSet, SkillDefinition } from "../types.js";
 
 const MAX_SKILL_RESOURCE_ENTRIES = 50;
 const BINARY_EXTENSIONS = new Set([

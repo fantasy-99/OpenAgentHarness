@@ -16,7 +16,7 @@ import type {
 } from "../types.js";
 import {
   WorkspaceCommandTimeoutError
-} from "../workspace-command-executor.js";
+} from "../workspace/workspace-command-executor.js";
 
 export interface HookEnvelope {
   workspace_id: string;

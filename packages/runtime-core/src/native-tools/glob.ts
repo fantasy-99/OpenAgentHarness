@@ -3,7 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 
 import { AppError } from "../errors.js";
-import { formatToolOutput } from "../tool-output.js";
+import { formatToolOutput } from "../capabilities/tool-output.js";
 import type { RuntimeToolSet } from "../types.js";
 import { DEFAULT_GLOB_LIMIT } from "./constants.js";
 import { collectWorkspaceFiles } from "./fs-utils.js";

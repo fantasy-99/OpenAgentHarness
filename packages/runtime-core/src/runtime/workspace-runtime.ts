@@ -4,7 +4,7 @@ import type { Workspace, WorkspaceCatalog } from "@oah/api-contracts";
 
 import { AppError } from "../errors.js";
 import { NATIVE_TOOL_NAMES } from "../native-tools.js";
-import { runtimeToolNamesForCatalog as listRuntimeToolNamesForCatalog } from "../runtime-tooling.js";
+import { runtimeToolNamesForCatalog as listRuntimeToolNamesForCatalog } from "../capabilities/runtime-capabilities.js";
 import type {
   CreateWorkspaceParams,
   RuntimeServiceOptions,
@@ -26,7 +26,7 @@ import {
   type WorkspaceFileContentResult,
   type WorkspaceFileDownloadResult,
   type WorkspaceFileService
-} from "../workspace-files.js";
+} from "../workspace/workspace-files.js";
 import { normalizeWorkspaceRecord, toPublicWorkspace } from "../types.js";
 
 export interface WorkspaceRuntimeServiceDependencies {

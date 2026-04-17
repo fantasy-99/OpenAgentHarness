@@ -6,7 +6,7 @@ import type { RuntimeToolSet, WorkspaceRecord } from "../types.js";
 import { MAX_BASH_TIMEOUT_MS } from "./constants.js";
 import { normalizePathForMatch } from "./paths.js";
 import { getNativeToolRetryPolicy, type NativeToolFactoryContext } from "./types.js";
-import { WorkspaceCommandCancelledError, WorkspaceCommandTimeoutError } from "../workspace-command-executor.js";
+import { WorkspaceCommandCancelledError, WorkspaceCommandTimeoutError } from "../workspace/workspace-command-executor.js";
 import { AppError } from "../errors.js";
 
 const BASH_DESCRIPTION = `Run a shell command

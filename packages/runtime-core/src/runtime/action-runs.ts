@@ -2,14 +2,14 @@ import path from "node:path";
 
 import type { Message, Run, RunStep, Session } from "@oah/api-contracts";
 
-import { validateActionInput } from "../action-input-validation.js";
+import { validateActionInput } from "../capabilities/action-input-validation.js";
 import { AppError } from "../errors.js";
 import type { ActionDefinition, SessionEvent, SessionRepository, WorkspaceCommandExecutor, WorkspaceRecord } from "../types.js";
 import type { ToolMessageService } from "./tool-messages.js";
 import {
   WorkspaceCommandCancelledError,
   WorkspaceCommandTimeoutError
-} from "../workspace-command-executor.js";
+} from "../workspace/workspace-command-executor.js";
 
 export interface ActionExecutionResult {
   stdout: string;
