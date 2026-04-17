@@ -9,6 +9,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSessionAgentStore } from "../stores/session-agent-store";
 import { useStreamStore } from "../stores/stream-store";
 import { useUiStore } from "../stores/ui-store";
+import type { MainViewMode } from "../support";
 import type { useAppController } from "../use-app-controller";
 
 type RuntimeProps = ReturnType<typeof useAppController>["runtimeDetailSurfaceProps"];
@@ -97,7 +98,7 @@ function RuntimeWorkspaceImpl(props: RuntimeProps) {
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <div className="app-toolbar-strip flex flex-wrap items-center justify-between gap-3 px-4 py-3 md:px-5">
-        <Tabs value={mainViewMode} onValueChange={(value) => setMainViewMode(value as RuntimeProps["mainViewMode"])}>
+        <Tabs value={mainViewMode} onValueChange={(value) => setMainViewMode(value as MainViewMode)}>
           <TabsList className="h-9 rounded-2xl p-1">
             <TabsTrigger value="conversation" className="h-7 rounded-xl px-3 text-xs">
               <MessageSquareText className="h-4 w-4" />

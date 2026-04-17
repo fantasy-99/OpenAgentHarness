@@ -10,7 +10,7 @@ import {
 } from "../inspector-panels";
 import { useStreamStore } from "../stores/stream-store";
 import { useUiStore } from "../stores/ui-store";
-import { statusTone } from "../support";
+import { statusTone, type InspectorTab } from "../support";
 import type { useAppController } from "../use-app-controller";
 
 type RuntimeProps = ReturnType<typeof useAppController>["runtimeDetailSurfaceProps"];
@@ -31,7 +31,7 @@ function InspectorWorkspaceImpl(props: RuntimeProps) {
   const setSelectedRunId = useStreamStore((state) => state.setSelectedRunId);
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <Tabs value={inspectorTab} onValueChange={(value) => setInspectorTab(value as RuntimeProps["inspectorTab"])} className="flex min-h-0 flex-1 flex-col">
+      <Tabs value={inspectorTab} onValueChange={(value) => setInspectorTab(value as InspectorTab)} className="flex min-h-0 flex-1 flex-col">
         <div className="app-toolbar-strip px-5 py-4">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <TabsList variant="line" className="gap-1 p-0">

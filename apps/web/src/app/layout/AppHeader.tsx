@@ -5,7 +5,7 @@ import { Layers3, Network, Orbit, Palette, SquareTerminal } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-import { probeTone, streamTone, toneBadgeClass, type StatusSemanticTone } from "../support";
+import { probeTone, streamTone, toneBadgeClass, type StatusSemanticTone, type SurfaceMode } from "../support";
 import { useHealthStore } from "../stores/health-store";
 import { useSettingsStore } from "../stores/settings-store";
 import { useStreamStore } from "../stores/stream-store";
@@ -111,7 +111,7 @@ function AppHeaderImpl(props: AppHeaderProps) {
             </SelectContent>
           </Select>
         </div>
-        <Tabs value={surfaceMode} onValueChange={(value) => setSurfaceMode(value as HeaderProps["surfaceMode"])}>
+        <Tabs value={surfaceMode} onValueChange={(value) => setSurfaceMode(value as SurfaceMode)}>
           <TabsList className="topbar-chip h-9 rounded-2xl p-1">
             <TabsTrigger value="runtime" className="topbar-tabs-trigger h-7 rounded-xl px-3 text-xs">
               Runtime
