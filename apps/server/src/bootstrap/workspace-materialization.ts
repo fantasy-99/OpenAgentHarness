@@ -7,7 +7,7 @@ import type { WorkspaceLeaseRegistry, WorkspacePlacementRegistry } from "@oah/st
 
 import {
   computeLocalDirectoryFingerprint,
-  syncLocalDirectoryToRemote,
+  syncWorkspaceRootToObjectStore,
   syncRemotePrefixToLocal,
   type DirectoryObjectStore
 } from "../object-storage.js";
@@ -543,7 +543,13 @@ export class WorkspaceMaterializationManager {
       this.#logger(
         `[workspace-materialization] flushing workspace ${entry.workspaceId} (${entry.version}) from ${entry.localPath} back to ${entry.source.remotePrefix}`
       );
-      await syncLocalDirectoryToRemote(this.#store, entry.source.remotePrefix, entry.localPath, this.#logger, entry.workspaceId);
+      await syncWorkspaceRootToObjectStore(
+        this.#store,
+        entry.source.remotePrefix,
+        entry.localPath,
+        this.#logger,
+        entry.workspaceId
+      );
       entry.dirty = false;
       this.#touchEntry(entry);
       this.#failures.delete(entry.cacheKey);

@@ -157,6 +157,43 @@ describe("workspace materialization", () => {
     expect(manager.snapshot()).toEqual([]);
   });
 
+  it("flushes workspace configs without persisting runtime-only state", async () => {
+    const cacheRoot = await mkdtemp(path.join(os.tmpdir(), "oah-materialization-cache-"));
+    tempDirs.push(cacheRoot);
+    const store = new FakeDirectoryObjectStore();
+    await store.putObject("workspace/demo/.openharness/settings.yaml", Buffer.from("default_agent: builder\n"));
+    await store.putObject("workspace/demo/README.md", Buffer.from("# old\n"));
+
+    const manager = new WorkspaceMaterializationManager({
+      cacheRoot,
+      workerId: "worker_1",
+      store
+    });
+
+    const lease = await manager.acquireWorkspace({
+      workspace: {
+        id: "ws_1",
+        rootPath: "/unused",
+        externalRef: "s3://test-bucket/workspace/demo"
+      } as never
+    });
+
+    await mkdir(path.join(lease.localPath, ".openharness", "state", "background-tasks", "ses_1"), { recursive: true });
+    await writeFile(path.join(lease.localPath, ".openharness", "settings.yaml"), "default_agent: assistant\n", "utf8");
+    await writeFile(path.join(lease.localPath, ".openharness", "state", "background-tasks", "ses_1", "stdout.log"), "hi\n", "utf8");
+    lease.markDirty();
+    await lease.release();
+
+    await manager.flushIdleCopies({ idleBefore: new Date(Date.now() + 1_000).toISOString() });
+
+    expect(store.objects.get("workspace/demo/.openharness/settings.yaml")?.body.toString("utf8")).toBe(
+      "default_agent: assistant\n"
+    );
+    expect(
+      [...store.objects.keys()].some((key) => key.startsWith("workspace/demo/.openharness/state/"))
+    ).toBe(false);
+  });
+
   it("falls back to a passthrough local directory for workspaces without object storage refs", async () => {
     const cacheRoot = await mkdtemp(path.join(os.tmpdir(), "oah-materialization-cache-"));
     const localWorkspace = await mkdtemp(path.join(os.tmpdir(), "oah-materialization-local-"));

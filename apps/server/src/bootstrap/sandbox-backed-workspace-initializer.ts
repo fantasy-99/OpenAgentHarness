@@ -42,6 +42,36 @@ async function uploadDirectoryTree(input: {
   }
 }
 
+async function uploadWorkspaceSeed(input: {
+  workspaceId: string;
+  request: CreateWorkspaceRequest;
+  initialized: WorkspaceInitializationResult;
+  stagingWorkspaceRoot: string;
+  sandboxHost: SandboxHost;
+}): Promise<void> {
+  const lease = await input.sandboxHost.workspaceFileAccessProvider.acquire({
+    workspace: createSandboxSeedWorkspace({
+      workspaceId: input.workspaceId,
+      request: input.request,
+      initialized: input.initialized
+    }),
+    access: "write"
+  });
+
+  try {
+    await input.sandboxHost.workspaceFileSystem.stat(lease.workspace.rootPath).catch(async () => {
+      await input.sandboxHost.workspaceFileSystem.mkdir(lease.workspace.rootPath, { recursive: true });
+    });
+    await uploadDirectoryTree({
+      currentLocalPath: input.stagingWorkspaceRoot,
+      currentRemotePath: lease.workspace.rootPath,
+      sandboxHost: input.sandboxHost
+    });
+  } finally {
+    await lease.release({ dirty: true });
+  }
+}
+
 function createSandboxSeedWorkspace(input: {
   workspaceId: string;
   request: CreateWorkspaceRequest;
@@ -185,6 +215,14 @@ export function createSandboxBackedWorkspaceInitializer(options: {
             executionPolicy: input.executionPolicy ?? "local"
           });
 
+          await uploadWorkspaceSeed({
+            workspaceId,
+            request: input,
+            initialized: discovered,
+            stagingWorkspaceRoot,
+            sandboxHost: options.sandboxHost
+          });
+
           return {
             ...discovered,
             id: workspaceId,
@@ -192,25 +230,13 @@ export function createSandboxBackedWorkspaceInitializer(options: {
           };
         }
 
-        const lease = await options.sandboxHost.workspaceFileAccessProvider.acquire({
-          workspace: createSandboxSeedWorkspace({
-            workspaceId,
-            request: input,
-            initialized: discovered
-          }),
-          access: "write"
+        await uploadWorkspaceSeed({
+          workspaceId,
+          request: input,
+          initialized: discovered,
+          stagingWorkspaceRoot,
+          sandboxHost: options.sandboxHost
         });
-
-        try {
-          await options.sandboxHost.workspaceFileSystem.mkdir(lease.workspace.rootPath, { recursive: true });
-          await uploadDirectoryTree({
-            currentLocalPath: stagingWorkspaceRoot,
-            currentRemotePath: lease.workspace.rootPath,
-            sandboxHost: options.sandboxHost
-          });
-        } finally {
-          await lease.release({ dirty: true });
-        }
 
         return {
           ...discovered,

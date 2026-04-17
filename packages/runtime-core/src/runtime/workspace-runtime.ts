@@ -108,6 +108,7 @@ export class WorkspaceRuntimeService {
       externalRef: input.externalRef,
       ...(input.ownerId ? { ownerId: input.ownerId } : {}),
       ...(input.serviceName ? { serviceName: input.serviceName } : {}),
+      ...(input.blueprint ? { blueprint: input.blueprint } : initialized.settings.blueprint ? { blueprint: initialized.settings.blueprint } : {}),
       name: input.name,
       rootPath: initialized.rootPath,
       executionPolicy: input.executionPolicy ?? "local",

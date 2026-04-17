@@ -5,7 +5,12 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { DirectoryObjectStore } from "../apps/server/src/object-storage.ts";
-import { ObjectStorageMirrorController, syncLocalDirectoryToRemote, syncRemotePrefixToLocal } from "../apps/server/src/object-storage.ts";
+import {
+  ObjectStorageMirrorController,
+  syncLocalDirectoryToRemote,
+  syncRemotePrefixToLocal,
+  syncWorkspaceRootToObjectStore
+} from "../apps/server/src/object-storage.ts";
 
 class FakeDirectoryObjectStore implements DirectoryObjectStore {
   readonly bucket = "test-bucket";
@@ -96,6 +101,25 @@ describe("object storage sync", () => {
     expect(store.objects.get("workspace/demo/.openharness/settings.yaml")?.body.toString("utf8")).toBe(
       "default_agent: assistant\n"
     );
+  });
+
+  it("pushes workspace roots to object storage while excluding runtime-only state", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-workspace-root-"));
+    tempDirs.push(directory);
+    const store = new FakeDirectoryObjectStore();
+    await mkdir(path.join(directory, ".openharness", "state", "todos"), { recursive: true });
+    await mkdir(path.join(directory, ".openharness", "__materialized__", "ws_1"), { recursive: true });
+    await writeFile(path.join(directory, ".openharness", "settings.yaml"), "default_agent: assistant\n", "utf8");
+    await writeFile(path.join(directory, ".openharness", "state", "todos", "session.json"), "{}", "utf8");
+    await writeFile(path.join(directory, ".openharness", "__materialized__", "ws_1", "ghost.txt"), "ghost\n", "utf8");
+    await writeFile(path.join(directory, "README.md"), "# workspace\n", "utf8");
+
+    await syncWorkspaceRootToObjectStore(store, "workspace/demo", directory);
+
+    expect([...store.objects.keys()].sort()).toEqual([
+      "workspace/demo/.openharness/settings.yaml",
+      "workspace/demo/README.md"
+    ]);
   });
 
   it("only computes managed workspace external refs for configured managed paths", () => {

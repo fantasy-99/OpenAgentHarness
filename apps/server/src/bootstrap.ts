@@ -54,7 +54,7 @@ import {
   summarizeWorkerRuntimeStatus,
   type WorkerRuntimeStatus
 } from "./bootstrap/worker-runtime.js";
-import { createDirectoryObjectStore, ObjectStorageMirrorController } from "./object-storage.js";
+import { createDirectoryObjectStore, ObjectStorageMirrorController, seedWorkspaceRootToExternalRef } from "./object-storage.js";
 import { appendRuntimeLogEvent, buildRuntimeConsoleLogger } from "./runtime-console.js";
 import { createSandboxBackedWorkspaceInitializer } from "./bootstrap/sandbox-backed-workspace-initializer.js";
 import {
@@ -1015,10 +1015,26 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
           workspaceFileAccessProvider: sandboxHost.workspaceFileAccessProvider
         }
       : {}),
-    ...(singleWorkspace === undefined && !remoteSandboxProvider
+    ...(singleWorkspace === undefined
       ? {
           workspaceDeletionHandler: {
             async deleteWorkspace(workspace) {
+              if (remoteSandboxProvider && sandboxHost) {
+                const lease = await sandboxHost.workspaceFileAccessProvider.acquire({
+                  workspace,
+                  access: "write"
+                });
+
+                try {
+                  await sandboxHost.workspaceFileSystem.rm(lease.workspace.rootPath, {
+                    recursive: true,
+                    force: true
+                  });
+                } finally {
+                  await lease.release();
+                }
+              }
+
               const deletedCopies = await workspaceMaterializationManager?.deleteWorkspaceCopies(workspace.id);
               const cleanup = await cleanupWorkspaceLocalArtifacts({
                 workspace,
@@ -1080,6 +1096,18 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
                       skills: input.skills
                     } as Parameters<typeof initializeWorkspaceFromBlueprint>[0]
                   );
+
+                  const inferredExternalRef = resolveManagedWorkspaceExternalRef(workspaceRoot, "project", config);
+                  if (config.object_storage && inferredExternalRef) {
+                    await seedWorkspaceRootToExternalRef(
+                      config.object_storage,
+                      inferredExternalRef,
+                      workspaceRoot,
+                      (message) => {
+                        console.info(`[oah-object-storage] ${message}`);
+                      }
+                    );
+                  }
 
                   const discovered = await discoverWorkspace(workspaceRoot, "project", {
                     platformModels: models,

@@ -185,6 +185,16 @@ function shouldExcludeWorkspaceMirrorRelativePath(relativePath: string): boolean
   return relativePath === ".openharness" || relativePath.startsWith(".openharness/");
 }
 
+export function shouldExcludeWorkspaceBackingStoreRelativePath(relativePath: string): boolean {
+  const normalized = normalizeRelativePath(relativePath);
+  return (
+    normalized === ".openharness/state" ||
+    normalized.startsWith(".openharness/state/") ||
+    normalized === ".openharness/__materialized__" ||
+    normalized.startsWith(".openharness/__materialized__/")
+  );
+}
+
 async function pruneEmptyDirectories(rootDir: string): Promise<void> {
   const rootExists = await stat(rootDir).catch(() => null);
   if (!rootExists?.isDirectory()) {
@@ -489,6 +499,44 @@ export class ObjectStorageMirrorController {
           }
         : undefined
     );
+  }
+}
+
+export async function syncWorkspaceRootToObjectStore(
+  store: DirectoryObjectStore,
+  remotePrefix: string,
+  localDir: string,
+  logger?: (message: string) => void,
+  label?: string
+): Promise<void> {
+  await syncLocalDirectoryToRemote(store, remotePrefix, localDir, logger, label, {
+    excludeRelativePath: shouldExcludeWorkspaceBackingStoreRelativePath
+  });
+}
+
+export async function seedWorkspaceRootToExternalRef(
+  config: ObjectStorageConfig,
+  externalRef: string,
+  localDir: string,
+  logger?: (message: string) => void
+): Promise<void> {
+  const parsed = new URL(externalRef);
+  if (parsed.protocol !== "s3:") {
+    return;
+  }
+
+  if (parsed.hostname && parsed.hostname !== config.bucket) {
+    throw new Error(
+      `Workspace externalRef bucket ${parsed.hostname} does not match configured object storage bucket ${config.bucket}.`
+    );
+  }
+
+  const remotePrefix = normalizePrefix(parsed.pathname);
+  const store = new S3DirectoryStore(config);
+  try {
+    await syncWorkspaceRootToObjectStore(store, remotePrefix, localDir, logger, path.basename(localDir) || remotePrefix);
+  } finally {
+    await store.close();
   }
 }
 
