@@ -1,0 +1,26 @@
+server:
+  host: 127.0.0.1
+  port: 8797
+
+storage: {}
+
+paths:
+  workspace_dir: ./apps/web/tests/e2e/.runtime/workspaces
+  blueprint_dir: ./apps/web/tests/e2e/.runtime/blueprints
+  model_dir: ./apps/web/tests/e2e/fixtures/models
+  tool_dir: ./apps/web/tests/e2e/.runtime/tools
+  skill_dir: ./apps/web/tests/e2e/.runtime/skills
+
+workers:
+  embedded:
+    min_count: 1
+    max_count: 2
+    scale_interval_ms: 1000
+    idle_ttl_ms: 30000
+    scale_up_window: 2
+    scale_down_window: 2
+    cooldown_ms: 1000
+    reserved_capacity_for_subagent: 0
+
+llm:
+  default_model: mock-local
