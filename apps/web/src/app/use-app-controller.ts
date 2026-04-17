@@ -1,4 +1,4 @@
-import { startTransition, useDeferredValue, useEffect, useEffectEvent, useRef, useState } from "react";
+import { startTransition, useDeferredValue, useEffect, useEffectEvent, useRef } from "react";
 
 import {
   type ActionRunAccepted,
@@ -60,6 +60,7 @@ import { useHealthStore } from "./stores/health-store";
 import { useModelsStore } from "./stores/models-store";
 import { useSessionAgentStore } from "./stores/session-agent-store";
 import { useSettingsStore } from "./stores/settings-store";
+import { useStreamStore } from "./stores/stream-store";
 import { useUiStore } from "./stores/ui-store";
 
 const COMPLETED_RUN_RESULT_POLL_LIMIT = 5;
@@ -75,19 +76,32 @@ export function useAppController() {
     setServiceScope,
     setModelDraft
   } = useSettingsStore();
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [events, setEvents] = useState<SessionEventContract[]>([]);
-  const [selectedRunId, setSelectedRunId] = useState("");
-  const [sessionRuns, setSessionRuns] = useState<Run[]>([]);
-  const [run, setRun] = useState<Run | null>(null);
-  const [runSteps, setRunSteps] = useState<RunStep[]>([]);
-  const [draftMessage, setDraftMessage] = useState("");
-  const [liveMessagesByKey, setLiveMessagesByKey] = useState<Record<string, LiveConversationMessageRecord>>({});
+  const {
+    messages,
+    events,
+    selectedRunId,
+    sessionRuns,
+    run,
+    runSteps,
+    draftMessage,
+    liveMessagesByKey,
+    streamState,
+    generateOutput,
+    generateBusy,
+    setMessages,
+    setEvents,
+    setSelectedRunId,
+    setSessionRuns,
+    setRun,
+    setRunSteps,
+    setDraftMessage,
+    setLiveMessagesByKey,
+    setStreamState,
+    setGenerateOutput,
+    setGenerateBusy
+  } = useStreamStore();
   const { healthStatus, healthReport, readinessReport, setHealthStatus, setHealthReport, setReadinessReport } = useHealthStore();
   const { modelProviders, platformModels, setModelProviders, setPlatformModels } = useModelsStore();
-  const [streamState, setStreamState] = useState<"idle" | "connecting" | "listening" | "open" | "error">("idle");
-  const [generateOutput, setGenerateOutput] = useState<ModelGenerateResponse | null>(null);
-  const [generateBusy, setGenerateBusy] = useState(false);
   const {
     surfaceMode,
     mainViewMode,
