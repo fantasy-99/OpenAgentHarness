@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "../packages/config/node_modules/yaml/dist/index.js";
@@ -111,6 +111,18 @@ function prepareDockerServerConfigs() {
   }
 
   const sourceConfigPath = path.join(testRoot, "server.docker.yaml");
+  if (!existsSync(sourceConfigPath)) {
+    const exampleConfigPath = path.join(repoRoot, "server.example.yaml");
+    if (!existsSync(exampleConfigPath)) {
+      console.error(`Missing ${sourceConfigPath} and no server.example.yaml at repo root to seed it from.`);
+      process.exit(1);
+    }
+
+    mkdirSync(testRoot, { recursive: true });
+    copyFileSync(exampleConfigPath, sourceConfigPath);
+    console.log(`Seeded ${sourceConfigPath} from server.example.yaml. Edit it to point at your Postgres/Redis/MinIO if the defaults do not fit.`);
+  }
+
   const generatedDir = path.join(testRoot, ".oah-local");
   const generatedApiConfigPath = path.join(generatedDir, "api.generated.yaml");
   const generatedControllerConfigPath = path.join(generatedDir, "controller.generated.yaml");
@@ -256,6 +268,13 @@ async function up() {
 
   run("docker", ["compose", "-f", composeFile, "up", "-d", "postgres", "redis", "minio"]);
   await waitForMinioHealthy();
+
+  const syncScript = path.join(process.env.OAH_TEST_ROOT || "", "scripts", "sync_to_minio.py");
+  if (!existsSync(syncScript)) {
+    console.error(`Missing ${syncScript}. OAH_TEST_ROOT must contain scripts/sync_to_minio.py (used to seed MinIO with blueprint/model/tool/skill/archive content before the OAH services start).`);
+    process.exit(1);
+  }
+
   run("pnpm", ["storage:sync"]);
   recreateReadonlyObjectStorageVolumes();
 
