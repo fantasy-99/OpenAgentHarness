@@ -36,27 +36,17 @@ import {
   sanitizeFileSegment,
   serviceScopeLabel,
   serviceScopeMatches,
-  storageKeys,
   toErrorSummary,
   toErrorMessage,
   upsertSessionMessage,
-  usePersistentState,
   type AppRequestErrorSummary,
-  type ConsoleFilter,
-  type ConnectionSettings,
   type HealthReportResponse,
-  type InspectorTab,
   type LiveConversationMessageRecord,
-  type MainViewMode,
-  type ModelDraft,
   type PlatformModelListResponse,
   type PlatformModelRecord,
   type ModelProviderListResponse,
-  type ModelProviderRecord,
   type ReadinessReportResponse,
   type RuntimeConsoleEntry,
-  type ServiceScope,
-  type SurfaceMode,
   type PlatformModelSnapshotResponse,
   type SseFrame
 } from "./support";
@@ -69,24 +59,22 @@ import { useWorkspaceFileManager } from "./use-workspace-file-manager";
 import { useHealthStore } from "./stores/health-store";
 import { useModelsStore } from "./stores/models-store";
 import { useSessionAgentStore } from "./stores/session-agent-store";
+import { useSettingsStore } from "./stores/settings-store";
 import { useUiStore } from "./stores/ui-store";
 
 const COMPLETED_RUN_RESULT_POLL_LIMIT = 5;
 
 export function useAppController() {
-  const [connection, setConnection] = usePersistentState<ConnectionSettings>(storageKeys.connection, {
-    baseUrl: "",
-    token: ""
-  });
-  const [workspaceBlueprintFilter, setWorkspaceBlueprintFilter] = usePersistentState<string>(
-    storageKeys.workspaceBlueprintFilter,
-    ""
-  );
-  const [serviceScope, setServiceScope] = usePersistentState<ServiceScope>(storageKeys.serviceScope, SERVICE_SCOPE_ALL);
-  const [modelDraft, setModelDraft] = usePersistentState<ModelDraft>(storageKeys.modelDraft, {
-    model: "",
-    prompt: "你好，请简短回复一句话，确认模型链路已经接通。"
-  });
+  const {
+    connection,
+    workspaceBlueprintFilter,
+    serviceScope,
+    modelDraft,
+    setConnection,
+    setWorkspaceBlueprintFilter,
+    setServiceScope,
+    setModelDraft
+  } = useSettingsStore();
   const [messages, setMessages] = useState<Message[]>([]);
   const [events, setEvents] = useState<SessionEventContract[]>([]);
   const [selectedRunId, setSelectedRunId] = useState("");
