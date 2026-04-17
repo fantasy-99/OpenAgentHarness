@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { memo, type ReactNode } from "react";
 
 import { Network, RefreshCw, Sparkles } from "lucide-react";
 
@@ -9,6 +9,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 
 import { EmptyState, EntityPreview } from "../primitives";
+import { useHealthStore } from "../stores/health-store";
+import { useModelsStore } from "../stores/models-store";
+import { useSettingsStore } from "../stores/settings-store";
+import { useStreamStore } from "../stores/stream-store";
+import { useUiStore } from "../stores/ui-store";
 import { probeTone, streamTone, toneBadgeClass } from "../support";
 import type { useAppController } from "../use-app-controller";
 import { InspectorPanelHeader } from "../inspector-panels";
@@ -24,17 +29,31 @@ function Section(props: { title: string; description: string; action?: ReactNode
   );
 }
 
-export function ProviderWorkspace(props: ProviderProps) {
-  const readinessLabel = props.readinessReport?.status ?? "unknown";
-  const defaultModel = props.platformModels.find((model) => model.isDefault);
+function ProviderWorkspaceImpl(props: ProviderProps) {
+  const connection = useSettingsStore((state) => state.connection);
+  const setConnection = useSettingsStore((state) => state.setConnection);
+  const modelDraft = useSettingsStore((state) => state.modelDraft);
+  const setModelDraft = useSettingsStore((state) => state.setModelDraft);
+  const healthStatus = useHealthStore((state) => state.healthStatus);
+  const healthReport = useHealthStore((state) => state.healthReport);
+  const readinessReport = useHealthStore((state) => state.readinessReport);
+  const modelProviders = useModelsStore((state) => state.modelProviders);
+  const platformModels = useModelsStore((state) => state.platformModels);
+  const streamState = useStreamStore((state) => state.streamState);
+  const generateOutput = useStreamStore((state) => state.generateOutput);
+  const generateBusy = useStreamStore((state) => state.generateBusy);
+  const setStreamRevision = useUiStore((state) => state.setStreamRevision);
+
+  const readinessLabel = readinessReport?.status ?? "unknown";
+  const defaultModel = platformModels.find((model) => model.isDefault);
   const selectedModel =
-    props.platformModels.find((model) => model.id === props.modelDraft.model) ?? defaultModel ?? props.platformModels[0];
-  const providerIndex = new Map<string, (typeof props.modelProviders)[number]>(
-    props.modelProviders.map((provider) => [provider.id, provider])
+    platformModels.find((model) => model.id === modelDraft.model) ?? defaultModel ?? platformModels[0];
+  const providerIndex = new Map<string, (typeof modelProviders)[number]>(
+    modelProviders.map((provider) => [provider.id, provider])
   );
-  const providerSummaries = props.modelProviders.map((provider) => ({
+  const providerSummaries = modelProviders.map((provider) => ({
     ...provider,
-    modelCount: props.platformModels.filter((model) => model.provider === provider.id).length
+    modelCount: platformModels.filter((model) => model.provider === provider.id).length
   }));
 
   return (
@@ -52,7 +71,7 @@ export function ProviderWorkspace(props: ProviderProps) {
                       <Network className="h-4 w-4" />
                       Health
                     </Button>
-                    <Button variant="outline" size="sm" onClick={() => props.setStreamRevision((current) => current + 1)}>
+                    <Button variant="outline" size="sm" onClick={() => setStreamRevision((current) => current + 1)}>
                       <RefreshCw className="h-4 w-4" />
                       SSE
                     </Button>
@@ -60,28 +79,28 @@ export function ProviderWorkspace(props: ProviderProps) {
                 }
               >
                 <Input
-                  value={props.connection.baseUrl}
-                  onChange={(event) => props.setConnection((current) => ({ ...current, baseUrl: event.target.value }))}
+                  value={connection.baseUrl}
+                  onChange={(event) => setConnection((current) => ({ ...current, baseUrl: event.target.value }))}
                   placeholder="Base URL"
                 />
                 <Input
-                  value={props.connection.token}
-                  onChange={(event) => props.setConnection((current) => ({ ...current, token: event.target.value }))}
+                  value={connection.token}
+                  onChange={(event) => setConnection((current) => ({ ...current, token: event.target.value }))}
                   placeholder="Bearer token (optional)"
                 />
 
                 <div className="flex flex-wrap gap-2">
-                  <Badge variant="outline" className={toneBadgeClass(probeTone(props.healthStatus))}>{`health ${props.healthStatus}`}</Badge>
-                  <Badge variant="outline" className={toneBadgeClass(streamTone(props.streamState))}>{`stream ${props.streamState}`}</Badge>
+                  <Badge variant="outline" className={toneBadgeClass(probeTone(healthStatus))}>{`health ${healthStatus}`}</Badge>
+                  <Badge variant="outline" className={toneBadgeClass(streamTone(streamState))}>{`stream ${streamState}`}</Badge>
                   <Badge variant="outline" className={toneBadgeClass(probeTone(readinessLabel))}>{`ready ${readinessLabel}`}</Badge>
                 </div>
               </Section>
 
               <Section title="Diagnostics" description="保留原始 health / readiness 结果，便于快速核对服务与依赖状态。">
-                {props.healthReport || props.readinessReport ? (
+                {healthReport || readinessReport ? (
                   <div className="space-y-3">
-                    {props.healthReport ? <EntityPreview title="healthz" data={props.healthReport} /> : null}
-                    {props.readinessReport ? <EntityPreview title="readyz" data={props.readinessReport} /> : null}
+                    {healthReport ? <EntityPreview title="healthz" data={healthReport} /> : null}
+                    {readinessReport ? <EntityPreview title="readyz" data={readinessReport} /> : null}
                   </div>
                 ) : (
                   <EmptyState title="No diagnostics yet" description="Run Health once to load service and dependency diagnostics." />
@@ -146,14 +165,14 @@ export function ProviderWorkspace(props: ProviderProps) {
 
               <Section title="Model Playground" description="做单次模型验证，不依赖当前 Inspector 状态，也不打断正在看的 session 诊断。">
                 <Select
-                  value={selectedModel?.id ?? props.modelDraft.model}
-                  onValueChange={(value) => props.setModelDraft((current) => ({ ...current, model: value }))}
+                  value={selectedModel?.id ?? modelDraft.model}
+                  onValueChange={(value) => setModelDraft((current) => ({ ...current, model: value }))}
                 >
                   <SelectTrigger aria-label="Platform model">
                     <SelectValue placeholder="Choose a loaded model" />
                   </SelectTrigger>
                   <SelectContent>
-                    {props.platformModels.map((model) => (
+                    {platformModels.map((model) => (
                       <SelectItem key={model.id} value={model.id}>
                         {model.id} · {model.modelName}
                       </SelectItem>
@@ -161,17 +180,17 @@ export function ProviderWorkspace(props: ProviderProps) {
                   </SelectContent>
                 </Select>
                 <Textarea
-                  value={props.modelDraft.prompt}
-                  onChange={(event) => props.setModelDraft((current) => ({ ...current, prompt: event.target.value }))}
+                  value={modelDraft.prompt}
+                  onChange={(event) => setModelDraft((current) => ({ ...current, prompt: event.target.value }))}
                   className="min-h-32"
                   placeholder="Prompt"
                 />
-                <Button onClick={props.generateOnce} disabled={props.generateBusy}>
+                <Button onClick={props.generateOnce} disabled={generateBusy}>
                   <Sparkles className="h-4 w-4" />
                   Generate
                 </Button>
-                {props.generateOutput ? (
-                  <EntityPreview title={props.generateOutput.model} data={props.generateOutput} />
+                {generateOutput ? (
+                  <EntityPreview title={generateOutput.model} data={generateOutput} />
                 ) : (
                   <EmptyState title="No output" description="Generate output appears here after a single-shot request." />
                 )}
@@ -183,3 +202,5 @@ export function ProviderWorkspace(props: ProviderProps) {
     </section>
   );
 }
+
+export const ProviderWorkspace = memo(ProviderWorkspaceImpl);
