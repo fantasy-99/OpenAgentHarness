@@ -1,9 +1,9 @@
-import { Layers3, Loader2, Network, Orbit, Palette, SquareTerminal } from "lucide-react";
+import { Layers3, Network, Orbit, Palette, SquareTerminal } from "lucide-react";
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-import { probeTone, streamTone, toneBadgeClass, toneSolidClass, toneTextClass, type StatusSemanticTone } from "../support";
+import { probeTone, streamTone, toneBadgeClass, type StatusSemanticTone } from "../support";
 import { appThemeOptions, isAppThemeName } from "../theme";
 import type { AppThemeName } from "../theme";
 import type { useAppController } from "../use-app-controller";
@@ -17,9 +17,9 @@ type AppHeaderProps = HeaderProps & {
 function StatusPill(props: { label: string; value: string; tone: StatusSemanticTone; icon: typeof Network }) {
   const Icon = props.icon;
   return (
-    <div className={`inline-flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-[11px] ${toneBadgeClass(props.tone)}`}>
+    <div className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] ${toneBadgeClass(props.tone)}`}>
       <Icon className="h-3.5 w-3.5" />
-      <span className="uppercase tracking-[0.14em]">{props.label}</span>
+      <span className="uppercase tracking-[0.14em] opacity-72">{props.label}</span>
       <span className="font-medium normal-case tracking-normal">{props.value}</span>
     </div>
   );
@@ -40,16 +40,10 @@ export function AppHeader(props: AppHeaderProps) {
               Beta
             </span>
           </div>
-          <p className="truncate text-[11px] text-foreground/48">
-            {props.surfaceMode === "provider"
-              ? "Provider Workbench"
-              : props.hasActiveSession
-                ? `${props.currentWorkspaceName} / ${props.currentSessionName}`
-                : props.surfaceMode === "storage"
-                  ? "Storage Workbench"
-                  : "Runtime Workbench"}
-            {` · ${props.selectedServiceScopeLabel}`}
-          </p>
+          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+            <StatusPill icon={Network} label="Health" value={props.healthStatus} tone={probeTone(props.healthStatus)} />
+            <StatusPill icon={Orbit} label="Stream" value={props.streamState} tone={streamTone(props.streamState)} />
+          </div>
         </div>
       </div>
       <div className="flex min-w-0 flex-1 items-center justify-end gap-2.5">
@@ -115,31 +109,6 @@ export function AppHeader(props: AppHeaderProps) {
             </TabsTrigger>
           </TabsList>
         </Tabs>
-        {props.streamState !== "idle" && (
-          <div className="flex items-center gap-1.5 xl:hidden">
-            {props.streamState === "connecting" ? (
-              <Loader2 className={`h-3.5 w-3.5 animate-spin ${toneTextClass("amber")}`} />
-            ) : (
-              <span
-                className={`h-2 w-2 rounded-full ${
-                  props.streamState === "open" || props.streamState === "listening"
-                    ? `${toneSolidClass(streamTone(props.streamState))} animate-pulse`
-                    : toneSolidClass(streamTone(props.streamState))
-                }`}
-              />
-            )}
-            <span className="hidden text-[11px] text-foreground/46 md:inline">{props.streamState}</span>
-          </div>
-        )}
-        <div className="hidden items-center gap-2 xl:flex">
-          <StatusPill icon={Network} label="Health" value={props.healthStatus} tone={probeTone(props.healthStatus)} />
-          <StatusPill
-            icon={Orbit}
-            label="Stream"
-            value={props.streamState}
-            tone={streamTone(props.streamState)}
-          />
-        </div>
         <button
           type="button"
           onClick={props.toggleConsole}

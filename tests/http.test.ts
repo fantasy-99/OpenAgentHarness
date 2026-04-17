@@ -1968,6 +1968,81 @@ describe("http api", () => {
     });
   });
 
+  it("projects workspace root paths to the sandbox root for remote sandbox providers", async () => {
+    const gateway = new FakeModelGateway(20);
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.create({
+      id: "ws_remote_projection",
+      name: "remote-projection",
+      rootPath: "/data/workspaces/ws_remote_projection",
+      executionPolicy: "local",
+      status: "active",
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: true,
+      settings: {
+        defaultAgent: "default",
+        blueprint: "workspace",
+        skillDirs: []
+      },
+      defaultAgent: "default",
+      workspaceModels: {},
+      agents: {},
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "ws_remote_projection",
+        agents: [],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      },
+      createdAt: "2026-04-16T00:00:00.000Z",
+      updatedAt: "2026-04-16T00:00:00.000Z"
+    });
+
+    activeApp = await createStartedAppWithRuntimeService(runtimeService, gateway, {
+      sandboxHostProviderKind: "self_hosted"
+    });
+
+    const listResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces?pageSize=20`, {
+      headers: {
+        authorization: "Bearer token-1"
+      }
+    });
+    expect(listResponse.status).toBe(200);
+    await expect(listResponse.json()).resolves.toMatchObject({
+      items: [
+        expect.objectContaining({
+          id: "ws_remote_projection",
+          rootPath: "/workspace"
+        })
+      ]
+    });
+
+    const detailResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/ws_remote_projection`, {
+      headers: {
+        authorization: "Bearer token-1"
+      }
+    });
+    expect(detailResponse.status).toBe(200);
+    await expect(detailResponse.json()).resolves.toMatchObject({
+      id: "ws_remote_projection",
+      rootPath: "/workspace"
+    });
+  });
+
   it("proxies sandbox requests to the owner worker", async () => {
     const ownerGateway = new FakeModelGateway(20);
     const ownerPersistence = createMemoryRuntimePersistence();

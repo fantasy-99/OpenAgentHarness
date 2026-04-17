@@ -3,6 +3,7 @@ import { Readable } from "node:stream";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import {
+  SANDBOX_ROOT_PATH,
   createActionRunRequestSchema,
   createSessionRequestSchema,
   createWorkspaceDirectoryRequestSchema,
@@ -28,6 +29,33 @@ import { assertWorkspaceAccess, createParamsSchema, sendError, toCallerContext }
 import type { AppDependencies, AppRouteOptions } from "../types.js";
 
 type WorkspaceOwnership = Awaited<ReturnType<NonNullable<AppDependencies["resolveWorkspaceOwnership"]>>>;
+
+function projectWorkspaceForPublicApi(
+  dependencies: Pick<AppDependencies, "sandboxHostProviderKind">,
+  workspace: import("@oah/api-contracts").Workspace
+): import("@oah/api-contracts").Workspace {
+  if (
+    dependencies.sandboxHostProviderKind !== "self_hosted" &&
+    dependencies.sandboxHostProviderKind !== "e2b"
+  ) {
+    return workspace;
+  }
+
+  return {
+    ...workspace,
+    rootPath: SANDBOX_ROOT_PATH
+  };
+}
+
+function projectWorkspacePageForPublicApi(
+  dependencies: Pick<AppDependencies, "sandboxHostProviderKind">,
+  page: import("@oah/api-contracts").WorkspacePage
+): import("@oah/api-contracts").WorkspacePage {
+  return {
+    ...page,
+    items: page.items.map((workspace) => projectWorkspaceForPublicApi(dependencies, workspace))
+  };
+}
 
 function resolveWorkspaceOwnerId(input: { ownerId?: string | undefined; userId?: string | undefined }): string | undefined {
   const ownerId = input.ownerId?.trim();
@@ -389,7 +417,7 @@ export function registerWorkspaceRoutes(
         overwrite: true
       });
     }
-    return reply.status(201).send(workspace);
+    return reply.status(201).send(projectWorkspaceForPublicApi(dependencies, workspace));
   });
 
   app.post("/api/v1/workspaces/import", async (request, reply) => {
@@ -428,20 +456,20 @@ export function registerWorkspaceRoutes(
         overwrite: true
       });
     }
-    return reply.status(201).send(workspace);
+    return reply.status(201).send(projectWorkspaceForPublicApi(dependencies, workspace));
   });
 
   app.get("/api/v1/workspaces", async (request, reply) => {
     const query = pageQuerySchema.parse(request.query);
     const page = await dependencies.runtimeService.listWorkspaces(query.pageSize, query.cursor);
-    return reply.send(workspacePageSchema.parse(page));
+    return reply.send(workspacePageSchema.parse(projectWorkspacePageForPublicApi(dependencies, page)));
   });
 
   app.get("/api/v1/workspaces/:workspaceId", async (request, reply) => {
     const params = createParamsSchema("workspaceId").parse(request.params);
     assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
     const workspace = await dependencies.runtimeService.getWorkspace(params.workspaceId);
-    return reply.send(workspace);
+    return reply.send(projectWorkspaceForPublicApi(dependencies, workspace));
   });
 
   app.delete("/api/v1/workspaces/:workspaceId", async (request, reply) => {
