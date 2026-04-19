@@ -145,7 +145,7 @@ export interface ServerConfig {
         | undefined;
       scale_target?:
         | {
-            type?: "noop" | "kubernetes" | undefined;
+            type?: "noop" | "kubernetes" | "docker_compose" | undefined;
             allow_scale_down?: boolean | undefined;
             kubernetes?:
               | {
@@ -156,6 +156,14 @@ export interface ServerConfig {
                   token_file?: string | undefined;
                   ca_file?: string | undefined;
                   skip_tls_verify?: boolean | undefined;
+                }
+              | undefined;
+            docker_compose?:
+              | {
+                  compose_file?: string | undefined;
+                  project_name?: string | undefined;
+                  service?: string | undefined;
+                  command?: string | undefined;
                 }
               | undefined;
           }

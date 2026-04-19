@@ -143,7 +143,7 @@ export class RunProcessorService {
         executionWorkspace = executionLease.workspace;
       }
 
-      if (run.triggerType === "api_action") {
+      if (run.triggerType === "api_action" || run.triggerType === "manual_action") {
         await this.#processActionRun(executionWorkspace, run, session, abortController.signal);
         return;
       }

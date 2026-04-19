@@ -665,6 +665,51 @@ describe("storage redis", () => {
     await expect(registry.listAll()).resolves.toEqual([entry]);
   });
 
+  it("does not drop a concurrently assigned placement user during stale placement upserts", async () => {
+    const redis = createInMemoryRedisCommands();
+    let registry: RedisWorkspacePlacementRegistry;
+    let injectConcurrentAssign = true;
+    const commands = {
+      ...redis.commands,
+      multi() {
+        const transaction = redis.commands.multi();
+        const originalExec = transaction.exec.bind(transaction);
+        transaction.exec = async () => {
+          if (injectConcurrentAssign) {
+            injectConcurrentAssign = false;
+            await registry.assignUser("ws_race", "user_race", {
+              updatedAt: "2026-04-01T00:00:01.000Z"
+            });
+          }
+          return originalExec();
+        };
+        return transaction;
+      }
+    };
+
+    registry = new RedisWorkspacePlacementRegistry({
+      url: "redis://unused",
+      keyPrefix: "test",
+      commands: commands as never
+    });
+
+    await registry.upsert({
+      workspaceId: "ws_race",
+      version: "live",
+      ownerWorkerId: "worker_1",
+      ownerBaseUrl: "http://worker-1.internal:8787",
+      state: "idle",
+      updatedAt: "2026-04-01T00:00:02.000Z"
+    });
+
+    await expect(registry.getByWorkspaceId("ws_race")).resolves.toMatchObject({
+      workspaceId: "ws_race",
+      userId: "user_race",
+      ownerWorkerId: "worker_1",
+      state: "idle"
+    });
+  });
+
   it("can release workspace ownership while preserving placement affinity metadata", async () => {
     const redis = createInMemoryRedisCommands();
     const registry = new RedisWorkspacePlacementRegistry({

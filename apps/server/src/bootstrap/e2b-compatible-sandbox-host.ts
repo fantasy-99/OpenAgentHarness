@@ -94,6 +94,7 @@ export interface E2BCompatibleSandboxService {
 export interface HttpE2BCompatibleSandboxServiceOptions {
   baseUrl: string;
   headers?: Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>);
+  resolveCreateBaseUrl?: ((workspace: WorkspaceRecord) => Promise<string | undefined>) | undefined;
 }
 
 async function resolveHttpHeaders(
@@ -159,49 +160,69 @@ function normalizeHttpSandboxPath(rootPath: string, targetPath: string): string 
 export function createHttpE2BCompatibleSandboxService(
   options: HttpE2BCompatibleSandboxServiceOptions
 ): E2BCompatibleSandboxService {
-  const { baseUrl, routePrefix } = parseSandboxHttpBaseUrl(options.baseUrl);
-  const mapRequestPath = (requestPath: string) =>
-    routePrefix ? requestPath.replace(/^\/api\/v1(?=\/|$)/u, routePrefix) : requestPath;
+  const clientBySandboxId = new Map<string, ReturnType<typeof createSandboxHttpClient>>();
 
-  const transport: SandboxHttpTransport = {
-    async requestJson<T>(requestPath: string, init?: RequestInit) {
-      const headers = new Headers(await resolveHttpHeaders(options.headers));
-      const inputHeaders = new Headers(init?.headers);
-      for (const [name, value] of inputHeaders.entries()) {
-        headers.set(name, value);
+  const createClient = (inputBaseUrl: string) => {
+    const { baseUrl, routePrefix } = parseSandboxHttpBaseUrl(inputBaseUrl);
+    const mapRequestPath = (requestPath: string) =>
+      routePrefix ? requestPath.replace(/^\/api\/v1(?=\/|$)/u, routePrefix) : requestPath;
+
+    const transport: SandboxHttpTransport = {
+      async requestJson<T>(requestPath: string, init?: RequestInit) {
+        const headers = new Headers(await resolveHttpHeaders(options.headers));
+        const inputHeaders = new Headers(init?.headers);
+        for (const [name, value] of inputHeaders.entries()) {
+          headers.set(name, value);
+        }
+
+        const response = await fetch(`${baseUrl}${mapRequestPath(requestPath)}`, {
+          ...init,
+          headers
+        });
+        return readJsonResponse<T>(response);
+      },
+      async requestBytes(requestPath: string, init?: RequestInit) {
+        const headers = new Headers(await resolveHttpHeaders(options.headers));
+        const inputHeaders = new Headers(init?.headers);
+        for (const [name, value] of inputHeaders.entries()) {
+          headers.set(name, value);
+        }
+
+        const response = await fetch(`${baseUrl}${mapRequestPath(requestPath)}`, {
+          ...init,
+          headers
+        });
+        if (!response.ok) {
+          throw new Error((await response.text()) || `Sandbox backend request failed with status ${response.status}.`);
+        }
+
+        return new Uint8Array(await response.arrayBuffer());
       }
+    };
 
-      const response = await fetch(`${baseUrl}${mapRequestPath(requestPath)}`, {
-        ...init,
-        headers
-      });
-      return readJsonResponse<T>(response);
-    },
-    async requestBytes(requestPath: string, init?: RequestInit) {
-      const headers = new Headers(await resolveHttpHeaders(options.headers));
-      const inputHeaders = new Headers(init?.headers);
-      for (const [name, value] of inputHeaders.entries()) {
-        headers.set(name, value);
-      }
-
-      const response = await fetch(`${baseUrl}${mapRequestPath(requestPath)}`, {
-        ...init,
-        headers
-      });
-      if (!response.ok) {
-        throw new Error((await response.text()) || `Sandbox backend request failed with status ${response.status}.`);
-      }
-
-      return new Uint8Array(await response.arrayBuffer());
-    }
+    return createSandboxHttpClient(transport);
   };
-  const sandboxClient = createSandboxHttpClient(transport);
+
+  const defaultClient = createClient(options.baseUrl);
+  const clientForSandbox = (sandboxId: string) => clientBySandboxId.get(sandboxId) ?? defaultClient;
 
   async function resolveSandboxForWorkspace(workspace: WorkspaceRecord) {
-    return sandboxClient.createSandbox({
+    const targetBaseUrl = (await options.resolveCreateBaseUrl?.(workspace)) ?? options.baseUrl;
+    const createClientForWorkspace =
+      targetBaseUrl.trim() === options.baseUrl.trim() ? defaultClient : createClient(targetBaseUrl);
+    const sandbox = await createClientForWorkspace.createSandbox({
       workspaceId: workspace.id,
+      ...(workspace.name ? { name: workspace.name } : {}),
+      ...(workspace.blueprint ? { blueprint: workspace.blueprint } : {}),
+      ...(workspace.externalRef ? { externalRef: workspace.externalRef } : {}),
+      ...(workspace.ownerId ? { ownerId: workspace.ownerId } : {}),
+      ...(workspace.serviceName ? { serviceName: workspace.serviceName } : {}),
       executionPolicy: workspace.executionPolicy
     });
+    if (sandbox.ownerBaseUrl?.trim()) {
+      clientBySandboxId.set(sandbox.id, createClient(sandbox.ownerBaseUrl));
+    }
+    return sandbox;
   }
 
   function relativeToSandboxRoot(rootPath: string, targetPath: string) {
@@ -230,7 +251,7 @@ export function createHttpE2BCompatibleSandboxService(
       };
     },
     async runCommand(input) {
-      return sandboxClient.runForegroundCommand(input.sandboxId, {
+      return clientForSandbox(input.sandboxId).runForegroundCommand(input.sandboxId, {
         command: input.command,
         ...(input.cwd ? { cwd: relativeToSandboxRoot(input.rootPath, input.cwd) } : {}),
         ...(input.env ? { env: input.env } : {}),
@@ -239,7 +260,7 @@ export function createHttpE2BCompatibleSandboxService(
       });
     },
     async runProcess(input) {
-      return sandboxClient.runProcessCommand(input.sandboxId, {
+      return clientForSandbox(input.sandboxId).runProcessCommand(input.sandboxId, {
         executable: input.executable,
         args: input.args,
         ...(input.cwd ? { cwd: relativeToSandboxRoot(input.rootPath, input.cwd) } : {}),
@@ -249,7 +270,7 @@ export function createHttpE2BCompatibleSandboxService(
       });
     },
     async runBackground(input) {
-      return sandboxClient.runBackgroundCommand(input.sandboxId, {
+      return clientForSandbox(input.sandboxId).runBackgroundCommand(input.sandboxId, {
         command: input.command,
         sessionId: input.sessionId,
         ...(input.description ? { description: input.description } : {}),
@@ -258,19 +279,19 @@ export function createHttpE2BCompatibleSandboxService(
       });
     },
     async stat(input) {
-      return sandboxClient.getFileStat(input.sandboxId, {
+      return clientForSandbox(input.sandboxId).getFileStat(input.sandboxId, {
         path: input.path
       });
     },
     async readFile(input) {
       return Buffer.from(
-        await sandboxClient.downloadFile(input.sandboxId, {
+        await clientForSandbox(input.sandboxId).downloadFile(input.sandboxId, {
           path: input.path
         })
       );
     },
     async readdir(input) {
-      const page = await sandboxClient.listEntries(input.sandboxId, {
+      const page = await clientForSandbox(input.sandboxId).listEntries(input.sandboxId, {
         path: input.path,
         pageSize: 1000,
         sortBy: "name",
@@ -284,13 +305,13 @@ export function createHttpE2BCompatibleSandboxService(
       }));
     },
     async mkdir(input) {
-      await sandboxClient.createDirectory(input.sandboxId, {
+      await clientForSandbox(input.sandboxId).createDirectory(input.sandboxId, {
         path: input.path,
         createParents: input.recursive ?? true
       });
     },
     async writeFile(input) {
-      await sandboxClient.uploadFile(input.sandboxId, {
+      await clientForSandbox(input.sandboxId).uploadFile(input.sandboxId, {
         path: input.path,
         overwrite: true,
         data: input.data,
@@ -298,13 +319,13 @@ export function createHttpE2BCompatibleSandboxService(
       });
     },
     async rm(input) {
-      await sandboxClient.deleteEntry(input.sandboxId, {
+      await clientForSandbox(input.sandboxId).deleteEntry(input.sandboxId, {
         path: input.path,
         recursive: input.recursive ?? false
       });
     },
     async rename(input) {
-      await sandboxClient.moveEntry(input.sandboxId, {
+      await clientForSandbox(input.sandboxId).moveEntry(input.sandboxId, {
         sourcePath: input.sourcePath,
         targetPath: input.targetPath,
         overwrite: true

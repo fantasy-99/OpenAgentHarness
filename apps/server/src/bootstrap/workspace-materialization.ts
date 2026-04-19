@@ -27,6 +27,7 @@ interface WorkspaceMaterializationEntry {
   cacheKey: string;
   workspaceId: string;
   version: string;
+  userId?: string | undefined;
   ownerWorkerId: string;
   source: WorkspaceMaterializationSource;
   localPath: string;
@@ -239,7 +240,7 @@ export class WorkspaceMaterializationManager {
   }
 
   async acquireWorkspace(input: {
-    workspace: Pick<WorkspaceRecord, "id" | "rootPath" | "externalRef">;
+    workspace: Pick<WorkspaceRecord, "id" | "rootPath" | "externalRef" | "ownerId">;
     version?: string | undefined;
   }): Promise<WorkspaceMaterializationLease> {
     const version = input.version?.trim() || "live";
@@ -263,6 +264,7 @@ export class WorkspaceMaterializationManager {
         cacheKey,
         workspaceId: input.workspace.id,
         version,
+        ...(input.workspace.ownerId?.trim() ? { userId: input.workspace.ownerId.trim() } : {}),
         ownerWorkerId: this.#workerId,
         source,
         localPath: this.#localPathForEntry(input.workspace.id, version, source, input.workspace.rootPath),
@@ -697,6 +699,7 @@ export class WorkspaceMaterializationManager {
       await this.#placementRegistry.upsert({
         workspaceId: entry.workspaceId,
         version: entry.version,
+        ...(entry.userId ? { userId: entry.userId } : {}),
         state: this.#draining ? "draining" : entry.refCount > 0 ? "active" : "idle",
         ownerWorkerId: entry.ownerWorkerId,
         ...(this.#ownerBaseUrl ? { ownerBaseUrl: this.#ownerBaseUrl } : {}),
@@ -717,6 +720,7 @@ export class WorkspaceMaterializationManager {
     await this.#placementRegistry?.upsert({
       workspaceId: entry.workspaceId,
       version: entry.version,
+      ...(entry.userId ? { userId: entry.userId } : {}),
       state: "evicted",
       ownerWorkerId: entry.ownerWorkerId,
       ...(this.#ownerBaseUrl ? { ownerBaseUrl: this.#ownerBaseUrl } : {}),

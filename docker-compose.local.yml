@@ -104,10 +104,20 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+    environment:
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME}
+      OAH_DOCKER_API_CONFIG: ${OAH_DOCKER_API_CONFIG}
+      OAH_DOCKER_CONTROLLER_CONFIG: ${OAH_DOCKER_CONTROLLER_CONFIG}
+      OAH_DOCKER_SANDBOX_CONFIG: ${OAH_DOCKER_SANDBOX_CONFIG}
+      OAH_LOCAL_REPO_ROOT: ${OAH_LOCAL_REPO_ROOT}
+      OAH_LOCAL_TEST_ROOT: ${OAH_LOCAL_TEST_ROOT}
     ports:
       - "8789:8788"
     volumes:
       - ${OAH_DOCKER_CONTROLLER_CONFIG:?set OAH_DOCKER_CONTROLLER_CONFIG}:/config/server.docker.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${OAH_LOCAL_REPO_ROOT:?set OAH_LOCAL_REPO_ROOT}:${OAH_LOCAL_REPO_ROOT:?set OAH_LOCAL_REPO_ROOT}:ro
+      - ${OAH_LOCAL_TEST_ROOT:?set OAH_LOCAL_TEST_ROOT}:${OAH_LOCAL_TEST_ROOT:?set OAH_LOCAL_TEST_ROOT}:ro
 
   oah-sandbox:
     build:
@@ -115,13 +125,11 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     command:
-      - node
-      - apps/server/dist/worker.js
-      - --config
-      - /config/server.docker.yaml
+      - sh
+      - -lc
+      - export OAH_INTERNAL_BASE_URL="http://$${HOSTNAME}:8787" && exec node apps/server/dist/worker.js --config /config/server.docker.yaml
     environment:
       OAH_ALLOW_PRIVATE_INTERNAL_ROUTES: "true"
-      OAH_INTERNAL_BASE_URL: "http://oah-sandbox:8787"
     depends_on:
       postgres:
         condition: service_healthy
@@ -129,11 +137,11 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-    ports:
-      - "8788:8787"
+    expose:
+      - "8787"
     volumes:
       - ${OAH_DOCKER_SANDBOX_CONFIG:?set OAH_DOCKER_SANDBOX_CONFIG}:/config/server.docker.yaml:ro
-      - oah-sandbox-workspaces:/data/workspaces
+      - /data/workspaces
       - oah-blueprints:/data/blueprints:ro
       - oah-models:/data/models:ro
       - oah-tools:/data/tools:ro
@@ -145,7 +153,6 @@ volumes:
   redisdata:
   minio-data:
   oah-api-workspaces:
-  oah-sandbox-workspaces:
   oah-blueprints:
     driver: rclone
     driver_opts:
@@ -157,7 +164,7 @@ volumes:
       s3_region: us-east-1
       s3_endpoint: http://host.docker.internal:9000
       s3_force_path_style: "true"
-      vfs_cache_mode: off
+      vfs_cache_mode: "off"
       poll_interval: 0
   oah-models:
     driver: rclone
@@ -170,7 +177,7 @@ volumes:
       s3_region: us-east-1
       s3_endpoint: http://host.docker.internal:9000
       s3_force_path_style: "true"
-      vfs_cache_mode: off
+      vfs_cache_mode: "off"
       poll_interval: 0
   oah-tools:
     driver: rclone
@@ -183,7 +190,7 @@ volumes:
       s3_region: us-east-1
       s3_endpoint: http://host.docker.internal:9000
       s3_force_path_style: "true"
-      vfs_cache_mode: off
+      vfs_cache_mode: "off"
       poll_interval: 0
   oah-skills:
     driver: rclone
@@ -196,7 +203,7 @@ volumes:
       s3_region: us-east-1
       s3_endpoint: http://host.docker.internal:9000
       s3_force_path_style: "true"
-      vfs_cache_mode: off
+      vfs_cache_mode: "off"
       poll_interval: 0
   oah-archives:
     driver: rclone
@@ -209,5 +216,5 @@ volumes:
       s3_region: us-east-1
       s3_endpoint: http://host.docker.internal:9000
       s3_force_path_style: "true"
-      vfs_cache_mode: off
+      vfs_cache_mode: "off"
       poll_interval: 0

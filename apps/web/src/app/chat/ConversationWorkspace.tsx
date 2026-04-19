@@ -16,7 +16,7 @@ import { WorkspaceFileManagerPanel } from "./WorkspaceFileManagerPanel";
 import { resolveMessageAgentInfo } from "./message-agent-info";
 
 type RuntimeProps = ReturnType<typeof useAppController>["runtimeDetailSurfaceProps"];
-type ToolStatus = "running" | "completed" | "failed";
+type ToolStatus = "running" | "started" | "completed" | "failed";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -37,6 +37,8 @@ function toolStatusTone(status: ToolStatus) {
   switch (status) {
     case "running":
       return toneBadgeClass("amber");
+    case "started":
+      return toneBadgeClass("sky");
     case "completed":
       return toneBadgeClass("emerald");
     case "failed":
@@ -52,6 +54,7 @@ function readToolMeta(messageMetadata: Message["metadata"] | undefined) {
   return {
     status:
       messageMetadata.toolStatus === "running" ||
+      messageMetadata.toolStatus === "started" ||
       messageMetadata.toolStatus === "completed" ||
       messageMetadata.toolStatus === "failed"
         ? (messageMetadata.toolStatus as ToolStatus)

@@ -395,6 +395,7 @@ export interface BootstrappedRuntime {
   } | undefined>;
   adminCapabilities: RuntimeAdminCapabilities;
   sandboxHostProviderKind?: SandboxHostProviderKind | undefined;
+  localOwnerBaseUrl?: string | undefined;
   appendRuntimeLog(input: {
     sessionId: string;
     runId?: string | undefined;
@@ -466,6 +467,14 @@ export function resolveRuntimeAssemblyProfile(options: {
   };
 }
 
+export function shouldManageWorkspaceRegistry(options: {
+  processKind: "api" | "worker";
+  hasSingleWorkspace: boolean;
+  remoteSandboxProvider: boolean;
+}): boolean {
+  return options.processKind !== "worker" && !options.hasSingleWorkspace && !options.remoteSandboxProvider;
+}
+
 function resolveInternalBaseUrl(config: Pick<ServerConfig, "server">): string | undefined {
   const explicit = process.env.OAH_INTERNAL_BASE_URL?.trim();
   if (explicit) {
@@ -523,6 +532,11 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   const assemblyProfile = resolveRuntimeAssemblyProfile({
     processKind,
     startWorker,
+    remoteSandboxProvider
+  });
+  const managesWorkspaceRegistry = shouldManageWorkspaceRegistry({
+    processKind,
+    hasSingleWorkspace: singleWorkspace !== undefined,
     remoteSandboxProvider
   });
   const objectStorageMirrorConfig = config.object_storage
@@ -593,7 +607,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
             objectStorageMirror
           )
         ]
-      : remoteSandboxProvider
+      : !managesWorkspaceRegistry
         ? []
       : (
           await discoverWorkspaces({
@@ -644,7 +658,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         })
       : undefined;
   const redisWorkerRegistry =
-    assemblyProfile.enableWorkerRuntime && config.storage.redis_url && config.storage.redis_url.trim().length > 0
+    config.storage.redis_url && config.storage.redis_url.trim().length > 0
       ? await createRedisWorkerRegistry({
           url: config.storage.redis_url
         }).catch((error) => {
@@ -710,7 +724,9 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   if (!sandboxHost) {
     sandboxHost = await createConfiguredSandboxHost({
       config,
-      ...(workspaceMaterializationManager ? { workspaceMaterializationManager } : {})
+      ...(workspaceMaterializationManager ? { workspaceMaterializationManager } : {}),
+      ...(redisWorkspacePlacementRegistry ? { workspacePlacementRegistry: redisWorkspacePlacementRegistry } : {}),
+      ...(redisWorkerRegistry ? { workerRegistry: redisWorkerRegistry } : {})
     });
   }
   const redisConfigured = Boolean(config.storage.redis_url && config.storage.redis_url.trim().length > 0);
@@ -739,7 +755,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       : await listAllWorkspaces(persistence.workspaceRepository);
   const bootWorkspaceCandidates =
     singleWorkspace === undefined
-      ? remoteSandboxProvider
+      ? !managesWorkspaceRegistry
         ? persistedWorkspaceSnapshots
         : [
             ...discoveredWorkspaces,
@@ -774,7 +790,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   let workspaceRegistryPollTimer: NodeJS.Timeout | undefined;
   let watchedProjectRoots = new Map<string, FSWatcher>();
   const rootWorkspaceWatcher =
-    singleWorkspace === undefined && !remoteSandboxProvider
+    managesWorkspaceRegistry
       ? openFsWatcher(config.paths.workspace_dir, scheduleWorkspaceRegistrySync)
       : undefined;
   let workspaceSyncTimer: NodeJS.Timeout | undefined;
@@ -786,7 +802,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   await Promise.all(reconciledWorkspaces.map((workspace) => workspaceRepository.upsert(workspace)));
 
   const syncWorkspaceRegistry =
-    singleWorkspace === undefined && !remoteSandboxProvider
+    managesWorkspaceRegistry
       ? async () => {
           const now = Date.now();
           if (workspaceRegistrySyncPromise) {
@@ -853,7 +869,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       : undefined;
 
   function updateWatchedProjectRoots(workspaces: WorkspaceRecord[]): void {
-    if (singleWorkspace !== undefined || remoteSandboxProvider) {
+    if (!managesWorkspaceRegistry) {
       return;
     }
 
@@ -1376,6 +1392,15 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
               overwrite: input.overwrite,
               updatedAt: new Date().toISOString()
             });
+          },
+          releaseWorkspacePlacement: async (input: {
+            workspaceId: string;
+            state?: "unassigned" | "draining" | "evicted" | undefined;
+          }) => {
+            await redisWorkspacePlacementRegistry.releaseOwnership(input.workspaceId, {
+              state: input.state ?? "evicted",
+              updatedAt: new Date().toISOString()
+            });
           }
         }
       : {}),
@@ -1401,6 +1426,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       : {}),
     adminCapabilities,
     ...(sandboxHost ? { sandboxHostProviderKind: sandboxHost.providerKind } : {}),
+    ...(ownerBaseUrl ? { localOwnerBaseUrl: ownerBaseUrl } : {}),
     appendRuntimeLog(input) {
       return appendRuntimeLogEvent(primarySessionEventStore, {
         ...input,

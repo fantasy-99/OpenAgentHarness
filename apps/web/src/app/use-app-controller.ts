@@ -1086,7 +1086,7 @@ export function useAppController() {
       runId: typeof frame.data.runId === "string" ? frame.data.runId : undefined,
       event: frame.event as SessionEventContract["event"],
       data: frame.data,
-      createdAt: new Date().toISOString()
+      createdAt: frame.createdAt ?? new Date().toISOString()
     } satisfies SessionEventContract;
 
     if (frame.cursor) {
@@ -1105,6 +1105,13 @@ export function useAppController() {
     const eventMetadata = isRecord(event.data.metadata) ? event.data.metadata : undefined;
     const eventToolCallId = typeof event.data.toolCallId === "string" ? event.data.toolCallId : undefined;
     const eventToolName = typeof event.data.toolName === "string" ? event.data.toolName : undefined;
+    const eventToolStatus =
+      eventMetadata?.toolStatus === "running" ||
+      eventMetadata?.toolStatus === "started" ||
+      eventMetadata?.toolStatus === "completed" ||
+      eventMetadata?.toolStatus === "failed"
+        ? eventMetadata.toolStatus
+        : undefined;
 
     const normalizeToolCallInput = (value: unknown): Record<string, unknown> | undefined => {
       if (isRecord(value)) {
@@ -1282,7 +1289,7 @@ export function useAppController() {
             content: toolResultMessage.content,
             createdAt: event.createdAt,
             metadata: {
-              toolStatus: event.event === "tool.failed" ? "failed" : "completed",
+              toolStatus: event.event === "tool.failed" ? "failed" : (eventToolStatus ?? "completed"),
               ...(typeof event.data.sourceType === "string" ? { toolSourceType: event.data.sourceType } : {}),
               ...(typeof event.data.durationMs === "number" ? { toolDurationMs: event.data.durationMs } : {})
             },
@@ -1302,7 +1309,7 @@ export function useAppController() {
               ...currentEntry,
               metadata: {
                 ...(isRecord(currentEntry.metadata) ? currentEntry.metadata : {}),
-                toolStatus: event.event === "tool.failed" ? "failed" : "completed",
+                toolStatus: event.event === "tool.failed" ? "failed" : (eventToolStatus ?? "completed"),
                 ...(typeof event.data.sourceType === "string" ? { toolSourceType: event.data.sourceType } : {}),
                 ...(typeof event.data.durationMs === "number" ? { toolDurationMs: event.data.durationMs } : {})
               }

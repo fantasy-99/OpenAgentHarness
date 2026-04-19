@@ -22,12 +22,21 @@ export function sendError(
   );
 }
 
-export function writeSseEvent(reply: FastifyReply, event: string, data: Record<string, unknown>, cursor?: string): void {
+export function writeSseEvent(
+  reply: FastifyReply,
+  event: string,
+  data: Record<string, unknown>,
+  cursor?: string,
+  createdAt?: string
+): void {
   if (cursor) {
     reply.raw.write(`id: ${cursor}\n`);
   }
 
   reply.raw.write(`event: ${event}\n`);
+  if (createdAt) {
+    reply.raw.write(`createdAt: ${createdAt}\n`);
+  }
   reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 

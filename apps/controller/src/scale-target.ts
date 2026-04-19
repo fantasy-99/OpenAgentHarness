@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import * as http from "node:http";
 import * as https from "node:https";
+import path from "node:path";
 
 import type { ServerConfig } from "@oah/config";
 
@@ -37,7 +39,7 @@ export interface WorkerReplicaTarget {
 }
 
 interface ControllerScaleTargetConfigShape {
-  type?: "noop" | "kubernetes" | undefined;
+  type?: "noop" | "kubernetes" | "docker_compose" | undefined;
   allow_scale_down?: boolean | undefined;
   kubernetes?:
     | {
@@ -48,6 +50,14 @@ interface ControllerScaleTargetConfigShape {
         token_file?: string | undefined;
         ca_file?: string | undefined;
         skip_tls_verify?: boolean | undefined;
+      }
+    | undefined;
+  docker_compose?:
+    | {
+        compose_file?: string | undefined;
+        project_name?: string | undefined;
+        service?: string | undefined;
+        command?: string | undefined;
       }
     | undefined;
 }
@@ -69,6 +79,16 @@ export type ResolvedWorkerReplicaTargetConfig =
         caFile?: string | undefined;
         skipTlsVerify: boolean;
       };
+    }
+  | {
+      type: "docker_compose";
+      allowScaleDown: boolean;
+      dockerCompose: {
+        composeFile?: string | undefined;
+        projectName: string;
+        service: string;
+        command: string;
+      };
     };
 
 export interface KubernetesJsonRequest {
@@ -79,6 +99,25 @@ export interface KubernetesJsonRequest {
   caFile?: string | undefined;
   skipTlsVerify?: boolean | undefined;
 }
+
+export interface DockerComposeCommandInput {
+  args: string[];
+  cwd?: string | undefined;
+}
+
+export interface DockerComposeCommandResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+interface DockerComposeManagedContainer {
+  id: string;
+  name: string;
+  running: boolean;
+}
+
+export type DockerComposeCommandFn = (input: DockerComposeCommandInput) => Promise<DockerComposeCommandResult>;
 
 export type KubernetesJsonRequestFn = (
   input: KubernetesJsonRequest
@@ -142,13 +181,47 @@ export function resolveWorkerReplicaTargetConfig(config: ServerConfig): Resolved
   };
   const scaleTarget = controllerConfig.scale_target;
   const targetTypeRaw = readStringEnv("OAH_CONTROLLER_TARGET_TYPE", scaleTarget?.type ?? "noop");
-  const targetType = targetTypeRaw === "kubernetes" ? "kubernetes" : "noop";
+  const targetType =
+    targetTypeRaw === "kubernetes" ? "kubernetes" : targetTypeRaw === "docker_compose" ? "docker_compose" : "noop";
   const allowScaleDown = readBoolEnv("OAH_CONTROLLER_ALLOW_SCALE_DOWN", scaleTarget?.allow_scale_down ?? true);
 
   if (targetType === "noop") {
     return {
       type: "noop",
       allowScaleDown
+    };
+  }
+
+  if (targetType === "docker_compose") {
+    const dockerCompose = scaleTarget?.docker_compose;
+    const composeFile = readStringEnv(
+      "OAH_CONTROLLER_TARGET_COMPOSE_FILE",
+      dockerCompose?.compose_file
+    );
+    const projectName = readStringEnv("OAH_CONTROLLER_TARGET_PROJECT_NAME", dockerCompose?.project_name);
+    const service = readStringEnv("OAH_CONTROLLER_TARGET_COMPOSE_SERVICE", dockerCompose?.service ?? "oah-sandbox");
+    const command = readStringEnv("OAH_CONTROLLER_TARGET_COMPOSE_COMMAND", dockerCompose?.command ?? "docker");
+
+    if (!service) {
+      throw new Error("controller docker_compose scale target requires service.");
+    }
+    if (!projectName) {
+      throw new Error("controller docker_compose scale target requires project_name.");
+    }
+    if (!command) {
+      throw new Error("controller docker_compose scale target requires command.");
+    }
+
+    return {
+      type: "docker_compose",
+      allowScaleDown,
+      dockerCompose: {
+        ...(composeFile ? { composeFile } : {}),
+        projectName,
+        ...(projectName ? { projectName } : {}),
+        service,
+        command
+      }
     };
   }
 
@@ -199,10 +272,15 @@ export function createWorkerReplicaTarget(
   config: ResolvedWorkerReplicaTargetConfig,
   options?: {
     request?: KubernetesJsonRequestFn | undefined;
+    command?: DockerComposeCommandFn | undefined;
   }
 ): WorkerReplicaTarget {
   if (config.type === "kubernetes") {
     return createKubernetesWorkerReplicaTarget(config, options);
+  }
+
+  if (config.type === "docker_compose") {
+    return createDockerComposeWorkerReplicaTarget(config, options);
   }
 
   return createNoopWorkerReplicaTarget(config);
@@ -325,6 +403,163 @@ export function createKubernetesWorkerReplicaTarget(
         appliedReplicas,
         outcome: "scaled",
         at: input.timestamp
+      };
+    }
+  };
+}
+
+async function defaultDockerComposeCommand(input: DockerComposeCommandInput): Promise<DockerComposeCommandResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(input.args[0]!, input.args.slice(1), {
+      cwd: input.cwd,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer | string) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk: Buffer | string) => {
+      stderr += chunk.toString();
+    });
+    child.once("error", (error) => {
+      reject(error);
+    });
+    child.once("close", (code) => {
+      resolve({
+        code: code ?? 1,
+        stdout,
+        stderr
+      });
+    });
+  });
+}
+
+export function createDockerComposeWorkerReplicaTarget(
+  config: Extract<ResolvedWorkerReplicaTargetConfig, { type: "docker_compose" }>,
+  options?: {
+    command?: DockerComposeCommandFn | undefined;
+  }
+): WorkerReplicaTarget {
+  const commandRunner = options?.command ?? defaultDockerComposeCommand;
+
+  function composeArgs(args: string[]): string[] {
+    return [
+      config.dockerCompose.command,
+      "compose",
+      ...(config.dockerCompose.composeFile ? ["-f", config.dockerCompose.composeFile] : []),
+      "-p",
+      config.dockerCompose.projectName,
+      ...args
+    ];
+  }
+
+  async function listManagedContainers(): Promise<DockerComposeManagedContainer[]> {
+    const listResult = await commandRunner({
+      args: composeArgs(["ps", "-a", "-q", config.dockerCompose.service]),
+      ...(config.dockerCompose.composeFile ? { cwd: path.dirname(config.dockerCompose.composeFile) } : {})
+    });
+    if (listResult.code !== 0) {
+      throw new Error(listResult.stderr.trim() || listResult.stdout.trim() || "failed to list docker compose containers");
+    }
+
+    const ids = listResult.stdout
+      .split(/\s+/u)
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0);
+    if (ids.length === 0) {
+      return [];
+    }
+
+    const inspectResult = await commandRunner({
+      args: [config.dockerCompose.command, "inspect", ...ids],
+      ...(config.dockerCompose.composeFile ? { cwd: path.dirname(config.dockerCompose.composeFile) } : {})
+    });
+    if (inspectResult.code !== 0) {
+      throw new Error(inspectResult.stderr.trim() || inspectResult.stdout.trim() || "failed to inspect docker compose containers");
+    }
+
+    const inspected = JSON.parse(inspectResult.stdout) as Array<{
+      Id: string;
+      Name?: string | undefined;
+      State?: {
+        Running?: boolean | undefined;
+      } | undefined;
+      Config?: {
+        Labels?: Record<string, string> | undefined;
+      } | undefined;
+    }>;
+
+    return inspected
+      .map((entry) => ({
+        id: entry.Id,
+        name: entry.Name?.replace(/^\/+/u, "") ?? entry.Id,
+        running: entry.State?.Running === true
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  return {
+    kind: "docker_compose",
+    async reconcile(input) {
+      const containers = await listManagedContainers();
+      const runningContainers = containers.filter((container) => container.running);
+
+      if (!config.allowScaleDown && input.desiredReplicas < runningContainers.length) {
+        return {
+          kind: "docker_compose",
+          attempted: true,
+          applied: false,
+          desiredReplicas: input.desiredReplicas,
+          observedReplicas: runningContainers.length,
+          appliedReplicas: runningContainers.length,
+          outcome: "blocked_scale_down",
+          at: input.timestamp,
+          message: "scale down blocked by controller policy"
+        };
+      }
+
+      if (input.desiredReplicas === runningContainers.length) {
+        return {
+          kind: "docker_compose",
+          attempted: true,
+          applied: false,
+          desiredReplicas: input.desiredReplicas,
+          observedReplicas: runningContainers.length,
+          appliedReplicas: runningContainers.length,
+          outcome: "steady",
+          at: input.timestamp
+        };
+      }
+
+      const result = await commandRunner({
+        args: composeArgs([
+          "up",
+          "-d",
+          "--no-deps",
+          "--scale",
+          `${config.dockerCompose.service}=${input.desiredReplicas}`,
+          config.dockerCompose.service
+        ]),
+        ...(config.dockerCompose.composeFile ? { cwd: path.dirname(config.dockerCompose.composeFile) } : {})
+      });
+
+      if (!result || result.code !== 0) {
+        throw new Error(result.stderr.trim() || result.stdout.trim() || "docker compose reconcile failed");
+      }
+
+      return {
+        kind: "docker_compose",
+        attempted: true,
+        applied: true,
+        desiredReplicas: input.desiredReplicas,
+        observedReplicas: runningContainers.length,
+        appliedReplicas: input.desiredReplicas,
+        outcome: "scaled",
+        at: input.timestamp,
+        ...(result.stdout.trim() ? { message: result.stdout.trim() } : {})
       };
     }
   };

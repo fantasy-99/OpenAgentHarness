@@ -76,6 +76,10 @@ export interface AppDependencies {
     userId: string;
     overwrite?: boolean | undefined;
   }) => Promise<void>) | undefined;
+  releaseWorkspacePlacement?: ((input: {
+    workspaceId: string;
+    state?: "unassigned" | "draining" | "evicted" | undefined;
+  }) => Promise<void>) | undefined;
   healthCheck?: () => Promise<HealthReport> | HealthReport;
   readinessCheck?: () => Promise<ReadinessReport> | ReadinessReport;
   storageAdmin?: StorageAdmin;
@@ -90,6 +94,7 @@ export interface AppDependencies {
   }) => Promise<void>;
   sandboxHostProviderKind?: SandboxHostProviderKind | undefined;
   sandboxOwnerFallbackBaseUrl?: string | undefined;
+  localOwnerBaseUrl?: string | undefined;
 }
 
 export interface AppRouteOptions {

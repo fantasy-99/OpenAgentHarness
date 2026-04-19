@@ -133,7 +133,8 @@ describe("workspace materialization", () => {
       workspace: {
         id: "ws_1",
         rootPath: "/unused",
-        externalRef: "s3://test-bucket/workspace/demo"
+        externalRef: "s3://test-bucket/workspace/demo",
+        ownerId: "user_1"
       } as never
     });
 
@@ -174,7 +175,8 @@ describe("workspace materialization", () => {
       workspace: {
         id: "ws_1",
         rootPath: "/unused",
-        externalRef: "s3://test-bucket/workspace/demo"
+        externalRef: "s3://test-bucket/workspace/demo",
+        ownerId: "user_1"
       } as never
     });
 
@@ -405,7 +407,8 @@ describe("workspace materialization", () => {
       workspace: {
         id: "ws_1",
         rootPath: "/unused",
-        externalRef: "s3://test-bucket/workspace/demo"
+        externalRef: "s3://test-bucket/workspace/demo",
+        ownerId: "user_1"
       } as never
     });
     await lease.release();
@@ -441,7 +444,8 @@ describe("workspace materialization", () => {
       workspace: {
         id: "ws_1",
         rootPath: "/unused",
-        externalRef: "s3://test-bucket/workspace/demo"
+        externalRef: "s3://test-bucket/workspace/demo",
+        ownerId: "user_1"
       } as never
     });
 
@@ -541,7 +545,8 @@ describe("workspace materialization", () => {
       workspace: {
         id: "ws_1",
         rootPath: "/unused",
-        externalRef: "s3://test-bucket/workspace/demo"
+        externalRef: "s3://test-bucket/workspace/demo",
+        ownerId: "user_1"
       } as never
     });
     lease.markDirty();
@@ -552,6 +557,7 @@ describe("workspace materialization", () => {
     expect(heartbeats.some((entry) => entry.workspaceId === "ws_1" && entry.refCount === 1)).toBe(true);
     expect(heartbeats.some((entry) => entry.workspaceId === "ws_1" && entry.dirty)).toBe(true);
     expect(heartbeats.some((entry) => entry.workspaceId === "ws_1" && entry.ownerBaseUrl === "http://worker-1.internal:8787")).toBe(true);
+    expect(placements.some((entry) => entry.workspaceId === "ws_1" && entry.userId === "user_1" && entry.state === "active")).toBe(true);
     expect(placements.some((entry) => entry.workspaceId === "ws_1" && entry.state === "active")).toBe(true);
     expect(placements.some((entry) => entry.workspaceId === "ws_1" && entry.state === "idle")).toBe(true);
     expect(placements.some((entry) => entry.workspaceId === "ws_1" && entry.state === "evicted")).toBe(true);

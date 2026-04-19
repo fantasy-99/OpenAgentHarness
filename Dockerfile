@@ -26,7 +26,23 @@ FROM node:24-bookworm-slim AS runtime
 
 ENV NODE_ENV=production
 
+ARG TARGETOS=linux
+ARG TARGETARCH
+ARG DOCKER_COMPOSE_VERSION=2.40.3
+
 RUN corepack enable \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl docker.io \
+  && mkdir -p /usr/libexec/docker/cli-plugins \
+  && case "${TARGETARCH}" in \
+    "amd64") compose_arch="x86_64" ;; \
+    "arm64") compose_arch="aarch64" ;; \
+    *) compose_arch="${TARGETARCH}" ;; \
+  esac \
+  && curl -fsSL "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-${TARGETOS}-${compose_arch}" -o /usr/libexec/docker/cli-plugins/docker-compose \
+  && chmod +x /usr/libexec/docker/cli-plugins/docker-compose \
+  && docker compose version \
+  && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /etc/oah \
   && mkdir -p /var/lib/oah/workspaces \
   && mkdir -p /var/lib/oah/blueprints \

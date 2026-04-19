@@ -132,7 +132,7 @@ export function registerSessionRoutes(app: FastifyInstance, dependencies: AppDep
         }
 
         rememberEvent(event.id);
-        writeSseEvent(reply, event.event, event.data, event.cursor);
+        writeSseEvent(reply, event.event, event.data, event.cursor, event.createdAt);
       };
 
       const unsubscribe = dependencies.runtimeService.subscribeSessionEvents(params.sessionId, (event: SessionEvent) => {

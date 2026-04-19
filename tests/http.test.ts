@@ -243,8 +243,13 @@ async function createStartedAppWithRuntimeService(
       userId: string;
       overwrite?: boolean | undefined;
     }) => Promise<void>;
+    releaseWorkspacePlacement?: (input: {
+      workspaceId: string;
+      state?: "unassigned" | "draining" | "evicted" | undefined;
+    }) => Promise<void>;
     sandboxHostProviderKind?: "embedded" | "self_hosted" | "e2b";
     sandboxOwnerFallbackBaseUrl?: string;
+    localOwnerBaseUrl?: string;
   }
 ) {
   const app = createApp({
@@ -269,8 +274,10 @@ async function createStartedAppWithRuntimeService(
     ...(options?.assignWorkspacePlacementUser
       ? { assignWorkspacePlacementUser: options.assignWorkspacePlacementUser }
       : {}),
+    ...(options?.releaseWorkspacePlacement ? { releaseWorkspacePlacement: options.releaseWorkspacePlacement } : {}),
     ...(options?.sandboxHostProviderKind ? { sandboxHostProviderKind: options.sandboxHostProviderKind } : {}),
     ...(options?.sandboxOwnerFallbackBaseUrl ? { sandboxOwnerFallbackBaseUrl: options.sandboxOwnerFallbackBaseUrl } : {}),
+    ...(options?.localOwnerBaseUrl ? { localOwnerBaseUrl: options.localOwnerBaseUrl } : {}),
     ...(options?.importWorkspace ? { importWorkspace: options.importWorkspace } : {})
   });
 
@@ -1228,6 +1235,7 @@ describe("http api", () => {
 
   it("records workspace owner affinity from workspace creation and session creation", async () => {
     const assignedUsers: Array<{ workspaceId: string; userId: string; overwrite?: boolean }> = [];
+    const initializerWorkspaceIds: string[] = [];
     const gateway = new FakeModelGateway(20);
     const persistence = createMemoryRuntimePersistence();
     const runtimeService = new RuntimeService({
@@ -1236,6 +1244,9 @@ describe("http api", () => {
       ...persistence,
       workspaceInitializer: {
         async initialize(input) {
+          if (typeof (input as { workspaceId?: string | undefined }).workspaceId === "string") {
+            initializerWorkspaceIds.push((input as { workspaceId: string }).workspaceId);
+          }
           return {
             rootPath: input.rootPath,
             settings: {
@@ -1267,7 +1278,8 @@ describe("http api", () => {
     activeApp = await createStartedAppWithRuntimeService(runtimeService, gateway, {
       assignWorkspacePlacementUser: async (input) => {
         assignedUsers.push(input);
-      }
+      },
+      sandboxHostProviderKind: "self_hosted"
     });
 
     const workspaceResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces`, {
@@ -1296,9 +1308,10 @@ describe("http api", () => {
     });
     expect(sessionResponse.status).toBe(201);
 
+    expect(initializerWorkspaceIds).toHaveLength(1);
     expect(assignedUsers).toEqual([
       {
-        workspaceId: workspace.id,
+        workspaceId: initializerWorkspaceIds[0],
         userId: "user_explicit",
         overwrite: true
       },
@@ -1308,6 +1321,7 @@ describe("http api", () => {
         overwrite: false
       }
     ]);
+    expect(workspace.id).toBe(initializerWorkspaceIds[0]);
   });
 
   it("lists workspaces and sessions over HTTP", async () => {
@@ -2444,6 +2458,42 @@ describe("http api", () => {
     expect(readResponse.status).toBe(200);
     await expect(readResponse.json()).resolves.toMatchObject({
       content: "Hello fallback owner.\n"
+    });
+  });
+
+  it("returns the local owner base url for sandbox creation responses served by the owner worker", async () => {
+    const gateway = new FakeModelGateway(20);
+    const persistence = createMemoryRuntimePersistence();
+    const workspace = await createWorkspaceRecord();
+    await persistence.workspaceRepository.upsert(workspace);
+
+    activeApp = await createStartedAppWithRuntimeService(
+      new RuntimeService({
+        defaultModel: "openai-default",
+        modelGateway: gateway,
+        ...persistence
+      }),
+      gateway,
+      {
+        sandboxHostProviderKind: "self_hosted",
+        localOwnerBaseUrl: "http://worker-local.internal:8787"
+      }
+    );
+
+    const response = await fetch(`${activeApp.baseUrl}/api/v1/sandboxes`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        workspaceId: workspace.id
+      })
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      id: workspace.id,
+      ownerBaseUrl: "http://worker-local.internal:8787/internal/v1"
     });
   });
 

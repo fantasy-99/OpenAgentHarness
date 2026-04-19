@@ -345,15 +345,10 @@ export class ActionRunService {
         throw new Error("aborted");
       }
       if (error instanceof WorkspaceCommandTimeoutError) {
-        const timedOutRun = await this.#setRunStatus(run, "timed_out", {
+        await this.#setRunStatus(run, "timed_out", {
           endedAt: this.#nowIso(),
           errorCode: "action_timed_out",
           errorMessage: `Action ${action.name} timed out.`
-        });
-        await this.#recordSystemStep(timedOutRun, "run.timed_out", {
-          status: timedOutRun.status,
-          errorCode: timedOutRun.errorCode,
-          errorMessage: timedOutRun.errorMessage
         });
         throw new AppError(408, "action_timed_out", `Action ${action.name} timed out.`);
       }

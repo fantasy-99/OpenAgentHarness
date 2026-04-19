@@ -14,7 +14,7 @@ interface RunExecutionContextLike {
 }
 
 type ToolMessageMetadata = {
-  toolStatus: "completed" | "failed";
+  toolStatus: "started" | "completed" | "failed";
   toolSourceType: "action" | "skill" | "agent" | "tool" | "native";
   toolDurationMs?: number | undefined;
 };

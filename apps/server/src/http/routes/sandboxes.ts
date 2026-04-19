@@ -32,7 +32,7 @@ import type {
   WorkspaceEntryPage,
   WorkspaceFileContentResult
 } from "@oah/runtime-core";
-import { AppError } from "@oah/runtime-core";
+import { AppError, createId } from "@oah/runtime-core";
 
 import { assertWorkspaceAccess, createParamsSchema, sendError, toCallerContext } from "../context.js";
 import {
@@ -48,6 +48,64 @@ import type { AppDependencies, AppRouteOptions } from "../types.js";
 const DEFAULT_BACKGROUND_SESSION_PREFIX = "sandbox";
 
 type WorkspaceOwnership = Awaited<ReturnType<NonNullable<AppDependencies["resolveWorkspaceOwnership"]>>>;
+
+async function reserveOwnerScopedWorkspacePlacement(
+  dependencies: Pick<AppDependencies, "assignWorkspacePlacementUser" | "releaseWorkspacePlacement" | "sandboxHostProviderKind">,
+  ownerId: string | undefined,
+  workspaceId: string | undefined
+): Promise<{ workspaceId: string | undefined; release: () => Promise<void> }> {
+  if (!ownerId || !workspaceId || dependencies.sandboxHostProviderKind !== "self_hosted") {
+    return {
+      workspaceId,
+      async release() {
+        return undefined;
+      }
+    };
+  }
+
+  await dependencies.assignWorkspacePlacementUser?.({
+    workspaceId,
+    userId: ownerId,
+    overwrite: true
+  });
+
+  return {
+    workspaceId,
+    async release() {
+      await dependencies.releaseWorkspacePlacement?.({
+        workspaceId,
+        state: "evicted"
+      });
+    }
+  };
+}
+
+function normalizeSandboxOwnerBaseUrl(input: string | undefined): string | undefined {
+  const trimmed = input?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  try {
+    const url = new URL(trimmed);
+    if (url.pathname.endsWith("/internal/v1")) {
+      return `${url.origin}${url.pathname.replace(/\/+$/u, "")}`;
+    }
+    if (url.pathname.endsWith("/api/v1")) {
+      return `${url.origin}${url.pathname.replace(/\/api\/v1$/u, "/internal/v1")}`;
+    }
+    const normalizedPath = url.pathname.replace(/\/+$/u, "");
+    return `${url.origin}${normalizedPath}/internal/v1`;
+  } catch {
+    if (trimmed.endsWith("/internal/v1")) {
+      return trimmed.replace(/\/+$/u, "");
+    }
+    if (trimmed.endsWith("/api/v1")) {
+      return trimmed.replace(/\/api\/v1$/u, "/internal/v1");
+    }
+    return `${trimmed.replace(/\/+$/u, "")}/internal/v1`;
+  }
+}
 
 function resolveWorkspaceOwnerBaseUrl(
   dependencies: Pick<AppDependencies, "sandboxOwnerFallbackBaseUrl">,
@@ -169,6 +227,10 @@ function workspacePathToSandboxPath(targetPath: string | undefined): string {
 async function buildSandboxResponse(dependencies: AppDependencies, workspaceId: string) {
   const workspace = await dependencies.runtimeService.getWorkspace(workspaceId);
   const ownership = await dependencies.resolveWorkspaceOwnership?.(workspaceId);
+  const resolvedOwnerBaseUrl = normalizeSandboxOwnerBaseUrl(
+    ownership?.ownerBaseUrl ??
+      ((ownership?.isLocalOwner ?? true) ? dependencies.localOwnerBaseUrl : undefined)
+  );
 
   return sandboxSchema.parse({
     id: workspace.id,
@@ -181,7 +243,7 @@ async function buildSandboxResponse(dependencies: AppDependencies, workspaceId: 
     createdAt: workspace.createdAt,
     updatedAt: workspace.updatedAt,
     ...(ownership?.ownerWorkerId ? { ownerWorkerId: ownership.ownerWorkerId } : {}),
-    ...(ownership?.ownerBaseUrl ? { ownerBaseUrl: ownership.ownerBaseUrl } : {})
+    ...(resolvedOwnerBaseUrl ? { ownerBaseUrl: resolvedOwnerBaseUrl } : {})
   });
 }
 
@@ -508,19 +570,25 @@ function registerSandboxCoreRoutes(
         ...(input.serviceName ? { serviceName: input.serviceName } : {}),
         workspaceId: input.workspaceId
       };
-      const workspace = await dependencies.runtimeService.createWorkspace({
-        input: createWorkspaceInput as typeof createWorkspaceInput & {
-          workspaceId: string;
-        }
-      });
-      if (ownerId) {
-        await dependencies.assignWorkspacePlacementUser?.({
-          workspaceId: workspace.id,
-          userId: ownerId,
-          overwrite: true
+      const reservedPlacement = await reserveOwnerScopedWorkspacePlacement(dependencies, ownerId, input.workspaceId);
+      try {
+        const workspace = await dependencies.runtimeService.createWorkspace({
+          input: createWorkspaceInput as typeof createWorkspaceInput & {
+            workspaceId: string;
+          }
         });
+        if (ownerId && workspace.id !== reservedPlacement.workspaceId) {
+          await dependencies.assignWorkspacePlacementUser?.({
+            workspaceId: workspace.id,
+            userId: ownerId,
+            overwrite: true
+          });
+        }
+        return reply.status(201).send(await buildSandboxResponse(dependencies, workspace.id));
+      } catch (error) {
+        await reservedPlacement.release();
+        throw error;
       }
-      return reply.status(201).send(await buildSandboxResponse(dependencies, workspace.id));
     }
 
     if (input.rootPath) {
@@ -548,23 +616,41 @@ function registerSandboxCoreRoutes(
       throw new AppError(501, "sandbox_creation_unavailable", "Sandbox creation is not available in single-workspace mode.");
     }
 
-    const workspace = await dependencies.runtimeService.createWorkspace({
-      input: {
-        name: input.name as string,
-        blueprint: input.blueprint as string,
-        executionPolicy: input.executionPolicy,
-        ...(input.externalRef ? { externalRef: input.externalRef } : {}),
-        ...(input.serviceName ? { serviceName: input.serviceName } : {})
-      }
-    });
-    if (ownerId) {
-      await dependencies.assignWorkspacePlacementUser?.({
-        workspaceId: workspace.id,
-        userId: ownerId,
-        overwrite: true
+    const reservedPlacement = await reserveOwnerScopedWorkspacePlacement(
+      dependencies,
+      ownerId,
+      ownerId ? createId("ws") : undefined
+    );
+    try {
+      const workspace = await dependencies.runtimeService.createWorkspace({
+        input: {
+          name: input.name as string,
+          blueprint: input.blueprint as string,
+          executionPolicy: input.executionPolicy,
+          ...(input.externalRef ? { externalRef: input.externalRef } : {}),
+          ...(input.serviceName ? { serviceName: input.serviceName } : {}),
+          ...(reservedPlacement.workspaceId ? { workspaceId: reservedPlacement.workspaceId } : {})
+        } as {
+          name: string;
+          blueprint: string;
+          executionPolicy: "local" | "container" | "remote_runner";
+          externalRef?: string | undefined;
+          serviceName?: string | undefined;
+          workspaceId?: string | undefined;
+        }
       });
+      if (ownerId && workspace.id !== reservedPlacement.workspaceId) {
+        await dependencies.assignWorkspacePlacementUser?.({
+          workspaceId: workspace.id,
+          userId: ownerId,
+          overwrite: true
+        });
+      }
+      return reply.status(201).send(await buildSandboxResponse(dependencies, workspace.id));
+    } catch (error) {
+      await reservedPlacement.release();
+      throw error;
     }
-    return reply.status(201).send(await buildSandboxResponse(dependencies, workspace.id));
   });
 
   app.get(`${prefix}/sandboxes/:sandboxId`, async (request, reply) => {

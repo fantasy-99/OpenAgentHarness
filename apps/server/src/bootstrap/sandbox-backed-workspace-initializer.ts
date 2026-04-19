@@ -8,7 +8,7 @@ import {
   type DiscoveredAgent,
   type PlatformModelRegistry
 } from "@oah/config";
-import { createSandboxHttpClient, type CreateWorkspaceRequest } from "@oah/api-contracts";
+import type { CreateWorkspaceRequest } from "@oah/api-contracts";
 import { createId, type WorkspaceInitializationResult } from "@oah/runtime-core";
 
 import type { SandboxHost } from "./sandbox-host.js";
@@ -60,7 +60,9 @@ async function uploadWorkspaceSeed(input: {
 
   try {
     await input.sandboxHost.workspaceFileSystem.stat(lease.workspace.rootPath).catch(async () => {
-      await input.sandboxHost.workspaceFileSystem.mkdir(lease.workspace.rootPath, { recursive: true });
+      if (lease.workspace.rootPath !== SANDBOX_WORKSPACE_ROOT) {
+        await input.sandboxHost.workspaceFileSystem.mkdir(lease.workspace.rootPath, { recursive: true });
+      }
     });
     await uploadDirectoryTree({
       currentLocalPath: input.stagingWorkspaceRoot,
@@ -109,33 +111,6 @@ function createSandboxSeedWorkspace(input: {
   };
 }
 
-function parseSandboxHttpBaseUrl(input: string): { baseUrl: string; routePrefix: "/api/v1" | "/internal/v1" | "" } {
-  const trimmed = input.trim();
-  try {
-    const url = new URL(trimmed);
-    const routePrefix = url.pathname.endsWith("/internal/v1")
-      ? "/internal/v1"
-      : url.pathname.endsWith("/api/v1")
-        ? "/api/v1"
-        : "";
-    const normalizedPath = routePrefix ? url.pathname.slice(0, -routePrefix.length).replace(/\/+$/u, "") : url.pathname.replace(/\/+$/u, "");
-    return {
-      baseUrl: `${url.origin}${normalizedPath}`,
-      routePrefix
-    };
-  } catch {
-    const routePrefix = trimmed.endsWith("/internal/v1")
-      ? "/internal/v1"
-      : trimmed.endsWith("/api/v1")
-        ? "/api/v1"
-        : "";
-    return {
-      baseUrl: routePrefix ? trimmed.slice(0, -routePrefix.length).replace(/\/+$/u, "") : trimmed.replace(/\/+$/u, ""),
-      routePrefix
-    };
-  }
-}
-
 export function createSandboxBackedWorkspaceInitializer(options: {
   blueprintDir: string;
   platformToolDir: string;
@@ -177,58 +152,6 @@ export function createSandboxBackedWorkspaceInitializer(options: {
           platformSkillDir: options.platformSkillDir,
           platformToolDir: options.toolDir
         });
-
-        if (options.sandboxHost.providerKind === "self_hosted" && options.selfHosted) {
-          const { baseUrl, routePrefix } = parseSandboxHttpBaseUrl(options.selfHosted.baseUrl);
-          const mapRequestPath = (requestPath: string) =>
-            routePrefix ? requestPath.replace(/^\/api\/v1(?=\/|$)/u, routePrefix) : requestPath;
-          const sandboxClient = createSandboxHttpClient({
-            async requestJson<T>(requestPath: string, init?: RequestInit) {
-              const headers = new Headers(options.selfHosted?.headers);
-              const inputHeaders = new Headers(init?.headers);
-              for (const [name, value] of inputHeaders.entries()) {
-                headers.set(name, value);
-              }
-
-              const response = await fetch(`${baseUrl}${mapRequestPath(requestPath)}`, {
-                ...init,
-                headers
-              });
-              const raw = await response.text();
-              if (!response.ok) {
-                throw new Error(raw || `Sandbox backend request failed with status ${response.status}.`);
-              }
-
-              return JSON.parse(raw) as T;
-            },
-            async requestBytes() {
-              throw new Error("Self-hosted sandbox bootstrap does not use byte transport during workspace initialization.");
-            }
-          });
-
-          await sandboxClient.createSandbox({
-            workspaceId,
-            name: input.name,
-            blueprint: input.blueprint,
-            ...(input.ownerId ? { ownerId: input.ownerId } : {}),
-            ...(input.serviceName ? { serviceName: input.serviceName } : {}),
-            executionPolicy: input.executionPolicy ?? "local"
-          });
-
-          await uploadWorkspaceSeed({
-            workspaceId,
-            request: input,
-            initialized: discovered,
-            stagingWorkspaceRoot,
-            sandboxHost: options.sandboxHost
-          });
-
-          return {
-            ...discovered,
-            id: workspaceId,
-            rootPath: SANDBOX_WORKSPACE_ROOT
-          };
-        }
 
         await uploadWorkspaceSeed({
           workspaceId,

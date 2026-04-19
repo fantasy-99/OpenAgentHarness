@@ -19,16 +19,16 @@ afterEach(async () => {
 
 async function readSseEvents(
   response: Response,
-  stopWhen: (events: Array<{ event: string; data: Record<string, unknown>; cursor?: string }>) => boolean
-): Promise<Array<{ event: string; data: Record<string, unknown>; cursor?: string }>> {
+  stopWhen: (events: Array<{ event: string; data: Record<string, unknown>; cursor?: string; createdAt?: string }>) => boolean
+): Promise<Array<{ event: string; data: Record<string, unknown>; cursor?: string; createdAt?: string }>> {
   const reader = response.body?.getReader();
   if (!reader) {
     throw new Error("Expected SSE response body.");
   }
 
   const decoder = new TextDecoder();
-  const events: Array<{ event: string; data: Record<string, unknown>; cursor?: string }> = [];
-  const frame: { event?: string; data?: string; cursor?: string } = {};
+  const events: Array<{ event: string; data: Record<string, unknown>; cursor?: string; createdAt?: string }> = [];
+  const frame: { event?: string; data?: string; cursor?: string; createdAt?: string } = {};
   let buffer = "";
 
   while (true) {
@@ -52,11 +52,13 @@ async function readSseEvents(
           events.push({
             event: frame.event,
             data: frame.data ? (JSON.parse(frame.data) as Record<string, unknown>) : {},
-            ...(frame.cursor ? { cursor: frame.cursor } : {})
+            ...(frame.cursor ? { cursor: frame.cursor } : {}),
+            ...(frame.createdAt ? { createdAt: frame.createdAt } : {})
           });
           frame.event = undefined;
           frame.data = undefined;
           frame.cursor = undefined;
+          frame.createdAt = undefined;
 
           if (stopWhen(events)) {
             await reader.cancel();
@@ -82,6 +84,11 @@ async function readSseEvents(
 
       if (line.startsWith("id: ")) {
         frame.cursor = line.slice("id: ".length);
+        continue;
+      }
+
+      if (line.startsWith("createdAt: ")) {
+        frame.createdAt = line.slice("createdAt: ".length);
       }
     }
   }
@@ -152,5 +159,6 @@ describe("session event SSE route", () => {
 
     expect(events.map((event) => event.event)).toEqual(["run.queued", "run.started"]);
     expect(events.map((event) => event.cursor)).toEqual(["1", "2"]);
+    expect(events.map((event) => event.createdAt)).toEqual([backlogEvent.createdAt, liveEvent.createdAt]);
   });
 });

@@ -3294,6 +3294,10 @@ describe("runtime service", () => {
     expect(messageText(backgroundMessage)).toContain("subagent_name: researcher");
     expect(messageText(backgroundMessage)).toContain("description: Research in background");
     expect(messageText(backgroundMessage)).toContain("task_id:");
+    expect(backgroundMessage?.metadata).toMatchObject({
+      toolStatus: "started",
+      toolSourceType: "agent"
+    });
     expect(messageText(completionMessage)).toContain("task_id:");
     expect(messageText(completionMessage)).toContain("run_id:");
     expect(messageText(completionMessage)).toContain("status: completed");
@@ -3304,6 +3308,19 @@ describe("runtime service", () => {
       delegatedUpdate: "completed",
       toolStatus: "completed",
       toolSourceType: "agent"
+    });
+
+    const events = await runtimeService.listSessionEvents(session.id, undefined, accepted.runId);
+    expect(
+      events.find(
+        (event) =>
+          event.event === "tool.completed" && event.data.toolCallId === (backgroundMessage ? messageToolCallId(backgroundMessage) : undefined)
+      )?.data
+    ).toMatchObject({
+      toolName: "SubAgent",
+      metadata: {
+        toolStatus: "started"
+      }
     });
   });
 
@@ -4489,6 +4506,10 @@ describe("runtime service", () => {
       return run.status === "completed";
     });
 
+    await expect(runtimeService.getRun(accepted.runId)).resolves.toMatchObject({
+      triggerType: "api_action"
+    });
+
     const page = await runtimeService.listSessionMessages(session.id, 20);
     const expectedToolCallId = `action-run:${accepted.runId}:debug.echo`;
     expect(page.items.map((message) => message.role)).toEqual(["assistant", "tool"]);
@@ -4543,6 +4564,132 @@ describe("runtime service", () => {
       sourceType: "action",
       retryPolicy: "safe"
     });
+    expect(runSteps.items.some((step) => step.stepType === "model_call")).toBe(false);
+  });
+
+  it("executes user-triggered session-attached action runs without entering the model loop", async () => {
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new RuntimeService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_manual_action_session_stream",
+      name: "manual-action-session-stream",
+      rootPath: "/tmp/manual-action-session-stream",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "builder",
+      settings: {
+        defaultAgent: "builder",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        builder: {
+          name: "builder",
+          mode: "primary",
+          prompt: "Run actions directly when asked.",
+          tools: {
+            native: [],
+            actions: ["debug.echo"],
+            skills: [],
+            external: []
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {
+        "debug.echo": {
+          name: "debug.echo",
+          description: "Echo text",
+          callableByApi: true,
+          callableByUser: true,
+          exposeToLlm: false,
+          retryPolicy: "safe",
+          directory: "/tmp",
+          entry: {
+            command: "printf manual-session-action-ok"
+          }
+        }
+      },
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_manual_action_session_stream",
+        agents: [{ name: "builder", mode: "primary", source: "workspace" }],
+        models: [],
+        actions: [
+          {
+            name: "debug.echo",
+            description: "Echo text",
+            callableByApi: true,
+            callableByUser: true,
+            exposeToLlm: false,
+            retryPolicy: "safe"
+          }
+        ],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: "project_manual_action_session_stream",
+      caller,
+      input: {}
+    });
+
+    const accepted = await runtimeService.triggerActionRun({
+      workspaceId: "project_manual_action_session_stream",
+      sessionId: session.id,
+      actionName: "debug.echo",
+      caller,
+      triggerSource: "user"
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    await expect(runtimeService.getRun(accepted.runId)).resolves.toMatchObject({
+      triggerType: "manual_action",
+      metadata: {
+        actionName: "debug.echo",
+        stdout: "manual-session-action-ok"
+      }
+    });
+
+    const page = await runtimeService.listSessionMessages(session.id, 20);
+    const expectedToolCallId = `action-run:${accepted.runId}:debug.echo`;
+    expect(page.items.map((message) => message.role)).toEqual(["assistant", "tool"]);
+    expect(hasToolCallPart(page.items[0], "debug.echo", expectedToolCallId)).toBe(true);
+    expect(hasToolResultPart(page.items[1], "debug.echo", expectedToolCallId)).toBe(true);
+    expect(messageText(page.items[1])).toBe("manual-session-action-ok");
+
+    const runSteps = await runtimeService.listRunSteps(accepted.runId);
+    expect(runSteps.items.some((step) => step.stepType === "tool_call" && step.name === "debug.echo")).toBe(true);
+    expect(runSteps.items.some((step) => step.stepType === "model_call")).toBe(false);
   });
 
   it("persists failed tool output for session-attached action runs", async () => {
@@ -4872,10 +5019,16 @@ describe("runtime service", () => {
       status: "cancellation_requested"
     });
 
+    await expect(runtimeService.getRun(accepted.runId)).resolves.toMatchObject({
+      triggerType: "api_action",
+      status: "timed_out",
+      errorCode: "action_timed_out"
+    });
+
     const runSteps = await runtimeService.listRunSteps(accepted.runId);
     expect(runSteps.items.some((step) => step.stepType === "tool_call" && step.name === "debug.sleep")).toBe(true);
     expect(runSteps.items.find((step) => step.name === "debug.sleep")?.status).toBe("failed");
-    expect(runSteps.items.some((step) => step.stepType === "system" && step.name === "run.timed_out")).toBe(true);
+    expect(runSteps.items.filter((step) => step.stepType === "system" && step.name === "run.timed_out")).toHaveLength(1);
   });
 
   it("enforces agent run_timeout_seconds with a terminal timed_out status", async () => {
@@ -6356,6 +6509,17 @@ describe("runtime service", () => {
           entry: {
             command: "printf ok"
           }
+        },
+        "debug.hidden": {
+          name: "debug.hidden",
+          description: "Hidden",
+          callableByApi: true,
+          callableByUser: true,
+          exposeToLlm: false,
+          directory: "/tmp",
+          entry: {
+            command: "printf hidden"
+          }
         }
       },
       skills: {
@@ -6384,7 +6548,10 @@ describe("runtime service", () => {
           { name: "researcher", mode: "subagent", source: "workspace" }
         ],
         models: [{ ref: "platform/openai-default", name: "openai-default", source: "platform", provider: "openai" }],
-        actions: [{ name: "debug.echo", description: "Echo", callableByApi: true, callableByUser: true, exposeToLlm: true }],
+        actions: [
+          { name: "debug.echo", description: "Echo", callableByApi: true, callableByUser: true, exposeToLlm: true },
+          { name: "debug.hidden", description: "Hidden", callableByApi: true, callableByUser: true, exposeToLlm: false }
+        ],
         skills: [{ name: "repo-explorer", description: "Explore the repository.", exposeToLlm: true }],
         tools: [{ name: "docs-server", transportType: "stdio" }],
         hooks: [],
@@ -6422,6 +6589,8 @@ describe("runtime service", () => {
     expect(composedSystemPrompt).toContain("Repository conventions live here.");
     expect(composedSystemPrompt).toContain("<available_actions>");
     expect(composedSystemPrompt).toContain("call `run_action`");
+    expect(composedSystemPrompt).toContain("debug.echo");
+    expect(composedSystemPrompt).not.toContain("debug.hidden");
     expect(composedSystemPrompt).toContain("<available_skills>");
     expect(composedSystemPrompt).toContain("call `Skill`");
     expect(composedSystemPrompt).toContain("<available_agent_switches");

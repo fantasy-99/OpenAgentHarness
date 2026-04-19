@@ -96,6 +96,10 @@ async function waitForMinioHealthy() {
   throw new Error("Timed out waiting for MinIO to become healthy.");
 }
 
+function resetLocalRedisCoordinationState() {
+  run("docker", ["compose", "-f", composeFile, "exec", "-T", "redis", "redis-cli", "FLUSHALL"]);
+}
+
 function ensureTestRoot() {
   if (!process.env.OAH_TEST_ROOT) {
     console.error("OAH_TEST_ROOT is required. Example:");
@@ -134,6 +138,32 @@ function prepareDockerServerConfigs() {
     );
   }
 
+  const localSandboxEmbeddedWorkers =
+    sourceConfig.workers?.embedded && typeof sourceConfig.workers.embedded === "object"
+      ? sourceConfig.workers.embedded
+      : {
+          min_count: 2,
+          max_count: 4,
+          scale_interval_ms: 1000,
+          scale_up_window: 2,
+          scale_down_window: 2,
+          cooldown_ms: 1000,
+          reserved_capacity_for_subagent: 1
+        };
+  const configuredSandboxFleet = sourceConfig.sandbox?.fleet;
+  const parsedReplicaOverride = Number.parseInt(process.env.OAH_LOCAL_SANDBOX_REPLICAS || "", 10);
+  const sandboxReplicaCount = Number.isFinite(parsedReplicaOverride) && parsedReplicaOverride > 0
+    ? parsedReplicaOverride
+    : Math.max(1, configuredSandboxFleet?.max_count ?? 4);
+  const initialSandboxReplicaCount = Math.max(
+    0,
+    apiInt(
+      sourceConfig.workers?.standalone?.min_replicas,
+      configuredSandboxFleet?.min_count,
+      1
+    )
+  );
+
   const apiServerConfig = {
     ...sourceConfig,
     server: {
@@ -152,7 +182,30 @@ function prepareDockerServerConfigs() {
   };
 
   const controllerConfig = {
-    ...apiServerConfig
+    ...apiServerConfig,
+    workers: {
+      ...(apiServerConfig.workers ?? {}),
+      standalone: {
+        ...(apiServerConfig.workers?.standalone ?? {}),
+        min_replicas: apiServerConfig.workers?.standalone?.min_replicas ?? (configuredSandboxFleet?.min_count ?? 1),
+        max_replicas: apiServerConfig.workers?.standalone?.max_replicas ?? sandboxReplicaCount
+      },
+      controller: {
+        ...(apiServerConfig.workers?.controller ?? {}),
+        scale_target: {
+          ...(apiServerConfig.workers?.controller?.scale_target ?? {}),
+          type: "docker_compose",
+          allow_scale_down: apiServerConfig.workers?.controller?.scale_target?.allow_scale_down ?? true,
+          docker_compose: {
+            ...(apiServerConfig.workers?.controller?.scale_target?.docker_compose ?? {}),
+            compose_file: composeFile,
+            project_name: composeProjectName,
+            service: "oah-sandbox",
+            command: "docker"
+          }
+        }
+      }
+    }
   };
 
   const sandboxServerConfig = {
@@ -161,6 +214,10 @@ function prepareDockerServerConfigs() {
       ...(sourceConfig.server ?? {}),
       host: "0.0.0.0",
       port: 8787
+    },
+    workers: {
+      ...(sourceConfig.workers ?? {}),
+      embedded: localSandboxEmbeddedWorkers
     },
     sandbox: {
       ...(sourceConfig.sandbox ?? {}),
@@ -176,6 +233,21 @@ function prepareDockerServerConfigs() {
   process.env.OAH_DOCKER_API_CONFIG = generatedApiConfigPath;
   process.env.OAH_DOCKER_CONTROLLER_CONFIG = generatedControllerConfigPath;
   process.env.OAH_DOCKER_SANDBOX_CONFIG = generatedSandboxConfigPath;
+  process.env.OAH_LOCAL_SANDBOX_REPLICA_COUNT = String(sandboxReplicaCount);
+  process.env.OAH_LOCAL_SANDBOX_INITIAL_REPLICA_COUNT = String(initialSandboxReplicaCount);
+  process.env.OAH_LOCAL_REPO_ROOT = repoRoot;
+  process.env.OAH_LOCAL_TEST_ROOT = testRoot;
+  process.env.COMPOSE_PROJECT_NAME = composeProjectName;
+}
+
+function apiInt(...values) {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return Math.trunc(value);
+    }
+  }
+
+  return 0;
 }
 
 function objectStorageBacksManagedWorkspaces(objectStorage) {
@@ -293,13 +365,31 @@ async function up() {
 
   run("docker", ["compose", "-f", composeFile, "up", "-d", "postgres", "redis", "minio"]);
   await waitForMinioHealthy();
+  resetLocalRedisCoordinationState();
 
   run("pnpm", ["storage:sync"]);
   recreateReadonlyObjectStorageVolumes();
 
+  const initialSandboxReplicaCount = Math.max(
+    0,
+    Number.parseInt(process.env.OAH_LOCAL_SANDBOX_INITIAL_REPLICA_COUNT || "", 10) || 0
+  );
+  const sandboxScaleArgs = initialSandboxReplicaCount > 0 ? ["--scale", `oah-sandbox=${initialSandboxReplicaCount}`] : [];
+  const appServices =
+    initialSandboxReplicaCount > 0 ? ["oah-sandbox", "oah-controller", "oah-api"] : ["oah-controller", "oah-api"];
+
   if (["1", "true", "yes"].includes((process.env.OAH_SKIP_BUILD || "").toLowerCase())) {
     console.warn("OAH_SKIP_BUILD is set. Starting OAH with --no-build.");
-    run("docker", ["compose", "-f", composeFile, "up", "-d", "--no-build", "oah-sandbox", "oah-controller", "oah-api"]);
+    run("docker", [
+      "compose",
+      "-f",
+      composeFile,
+      "up",
+      "-d",
+      "--no-build",
+      ...sandboxScaleArgs,
+      ...appServices
+    ]);
     return;
   }
 
@@ -310,9 +400,8 @@ async function up() {
     "up",
     "-d",
     "--build",
-    "oah-sandbox",
-    "oah-controller",
-    "oah-api"
+    ...sandboxScaleArgs,
+    ...appServices
   ]);
   if (buildResult.status === 0) {
     return;
@@ -323,7 +412,16 @@ async function up() {
   }
 
   console.warn("Build failed, but a local openagentharness-oah image exists. Falling back to --no-build.");
-  run("docker", ["compose", "-f", composeFile, "up", "-d", "--no-build", "oah-sandbox", "oah-controller", "oah-api"]);
+  run("docker", [
+    "compose",
+    "-f",
+    composeFile,
+    "up",
+    "-d",
+    "--no-build",
+    ...sandboxScaleArgs,
+    ...appServices
+  ]);
 }
 
 function down() {

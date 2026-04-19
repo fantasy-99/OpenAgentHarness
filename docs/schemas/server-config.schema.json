@@ -499,7 +499,8 @@
                   "type": "string",
                   "enum": [
                     "noop",
-                    "kubernetes"
+                    "kubernetes",
+                    "docker_compose"
                   ]
                 },
                 "allow_scale_down": {
@@ -535,6 +536,28 @@
                     },
                     "skip_tls_verify": {
                       "type": "boolean"
+                    }
+                  }
+                },
+                "docker_compose": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "compose_file": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "project_name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "service": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "command": {
+                      "type": "string",
+                      "minLength": 1
                     }
                   }
                 }

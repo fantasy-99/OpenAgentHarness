@@ -21,7 +21,7 @@ import {
   workspaceFileUploadQuerySchema,
   workspacePageSchema
 } from "@oah/api-contracts";
-import { AppError } from "@oah/runtime-core";
+import { AppError, createId } from "@oah/runtime-core";
 
 import { assertWorkspaceAccess, createParamsSchema, sendError, toCallerContext } from "../context.js";
 import {
@@ -66,6 +66,37 @@ function projectWorkspacePageForPublicApi(
   return {
     ...page,
     items: page.items.map((workspace) => projectWorkspaceForPublicApi(dependencies, workspace))
+  };
+}
+
+async function reserveOwnerScopedWorkspacePlacement(
+  dependencies: Pick<AppDependencies, "assignWorkspacePlacementUser" | "releaseWorkspacePlacement" | "sandboxHostProviderKind">,
+  ownerId: string | undefined,
+  workspaceId: string | undefined
+): Promise<{ workspaceId: string | undefined; release: () => Promise<void> }> {
+  if (!ownerId || !workspaceId || dependencies.sandboxHostProviderKind !== "self_hosted") {
+    return {
+      workspaceId,
+      async release() {
+        return undefined;
+      }
+    };
+  }
+
+  await dependencies.assignWorkspacePlacementUser?.({
+    workspaceId,
+    userId: ownerId,
+    overwrite: true
+  });
+
+  return {
+    workspaceId,
+    async release() {
+      await dependencies.releaseWorkspacePlacement?.({
+        workspaceId,
+        state: "evicted"
+      });
+    }
   };
 }
 
@@ -366,16 +397,32 @@ export function registerWorkspaceRoutes(
     }
 
     const input = createWorkspaceRequestSchema.parse(request.body);
-    const workspace = await dependencies.runtimeService.createWorkspace({ input });
     const ownerId = resolveOwnerId(input);
-    if (ownerId) {
-      await dependencies.assignWorkspacePlacementUser?.({
-        workspaceId: workspace.id,
-        userId: ownerId,
-        overwrite: true
+    const reservedPlacement = await reserveOwnerScopedWorkspacePlacement(
+      dependencies,
+      ownerId,
+      ownerId ? createId("ws") : undefined
+    );
+
+    try {
+      const workspace = await dependencies.runtimeService.createWorkspace({
+        input: {
+          ...input,
+          ...(reservedPlacement.workspaceId ? { workspaceId: reservedPlacement.workspaceId } : {})
+        } as typeof input & { workspaceId?: string | undefined }
       });
+      if (ownerId && workspace.id !== reservedPlacement.workspaceId) {
+        await dependencies.assignWorkspacePlacementUser?.({
+          workspaceId: workspace.id,
+          userId: ownerId,
+          overwrite: true
+        });
+      }
+      return reply.status(201).send(projectWorkspaceForPublicApi(dependencies, workspace));
+    } catch (error) {
+      await reservedPlacement.release();
+      throw error;
     }
-    return reply.status(201).send(projectWorkspaceForPublicApi(dependencies, workspace));
   });
 
   app.post("/api/v1/workspaces/import", async (request, reply) => {

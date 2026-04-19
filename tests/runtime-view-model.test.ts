@@ -434,6 +434,86 @@ describe("buildRuntimeViewModel", () => {
     });
   });
 
+  it("preserves started status for background tool launch messages", () => {
+    const viewModel = buildRuntimeViewModel({
+      messages: [],
+      runSteps: [createModelCallStep()],
+      deferredEvents: [],
+      liveMessagesByKey: {
+        "tool-call:call_background": {
+          toolCallId: "call_background",
+          runId: "run_1",
+          sessionId: "ses_1",
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "call_background",
+              toolName: "SubAgent",
+              input: {
+                description: "Research in background",
+                run_in_background: true
+              }
+            }
+          ],
+          metadata: {
+            toolStatus: "started",
+            toolSourceType: "agent",
+            toolDurationMs: 120
+          },
+          createdAt: "2026-04-07T00:00:03.000Z"
+        },
+        "tool-result:call_background": {
+          toolCallId: "call_background",
+          runId: "run_1",
+          sessionId: "ses_1",
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "call_background",
+              toolName: "SubAgent",
+              output: {
+                type: "text",
+                value: "started: true\nsubagent_name: researcher\ntask_id: ses_child"
+              }
+            }
+          ],
+          metadata: {
+            toolStatus: "started",
+            toolSourceType: "agent",
+            toolDurationMs: 120
+          },
+          createdAt: "2026-04-07T00:00:04.000Z"
+        }
+      },
+      selectedTraceId: "",
+      selectedMessageId: "",
+      selectedStepId: "",
+      selectedEventId: "",
+      sessionId: "ses_1"
+    });
+
+    expect(viewModel.messageFeed.map((message) => message.id)).toEqual([
+      "live:tool-call:call_background",
+      "live:tool-result:call_background"
+    ]);
+    expect(viewModel.messageFeed[0]).toMatchObject({
+      metadata: {
+        toolStatus: "started",
+        toolSourceType: "agent",
+        toolDurationMs: 120
+      }
+    });
+    expect(viewModel.messageFeed[1]).toMatchObject({
+      metadata: {
+        toolStatus: "started",
+        toolSourceType: "agent",
+        toolDurationMs: 120
+      }
+    });
+  });
+
   it("projects interrupted assistant text into separate bubbles using session events", () => {
     const userMessage: Message = {
       id: "msg_user",

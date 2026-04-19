@@ -8,6 +8,7 @@ import {
   resolveEmbeddedWorkerPoolConfig,
   resolveWorkspaceMaterializationConfig,
   resolveWorkerMode,
+  shouldManageWorkspaceRegistry,
   shouldStartEmbeddedWorker
 } from "../apps/server/src/bootstrap.ts";
 import {
@@ -144,6 +145,40 @@ describe("server runtime process modes", () => {
       enablePlatformModelLiveReload: false,
       enableWorkerRuntime: true
     });
+  });
+
+  it("limits workspace registry management to multi-workspace api runtimes", () => {
+    expect(
+      shouldManageWorkspaceRegistry({
+        processKind: "api",
+        hasSingleWorkspace: false,
+        remoteSandboxProvider: false
+      })
+    ).toBe(true);
+
+    expect(
+      shouldManageWorkspaceRegistry({
+        processKind: "worker",
+        hasSingleWorkspace: false,
+        remoteSandboxProvider: false
+      })
+    ).toBe(false);
+
+    expect(
+      shouldManageWorkspaceRegistry({
+        processKind: "api",
+        hasSingleWorkspace: false,
+        remoteSandboxProvider: true
+      })
+    ).toBe(false);
+
+    expect(
+      shouldManageWorkspaceRegistry({
+        processKind: "api",
+        hasSingleWorkspace: true,
+        remoteSandboxProvider: false
+      })
+    ).toBe(false);
   });
 
   it("summarizes worker runtime status from registry entries", () => {

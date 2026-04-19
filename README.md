@@ -151,6 +151,8 @@ pnpm local:down                                                    # Stop local 
 pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/worker.ts -- --config ./server.example.yaml  # Advanced: start a standalone worker (typically sandbox-hosted)
 ```
 
+If `server.docker.yaml` omits `workers.embedded`, `pnpm local:up` now seeds the sandbox-local worker pool with `min_count: 2` and `max_count: 4`, so background tools and subagents can overlap by default instead of collapsing to a single execution slot.
+
 ## Who Is It For?
 
 **Good fit:**

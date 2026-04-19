@@ -465,14 +465,13 @@ workers:
         retry_interval_ms: 2000
         identity: controller-a
     scale_target:
-      type: kubernetes
+      type: docker_compose
       allow_scale_down: false
-      kubernetes:
-        namespace: open-agent-harness
-        label_selector: app.kubernetes.io/component=worker
-        api_url: https://kubernetes.default.svc
-        token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
-        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      docker_compose:
+        compose_file: /tmp/oah/docker-compose.local.yml
+        project_name: openagentharness
+        service: oah-sandbox
+        command: docker-compose
 llm:
   default_model: openai-default
 `,
@@ -508,14 +507,13 @@ llm:
         }
       },
       scale_target: {
-        type: "kubernetes",
+        type: "docker_compose",
         allow_scale_down: false,
-        kubernetes: {
-          namespace: "open-agent-harness",
-          label_selector: "app.kubernetes.io/component=worker",
-          api_url: "https://kubernetes.default.svc",
-          token_file: "/var/run/secrets/kubernetes.io/serviceaccount/token",
-          ca_file: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+        docker_compose: {
+          compose_file: "/tmp/oah/docker-compose.local.yml",
+          project_name: "openagentharness",
+          service: "oah-sandbox",
+          command: "docker-compose"
         }
       }
     });

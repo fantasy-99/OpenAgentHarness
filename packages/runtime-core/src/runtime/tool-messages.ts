@@ -13,7 +13,7 @@ import type { ToolErrorContentPart } from "./model-call-serialization.js";
 
 type AssistantMessage = Extract<Message, { role: "assistant" }>;
 type ToolMessageMetadata = {
-  toolStatus: "running" | "completed" | "failed";
+  toolStatus: "running" | "started" | "completed" | "failed";
   toolSourceType?: string | undefined;
   toolDurationMs?: number | undefined;
 };

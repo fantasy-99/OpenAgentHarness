@@ -16,7 +16,7 @@ interface RunExecutionContextLike {
 }
 
 type ToolMessageMetadata = {
-  toolStatus: "completed" | "failed";
+  toolStatus: "started" | "completed" | "failed";
   toolSourceType: "action" | "skill" | "agent" | "tool" | "native";
   toolDurationMs?: number | undefined;
 };
@@ -79,6 +79,26 @@ function buildAgentEventMetadata(workspace: WorkspaceRecord, agentName: string):
     effectiveAgentName: agentName,
     ...(agentMode ? { agentMode } : {})
   };
+}
+
+function readToolResultText(output: unknown): string | undefined {
+  if (typeof output === "string") {
+    return output;
+  }
+
+  if (
+    isRecord(output) &&
+    (output.type === "text" || output.type === "error-text") &&
+    typeof output.value === "string"
+  ) {
+    return output.value;
+  }
+
+  return undefined;
+}
+
+function inferSuccessfulToolMessageStatus(output: unknown): ToolMessageMetadata["toolStatus"] {
+  return /^started:\s*true(?:\s|$)/mu.test(readToolResultText(output) ?? "") ? "started" : "completed";
 }
 
 export interface ModelStreamPlanningCapabilities<TModelInput extends ModelExecutionInputSnapshot> {
@@ -402,9 +422,10 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
         const toolStep = this.#toolCallSteps.get(toolResult.toolCallId);
         const toolAgentName = toolStep?.agentName ?? this.#executionContext.currentAgentName;
         const toolSourceType = this.#serialization.resolveToolSourceType(toolResult.toolName);
+        const toolStatus = inferSuccessfulToolMessageStatus(toolResult.output);
         const retryPolicy = toolStep ? this.#steps.runStepRetryPolicy(toolStep) : undefined;
         this.#toolMessageMetadataByCallId.set(toolResult.toolCallId, {
-          toolStatus: "completed",
+          toolStatus,
           toolSourceType,
           ...(startedAt !== undefined ? { toolDurationMs: Date.now() - startedAt } : {})
         });
@@ -431,7 +452,10 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
             ...(retryPolicy ? { retryPolicy } : {}),
             output: toolResult.output,
             ...(startedAt !== undefined ? { durationMs: Date.now() - startedAt } : {}),
-            metadata: buildAgentEventMetadata(this.#workspace, toolAgentName)
+            metadata: {
+              ...buildAgentEventMetadata(this.#workspace, toolAgentName),
+              toolStatus
+            }
           }
         });
         this.#logger?.debug?.("Runtime tool call finished.", {

@@ -383,10 +383,15 @@ function cooldownRemainingMs(lastChangeAtMs: number | undefined, cooldownMs: num
 export function resolveStandaloneControllerConfig(config: ServerConfig): StandaloneControllerConfig {
   const standalone = config.workers?.standalone;
   const controller = config.workers?.controller;
-  const minReplicas = readPositiveIntEnv("OAH_STANDALONE_WORKER_MIN_REPLICAS", standalone?.min_replicas ?? 1);
+  const sandboxFleet = resolveSandboxFleetConfig(config);
+  const defaultMinReplicas = standalone?.min_replicas ?? (sandboxFleet.managedByController ? sandboxFleet.minCount : 1);
+  const minReplicas = readNonNegativeIntEnv("OAH_STANDALONE_WORKER_MIN_REPLICAS", defaultMinReplicas);
   const maxReplicas = Math.max(
     minReplicas,
-    readPositiveIntEnv("OAH_STANDALONE_WORKER_MAX_REPLICAS", standalone?.max_replicas ?? minReplicas)
+    readPositiveIntEnv(
+      "OAH_STANDALONE_WORKER_MAX_REPLICAS",
+      standalone?.max_replicas ?? (sandboxFleet.managedByController ? Math.max(minReplicas, sandboxFleet.maxCount) : minReplicas)
+    )
   );
 
   return {
@@ -1348,14 +1353,10 @@ export class RedisController {
       this.#placementRegistry?.listAll() ?? Promise.resolve(undefined)
     ]);
     let workspacePlacements = listedWorkspacePlacements;
-    const { fleet, suggestedWorkers, suggestedReplicas } = calculateStandaloneWorkerReplicas({
+    const { fleet, suggestedWorkers, suggestedReplicas: workloadSuggestedReplicas } = calculateStandaloneWorkerReplicas({
       config: this.#config,
       activeWorkers,
       schedulingPressure
-    });
-    const sandboxFleet = summarizeSandboxFleet({
-      placements: workspacePlacements,
-      config: this.#sandboxConfig
     });
     let placementSummary = summarizeWorkspacePlacements(workspacePlacements, activeWorkers);
     let placementPolicy = summarizePlacementPolicy({
@@ -1397,6 +1398,17 @@ export class RedisController {
       });
       placementActionPlan = summarizePlacementActionPlan(placementRecommendations);
     }
+    const sandboxFleet = summarizeSandboxFleet({
+      placements: workspacePlacements,
+      config: this.#sandboxConfig
+    });
+    const placementSuggestedReplicas = sandboxFleet.managedByController
+      ? Math.max(
+          this.#config.minReplicas,
+          Math.min(this.#config.maxReplicas, Math.max(0, sandboxFleet.desiredSandboxes))
+        )
+      : this.#config.minReplicas;
+    const suggestedReplicas = Math.max(workloadSuggestedReplicas, placementSuggestedReplicas);
     const scaleDownTargetReplicas = this.#scaleDownTargetReplicas(suggestedReplicas, fleet.activeReplicas);
     const scaleDownGate =
       scaleDownTargetReplicas < fleet.activeReplicas

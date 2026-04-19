@@ -77,6 +77,7 @@ interface PlatformModelRecord {
 
 interface SseFrame {
   cursor?: string;
+  createdAt?: string;
   event: string;
   data: Record<string, unknown>;
 }
@@ -1342,6 +1343,7 @@ async function consumeSse(
       const lines = chunk.split("\n");
       let event = "message";
       let cursor: string | undefined;
+      let createdAt: string | undefined;
       const dataLines: string[] = [];
 
       for (const line of lines) {
@@ -1352,6 +1354,11 @@ async function consumeSse(
 
         if (line.startsWith("id:")) {
           cursor = line.slice(3).trim();
+          continue;
+        }
+
+        if (line.startsWith("createdAt:")) {
+          createdAt = line.slice("createdAt:".length).trim();
           continue;
         }
 
@@ -1367,7 +1374,8 @@ async function consumeSse(
       onFrame({
         event,
         data: JSON.parse(dataLines.join("\n")) as Record<string, unknown>,
-        ...(cursor ? { cursor } : {})
+        ...(cursor ? { cursor } : {}),
+        ...(createdAt ? { createdAt } : {})
       });
     }
   }

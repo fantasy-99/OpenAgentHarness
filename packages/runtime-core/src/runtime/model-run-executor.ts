@@ -101,7 +101,7 @@ export interface ModelRunExecutorDependencies {
     toolMetadataByCallId?: Map<
       string,
       {
-        toolStatus: "completed" | "failed";
+        toolStatus: "started" | "completed" | "failed";
         toolSourceType: "action" | "skill" | "agent" | "tool" | "native";
         toolDurationMs?: number | undefined;
       }
@@ -118,7 +118,7 @@ export interface ModelRunExecutorDependencies {
     toolMetadataByCallId?: Map<
       string,
       {
-        toolStatus: "completed" | "failed";
+        toolStatus: "started" | "completed" | "failed";
         toolSourceType: "action" | "skill" | "agent" | "tool" | "native";
         toolDurationMs?: number | undefined;
       }

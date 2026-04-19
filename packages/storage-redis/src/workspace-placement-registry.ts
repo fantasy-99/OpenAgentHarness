@@ -111,20 +111,11 @@ export class RedisWorkspacePlacementRegistry implements WorkspacePlacementRegist
       updatedAt: next.updatedAt
     });
 
-    if (!next.userId) {
-      transaction.hDel(key, "userId");
-    }
     if (!next.ownerWorkerId) {
       transaction.hDel(key, "ownerWorkerId");
     }
     if (!next.ownerBaseUrl) {
       transaction.hDel(key, "ownerBaseUrl");
-    }
-    if (!next.preferredWorkerId) {
-      transaction.hDel(key, "preferredWorkerId");
-    }
-    if (!next.preferredWorkerReason) {
-      transaction.hDel(key, "preferredWorkerReason");
     }
     if (!next.sourceKind) {
       transaction.hDel(key, "sourceKind");

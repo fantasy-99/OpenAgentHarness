@@ -93,9 +93,15 @@ export async function startWorkerServer(argv = process.argv.slice(2)): Promise<v
     processKind: "worker"
   });
 
-  const app = createApp(buildAppDependencies(runtime), {
-    surface: "internal_only"
-  });
+  const app = createApp(
+    {
+      ...buildAppDependencies(runtime),
+      ...(runtime.localOwnerBaseUrl ? { localOwnerBaseUrl: runtime.localOwnerBaseUrl } : {})
+    },
+    {
+      surface: "internal_only"
+    }
+  );
 
   app.addHook("onClose", async () => {
     await runtime.close();

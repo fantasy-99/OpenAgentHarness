@@ -25,6 +25,7 @@ import {
   summarizeStandaloneWorkerFleet
 } from "../apps/controller/src/controller.ts";
 import {
+  createDockerComposeWorkerReplicaTarget,
   createKubernetesWorkerReplicaTarget,
   resolveWorkerReplicaTargetConfig
 } from "../apps/controller/src/scale-target.ts";
@@ -795,6 +796,76 @@ describe("controller", () => {
     });
   });
 
+  it("allows controller-managed standalone workers to scale down to zero when configured", () => {
+    const config = resolveStandaloneControllerConfig({
+      server: { host: "127.0.0.1", port: 8787 },
+      storage: { redis_url: "redis://local/0" },
+      sandbox: {
+        provider: "self_hosted",
+        self_hosted: {
+          base_url: "http://oah-sandbox:8787/internal/v1"
+        },
+        fleet: {
+          min_count: 0,
+          max_count: 4
+        }
+      },
+      paths: {
+        workspace_dir: "/tmp/workspaces",
+        blueprint_dir: "/tmp/blueprints",
+        model_dir: "/tmp/models",
+        tool_dir: "/tmp/tools",
+        skill_dir: "/tmp/skills"
+      },
+      workers: {
+        standalone: {
+          min_replicas: 0,
+          max_replicas: 4
+        }
+      },
+      llm: {
+        default_model: "openai-default"
+      }
+    });
+
+    expect(config).toMatchObject({
+      minReplicas: 0,
+      maxReplicas: 4
+    });
+  });
+
+  it("defaults standalone replica bounds from the managed sandbox fleet", () => {
+    const config = resolveStandaloneControllerConfig({
+      server: { host: "127.0.0.1", port: 8787 },
+      storage: { redis_url: "redis://local/0" },
+      sandbox: {
+        provider: "self_hosted",
+        fleet: {
+          min_count: 2,
+          max_count: 5
+        },
+        self_hosted: {
+          base_url: "http://oah-sandbox:8787/internal/v1"
+        }
+      },
+      paths: {
+        workspace_dir: "/tmp/workspaces",
+        blueprint_dir: "/tmp/blueprints",
+        model_dir: "/tmp/models",
+        tool_dir: "/tmp/tools",
+        skill_dir: "/tmp/skills"
+      },
+      llm: {
+        default_model: "openai-default"
+      }
+    });
+
+    expect(config).toMatchObject({
+      minReplicas: 2,
+      maxReplicas: 5
+    });
+  });
+
   it("holds scale-down during cooldown before changing desired replicas", async () => {
     const queue = {
       async getSchedulingPressure() {
@@ -1502,6 +1573,48 @@ describe("controller", () => {
     });
   });
 
+  it("resolves docker-compose scale target settings", () => {
+    const target = resolveWorkerReplicaTargetConfig({
+      server: { host: "127.0.0.1", port: 8787 },
+      storage: { redis_url: "redis://local/0" },
+      paths: {
+        workspace_dir: "/tmp/workspaces",
+        blueprint_dir: "/tmp/blueprints",
+        model_dir: "/tmp/models",
+        tool_dir: "/tmp/tools",
+        skill_dir: "/tmp/skills"
+      },
+      workers: {
+        controller: {
+          scale_target: {
+            type: "docker_compose",
+            allow_scale_down: true,
+            docker_compose: {
+              compose_file: "/tmp/oah/docker-compose.local.yml",
+              project_name: "openagentharness",
+              service: "oah-sandbox",
+              command: "docker"
+            }
+          }
+        }
+      },
+      llm: {
+        default_model: "openai-default"
+      }
+    });
+
+    expect(target).toEqual({
+      type: "docker_compose",
+      allowScaleDown: true,
+      dockerCompose: {
+        composeFile: "/tmp/oah/docker-compose.local.yml",
+        projectName: "openagentharness",
+        service: "oah-sandbox",
+        command: "docker"
+      }
+    });
+  });
+
   it("resolves kubernetes leader election settings", () => {
     const leaderElection = resolveControllerLeaderElectionConfig({
       server: { host: "127.0.0.1", port: 8787 },
@@ -1991,6 +2104,268 @@ describe("controller", () => {
     expect(requests[1]?.headers.authorization).toBe("Bearer test-token");
     expect(requests[1]?.headers["content-type"]).toBe("application/merge-patch+json");
     expect(requests[1]?.body).toBe(JSON.stringify({ spec: { replicas: 4 } }));
+  });
+
+  it("scales docker-compose services up when desired replicas increase", async () => {
+    const commands: Array<{ args: string[]; cwd?: string | undefined }> = [];
+    const target = createDockerComposeWorkerReplicaTarget(
+      {
+        type: "docker_compose",
+        allowScaleDown: true,
+        dockerCompose: {
+          composeFile: "/tmp/oah/docker-compose.local.yml",
+          projectName: "openagentharness",
+          service: "oah-sandbox",
+          command: "docker"
+        }
+      },
+      {
+        command: async (input) => {
+          commands.push(input);
+          if (input.args.includes("ps")) {
+            return {
+              code: 0,
+              stdout: "sandbox-1\nsandbox-2\nsandbox-3\n",
+              stderr: ""
+            };
+          }
+          if (input.args[1] === "inspect") {
+            return {
+              code: 0,
+              stdout: JSON.stringify([
+                {
+                  Id: "sandbox-1",
+                  Name: "/openagentharness-oah-sandbox-1",
+                  State: { Running: true },
+                  Config: {
+                    Labels: {
+                      "com.docker.compose.container-number": "1"
+                    }
+                  }
+                },
+                {
+                  Id: "sandbox-2",
+                  Name: "/openagentharness-oah-sandbox-2",
+                  State: { Running: true },
+                  Config: {
+                    Labels: {
+                      "com.docker.compose.container-number": "2"
+                    }
+                  }
+                },
+                {
+                  Id: "sandbox-3",
+                  Name: "/openagentharness-oah-sandbox-3",
+                  State: { Running: false },
+                  Config: {
+                    Labels: {
+                      "com.docker.compose.container-number": "3"
+                    }
+                  }
+                }
+              ]),
+              stderr: ""
+            };
+          }
+          return {
+            code: 0,
+            stdout: "scaled\n",
+            stderr: ""
+          };
+        }
+      }
+    );
+
+    const result = await target.reconcile({
+      timestamp: "2026-04-15T00:00:00.000Z",
+      reason: "scale_up",
+      desiredReplicas: 3,
+      suggestedReplicas: 3,
+      activeReplicas: 1,
+      activeSlots: 2,
+      busySlots: 1
+    });
+
+    expect(result).toEqual({
+      kind: "docker_compose",
+      attempted: true,
+      applied: true,
+      desiredReplicas: 3,
+      observedReplicas: 2,
+      appliedReplicas: 3,
+      outcome: "scaled",
+      at: "2026-04-15T00:00:00.000Z",
+      message: "scaled"
+    });
+    expect(commands).toEqual([
+      {
+        args: [
+          "docker",
+          "compose",
+          "-f",
+          "/tmp/oah/docker-compose.local.yml",
+          "-p",
+          "openagentharness",
+          "ps",
+          "-a",
+          "-q",
+          "oah-sandbox"
+        ],
+        cwd: "/tmp/oah"
+      },
+      {
+        args: ["docker", "inspect", "sandbox-1", "sandbox-2", "sandbox-3"],
+        cwd: "/tmp/oah"
+      },
+      {
+        args: [
+          "docker",
+          "compose",
+          "-f",
+          "/tmp/oah/docker-compose.local.yml",
+          "-p",
+          "openagentharness",
+          "up",
+          "-d",
+          "--no-deps",
+          "--scale",
+          "oah-sandbox=3",
+          "oah-sandbox"
+        ],
+        cwd: "/tmp/oah"
+      }
+    ]);
+  });
+
+  it("scales docker-compose services down when desired replicas decrease", async () => {
+    const commands: Array<{ args: string[]; cwd?: string | undefined }> = [];
+    const target = createDockerComposeWorkerReplicaTarget(
+      {
+        type: "docker_compose",
+        allowScaleDown: true,
+        dockerCompose: {
+          composeFile: "/tmp/oah/docker-compose.local.yml",
+          projectName: "openagentharness",
+          service: "oah-sandbox",
+          command: "docker"
+        }
+      },
+      {
+        command: async (input) => {
+          commands.push(input);
+          if (input.args.includes("ps")) {
+            return {
+              code: 0,
+              stdout: "sandbox-1\nsandbox-2\nsandbox-3\n",
+              stderr: ""
+            };
+          }
+          if (input.args[1] === "inspect") {
+            return {
+              code: 0,
+              stdout: JSON.stringify([
+                {
+                  Id: "sandbox-1",
+                  Name: "/openagentharness-oah-sandbox-1",
+                  State: { Running: true },
+                  Config: {
+                    Labels: {
+                      "com.docker.compose.container-number": "1"
+                    }
+                  }
+                },
+                {
+                  Id: "sandbox-2",
+                  Name: "/openagentharness-oah-sandbox-2",
+                  State: { Running: true },
+                  Config: {
+                    Labels: {
+                      "com.docker.compose.container-number": "2"
+                    }
+                  }
+                },
+                {
+                  Id: "sandbox-3",
+                  Name: "/openagentharness-oah-sandbox-3",
+                  State: { Running: true },
+                  Config: {
+                    Labels: {
+                      "com.docker.compose.container-number": "3"
+                    }
+                  }
+                }
+              ]),
+              stderr: ""
+            };
+          }
+          return {
+            code: 0,
+            stdout: "scaled\n",
+            stderr: ""
+          };
+        }
+      }
+    );
+
+    const result = await target.reconcile({
+      timestamp: "2026-04-15T00:00:00.000Z",
+      reason: "scale_down",
+      desiredReplicas: 2,
+      suggestedReplicas: 2,
+      activeReplicas: 3,
+      activeSlots: 6,
+      busySlots: 1
+    });
+
+    expect(result).toEqual({
+      kind: "docker_compose",
+      attempted: true,
+      applied: true,
+      desiredReplicas: 2,
+      observedReplicas: 3,
+      appliedReplicas: 2,
+      outcome: "scaled",
+      at: "2026-04-15T00:00:00.000Z",
+      message: "scaled"
+    });
+    expect(commands).toEqual([
+      {
+        args: [
+          "docker",
+          "compose",
+          "-f",
+          "/tmp/oah/docker-compose.local.yml",
+          "-p",
+          "openagentharness",
+          "ps",
+          "-a",
+          "-q",
+          "oah-sandbox"
+        ],
+        cwd: "/tmp/oah"
+      },
+      {
+        args: ["docker", "inspect", "sandbox-1", "sandbox-2", "sandbox-3"],
+        cwd: "/tmp/oah"
+      },
+      {
+        args: [
+          "docker",
+          "compose",
+          "-f",
+          "/tmp/oah/docker-compose.local.yml",
+          "-p",
+          "openagentharness",
+          "up",
+          "-d",
+          "--no-deps",
+          "--scale",
+          "oah-sandbox=2",
+          "oah-sandbox"
+        ],
+        cwd: "/tmp/oah"
+      }
+    ]);
   });
 
   it("discovers the target deployment by label selector before scaling", async () => {
