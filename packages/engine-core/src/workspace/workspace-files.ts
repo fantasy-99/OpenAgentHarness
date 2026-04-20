@@ -55,7 +55,7 @@ export interface WorkspaceFileDownloadResult {
   sizeBytes: number;
   mimeType?: string | undefined;
   etag: string;
-  updatedAt: string;
+  updatedAt?: string | undefined;
   readOnly: boolean;
   openReadStream(): Readable;
 }
@@ -187,6 +187,23 @@ function compareNumbers(left: number | undefined, right: number | undefined): nu
   return left - right;
 }
 
+function toOptionalIsoTimestamp(epochMs: number | undefined): string | undefined {
+  if (typeof epochMs !== "number" || !Number.isFinite(epochMs) || epochMs <= 0) {
+    return undefined;
+  }
+
+  return new Date(epochMs).toISOString();
+}
+
+function chooseCreatedAt(entry: WorkspaceFileStat, updatedAt: string | undefined): string | undefined {
+  const createdAt = toOptionalIsoTimestamp(entry.birthtimeMs);
+  if (createdAt) {
+    return createdAt;
+  }
+
+  return updatedAt;
+}
+
 export class WorkspaceFileService {
   readonly #fileSystem: WorkspaceFileSystem;
 
@@ -200,11 +217,18 @@ export class WorkspaceFileService {
     }
   }
 
-  async buildWorkspaceEntry(workspace: WorkspaceRecord, resolved: ResolvedWorkspacePath): Promise<WorkspaceEntry> {
+  async buildWorkspaceEntry(
+    workspace: WorkspaceRecord,
+    resolved: ResolvedWorkspacePath,
+    listedEntry?: { sizeBytes?: number | undefined; updatedAt?: string | undefined }
+  ): Promise<WorkspaceEntry> {
     const entry = await this.#fileSystem.stat(resolved.absolutePath).catch(() => null);
     if (!entry) {
       throw new AppError(404, "workspace_entry_not_found", `Path ${resolved.relativePath} was not found.`);
     }
+
+    const updatedAt = listedEntry?.updatedAt ?? toOptionalIsoTimestamp(entry.mtimeMs);
+    const createdAt = chooseCreatedAt(entry, updatedAt);
 
     return {
       path: resolved.relativePath,
@@ -212,13 +236,13 @@ export class WorkspaceFileService {
       type: entry.kind === "directory" ? "directory" : "file",
       ...(entry.kind === "file"
         ? {
-            sizeBytes: entry.size,
+            sizeBytes: listedEntry?.sizeBytes ?? entry.size,
             mimeType: guessMimeType(resolved.absolutePath),
             etag: createStatEtag(entry)
           }
         : {}),
-      updatedAt: new Date(entry.mtimeMs).toISOString(),
-      createdAt: new Date(entry.birthtimeMs).toISOString(),
+      ...(updatedAt ? { updatedAt } : {}),
+      ...(createdAt ? { createdAt } : {}),
       readOnly: workspace.readOnly
     };
   }
@@ -230,6 +254,7 @@ export class WorkspaceFileService {
       bytes: Buffer;
       overwrite?: boolean | undefined;
       ifMatch?: string | undefined;
+      mtimeMs?: number | undefined;
     }
   ): Promise<WorkspaceEntry> {
     this.assertWorkspaceMutable(workspace);
@@ -264,7 +289,9 @@ export class WorkspaceFileService {
     }
 
     await this.#fileSystem.mkdir(path.dirname(resolved.absolutePath), { recursive: true });
-    await this.#fileSystem.writeFile(resolved.absolutePath, input.bytes);
+    await this.#fileSystem.writeFile(resolved.absolutePath, input.bytes, {
+      ...(typeof input.mtimeMs === "number" ? { mtimeMs: input.mtimeMs } : {})
+    });
     return this.buildWorkspaceEntry(workspace, resolved);
   }
 
@@ -289,15 +316,26 @@ export class WorkspaceFileService {
 
     const entries = await this.#fileSystem.readdir(resolved.absolutePath);
     const items = await Promise.all(
-      entries.map(async (entry) =>
-        this.buildWorkspaceEntry(workspace, {
-          absolutePath: path.join(resolved.absolutePath, entry.name),
-          relativePath:
-            resolved.relativePath === "."
-              ? normalizeRelativePath(entry.name)
-              : normalizeRelativePath(path.posix.join(resolved.relativePath, entry.name))
-        })
-      )
+      entries.map(async (entry) => {
+        const relativePath =
+          resolved.relativePath === "."
+            ? normalizeRelativePath(entry.name)
+            : normalizeRelativePath(path.posix.join(resolved.relativePath, entry.name));
+
+        return this.buildWorkspaceEntry(
+          workspace,
+          {
+            absolutePath: path.join(resolved.absolutePath, entry.name),
+            relativePath
+          },
+          {
+            ...(typeof entry.sizeBytes === "number" ? { sizeBytes: entry.sizeBytes } : {}),
+            ...(typeof entry.updatedAt === "string" && entry.updatedAt.trim().length > 0
+              ? { updatedAt: entry.updatedAt }
+              : {})
+          }
+        );
+      })
     );
 
     items.sort((left, right) => {
@@ -370,7 +408,7 @@ export class WorkspaceFileService {
       sizeBytes: raw.length,
       mimeType: guessMimeType(resolved.absolutePath),
       etag: createStatEtag(entry),
-      updatedAt: new Date(entry.mtimeMs).toISOString(),
+      ...(toOptionalIsoTimestamp(entry.mtimeMs) ? { updatedAt: toOptionalIsoTimestamp(entry.mtimeMs) } : {}),
       readOnly: workspace.readOnly
     };
   }
@@ -395,13 +433,14 @@ export class WorkspaceFileService {
 
   async uploadFile(
     workspace: WorkspaceRecord,
-    input: { path: string; data: Buffer; overwrite?: boolean | undefined; ifMatch?: string | undefined }
+    input: { path: string; data: Buffer; overwrite?: boolean | undefined; ifMatch?: string | undefined; mtimeMs?: number | undefined }
   ): Promise<WorkspaceEntry> {
     return this.writeWorkspaceFileBytes(workspace, {
       path: input.path,
       bytes: input.data,
       overwrite: input.overwrite,
-      ifMatch: input.ifMatch
+      ifMatch: input.ifMatch,
+      ...(typeof input.mtimeMs === "number" ? { mtimeMs: input.mtimeMs } : {})
     });
   }
 
@@ -498,6 +537,8 @@ export class WorkspaceFileService {
       throw new AppError(404, "workspace_file_not_found", `File ${resolved.relativePath} was not found.`);
     }
 
+    const updatedAt = toOptionalIsoTimestamp(entry.mtimeMs);
+
     return {
       workspaceId: workspace.id,
       path: resolved.relativePath,
@@ -505,7 +546,7 @@ export class WorkspaceFileService {
       sizeBytes: entry.size,
       mimeType: guessMimeType(resolved.absolutePath),
       etag: createStatEtag(entry),
-      updatedAt: new Date(entry.mtimeMs).toISOString(),
+      ...(updatedAt ? { updatedAt } : {}),
       readOnly: workspace.readOnly,
       openReadStream: () => this.#fileSystem.openReadStream(resolved.absolutePath)
     };

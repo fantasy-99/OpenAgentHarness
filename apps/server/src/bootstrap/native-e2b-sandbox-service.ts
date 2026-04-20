@@ -374,6 +374,11 @@ export function createNativeE2BSandboxService(options: NativeE2BSandboxServiceOp
     async writeFile(input): Promise<void> {
       const sandbox = getConnectedSandbox(input.sandboxId);
       await sandbox.files.write(input.path, toArrayBuffer(input.data));
+      if (typeof input.mtimeMs === "number" && Number.isFinite(input.mtimeMs) && input.mtimeMs > 0) {
+        await sandbox.commands.run(
+          `touch -m -d ${shellQuote(new Date(input.mtimeMs).toISOString())} -- ${shellQuote(input.path)}`
+        );
+      }
     },
     async rm(input): Promise<void> {
       const sandbox = getConnectedSandbox(input.sandboxId);

@@ -1319,8 +1319,25 @@ describe("runtime service", () => {
     const compactEventMessageIds = events
       .filter((event) => event.event === "message.completed")
       .map((event) => String(event.data.messageId ?? ""));
-    const compactInvocation = gateway.invocations.at(2);
-    const finalInvocation = gateway.invocations.at(3);
+    const compactInvocation = gateway.invocations.find((invocation) =>
+      invocation.input.messages?.some(
+        (message) =>
+          message.role === "system" &&
+          typeof message.content === "string" &&
+          message.content.includes("Summarize the earlier conversation context")
+      )
+    );
+    const finalInvocation = gateway.invocations
+      .filter(
+        (invocation) =>
+          !invocation.input.messages?.some(
+            (message) =>
+              message.role === "system" &&
+              typeof message.content === "string" &&
+              message.content.includes("Summarize the earlier conversation context")
+          )
+      )
+      .at(-1);
     const finalInvocationText = (finalInvocation?.input.messages ?? [])
       .map((message) => (typeof message.content === "string" ? message.content : JSON.stringify(message.content)))
       .join("\n\n");
@@ -1410,6 +1427,240 @@ describe("runtime service", () => {
 
     expect(compactKinds).not.toContain("compact_boundary");
     expect(compactKinds).not.toContain("compact_summary");
+  });
+
+  it("reduces kept recent groups when the configured compact window is still too large", async () => {
+    const { gateway, runtimeService, workspace } = await createRuntime(0, {
+      platformModels: {
+        "openai-default": {
+          provider: "openai",
+          name: "gpt-5",
+          metadata: {
+            contextWindowTokens: 200,
+            compactThresholdTokens: 100,
+            compactRecentGroupCount: 3
+          }
+        }
+      }
+    });
+    gateway.generateResponseFactory = (input) => {
+      const systemPrompt = input.messages?.find((message) => message.role === "system");
+      if (typeof systemPrompt?.content === "string" && systemPrompt.content.includes("Summarize the earlier conversation context")) {
+        return {
+          model: input.model ?? "openai-default",
+          text: "Compressed prior context",
+          finishReason: "stop",
+          usage: {
+            inputTokens: 20,
+            outputTokens: 6,
+            totalTokens: 26
+          }
+        };
+      }
+
+      return undefined;
+    };
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+    const session = await runtimeService.createSession({
+      workspaceId: workspace.id,
+      caller,
+      input: {}
+    });
+    const firstContent = "FIRST-CONTENT ".repeat(18).trim();
+    const secondContent = "SECOND-CONTENT ".repeat(18).trim();
+    const thirdContent = "THIRD-CONTENT ".repeat(18).trim();
+
+    const firstAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: firstContent }
+    });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(firstAccepted.runId);
+      return run.status === "completed";
+    });
+
+    const secondAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: secondContent }
+    });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(secondAccepted.runId);
+      return run.status === "completed";
+    });
+
+    const thirdAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: thirdContent }
+    });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(thirdAccepted.runId);
+      return run.status === "completed";
+    });
+    await waitFor(() => gateway.invocations.length >= 4);
+
+    const messages = await runtimeService.listSessionMessages(session.id, 20);
+    const summaryMessage = messages.items.find(
+      (message) =>
+        message.role === "system" &&
+        ((message.metadata as { runtimeKind?: string } | undefined)?.runtimeKind ?? "") === "compact_summary"
+    );
+    const summaryMetadata = summaryMessage?.metadata as
+      | {
+          extra?: {
+            configuredRecentGroupCount?: number;
+            keepRecentGroupCount?: number;
+          };
+        }
+      | undefined;
+    const finalInvocation = gateway.invocations.at(-1);
+    const finalInvocationText = (finalInvocation?.input.messages ?? [])
+      .map((message) => (typeof message.content === "string" ? message.content : JSON.stringify(message.content)))
+      .join("\n\n");
+
+    expect(messageText(summaryMessage)).toBe("Compressed prior context");
+    expect(summaryMetadata?.extra?.configuredRecentGroupCount).toBe(3);
+    expect(summaryMetadata?.extra?.keepRecentGroupCount).toBe(1);
+    expect(finalInvocationText).toContain("Compressed prior context");
+    expect(finalInvocationText).toContain(thirdContent);
+    expect(finalInvocationText).not.toContain(firstContent);
+    expect(finalInvocationText).not.toContain(secondContent);
+  });
+
+  it("accounts for static prompt overhead when deciding to compact", async () => {
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    gateway.generateResponseFactory = (input) => {
+      const systemPrompt = input.messages?.find((message) => message.role === "system");
+      if (typeof systemPrompt?.content === "string" && systemPrompt.content.includes("Summarize the earlier conversation context")) {
+        return {
+          model: input.model ?? "openai-default",
+          text: "Prompt-heavy history summary",
+          finishReason: "stop",
+          usage: {
+            inputTokens: 24,
+            outputTokens: 7,
+            totalTokens: 31
+          }
+        };
+      }
+
+      return undefined;
+    };
+
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      platformModels: {
+        "openai-default": {
+          provider: "openai",
+          name: "gpt-5",
+          metadata: {
+            contextWindowTokens: 5_000,
+            compactThresholdTokens: 3_300,
+            compactRecentGroupCount: 3
+          }
+        }
+      },
+      ...persistence,
+      workspaceInitializer: {
+        async initialize(input) {
+          return {
+            rootPath: input.rootPath,
+            defaultAgent: "default",
+            projectAgentsMd: "PROJECT-RULE ".repeat(1_100).trim(),
+            settings: {
+              defaultAgent: "default",
+              skillDirs: []
+            },
+            workspaceModels: {},
+            agents: {
+              default: {
+                name: "default",
+                mode: "primary",
+                prompt: "You are default.",
+                tools: {
+                  native: [],
+                  actions: [],
+                  skills: [],
+                  external: []
+                },
+                switch: [],
+                subagents: []
+              }
+            },
+            actions: {},
+            skills: {},
+            toolServers: {},
+            hooks: {},
+            catalog: {
+              workspaceId: "runtime",
+              agents: [{ name: "default", mode: "primary", source: "workspace" }],
+              models: [],
+              actions: [],
+              skills: [],
+              tools: [],
+              hooks: [],
+              nativeTools: []
+            }
+          };
+        }
+      }
+    });
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+    const workspace = await runtimeService.createWorkspace({
+      input: {
+        name: "prompt-heavy",
+        runtime: "workspace",
+        rootPath: "/tmp/prompt-heavy",
+        executionPolicy: "local"
+      }
+    });
+    const session = await runtimeService.createSession({
+      workspaceId: workspace.id,
+      caller,
+      input: {}
+    });
+
+    const firstAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "first" }
+    });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(firstAccepted.runId);
+      return run.status === "completed";
+    });
+
+    const secondAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "second" }
+    });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(secondAccepted.runId);
+      return run.status === "completed";
+    });
+
+    const messages = await runtimeService.listSessionMessages(session.id, 20);
+    const compactKinds = messages.items
+      .map((message) => (message.metadata as { runtimeKind?: string } | undefined)?.runtimeKind)
+      .filter((kind): kind is string => typeof kind === "string");
+
+    expect(compactKinds).toContain("compact_boundary");
+    expect(compactKinds).toContain("compact_summary");
   });
 
   it("skips redundant runtime message rewrites when later events do not change the projection", async () => {

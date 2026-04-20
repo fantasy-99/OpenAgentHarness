@@ -87,6 +87,7 @@ services:
     volumes:
       - ${OAH_DOCKER_API_CONFIG:?set OAH_DOCKER_API_CONFIG}:/config/server.docker.yaml:ro
       - oah-api-workspaces:/data/workspaces
+      - oah-runtime-state:/data/runtime-state
       - oah-runtimes:/data/runtimes:ro
       - oah-models:/data/models:ro
       - oah-tools:/data/tools:ro
@@ -160,6 +161,7 @@ services:
     volumes:
       - ${OAH_DOCKER_SANDBOX_CONFIG:?set OAH_DOCKER_SANDBOX_CONFIG}:/config/server.docker.yaml:ro
       - /data/workspaces
+      - oah-runtime-state:/data/runtime-state
       - oah-runtimes:/data/runtimes:ro
       - oah-models:/data/models:ro
       - oah-tools:/data/tools:ro
@@ -171,6 +173,7 @@ volumes:
   redisdata:
   minio-data:
   oah-api-workspaces:
+  oah-runtime-state:
   oah-runtimes:
     driver: rclone
     driver_opts:

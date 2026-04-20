@@ -251,7 +251,8 @@ async function handleUploadWorkspaceFile(
     path: query.path,
     data: request.body,
     overwrite: query.overwrite,
-    ...(query.ifMatch !== undefined ? { ifMatch: query.ifMatch } : {})
+    ...(query.ifMatch !== undefined ? { ifMatch: query.ifMatch } : {}),
+    ...(query.mtimeMs !== undefined ? { mtimeMs: query.mtimeMs } : {})
   });
   return reply.send(workspaceEntrySchema.parse(entry));
 }
@@ -285,7 +286,9 @@ async function handleDownloadWorkspaceFile(
   reply.header("Content-Type", file.mimeType ?? "application/octet-stream");
   reply.header("Content-Length", String(file.sizeBytes));
   reply.header("ETag", file.etag);
-  reply.header("Last-Modified", file.updatedAt);
+  if (file.updatedAt) {
+    reply.header("Last-Modified", file.updatedAt);
+  }
   reply.header("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`);
   const stream = file.openReadStream();
   stream.once("close", () => {

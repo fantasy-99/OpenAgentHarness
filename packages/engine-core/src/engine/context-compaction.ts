@@ -1,4 +1,4 @@
-import type { Message, Run, Session } from "@oah/api-contracts";
+import type { ChatMessage, Message, Run, Session } from "@oah/api-contracts";
 
 import type { EngineLogger, MessageRepository, ModelGateway, SessionEvent, WorkspaceRecord } from "../types.js";
 import type { EngineMessage } from "./engine-messages.js";
@@ -9,6 +9,8 @@ const DEFAULT_CONTEXT_WINDOW_RATIO = 0.7;
 const DEFAULT_RECENT_GROUP_COUNT = 3;
 const COMPACT_TOOL_RESULT_SOFT_LIMIT_CHARS = 4_000;
 const COMPACT_SUMMARY_MAX_TOKENS = 1_200;
+const COMPACT_ESTIMATION_MIN_RESERVE_TOKENS = 1_024;
+const COMPACT_ESTIMATION_RESERVE_RATIO = 0.05;
 const COMPACT_SYSTEM_PROMPT = [
   "Summarize the earlier conversation context for a coding agent that will continue immediately.",
   "Focus on the user's goal, important findings, files or code touched, key tool results, constraints, and the next useful step.",
@@ -118,6 +120,12 @@ function stringifyContent(content: Message["content"]): string {
     .join("\n\n");
 }
 
+function renderChatMessages(messages: ChatMessage[]): string {
+  return messages
+    .map((message, index) => `#${index + 1} ${message.role}\n${stringifyContent(message.content)}`.trim())
+    .join("\n\n");
+}
+
 function renderCompactMessages(messages: CompactMessage[]): string {
   return messages
     .map((message, index) => {
@@ -130,6 +138,15 @@ function renderCompactMessages(messages: CompactMessage[]): string {
 function estimateCompactTokenUsage(messages: CompactMessage[]): number {
   const rendered = renderCompactMessages(messages);
   return Math.max(1, Math.ceil(rendered.length / 4));
+}
+
+function estimateChatMessageTokenUsage(messages: ChatMessage[]): number {
+  const rendered = renderChatMessages(messages);
+  return Math.max(1, Math.ceil(rendered.length / 4));
+}
+
+function readCompactionReserveTokens(contextWindowTokens: number): number {
+  return Math.max(COMPACT_ESTIMATION_MIN_RESERVE_TOKENS, Math.floor(contextWindowTokens * COMPACT_ESTIMATION_RESERVE_RATIO));
 }
 
 function readCompactionGroupKey(message: CompactMessage, source: EngineMessage | undefined): string {
@@ -195,6 +212,16 @@ export interface ContextCompactionServiceDependencies {
     run: Run,
     activeAgentName: string
   ) => ResolvedRunModel;
+  buildModelContextMessages: (
+    workspace: WorkspaceRecord,
+    session: Session,
+    run: Run,
+    engineMessages: EngineMessage[],
+    activeAgentName: string,
+    options?: {
+      applyHooks?: boolean | undefined;
+    }
+  ) => Promise<ChatMessage[]>;
   buildEngineMessagesForSession: (sessionId: string, persistedMessages?: Message[]) => Promise<EngineMessage[]>;
 }
 
@@ -208,6 +235,7 @@ export class ContextCompactionService {
   readonly #createId: ContextCompactionServiceDependencies["createId"];
   readonly #nowIso: ContextCompactionServiceDependencies["nowIso"];
   readonly #resolveRunModel: ContextCompactionServiceDependencies["resolveRunModel"];
+  readonly #buildModelContextMessages: ContextCompactionServiceDependencies["buildModelContextMessages"];
   readonly #buildEngineMessagesForSession: ContextCompactionServiceDependencies["buildEngineMessagesForSession"];
   readonly #projector = new EngineMessageProjector();
 
@@ -221,6 +249,7 @@ export class ContextCompactionService {
     this.#createId = dependencies.createId;
     this.#nowIso = dependencies.nowIso;
     this.#resolveRunModel = dependencies.resolveRunModel;
+    this.#buildModelContextMessages = dependencies.buildModelContextMessages;
     this.#buildEngineMessagesForSession = dependencies.buildEngineMessagesForSession;
   }
 
@@ -248,7 +277,18 @@ export class ContextCompactionService {
       includeToolResults: true,
       toolResultSoftLimitChars: COMPACT_TOOL_RESULT_SOFT_LIMIT_CHARS
     });
-    const estimatedInputTokens = estimateCompactTokenUsage(compactProjection.messages);
+    const estimatedModelContextMessages = await this.#buildModelContextMessages(
+      input.workspace,
+      input.session,
+      input.run,
+      engineMessages,
+      input.activeAgentName,
+      { applyHooks: false }
+    );
+    const estimatedInputTokens = Math.max(
+      estimateCompactTokenUsage(compactProjection.messages),
+      estimateChatMessageTokenUsage(estimatedModelContextMessages)
+    );
     const compactThresholdTokens = readCompactThresholdTokens(resolvedModel, contextWindowTokens);
     if (estimatedInputTokens < compactThresholdTokens) {
       return engineMessages;
@@ -256,12 +296,34 @@ export class ContextCompactionService {
 
     const engineMessagesById = new Map(engineMessages.map((message) => [message.id, message]));
     const groups = groupMessagesForCompaction(compactProjection.messages, engineMessagesById);
-    const recentGroupCount = readRecentGroupCount(resolvedModel);
-    if (groups.length <= recentGroupCount) {
+    if (groups.length <= 1) {
       return engineMessages;
     }
 
-    const messagesToSummarize = groups.slice(0, -recentGroupCount).flat();
+    const configuredRecentGroupCount = readRecentGroupCount(resolvedModel);
+    const recentGroupTokenUsage = groups.map((group) => estimateCompactTokenUsage(group));
+    const estimatedPromptOverheadTokens = Math.max(
+      0,
+      estimatedInputTokens - estimateCompactTokenUsage(compactProjection.messages)
+    );
+    const reserveTokens = readCompactionReserveTokens(contextWindowTokens);
+    const maxKeepRecentGroupCount = Math.max(1, Math.min(configuredRecentGroupCount, groups.length - 1));
+    let keepRecentGroupCount = maxKeepRecentGroupCount;
+    let estimatedPostCompactTokens =
+      estimatedPromptOverheadTokens +
+      recentGroupTokenUsage.slice(-keepRecentGroupCount).reduce((sum, value) => sum + value, 0) +
+      COMPACT_SUMMARY_MAX_TOKENS +
+      reserveTokens;
+    while (keepRecentGroupCount > 1 && estimatedPostCompactTokens >= compactThresholdTokens) {
+      keepRecentGroupCount -= 1;
+      estimatedPostCompactTokens =
+        estimatedPromptOverheadTokens +
+        recentGroupTokenUsage.slice(-keepRecentGroupCount).reduce((sum, value) => sum + value, 0) +
+        COMPACT_SUMMARY_MAX_TOKENS +
+        reserveTokens;
+    }
+
+    const messagesToSummarize = groups.slice(0, -keepRecentGroupCount).flat();
     if (messagesToSummarize.length === 0) {
       return engineMessages;
     }
@@ -304,7 +366,10 @@ export class ContextCompactionService {
             contextWindowTokens,
             compactThresholdTokens,
             estimatedInputTokens,
+            estimatedPostCompactTokens,
             summarizedMessageCount: messagesToSummarize.length,
+            configuredRecentGroupCount,
+            keepRecentGroupCount,
             ...(compactThroughMessageId ? { compactThroughMessageId } : {})
           }
         },
@@ -327,8 +392,10 @@ export class ContextCompactionService {
             contextWindowTokens,
             compactThresholdTokens,
             estimatedInputTokens,
+            estimatedPostCompactTokens,
             summarizedMessageCount: messagesToSummarize.length,
-            recentGroupCount,
+            configuredRecentGroupCount,
+            keepRecentGroupCount,
             ...(compactThroughMessageId ? { compactThroughMessageId } : {})
           }
         },
@@ -368,7 +435,10 @@ export class ContextCompactionService {
         contextWindowTokens,
         compactThresholdTokens,
         estimatedInputTokens,
+        estimatedPostCompactTokens,
         summarizedMessageCount: messagesToSummarize.length,
+        configuredRecentGroupCount,
+        keepRecentGroupCount,
         ...(compactThroughMessageId ? { compactThroughMessageId } : {}),
         summaryUsage: isRecord(summaryResponse.usage) ? summaryResponse.usage : undefined
       });

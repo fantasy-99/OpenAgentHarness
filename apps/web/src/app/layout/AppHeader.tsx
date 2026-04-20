@@ -1,6 +1,6 @@
 import { memo } from "react";
 
-import { Layers3, Network, Orbit, Palette, SquareTerminal } from "lucide-react";
+import { Layers3, Network, Orbit, SquareTerminal } from "lucide-react";
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -10,15 +10,9 @@ import { useHealthStore } from "../stores/health-store";
 import { useSettingsStore } from "../stores/settings-store";
 import { useStreamStore } from "../stores/stream-store";
 import { useUiStore } from "../stores/ui-store";
-import { appThemeOptions, isAppThemeName } from "../theme";
-import type { AppThemeName } from "../theme";
 import type { useAppController } from "../use-app-controller";
 
 type HeaderProps = ReturnType<typeof useAppController>["headerProps"];
-type AppHeaderProps = HeaderProps & {
-  theme: AppThemeName;
-  onThemeChange: (theme: AppThemeName) => void;
-};
 
 function StatusPill(props: { label: string; value: string; tone: StatusSemanticTone; icon: typeof Network }) {
   const Icon = props.icon;
@@ -31,7 +25,7 @@ function StatusPill(props: { label: string; value: string; tone: StatusSemanticT
   );
 }
 
-function AppHeaderImpl(props: AppHeaderProps) {
+function AppHeaderImpl(props: HeaderProps) {
   const healthStatus = useHealthStore((state) => state.healthStatus);
   const streamState = useStreamStore((state) => state.streamState);
   const surfaceMode = useUiStore((state) => state.surfaceMode);
@@ -62,34 +56,6 @@ function AppHeaderImpl(props: AppHeaderProps) {
         </div>
       </div>
       <div className="flex min-w-0 flex-1 items-center justify-end gap-2.5">
-        <div className="topbar-chip flex shrink-0 items-center gap-1 rounded-2xl p-1">
-          <div className="hidden items-center gap-1.5 pl-2 sm:flex">
-            <Palette className="h-3.5 w-3.5 text-foreground/48" />
-            <span className="text-[11px] font-medium uppercase tracking-[0.16em] text-foreground/46">Theme</span>
-          </div>
-          <Select
-            value={props.theme}
-            onValueChange={(value) => {
-              if (isAppThemeName(value)) {
-                props.onThemeChange(value);
-              }
-            }}
-          >
-            <SelectTrigger
-              size="sm"
-              className="topbar-chip-hoverable h-7 min-w-[110px] border-none bg-transparent px-2 text-xs text-foreground shadow-none focus-visible:ring-2 focus-visible:ring-black/10 sm:min-w-[132px]"
-            >
-              <SelectValue placeholder="Theme" />
-            </SelectTrigger>
-            <SelectContent className="min-w-[132px]">
-              {appThemeOptions.map((theme) => (
-                <SelectItem key={theme.value} value={theme.value}>
-                  {theme.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
         <div className="topbar-chip flex shrink-0 items-center gap-1 rounded-2xl p-1">
           <div className="hidden items-center gap-1.5 pl-2 xl:flex">
             <Layers3 className="h-3.5 w-3.5 text-foreground/48" />

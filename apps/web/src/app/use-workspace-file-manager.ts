@@ -121,6 +121,30 @@ function isTextEntry(entry: Pick<WorkspaceEntry, "path" | "mimeType">): boolean 
   ].includes(pathExtension(entry.path));
 }
 
+function mergeWorkspaceEntries(pages: WorkspaceEntryPage[]): WorkspaceEntryPage | null {
+  if (pages.length === 0) {
+    return null;
+  }
+
+  const itemsByPath = new Map<string, WorkspaceEntry>();
+  for (const page of pages) {
+    for (const entry of page.items) {
+      itemsByPath.set(entry.path, entry);
+    }
+  }
+
+  const lastPage = pages[pages.length - 1];
+  if (!lastPage) {
+    return null;
+  }
+
+  return {
+    workspaceId: lastPage.workspaceId,
+    path: lastPage.path,
+    items: [...itemsByPath.values()]
+  };
+}
+
 export function useWorkspaceFileManager(params: {
   connection: ConnectionSettings;
   request: AppRequest;
@@ -145,7 +169,6 @@ export function useWorkspaceFileManager(params: {
   const workspaceReadOnly = params.workspace?.readOnly ?? false;
   const normalizedCurrentPath = normalizeWorkspaceRelativePath(currentPath);
   const entries = entryPage?.items ?? [];
-  const nextCursor = entryPage?.nextCursor;
 
   const sandboxClient = useMemo(() => {
     const transport: SandboxHttpTransport = {
@@ -192,8 +215,6 @@ export function useWorkspaceFileManager(params: {
 
   async function refreshEntries(options?: {
     path?: string;
-    cursor?: string;
-    append?: boolean;
     quiet?: boolean;
   }): Promise<WorkspaceEntryPage | null> {
     if (!workspaceIdValue) {
@@ -205,31 +226,47 @@ export function useWorkspaceFileManager(params: {
 
     try {
       setEntriesBusy(true);
-      const response = toWorkspaceEntryPage(
+      const initialResponse = toWorkspaceEntryPage(
         await sandboxClient.listEntries(workspaceIdValue, {
           path: workspaceRelativePathToSandboxPath(targetPath),
-          pageSize: 100,
+          pageSize: 200,
           sortBy: "name",
-          sortOrder: "asc",
-          ...(options?.cursor ? { cursor: options.cursor } : {})
+          sortOrder: "asc"
         } satisfies WorkspaceEntriesQuery)
       );
+      const pages: WorkspaceEntryPage[] = [initialResponse];
+      let cursor = initialResponse.nextCursor;
+
+      while (cursor) {
+        const page = toWorkspaceEntryPage(
+          await sandboxClient.listEntries(workspaceIdValue, {
+            path: workspaceRelativePathToSandboxPath(targetPath),
+            pageSize: 200,
+            sortBy: "name",
+            sortOrder: "asc",
+            cursor
+          } satisfies WorkspaceEntriesQuery)
+        );
+        pages.push(page);
+        cursor = page.nextCursor;
+      }
+
+      const response = mergeWorkspaceEntries(pages);
+      if (!response) {
+        setEntryPage(null);
+        return null;
+      }
+
       setCurrentPath(normalizeWorkspaceRelativePath(response.path));
-      setEntryPage((current) =>
-        options?.append && current?.path === normalizeWorkspaceRelativePath(response.path)
-          ? {
-              ...response,
-              path: normalizeWorkspaceRelativePath(response.path),
-              items: [...current.items, ...response.items]
-            }
-          : {
-              ...response,
-              path: normalizeWorkspaceRelativePath(response.path)
-            }
-      );
+      setEntryPage({
+        ...response,
+        path: normalizeWorkspaceRelativePath(response.path)
+      });
       if (!options?.quiet) {
         const responsePath = normalizeWorkspaceRelativePath(response.path);
-        params.setActivity(`已加载 ${responsePath === "." ? "workspace 根目录" : responsePath}`);
+        params.setActivity(
+          `已加载 ${responsePath === "." ? "workspace 根目录" : responsePath}（${response.items.length} 项）`
+        );
         params.setErrorMessage("");
       }
       return response;
@@ -445,7 +482,8 @@ export function useWorkspaceFileManager(params: {
           path: workspaceRelativePathToSandboxPath(targetPath),
           overwrite: true,
           data: file,
-          contentType: "application/octet-stream"
+          contentType: "application/octet-stream",
+          ...(typeof file.lastModified === "number" && file.lastModified > 0 ? { mtimeMs: file.lastModified } : {})
         } satisfies WorkspaceFileUploadQuery & { data: SandboxHttpBody; contentType: string });
       }
       await refreshEntries({ path: currentPath, quiet: true });
@@ -525,7 +563,6 @@ export function useWorkspaceFileManager(params: {
       currentPath: normalizedCurrentPath,
       breadcrumbs,
       entries,
-      nextCursor,
       entriesBusy,
       fileBusy,
       mutationBusy,
@@ -538,13 +575,6 @@ export function useWorkspaceFileManager(params: {
       canManageFiles: Boolean(workspaceIdValue),
       openDirectory: (path: string) => void openDirectory(path),
       refreshEntries: () => void refreshEntries(),
-      loadMoreEntries: () =>
-        void refreshEntries({
-          path: normalizedCurrentPath,
-          ...(nextCursor ? { cursor: nextCursor } : {}),
-          append: true,
-          quiet: true
-        }),
       focusEntry: (entry: WorkspaceEntry) => void focusEntry(entry),
       navigateUp: () => void openDirectory(parentWorkspaceRelativePath(normalizedCurrentPath)),
       closeSelection,

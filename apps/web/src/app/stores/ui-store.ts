@@ -26,8 +26,6 @@ type UiState = {
   errorMessage: string;
   activeError: AppRequestErrorSummary | null;
   streamRevision: number;
-  autoStream: boolean;
-  filterSelectedRun: boolean;
   setSurfaceMode: (value: SurfaceMode) => void;
   setMainViewMode: (value: MainViewMode) => void;
   setInspectorTab: (value: InspectorTab) => void;
@@ -43,8 +41,6 @@ type UiState = {
   setErrorMessage: (value: string) => void;
   setActiveError: (value: AppRequestErrorSummary | null | ((current: AppRequestErrorSummary | null) => AppRequestErrorSummary | null)) => void;
   setStreamRevision: (value: number | ((current: number) => number)) => void;
-  setAutoStream: (value: boolean) => void;
-  setFilterSelectedRun: (value: boolean) => void;
 };
 
 export const useUiStore = create<UiState>((set) => ({
@@ -63,8 +59,6 @@ export const useUiStore = create<UiState>((set) => ({
   errorMessage: "",
   activeError: null,
   streamRevision: 0,
-  autoStream: true,
-  filterSelectedRun: false,
   setSurfaceMode: (surfaceMode) => set({ surfaceMode }),
   setMainViewMode: (mainViewMode) => set({ mainViewMode }),
   setInspectorTab: (inspectorTab) => set({ inspectorTab }),
@@ -82,7 +76,5 @@ export const useUiStore = create<UiState>((set) => ({
   setActiveError: (value) =>
     set((state) => ({ activeError: typeof value === "function" ? value(state.activeError) : value })),
   setStreamRevision: (value) =>
-    set((state) => ({ streamRevision: typeof value === "function" ? value(state.streamRevision) : value })),
-  setAutoStream: (autoStream) => set({ autoStream }),
-  setFilterSelectedRun: (filterSelectedRun) => set({ filterSelectedRun })
+    set((state) => ({ streamRevision: typeof value === "function" ? value(state.streamRevision) : value }))
 }));

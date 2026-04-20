@@ -25,7 +25,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
-import { formatTimestamp, pathLeaf, prettyJson } from "../support";
+import { formatRelativeTimestamp, formatTimestamp, formatTimestampPrecise, pathLeaf, prettyJson } from "../support";
 import type { useAppController } from "../use-app-controller";
 
 type FileManagerProps = ReturnType<typeof useAppController>["runtimeDetailSurfaceProps"]["fileManager"];
@@ -114,6 +114,22 @@ function EntryIcon(props: { type: "file" | "directory"; image?: boolean }) {
   }
 
   return <FileText className="h-4 w-4" />;
+}
+
+function renderEntryUpdatedAt(value?: string): { inline: string; detail: string } {
+  if (!value) {
+    return {
+      inline: "time unknown",
+      detail: "time unknown"
+    };
+  }
+
+  const precise = formatTimestampPrecise(value);
+  const relative = formatRelativeTimestamp(value);
+  return {
+    inline: relative ?? formatTimestamp(value),
+    detail: relative ? `${precise} · ${relative}` : precise
+  };
 }
 
 function FileManagerCommandBar(props: {
@@ -252,6 +268,8 @@ export function WorkspaceFileManagerPanel(props: { fileManager: FileManagerProps
   const selectedFile = fileManager.selectedFile;
   const busy = fileManager.entriesBusy || fileManager.fileBusy || fileManager.mutationBusy;
   const displayPath = fileManager.currentPath.trim() === "" || fileManager.currentPath === "." ? "workspace root" : fileManager.currentPath;
+  const selectedEntryUpdatedAt = renderEntryUpdatedAt(selectedEntry?.updatedAt);
+  const selectedPreviewUpdatedAt = renderEntryUpdatedAt(selectedFile?.updatedAt ?? selectedEntry?.updatedAt);
 
   function openCommand(mode: "new-file" | "new-directory" | "move") {
     setCommandMode(mode);
@@ -372,6 +390,7 @@ export function WorkspaceFileManagerPanel(props: { fileManager: FileManagerProps
                     {fileManager.entries.map((entry) => {
                       const active = selectedEntry?.path === entry.path;
                       const image = entry.type === "file" && (entry.mimeType?.startsWith("image/") ?? false);
+                      const updatedAt = renderEntryUpdatedAt(entry.updatedAt);
                       return (
                         <button
                           key={entry.path}
@@ -397,10 +416,10 @@ export function WorkspaceFileManagerPanel(props: { fileManager: FileManagerProps
                               <p className="truncate text-sm font-medium text-foreground">{entry.name}</p>
                               {entry.type === "directory" ? <Badge variant="outline">dir</Badge> : null}
                             </div>
-                            <p className="mt-1 truncate text-xs text-muted-foreground">
+                            <p className="mt-1 truncate text-xs text-muted-foreground" title={updatedAt.detail}>
                               {entry.type === "directory"
-                                ? entry.updatedAt ? `updated ${formatTimestamp(entry.updatedAt)}` : "directory"
-                                : `${formatSize(entry.sizeBytes)}${entry.updatedAt ? ` · ${formatTimestamp(entry.updatedAt)}` : ""}`}
+                                ? entry.updatedAt ? `updated ${updatedAt.inline}` : "directory"
+                                : `${formatSize(entry.sizeBytes)}${entry.updatedAt ? ` · ${updatedAt.inline}` : ""}`}
                             </p>
                           </div>
                         </button>
@@ -414,11 +433,6 @@ export function WorkspaceFileManagerPanel(props: { fileManager: FileManagerProps
                       </div>
                     ) : null}
 
-                    {fileManager.nextCursor ? (
-                      <Button variant="outline" className="mt-2 w-full rounded-2xl" onClick={fileManager.loadMoreEntries} disabled={fileManager.entriesBusy}>
-                        Load More
-                      </Button>
-                    ) : null}
                   </div>
                 </div>
               </div>
@@ -467,8 +481,8 @@ export function WorkspaceFileManagerPanel(props: { fileManager: FileManagerProps
                         </div>
                         <div className="rounded-2xl border border-black/8 bg-black/[0.02] px-4 py-3">
                           <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Last Updated</p>
-                          <p className="mt-2 text-sm font-medium text-foreground">{selectedEntry.updatedAt ? formatTimestamp(selectedEntry.updatedAt) : "unknown"}</p>
-                          <p className="mt-1 text-xs text-muted-foreground">Double-click it in the list to step into this directory.</p>
+                          <p className="mt-2 text-sm font-medium text-foreground">{selectedEntryUpdatedAt.inline}</p>
+                          <p className="mt-1 text-xs text-muted-foreground">{selectedEntryUpdatedAt.detail}</p>
                         </div>
                       </div>
                       <Button variant="outline" onClick={() => fileManager.openDirectory(selectedEntry.path)}>
@@ -495,6 +509,11 @@ export function WorkspaceFileManagerPanel(props: { fileManager: FileManagerProps
                           <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">MIME</p>
                           <p className="mt-2 truncate text-sm font-medium text-foreground">{selectedFile?.mimeType ?? selectedEntry.mimeType ?? "unknown"}</p>
                         </div>
+                      </div>
+                      <div className="rounded-2xl border border-black/8 bg-black/[0.02] px-4 py-3">
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Last Updated</p>
+                        <p className="mt-2 text-sm font-medium text-foreground">{selectedPreviewUpdatedAt.inline}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">{selectedPreviewUpdatedAt.detail}</p>
                       </div>
 
                       {isImagePreview(fileManager) && imagePreviewUrl ? (

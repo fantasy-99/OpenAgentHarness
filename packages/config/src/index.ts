@@ -24,6 +24,12 @@ export {
   usesExplicitObjectStorageWorkspaceBackingStore,
   usesLegacyObjectStorageCompatibilityFields
 } from "./object-storage.js";
+export {
+  mergePlatformModelDefinitions,
+  normalizeModelMetadata,
+  normalizePlatformModelDefinition,
+  normalizePlatformModelRegistry
+} from "./shared.js";
 export type {
   ObjectStorageConfig,
   ObjectStorageManagedPath,

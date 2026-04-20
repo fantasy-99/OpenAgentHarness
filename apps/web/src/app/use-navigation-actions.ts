@@ -814,10 +814,7 @@ export function useNavigationActions(params: {
     }
 
     try {
-      const [sessionResponse, messagePage] = await Promise.all([
-        params.request<Session>(`/api/v1/sessions/${nextSessionId}`),
-        params.request<{ items: Message[] }>(`/api/v1/sessions/${nextSessionId}/messages?pageSize=200`)
-      ]);
+      const sessionResponse = await params.request<Session>(`/api/v1/sessions/${nextSessionId}`);
       const nextWorkspaceId = sessionResponse.workspaceId;
       const workspaceChanged = params.navigation.workspace?.id !== nextWorkspaceId;
 
@@ -825,7 +822,6 @@ export function useNavigationActions(params: {
         params.navigation.setSession(sessionResponse);
         params.navigation.setSessionId(nextSessionId);
         params.navigation.setWorkspaceId(nextWorkspaceId);
-        params.runtime.setMessages(messagePage.items);
         params.navigation.setRecentSessions((current) => addRecentId(current, nextSessionId));
         if (workspaceChanged) {
           params.navigation.setWorkspace(null);

@@ -244,6 +244,8 @@ export interface WorkspaceFileStat {
 export interface WorkspaceFileSystemEntry {
   name: string;
   kind: "file" | "directory" | "other";
+  sizeBytes?: number | undefined;
+  updatedAt?: string | undefined;
 }
 
 export interface WorkspaceFileSystem {
@@ -253,7 +255,7 @@ export interface WorkspaceFileSystem {
   openReadStream(targetPath: string): Readable;
   readdir(targetPath: string): Promise<WorkspaceFileSystemEntry[]>;
   mkdir(targetPath: string, options?: { recursive?: boolean | undefined }): Promise<void>;
-  writeFile(targetPath: string, data: Buffer): Promise<void>;
+  writeFile(targetPath: string, data: Buffer, options?: { mtimeMs?: number | undefined }): Promise<void>;
   rm(targetPath: string, options?: { recursive?: boolean | undefined; force?: boolean | undefined }): Promise<void>;
   rename(sourcePath: string, targetPath: string): Promise<void>;
 }

@@ -1,7 +1,7 @@
 import { memo, useEffect, useRef, useCallback, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Bot, ChevronRight, Folder, Loader2, RefreshCw, Send, Square, Wrench, CornerDownRight } from "lucide-react";
+import { Archive, ArrowRight, Bot, ChevronRight, Folder, Loader2, RefreshCw, Send, Sparkles, Square, Wrench, CornerDownRight } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -74,6 +74,222 @@ function formatToolDuration(durationMs: number | undefined) {
   }
 
   return `${(durationMs / 1000).toFixed(durationMs >= 10000 ? 0 : 1)} s`;
+}
+
+const LONG_MESSAGE_COLLAPSE_CHARS = 2800;
+const LONG_MESSAGE_PREVIEW_CHARS = 1200;
+const COMPACT_SUMMARY_PREVIEW_CHARS = 900;
+
+type CompactRuntimeKind = "compact_boundary" | "compact_summary";
+
+function readRuntimeKind(messageMetadata: Message["metadata"] | undefined): CompactRuntimeKind | undefined {
+  if (!isRecord(messageMetadata)) {
+    return undefined;
+  }
+
+  return messageMetadata.runtimeKind === "compact_boundary" || messageMetadata.runtimeKind === "compact_summary"
+    ? messageMetadata.runtimeKind
+    : undefined;
+}
+
+function readNumericMetadataValue(messageMetadata: Message["metadata"] | undefined, key: string) {
+  if (!isRecord(messageMetadata)) {
+    return undefined;
+  }
+
+  const value = messageMetadata[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function formatCompactCount(value: number | undefined, suffix: string) {
+  if (value === undefined) {
+    return null;
+  }
+
+  return `${value.toLocaleString()} ${suffix}`;
+}
+
+function ExpandableMarkdownText({
+  text,
+  isUser,
+  collapseThreshold = LONG_MESSAGE_COLLAPSE_CHARS,
+  previewChars = LONG_MESSAGE_PREVIEW_CHARS,
+  expandLabel = "Expand full message",
+  collapseLabel = "Collapse"
+}: {
+  text: string;
+  isUser?: boolean;
+  collapseThreshold?: number;
+  previewChars?: number;
+  expandLabel?: string;
+  collapseLabel?: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const shouldCollapse = text.length > collapseThreshold;
+  const preview = text.slice(0, previewChars).trimEnd();
+
+  if (!shouldCollapse) {
+    return <MarkdownText text={text} {...(isUser !== undefined ? { isUser } : {})} />;
+  }
+
+  return (
+    <div className="space-y-3">
+      {expanded ? (
+        <MarkdownText text={text} {...(isUser !== undefined ? { isUser } : {})} />
+      ) : (
+        <div
+          className={`rounded-xl border px-3 py-2.5 text-sm leading-relaxed whitespace-pre-wrap break-words ${
+            isUser
+              ? "border-white/10 bg-background/18 text-background/90"
+              : "border-border/60 bg-muted/35 text-foreground/85"
+          }`}
+        >
+          {preview}
+          {preview.length < text.length ? "…" : null}
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={() => setExpanded((current) => !current)}
+        className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground transition hover:text-foreground"
+      >
+        {expanded ? collapseLabel : expandLabel}
+        <span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/70">
+          {text.length.toLocaleString()} chars
+        </span>
+      </button>
+    </div>
+  );
+}
+
+function CompactMetaRow({ message }: { message: Message }) {
+  return (
+    <div className="mt-2 flex flex-wrap items-center justify-center gap-2 text-[10px] font-medium text-muted-foreground/60">
+      {message.runId ? <Badge variant="outline" className="h-5 rounded-md px-1.5 text-[10px]">{message.runId}</Badge> : null}
+      <span>{formatTimestamp(message.createdAt)}</span>
+    </div>
+  );
+}
+
+function CompactBoundaryCard({ message }: { message: Message }) {
+  const estimatedInputTokens = readNumericMetadataValue(message.metadata, "estimatedInputTokens");
+  const estimatedPostCompactTokens = readNumericMetadataValue(message.metadata, "estimatedPostCompactTokens");
+  const contextWindowTokens = readNumericMetadataValue(message.metadata, "contextWindowTokens");
+  const compactThresholdTokens = readNumericMetadataValue(message.metadata, "compactThresholdTokens");
+  const summarizedMessageCount = readNumericMetadataValue(message.metadata, "summarizedMessageCount");
+
+  return (
+    <div className="mx-auto max-w-3xl">
+      <div className="overflow-hidden rounded-2xl border border-amber-500/20 bg-gradient-to-r from-amber-500/10 via-background to-sky-500/10 px-4 py-4 shadow-sm">
+        <div className="flex flex-wrap items-center justify-center gap-2 text-center">
+          <span className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-amber-500/20 bg-amber-500/12 text-amber-700 dark:text-amber-300">
+            <Archive className="h-4 w-4" />
+          </span>
+          <div>
+            <div className="text-sm font-semibold tracking-tight text-foreground">Context Compacted</div>
+            <div className="text-xs text-muted-foreground">Earlier history was compressed so the runtime can keep the active thread moving.</div>
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+          {estimatedInputTokens !== undefined || estimatedPostCompactTokens !== undefined ? (
+            <span className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-background/75 px-2.5 py-1 text-[11px] font-medium text-foreground/80">
+              {formatCompactCount(estimatedInputTokens, "tokens") ?? "input"}
+              <ArrowRight className="h-3 w-3 text-muted-foreground/70" />
+              {formatCompactCount(estimatedPostCompactTokens, "tokens") ?? "after compact"}
+            </span>
+          ) : null}
+          {compactThresholdTokens !== undefined ? (
+            <span className="inline-flex rounded-full border border-border/60 bg-background/75 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
+              threshold {compactThresholdTokens.toLocaleString()}
+            </span>
+          ) : null}
+          {contextWindowTokens !== undefined ? (
+            <span className="inline-flex rounded-full border border-border/60 bg-background/75 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
+              window {contextWindowTokens.toLocaleString()}
+            </span>
+          ) : null}
+          {summarizedMessageCount !== undefined ? (
+            <span className="inline-flex rounded-full border border-border/60 bg-background/75 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
+              summarized {summarizedMessageCount.toLocaleString()} messages
+            </span>
+          ) : null}
+        </div>
+      </div>
+      <CompactMetaRow message={message} />
+    </div>
+  );
+}
+
+function CompactSummaryCard({ message }: { message: Message }) {
+  const [expanded, setExpanded] = useState(false);
+  const contextWindowTokens = readNumericMetadataValue(message.metadata, "contextWindowTokens");
+  const compactThresholdTokens = readNumericMetadataValue(message.metadata, "compactThresholdTokens");
+  const keepRecentGroupCount = readNumericMetadataValue(message.metadata, "keepRecentGroupCount");
+  const summarizedMessageCount = readNumericMetadataValue(message.metadata, "summarizedMessageCount");
+  const summaryText = typeof message.content === "string" ? message.content : "";
+  const preview = summaryText.slice(0, COMPACT_SUMMARY_PREVIEW_CHARS).trimEnd();
+
+  return (
+    <div className="mx-auto max-w-3xl">
+      <div className="overflow-hidden rounded-3xl border border-sky-500/20 bg-gradient-to-br from-sky-500/12 via-background to-background px-5 py-4 shadow-sm">
+        <div className="flex flex-wrap items-start gap-3">
+          <span className="inline-flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl border border-sky-500/20 bg-sky-500/12 text-sky-700 dark:text-sky-300">
+            <Sparkles className="h-4 w-4" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="text-sm font-semibold tracking-tight text-foreground">Compaction Summary</div>
+              {summarizedMessageCount !== undefined ? (
+                <span className="inline-flex rounded-full border border-border/60 bg-background/75 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+                  {summarizedMessageCount.toLocaleString()} msgs
+                </span>
+              ) : null}
+              {keepRecentGroupCount !== undefined ? (
+                <span className="inline-flex rounded-full border border-border/60 bg-background/75 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+                  keep {keepRecentGroupCount}
+                </span>
+              ) : null}
+            </div>
+            <div className="mt-1 text-xs leading-6 text-muted-foreground">
+              This summary stands in for earlier conversation context after compaction.
+            </div>
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          {compactThresholdTokens !== undefined ? (
+            <span className="inline-flex rounded-full border border-border/60 bg-background/75 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
+              threshold {compactThresholdTokens.toLocaleString()}
+            </span>
+          ) : null}
+          {contextWindowTokens !== undefined ? (
+            <span className="inline-flex rounded-full border border-border/60 bg-background/75 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
+              window {contextWindowTokens.toLocaleString()}
+            </span>
+          ) : null}
+        </div>
+        <div className="mt-4 rounded-2xl border border-border/60 bg-background/70 px-4 py-3">
+          {expanded ? (
+            <MarkdownText text={summaryText} />
+          ) : (
+            <div className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground/85">
+              {preview}
+              {preview.length < summaryText.length ? "…" : null}
+            </div>
+          )}
+        </div>
+        <div className="mt-3">
+          <button
+            type="button"
+            onClick={() => setExpanded((current) => !current)}
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground transition hover:text-foreground"
+          >
+            {expanded ? "Collapse summary" : "Show full summary"}
+          </button>
+        </div>
+      </div>
+      <CompactMetaRow message={message} />
+    </div>
+  );
 }
 
 function MarkdownText({ text, isUser }: { text: string; isUser?: boolean }) {
@@ -373,7 +589,7 @@ function MessageContent({
   messageMetadata?: Message["metadata"];
 }) {
   if (typeof content === "string") {
-    return <MarkdownText text={content} {...(isUser !== undefined ? { isUser } : {})} />;
+    return <ExpandableMarkdownText text={content} {...(isUser !== undefined ? { isUser } : {})} />;
   }
 
   const textParts = content.filter((p) => p.type === "text");
@@ -403,7 +619,9 @@ function MessageContent({
       )}
       {textParts.map((part, i) => (
         <div key={i}>
-          {"text" in part && part.text ? <MarkdownText text={part.text} {...(isUser !== undefined ? { isUser } : {})} /> : null}
+          {"text" in part && part.text ? (
+            <ExpandableMarkdownText text={part.text} {...(isUser !== undefined ? { isUser } : {})} />
+          ) : null}
         </div>
       ))}
       {approvalParts.length > 0 && (
@@ -464,6 +682,7 @@ function ConversationWorkspaceImpl(props: RuntimeProps) {
   const prevMessageCountRef = useRef(0);
   const restoredRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const prependSnapshotRef = useRef<{ messageCount: number; scrollHeight: number; scrollTop: number } | null>(null);
 
   const sessionId = props.session?.id ?? "";
   const messageCount = props.messageFeed.length;
@@ -512,6 +731,7 @@ function ConversationWorkspaceImpl(props: RuntimeProps) {
   // Auto-scroll on new messages
   useEffect(() => {
     if (!restoredRef.current) return;
+    if (prependSnapshotRef.current) return;
     const isNewMessage = messageCount > prevMessageCountRef.current;
     prevMessageCountRef.current = messageCount;
 
@@ -545,6 +765,23 @@ function ConversationWorkspaceImpl(props: RuntimeProps) {
     }
   }, [draftMessage]);
 
+  useEffect(() => {
+    if (props.loadingOlderMessages) {
+      return;
+    }
+
+    const snapshot = prependSnapshotRef.current;
+    const el = scrollContainerRef.current;
+    if (!snapshot || !el) {
+      return;
+    }
+
+    const heightDelta = el.scrollHeight - snapshot.scrollHeight;
+    el.scrollTop = snapshot.scrollTop + Math.max(0, heightDelta);
+    prevMessageCountRef.current = messageCount;
+    prependSnapshotRef.current = null;
+  }, [messageCount, props.loadingOlderMessages]);
+
   // Enter to send, Shift+Enter for newline
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -553,6 +790,18 @@ function ConversationWorkspaceImpl(props: RuntimeProps) {
         props.sendMessage();
       }
     }
+  };
+
+  const handleLoadOlderMessages = () => {
+    const el = scrollContainerRef.current;
+    if (el) {
+      prependSnapshotRef.current = {
+        messageCount,
+        scrollHeight: el.scrollHeight,
+        scrollTop: el.scrollTop
+      };
+    }
+    props.loadOlderMessages();
   };
 
   return (
@@ -584,6 +833,21 @@ function ConversationWorkspaceImpl(props: RuntimeProps) {
         ) : null}
 
         <div className="mx-auto flex w-full max-w-4xl flex-col px-4 py-6 md:px-6 md:py-8">
+          {props.hasActiveSession && (props.hasMoreMessages || props.loadingOlderMessages) ? (
+            <div className="mb-5 flex justify-center">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleLoadOlderMessages}
+                disabled={props.loadingOlderMessages}
+                className="rounded-full bg-background/85 px-4 shadow-sm backdrop-blur-sm"
+              >
+                {props.loadingOlderMessages ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
+                {props.loadingOlderMessages ? "Loading earlier messages" : "Load earlier messages"}
+              </Button>
+            </div>
+          ) : null}
+
           {!props.hasActiveSession ? (
             <div className="flex min-h-[52vh] items-center justify-center py-10">
               <div className="max-w-md text-center">
@@ -592,6 +856,16 @@ function ConversationWorkspaceImpl(props: RuntimeProps) {
                 </div>
                 <h2 className="text-xl font-semibold tracking-tight text-foreground">No Session Selected</h2>
                 <p className="mt-3 text-sm leading-7 text-muted-foreground">Choose a session from the sidebar, or create one in {props.currentWorkspaceName}.</p>
+              </div>
+            </div>
+          ) : props.messagesLoading && props.messageFeed.length === 0 ? (
+            <div className="flex min-h-[52vh] items-center justify-center py-10">
+              <div className="max-w-md text-center">
+                <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-border/70 bg-background/85 text-muted-foreground shadow-sm">
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                </div>
+                <h2 className="text-xl font-semibold tracking-tight text-foreground">Loading Conversation</h2>
+                <p className="mt-3 text-sm leading-7 text-muted-foreground">Fetching the latest message block for this session.</p>
               </div>
             </div>
           ) : props.messageFeed.length === 0 ? (
@@ -608,6 +882,7 @@ function ConversationWorkspaceImpl(props: RuntimeProps) {
             props.messageFeed.map((message) => {
               const isUser = message.role === "user";
               const isStreaming = message.id.startsWith("live:");
+              const runtimeKind = readRuntimeKind(message.metadata);
               const isToolOnly = !isUser && isToolOnlyMessage(message.content);
               const messageAgentInfo = resolveMessageAgentInfo({
                 message,
@@ -617,6 +892,22 @@ function ConversationWorkspaceImpl(props: RuntimeProps) {
                 session: props.session,
                 sessionEvents: props.sessionEvents
               });
+
+              if (runtimeKind === "compact_boundary") {
+                return (
+                  <article key={message.id} className="animate-fade-in py-2 md:py-3">
+                    <CompactBoundaryCard message={message} />
+                  </article>
+                );
+              }
+
+              if (runtimeKind === "compact_summary") {
+                return (
+                  <article key={message.id} className="animate-fade-in py-2 md:py-3">
+                    <CompactSummaryCard message={message} />
+                  </article>
+                );
+              }
 
               return (
                 <article key={message.id} className={`group/message animate-fade-in flex gap-3 md:gap-4 py-2 md:py-3 ${isUser ? "flex-row-reverse" : ""}`}>

@@ -7,10 +7,12 @@ import {
   Lock,
   Network,
   Orbit,
+  Palette,
   RefreshCw,
   RotateCcw,
   Rows3,
   Search,
+  Settings2,
   Table2,
   Upload,
   Workflow
@@ -26,6 +28,15 @@ import {
   DialogHeader,
   DialogTitle
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -36,10 +47,14 @@ import { useSettingsStore } from "../stores/settings-store";
 import { useStreamStore } from "../stores/stream-store";
 import { useUiStore } from "../stores/ui-store";
 import { probeTone, streamTone, toneBadgeClass, type SavedSessionRecord, type StatusSemanticTone } from "../support";
+import { appThemeOptions, isAppThemeName, type AppThemeName } from "../theme";
 import type { useAppController } from "../use-app-controller";
 import { SessionNavItem, WorkspaceNavItem } from "./sidebar-items";
 
-type SidebarProps = ReturnType<typeof useAppController>["sidebarSurfaceProps"];
+type SidebarProps = ReturnType<typeof useAppController>["sidebarSurfaceProps"] & {
+  theme: AppThemeName;
+  onThemeChange: (theme: AppThemeName) => void;
+};
 
 function tableLabel(name: string) {
   return name.replace(/_/g, " ");
@@ -201,23 +216,10 @@ function SidebarActionItem(props: {
   );
 }
 
-function ToggleRow(props: { label: string; checked: boolean; onCheckedChange: (checked: boolean) => void }) {
-  return (
-    <label className="info-panel flex items-center justify-between gap-3 rounded-xl px-3 py-2">
-      <span className="text-sm text-foreground">{props.label}</span>
-      <Switch checked={props.checked} onCheckedChange={props.onCheckedChange} />
-    </label>
-  );
-}
-
 function RuntimeSidebar(props: SidebarProps) {
   const workspaceRuntimeFilter = useSettingsStore((state) => state.workspaceRuntimeFilter);
   const setWorkspaceRuntimeFilter = useSettingsStore((state) => state.setWorkspaceRuntimeFilter);
   const serviceScope = useSettingsStore((state) => state.serviceScope);
-  const autoStream = useUiStore((state) => state.autoStream);
-  const setAutoStream = useUiStore((state) => state.setAutoStream);
-  const filterSelectedRun = useUiStore((state) => state.filterSelectedRun);
-  const setFilterSelectedRun = useUiStore((state) => state.setFilterSelectedRun);
   const showFilteredWorkspaceCount = props.filteredSavedWorkspaces.length !== props.orderedSavedWorkspaces.length;
   const workspaceCountLabel = showFilteredWorkspaceCount
     ? `${props.filteredSavedWorkspaces.length} of ${props.orderedSavedWorkspaces.length} workspaces`
@@ -293,8 +295,8 @@ function RuntimeSidebar(props: SidebarProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
-        <div className="space-y-3 px-2 py-3">
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-2 py-3">
+        <div className="space-y-3">
           <div className="flex items-center justify-between gap-2 px-2">
             <div>
               <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Workspaces</p>
@@ -428,13 +430,6 @@ function RuntimeSidebar(props: SidebarProps) {
               );
             })
           )}
-        </div>
-      </div>
-
-      <div className="shrink-0 space-y-3 border-t border-black/8 px-3 py-3">
-        <div className="grid gap-2">
-          <ToggleRow label="Auto SSE" checked={autoStream} onCheckedChange={(checked) => setAutoStream(checked)} />
-          <ToggleRow label="Current Run" checked={filterSelectedRun} onCheckedChange={(checked) => setFilterSelectedRun(checked)} />
         </div>
       </div>
     </div>
@@ -854,6 +849,7 @@ function AppSidebarImpl(props: SidebarProps) {
       : surfaceMode === "provider"
         ? "Connection, health, and provider registry."
         : "Navigate workspaces and sessions.";
+  const currentThemeLabel = appThemeOptions.find((option) => option.value === props.theme)?.label ?? props.theme;
 
   return (
     <>
@@ -896,6 +892,51 @@ function AppSidebarImpl(props: SidebarProps) {
           ) : (
             <RuntimeSidebar {...props} />
           )}
+        </div>
+
+        <div className="shrink-0 border-t border-black/8 px-3 py-3">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" className="info-panel info-panel-hoverable h-auto w-full justify-between rounded-2xl px-3 py-3 text-left">
+                <span className="flex min-w-0 items-center gap-3">
+                  <span className="ob-list-item-icon flex h-8 w-8 shrink-0 items-center justify-center rounded-xl">
+                    <Settings2 className="h-4 w-4" />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-sm font-medium text-foreground">Settings</span>
+                    <span className="block truncate text-xs leading-5 text-muted-foreground">Theme: {currentThemeLabel}</span>
+                  </span>
+                </span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent side="top" align="start" className="w-[260px] min-w-[260px] rounded-2xl p-2">
+              <DropdownMenuLabel className="px-2 pt-1 pb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                Interface Settings
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <div className="px-2 py-2">
+                <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                  <Palette className="h-3.5 w-3.5" />
+                  Theme
+                </div>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">Choose the visual theme for the web app.</p>
+              </div>
+              <DropdownMenuRadioGroup
+                value={props.theme}
+                onValueChange={(value) => {
+                  if (isAppThemeName(value)) {
+                    props.onThemeChange(value);
+                  }
+                }}
+              >
+                {appThemeOptions.map((theme) => (
+                  <DropdownMenuRadioItem key={theme.value} value={theme.value} className="mx-1 rounded-xl px-2 py-2">
+                    {theme.label}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </aside>
 

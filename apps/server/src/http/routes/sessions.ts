@@ -6,6 +6,7 @@ import {
   cancelRunAcceptedSchema,
   createMessageRequestSchema,
   messageAcceptedSchema,
+  messageListQuerySchema,
   messagePageSchema,
   pageQuerySchema,
   requeueRunAcceptedSchema,
@@ -53,8 +54,13 @@ export function registerSessionRoutes(app: FastifyInstance, dependencies: AppDep
 
   app.get("/api/v1/sessions/:sessionId/messages", async (request, reply) => {
     const params = createParamsSchema("sessionId").parse(request.params);
-    const query = pageQuerySchema.parse(request.query);
-    const page = await dependencies.runtimeService.listSessionMessages(params.sessionId, query.pageSize, query.cursor);
+    const query = messageListQuerySchema.parse(request.query);
+    const page = await dependencies.runtimeService.listSessionMessages(
+      params.sessionId,
+      query.pageSize,
+      query.cursor,
+      query.direction
+    );
     return reply.send(messagePageSchema.parse(page));
   });
 

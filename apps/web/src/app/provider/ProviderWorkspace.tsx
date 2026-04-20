@@ -29,6 +29,10 @@ function Section(props: { title: string; description: string; action?: ReactNode
   );
 }
 
+function formatTokenCount(value: number | undefined): string {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value.toLocaleString() : "unknown";
+}
+
 function ProviderWorkspaceImpl(props: ProviderProps) {
   const connection = useSettingsStore((state) => state.connection);
   const setConnection = useSettingsStore((state) => state.setConnection);
@@ -153,6 +157,12 @@ function ProviderWorkspaceImpl(props: ProviderProps) {
                         <div className="border-l border-border/70 pl-4">
                           <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Base URL</p>
                           <p className="mt-2 break-all text-sm text-foreground">{selectedModel.url ?? "provider default"}</p>
+                        </div>
+                        <div className="border-l border-border/70 pl-4">
+                          <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                            Context Window
+                          </p>
+                          <p className="mt-2 text-sm text-foreground">{formatTokenCount(selectedModel.contextWindowTokens)}</p>
                         </div>
                       </div>
                     </div>

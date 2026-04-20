@@ -55,6 +55,7 @@ export interface AppDependencies {
       modelName: string;
       url?: string;
       hasKey: boolean;
+      contextWindowTokens?: number;
       metadata?: Record<string, unknown>;
       isDefault: boolean;
     }>

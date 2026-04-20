@@ -213,8 +213,8 @@ export class ControlPlaneEngineService implements ControlPlaneRuntimeOperations 
       await kernel.deleteSession(sessionId);
       await this.#touchWorkspace(session.workspaceId);
     };
-    this.listSessionMessages = async (sessionId, pageSize, cursor) => {
-      const messages = await kernel.listSessionMessages(sessionId, pageSize, cursor);
+    this.listSessionMessages = async (sessionId, pageSize, cursor, direction) => {
+      const messages = await kernel.listSessionMessages(sessionId, pageSize, cursor, direction);
       await this.#touchSessionWorkspace(sessionId);
       return messages;
     };

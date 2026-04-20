@@ -59,6 +59,39 @@ export class ModelInputService {
     activeAgentName: string,
     forceSystemReminder = false
   ): Promise<ModelExecutionInput> {
+    const resolvedModel = this.resolveRunModel(workspace, session, run, activeAgentName);
+    const activeAgent = workspace.agents[activeAgentName];
+    const contextMessages = await this.buildModelContextMessages(
+      workspace,
+      session,
+      run,
+      engineMessages,
+      activeAgentName,
+      forceSystemReminder
+    );
+    return {
+      model: resolvedModel.model,
+      canonicalModelRef: resolvedModel.canonicalModelRef,
+      ...(resolvedModel.provider ? { provider: resolvedModel.provider } : {}),
+      ...(resolvedModel.modelDefinition ? { modelDefinition: resolvedModel.modelDefinition } : {}),
+      ...(activeAgent?.temperature !== undefined ? { temperature: activeAgent.temperature } : {}),
+      ...(activeAgent?.topP !== undefined ? { topP: activeAgent.topP } : {}),
+      ...(activeAgent?.maxTokens !== undefined ? { maxTokens: activeAgent.maxTokens } : {}),
+      messages: contextMessages
+    };
+  }
+
+  async buildModelContextMessages(
+    workspace: WorkspaceRecord,
+    session: Session,
+    run: Run,
+    engineMessages: EngineMessage[],
+    activeAgentName: string,
+    forceSystemReminder = false,
+    options?: {
+      applyHooks?: boolean | undefined;
+    }
+  ): Promise<ChatMessage[]> {
     const activeAgent = workspace.agents[activeAgentName];
     const resolvedModel = this.resolveRunModel(workspace, session, run, activeAgentName);
     const modelProjection = this.#engineMessageProjector.projectToModel(engineMessages, {
@@ -70,13 +103,18 @@ export class ModelInputService {
       includeToolResults: true,
       applyCompactBoundary: true
     });
-    let contextMessages = await this.#applyContextHooks(
-      workspace,
-      session,
-      run,
-      "before_context_build",
-      this.#modelMessageSerializer.toAiSdkMessages(modelProjection.messages)
-    );
+    const applyHooks = options?.applyHooks !== false;
+    let contextMessages = this.#modelMessageSerializer.toAiSdkMessages(modelProjection.messages);
+    if (applyHooks) {
+      contextMessages = await this.#applyContextHooks(
+        workspace,
+        session,
+        run,
+        "before_context_build",
+        contextMessages
+      );
+    }
+
     const promptMessages: Array<{ role: "system"; content: string }> = this.#promptComposer.buildStaticPromptMessages(
       workspace,
       activeAgentName,
@@ -90,21 +128,12 @@ export class ModelInputService {
       contextMessages = this.#promptComposer.withInjectedSystemReminder(contextMessages, activeAgent.systemReminder);
     }
 
-    contextMessages = await this.#applyContextHooks(workspace, session, run, "after_context_build", [
-      ...promptMessages,
-      ...contextMessages
-    ]);
+    const assembledMessages = [...promptMessages, ...contextMessages];
+    const finalizedMessages = applyHooks
+      ? await this.#applyContextHooks(workspace, session, run, "after_context_build", assembledMessages)
+      : assembledMessages;
 
-    return {
-      model: resolvedModel.model,
-      canonicalModelRef: resolvedModel.canonicalModelRef,
-      ...(resolvedModel.provider ? { provider: resolvedModel.provider } : {}),
-      ...(resolvedModel.modelDefinition ? { modelDefinition: resolvedModel.modelDefinition } : {}),
-      ...(activeAgent?.temperature !== undefined ? { temperature: activeAgent.temperature } : {}),
-      ...(activeAgent?.topP !== undefined ? { topP: activeAgent.topP } : {}),
-      ...(activeAgent?.maxTokens !== undefined ? { maxTokens: activeAgent.maxTokens } : {}),
-      messages: this.#collapseLeadingSystemMessages(contextMessages)
-    };
+    return this.#collapseLeadingSystemMessages(finalizedMessages);
   }
 
   resolveModelForRun(workspace: WorkspaceRecord, modelRef?: string | undefined): ResolvedRunModel {

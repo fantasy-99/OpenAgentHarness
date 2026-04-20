@@ -1,4 +1,5 @@
 import type { PlatformModelDefinition, PlatformModelRegistry } from "@oah/config";
+import { normalizeModelMetadata, normalizePlatformModelRegistry } from "./platform-model-metadata.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -69,14 +70,15 @@ async function discoverContextWindowMetadata(definition: PlatformModelDefinition
   }
 
   const maxModelLen = parsePositiveNumber(modelCard.max_model_len);
-  return maxModelLen ? { max_model_len: maxModelLen } : undefined;
+  return maxModelLen ? { contextWindowTokens: maxModelLen } : undefined;
 }
 
 export async function enrichModelRegistryWithDiscoveredMetadata(
   models: PlatformModelRegistry
 ): Promise<PlatformModelRegistry> {
+  const normalizedModels = normalizePlatformModelRegistry(models);
   const entries = await Promise.all(
-    Object.entries(models).map(async ([modelName, definition]) => {
+    Object.entries(normalizedModels).map(async ([modelName, definition]) => {
       try {
         const discoveredMetadata = await discoverContextWindowMetadata(definition);
         if (!discoveredMetadata) {
@@ -87,10 +89,10 @@ export async function enrichModelRegistryWithDiscoveredMetadata(
           modelName,
           {
             ...definition,
-            metadata: {
+            metadata: normalizeModelMetadata({
               ...(definition.metadata ?? {}),
               ...discoveredMetadata
-            }
+            })
           }
         ] as const;
       } catch {

@@ -137,7 +137,8 @@ export const workspaceFileContentQuerySchema = z.object({
 export const workspaceFileUploadQuerySchema = z.object({
   path: z.string().min(1),
   overwrite: z.coerce.boolean().default(true),
-  ifMatch: z.string().optional()
+  ifMatch: z.string().optional(),
+  mtimeMs: z.coerce.number().min(0).optional()
 });
 
 export type Workspace = z.infer<typeof workspaceSchema>;

@@ -202,7 +202,7 @@ export class WorkspaceEngineService {
 
   async uploadWorkspaceFile(
     workspaceId: string,
-    input: { path: string; data: Buffer; overwrite?: boolean | undefined; ifMatch?: string | undefined }
+    input: { path: string; data: Buffer; overwrite?: boolean | undefined; ifMatch?: string | undefined; mtimeMs?: number | undefined }
   ): Promise<WorkspaceEntry> {
     return this.#withWorkspaceFileLease(workspaceId, "write", input.path, (workspace) =>
       this.#workspaceFiles.uploadFile(workspace, input)

@@ -79,6 +79,22 @@ describe("object storage sync", () => {
     expect((await stat(path.join(directory, "empty-dir"))).isDirectory()).toBe(true);
   });
 
+  it("preserves remote lastModified timestamps when materializing locally", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-pull-mtime-"));
+    tempDirs.push(directory);
+    const store = new FakeDirectoryObjectStore();
+    const lastModified = new Date("2026-04-18T08:09:10.000Z");
+    store.objects.set("workspace/demo/README.md", {
+      body: Buffer.from("# demo\n"),
+      lastModified
+    });
+
+    await syncRemotePrefixToLocal(store, "workspace/demo", directory);
+
+    const materializedStat = await stat(path.join(directory, "README.md"));
+    expect(Math.trunc(materializedStat.mtimeMs)).toBe(lastModified.getTime());
+  });
+
   it("pushes local changes back into remote storage and deletes removed objects", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-push-"));
     tempDirs.push(directory);

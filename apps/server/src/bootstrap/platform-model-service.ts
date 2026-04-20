@@ -1,7 +1,12 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+
 import { loadPlatformModels } from "@oah/config";
 import { enrichModelRegistryWithDiscoveredMetadata } from "./model-metadata-discovery.js";
+import { normalizeModelMetadata, normalizePlatformModelRegistry, readContextWindowTokens } from "./platform-model-metadata.js";
 
 export type PlatformModelRegistry = Awaited<ReturnType<typeof loadPlatformModels>>;
+const PERSISTED_MODEL_METADATA_FILENAME = ".oah-platform-model-metadata.json";
 
 export interface PlatformModelItem {
   id: string;
@@ -9,6 +14,7 @@ export interface PlatformModelItem {
   modelName: string;
   url?: string;
   hasKey: boolean;
+  contextWindowTokens?: number;
   metadata?: Record<string, unknown>;
   isDefault: boolean;
 }
@@ -27,16 +33,39 @@ export interface PlatformModelCatalogService {
   close(): Promise<void>;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readPositiveNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  return undefined;
+}
+
 function toPlatformModelItems(models: PlatformModelRegistry, defaultModel: string): PlatformModelItem[] {
-  return Object.entries(models).map(([id, definition]) => ({
-    id,
-    provider: definition.provider,
-    modelName: definition.name,
-    ...(definition.url ? { url: definition.url } : {}),
-    hasKey: Boolean(definition.key),
-    ...(definition.metadata ? { metadata: definition.metadata } : {}),
-    isDefault: defaultModel === id
-  }));
+  return Object.entries(models).map(([id, definition]) => {
+    const contextWindowTokens = readContextWindowTokens(definition.metadata);
+    return {
+      id,
+      provider: definition.provider,
+      modelName: definition.name,
+      ...(definition.url ? { url: definition.url } : {}),
+      hasKey: Boolean(definition.key),
+      ...(contextWindowTokens ? { contextWindowTokens } : {}),
+      ...(definition.metadata ? { metadata: definition.metadata } : {}),
+      isDefault: defaultModel === id
+    };
+  });
 }
 
 function replacePlatformModels(target: PlatformModelRegistry, next: PlatformModelRegistry): void {
@@ -59,17 +88,159 @@ function serializePlatformModels(models: PlatformModelRegistry): string {
   );
 }
 
+function persistedPlatformModelMetadataPath(modelDir: string): string {
+  return path.join(modelDir, PERSISTED_MODEL_METADATA_FILENAME);
+}
+
+async function loadPersistedContextWindowTokens(input: {
+  modelDir: string;
+  onLoadError(input: { filePath: string; error: unknown }): void;
+}): Promise<Record<string, number>> {
+  const filePath = persistedPlatformModelMetadataPath(input.modelDir);
+
+  try {
+    const raw = await readFile(filePath, "utf8");
+    const parsed = JSON.parse(raw) as {
+      version?: unknown;
+      models?: unknown;
+    };
+
+    if (!isRecord(parsed.models)) {
+      return {};
+    }
+
+    const entries = Object.entries(parsed.models)
+      .map(([modelName, entry]) => {
+        if (!isRecord(entry)) {
+          return undefined;
+        }
+
+        const contextWindowTokens = readPositiveNumber(entry.contextWindowTokens);
+        return contextWindowTokens ? ([modelName, contextWindowTokens] as const) : undefined;
+      })
+      .filter((entry): entry is readonly [string, number] => entry !== undefined);
+
+    return Object.fromEntries(entries);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+      return {};
+    }
+
+    input.onLoadError({
+      filePath,
+      error
+    });
+    return {};
+  }
+}
+
+function applyPersistedContextWindowTokens(
+  models: PlatformModelRegistry,
+  persistedContextWindowTokens: Record<string, number>
+): PlatformModelRegistry {
+  return normalizePlatformModelRegistry(
+    Object.fromEntries(
+      Object.entries(models).map(([modelName, definition]) => {
+        const contextWindowTokens = persistedContextWindowTokens[modelName];
+        if (!contextWindowTokens) {
+          return [modelName, definition];
+        }
+
+        return [
+          modelName,
+          {
+            ...definition,
+            metadata: normalizeModelMetadata({
+              ...(definition.metadata ?? {}),
+              contextWindowTokens
+            })
+          }
+        ];
+      })
+    )
+  );
+}
+
+function serializePersistedContextWindowTokens(models: PlatformModelRegistry): string {
+  const persistedModels = Object.fromEntries(
+    Object.entries(models)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .flatMap(([modelName, definition]) => {
+        const contextWindowTokens = readContextWindowTokens(definition.metadata);
+        return contextWindowTokens ? [[modelName, { contextWindowTokens }]] : [];
+      })
+  );
+
+  return `${JSON.stringify(
+    {
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      models: persistedModels
+    },
+    null,
+    2
+  )}\n`;
+}
+
+async function persistContextWindowTokens(input: {
+  modelDir: string;
+  models: PlatformModelRegistry;
+  onLoadError(input: { filePath: string; error: unknown }): void;
+}): Promise<void> {
+  const filePath = persistedPlatformModelMetadataPath(input.modelDir);
+  const nextContent = serializePersistedContextWindowTokens(input.models);
+
+  try {
+    await mkdir(input.modelDir, { recursive: true });
+    const currentContent = await readFile(filePath, "utf8").catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+        return undefined;
+      }
+
+      throw error;
+    });
+
+    if (currentContent === nextContent) {
+      return;
+    }
+
+    await writeFile(filePath, nextContent, "utf8");
+  } catch (error) {
+    input.onLoadError({
+      filePath,
+      error
+    });
+  }
+}
+
 export async function createPlatformModelCatalogService(options: {
   modelDir: string;
+  stateDir: string;
   defaultModel: string;
   onLoadError(input: { filePath: string; error: unknown }): void;
   onModelsChanged?: ((models: PlatformModelRegistry) => Promise<void> | void) | undefined;
 }): Promise<PlatformModelCatalogService> {
-  const definitions = await enrichModelRegistryWithDiscoveredMetadata(
-    await loadPlatformModels(options.modelDir, {
-      onError: options.onLoadError
-    })
-  );
+  async function loadDefinitions(): Promise<PlatformModelRegistry> {
+    const loadedModels = normalizePlatformModelRegistry(
+      await loadPlatformModels(options.modelDir, {
+        onError: options.onLoadError
+      })
+    );
+    const persistedContextWindowTokens = await loadPersistedContextWindowTokens({
+      modelDir: options.stateDir,
+      onLoadError: options.onLoadError
+    });
+    const mergedModels = applyPersistedContextWindowTokens(loadedModels, persistedContextWindowTokens);
+    const enrichedModels = await enrichModelRegistryWithDiscoveredMetadata(mergedModels);
+    await persistContextWindowTokens({
+      modelDir: options.stateDir,
+      models: enrichedModels,
+      onLoadError: options.onLoadError
+    });
+    return enrichedModels;
+  }
+
+  const definitions = await loadDefinitions();
   const listeners = new Set<(snapshot: PlatformModelSnapshot) => void>();
   let revision = 0;
   let reloadPromise: Promise<void> | undefined;
@@ -100,11 +271,7 @@ export async function createPlatformModelCatalogService(options: {
 
     reloadPromise = (async () => {
       const currentSnapshot = serializePlatformModels(definitions);
-      const nextModels = await enrichModelRegistryWithDiscoveredMetadata(
-        await loadPlatformModels(options.modelDir, {
-          onError: options.onLoadError
-        })
-      );
+      const nextModels = await loadDefinitions();
       const nextSnapshot = serializePlatformModels(nextModels);
 
       if (currentSnapshot === nextSnapshot) {

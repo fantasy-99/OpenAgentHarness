@@ -20,6 +20,7 @@ export const platformModelSchema = z.object({
   modelName: z.string(),
   url: z.string().optional(),
   hasKey: z.boolean(),
+  contextWindowTokens: z.number().int().positive().optional(),
   metadata: jsonObjectSchema.optional(),
   isDefault: z.boolean()
 });

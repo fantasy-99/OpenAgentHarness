@@ -77,7 +77,7 @@ export interface E2BCompatibleSandboxService {
   openReadStream?(input: { sandboxId: string; path: string }): Readable;
   readdir(input: { sandboxId: string; path: string }): Promise<WorkspaceFileSystemEntry[]>;
   mkdir(input: { sandboxId: string; path: string; recursive?: boolean | undefined }): Promise<void>;
-  writeFile(input: { sandboxId: string; path: string; data: Buffer }): Promise<void>;
+  writeFile(input: { sandboxId: string; path: string; data: Buffer; mtimeMs?: number | undefined }): Promise<void>;
   rm(input: {
     sandboxId: string;
     path: string;
@@ -325,7 +325,8 @@ export function createHttpE2BCompatibleSandboxService(
         path: input.path,
         overwrite: true,
         data: input.data,
-        contentType: "application/octet-stream"
+        contentType: "application/octet-stream",
+        ...(typeof input.mtimeMs === "number" ? { mtimeMs: input.mtimeMs } : {})
       });
     },
     async rm(input) {
@@ -493,12 +494,13 @@ function createE2BCompatibleWorkspaceFileSystem(service: E2BCompatibleSandboxSer
         recursive: options?.recursive
       });
     },
-    async writeFile(targetPath, data) {
+    async writeFile(targetPath, data, options) {
       const parsed = parseVirtualSandboxPath(targetPath);
       await service.writeFile({
         sandboxId: parsed.sandboxId,
         path: parsed.remotePath,
-        data
+        data,
+        ...(typeof options?.mtimeMs === "number" ? { mtimeMs: options.mtimeMs } : {})
       });
     },
     async rm(targetPath, options) {

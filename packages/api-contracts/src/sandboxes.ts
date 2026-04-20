@@ -227,7 +227,8 @@ export function createSandboxHttpClient(transport: SandboxHttpTransport) {
         await transport.requestJson<unknown>(
           `${buildSandboxApiPath(sandboxId, "/files/upload")}${buildSandboxQueryString({
             path: input.path,
-            ...(input.overwrite !== undefined ? { overwrite: input.overwrite } : {})
+            ...(input.overwrite !== undefined ? { overwrite: input.overwrite } : {}),
+            ...(input.mtimeMs !== undefined ? { mtimeMs: input.mtimeMs } : {})
           })}`,
           {
             method: "PUT",

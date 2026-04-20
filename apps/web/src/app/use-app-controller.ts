@@ -1,4 +1,4 @@
-import { startTransition, useDeferredValue, useEffect, useEffectEvent, useRef } from "react";
+import { startTransition, useDeferredValue, useEffect, useEffectEvent, useRef, useState } from "react";
 
 import {
   type ActionRunAccepted,
@@ -6,6 +6,7 @@ import {
   readinessReportSchema,
   type Message,
   type MessageAccepted,
+  type MessagePage,
   type ModelGenerateResponse,
   type Run,
   type RunPage,
@@ -64,6 +65,55 @@ import { useStreamStore } from "./stores/stream-store";
 import { useUiStore } from "./stores/ui-store";
 
 const COMPLETED_RUN_RESULT_POLL_LIMIT = 5;
+const MESSAGE_PAGE_SIZE = 120;
+
+function buildMessagePagePath(
+  sessionId: string,
+  options?: {
+    cursor?: string | undefined;
+    direction?: "forward" | "backward" | undefined;
+    pageSize?: number | undefined;
+  }
+) {
+  const query = new URLSearchParams({
+    pageSize: String(options?.pageSize ?? MESSAGE_PAGE_SIZE),
+    direction: options?.direction ?? "backward"
+  });
+  if (options?.cursor) {
+    query.set("cursor", options.cursor);
+  }
+
+  return `/api/v1/sessions/${sessionId}/messages?${query.toString()}`;
+}
+
+function mergeSessionMessages(current: Message[], incoming: Message[]) {
+  let next = current;
+  for (const message of incoming) {
+    next = upsertSessionMessage(next, message);
+  }
+
+  return next;
+}
+
+function mergeMessageCursor(current: string | null, incoming: string | undefined) {
+  const normalizedCurrent = current?.trim() ? current : null;
+  const normalizedIncoming = incoming?.trim() ? incoming : null;
+
+  if (!normalizedCurrent) {
+    return normalizedIncoming;
+  }
+  if (!normalizedIncoming) {
+    return normalizedCurrent;
+  }
+
+  const currentOffset = Number.parseInt(normalizedCurrent, 10);
+  const incomingOffset = Number.parseInt(normalizedIncoming, 10);
+  if (Number.isFinite(currentOffset) && Number.isFinite(incomingOffset)) {
+    return String(Math.min(currentOffset, incomingOffset));
+  }
+
+  return normalizedCurrent;
+}
 
 export function useAppController() {
   const {
@@ -118,8 +168,6 @@ export function useAppController() {
     errorMessage,
     activeError,
     streamRevision,
-    autoStream,
-    filterSelectedRun,
     setSurfaceMode,
     setMainViewMode,
     setInspectorTab,
@@ -134,9 +182,7 @@ export function useAppController() {
     setActivity,
     setErrorMessage,
     setActiveError,
-    setStreamRevision,
-    setAutoStream,
-    setFilterSelectedRun
+    setStreamRevision
   } = useUiStore();
   const {
     pendingSessionAgentName,
@@ -189,11 +235,17 @@ export function useAppController() {
   } = navigation;
 
   const deferredEvents = useDeferredValue(events);
+  const [messagesNextCursor, setMessagesNextCursor] = useState<string | null>(null);
+  const [messagesLoading, setMessagesLoading] = useState(false);
+  const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const completedRunResultPollsRef = useRef<Record<string, number>>({});
   const streamAbortRef = useRef<AbortController | null>(null);
   const platformModelStreamAbortRef = useRef<AbortController | null>(null);
+  const activeSessionIdRef = useRef("");
   const lastCursorRef = useRef<string | undefined>(undefined);
   const messageRefreshTimerRef = useRef<number | undefined>(undefined);
+  const messageRefreshSeqRef = useRef(0);
+  const olderMessagesSeqRef = useRef(0);
   const runRefreshTimerRef = useRef<number | undefined>(undefined);
   const workspaceIndexRefreshTimerRef = useRef<number | undefined>(undefined);
   const runPollingTimerRef = useRef<number | undefined>(undefined);
@@ -206,7 +258,6 @@ export function useAppController() {
   const conversationTailRef = useRef<HTMLDivElement | null>(null);
   const shouldAutoFollowConversationRef = useRef(true);
   const selectedRunIdValue = selectedRunId.trim();
-  const streamRunId = filterSelectedRun ? selectedRunIdValue : "";
   const normalizedServiceScope = normalizeServiceScope(serviceScope);
   const serviceFilteredWorkspaces = orderedSavedWorkspaces.filter((entry) =>
     serviceScopeMatches(normalizedServiceScope, entry.serviceName)
@@ -382,6 +433,9 @@ export function useAppController() {
       setSwitchingSessionModelId(null);
       setStreamState("idle");
     });
+    setMessagesNextCursor(null);
+    setMessagesLoading(false);
+    setLoadingOlderMessages(false);
   }, [activeWorkspaceId, normalizedServiceScope, savedWorkspaces, setCatalog, setSession, setSessionId, setWorkspace, setWorkspaceId, workspace]);
 
   const storageController = useStorageController({
@@ -447,7 +501,23 @@ export function useAppController() {
     }
   });
 
-  function downloadSessionTrace() {
+  async function listAllSessionMessages(targetSessionId: string): Promise<Message[]> {
+    let cursor: string | undefined;
+    let allMessages: Message[] = [];
+
+    while (true) {
+      const page = await request<MessagePage>(buildMessagePagePath(targetSessionId, { cursor, direction: "forward" }));
+      allMessages = mergeSessionMessages(allMessages, page.items);
+      if (!page.nextCursor) {
+        return allMessages;
+      }
+      cursor = page.nextCursor;
+    }
+  }
+
+  async function downloadSessionTrace() {
+    const targetSessionId = session?.id?.trim();
+    const exportMessages = targetSessionId ? await listAllSessionMessages(targetSessionId) : messages;
     const selectedOrLatestRunId = run?.id ?? (selectedRunIdValue || "latest");
     const latestRequest = buildAiSdkLikeRequest(latestModelCallTrace);
     const exportPayload = {
@@ -512,7 +582,7 @@ export function useAppController() {
             activeTools: [],
             toolServers: []
           },
-      Messages: buildAiSdkLikeStoredMessages(messages)
+      Messages: buildAiSdkLikeStoredMessages(exportMessages)
     };
 
     const sessionSegment = sanitizeFileSegment(session?.title ?? session?.id ?? currentSessionName);
@@ -619,15 +689,36 @@ export function useAppController() {
     }
   });
 
-  async function refreshMessages(quiet = false) {
-    if (!sessionId.trim()) {
+  async function refreshMessages(
+    quiet = false,
+    options?: {
+      reset?: boolean | undefined;
+    }
+  ) {
+    const targetSessionId = sessionId.trim();
+    if (!targetSessionId) {
+      startTransition(() => {
+        setMessages([]);
+        setMessagesNextCursor(null);
+      });
       return;
     }
 
+    const refreshSeq = messageRefreshSeqRef.current + 1;
+    messageRefreshSeqRef.current = refreshSeq;
+    setMessagesLoading(true);
+
     try {
-      const messagePage = await request<{ items: Message[] }>(`/api/v1/sessions/${sessionId}/messages?pageSize=200`);
+      const messagePage = await request<MessagePage>(buildMessagePagePath(targetSessionId));
+      if (activeSessionIdRef.current !== targetSessionId || messageRefreshSeqRef.current !== refreshSeq) {
+        return;
+      }
+
       startTransition(() => {
-        setMessages(messagePage.items);
+        setMessages((current) => (options?.reset ? messagePage.items : mergeSessionMessages(current, messagePage.items)));
+        setMessagesNextCursor((current) =>
+          options?.reset ? (messagePage.nextCursor ?? null) : mergeMessageCursor(current, messagePage.nextCursor)
+        );
         setLiveMessagesByKey((current) =>
           Object.fromEntries(
             Object.entries(current).filter(([, entry]) => {
@@ -646,6 +737,41 @@ export function useAppController() {
     } catch (error) {
       if (!quiet) {
         reportError(error);
+      }
+    } finally {
+      if (messageRefreshSeqRef.current === refreshSeq) {
+        setMessagesLoading(false);
+      }
+    }
+  }
+
+  async function loadOlderMessages() {
+    const targetSessionId = sessionId.trim();
+    const cursor = messagesNextCursor?.trim();
+    if (!targetSessionId || !cursor || loadingOlderMessages) {
+      return;
+    }
+
+    const olderSeq = olderMessagesSeqRef.current + 1;
+    olderMessagesSeqRef.current = olderSeq;
+    setLoadingOlderMessages(true);
+
+    try {
+      const messagePage = await request<MessagePage>(buildMessagePagePath(targetSessionId, { cursor }));
+      if (activeSessionIdRef.current !== targetSessionId || olderMessagesSeqRef.current !== olderSeq) {
+        return;
+      }
+
+      startTransition(() => {
+        setMessages((current) => mergeSessionMessages(current, messagePage.items));
+        setMessagesNextCursor(messagePage.nextCursor ?? null);
+      });
+      clearActiveError();
+    } catch (error) {
+      reportError(error);
+    } finally {
+      if (olderMessagesSeqRef.current === olderSeq) {
+        setLoadingOlderMessages(false);
       }
     }
   }
@@ -945,9 +1071,7 @@ export function useAppController() {
           }
         }));
       });
-      if (autoStream) {
-        setStreamRevision((current) => current + 1);
-      }
+      setStreamRevision((current) => current + 1);
       await Promise.all([
         refreshMessages(true),
         refreshSessionRuns(true, { includeSteps: true }),
@@ -1434,7 +1558,25 @@ export function useAppController() {
   }, []);
 
   useEffect(() => {
+    activeSessionIdRef.current = sessionId.trim();
+  }, [sessionId]);
+
+  useEffect(() => {
     shouldAutoFollowConversationRef.current = true;
+    setMessagesNextCursor(null);
+    setLoadingOlderMessages(false);
+    olderMessagesSeqRef.current = 0;
+
+    if (!sessionId.trim()) {
+      startTransition(() => {
+        setMessages([]);
+      });
+      setMessagesLoading(false);
+      return;
+    }
+
+    setMessagesLoading(true);
+    void refreshMessages(true, { reset: true });
   }, [sessionId]);
 
   useEffect(() => {
@@ -1539,7 +1681,7 @@ export function useAppController() {
   }, [connection.baseUrl, connection.token, sessionId, workspaceId]);
 
   useEffect(() => {
-    if (!sessionId.trim() || !autoStream || session?.id !== sessionId) {
+    if (!sessionId.trim() || session?.id !== sessionId) {
       streamAbortRef.current?.abort();
       setStreamState("idle");
       return;
@@ -1556,9 +1698,6 @@ export function useAppController() {
     }, 1200);
 
     const query = new URLSearchParams();
-    if (streamRunId) {
-      query.set("runId", streamRunId);
-    }
     if (lastCursorRef.current) {
       query.set("cursor", lastCursorRef.current);
     }
@@ -1607,14 +1746,11 @@ export function useAppController() {
       controller.abort();
     };
   }, [
-    autoStream,
     connection.baseUrl,
     connection.token,
-    filterSelectedRun,
     session?.id,
     sessionId,
-    streamRevision,
-    streamRunId
+    streamRevision
   ]);
 
   useEffect(() => {
@@ -1639,7 +1775,7 @@ export function useAppController() {
         const [nextRun, nextSteps, nextMessages] = await Promise.all([
           request<Run>(`/api/v1/runs/${selectedRunIdValue}`),
           request<{ items: RunStep[] }>(`/api/v1/runs/${selectedRunIdValue}/steps?pageSize=200`),
-          request<{ items: Message[] }>(`/api/v1/sessions/${sessionId}/messages?pageSize=200`)
+          request<MessagePage>(buildMessagePagePath(sessionId))
         ]);
 
         if (cancelled) {
@@ -1653,7 +1789,8 @@ export function useAppController() {
             return next.sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
           });
           setRunSteps((current) => mergeRunStepsForRun(current, selectedRunIdValue, nextSteps.items));
-          setMessages(nextMessages.items);
+          setMessages((current) => mergeSessionMessages(current, nextMessages.items));
+          setMessagesNextCursor((current) => mergeMessageCursor(current, nextMessages.nextCursor));
         });
 
         const hasPersistedRunOutput = hasDisplayableRunMessages(nextMessages.items, selectedRunIdValue);
@@ -1857,6 +1994,10 @@ export function useAppController() {
       conversationThreadRef,
       conversationTailRef,
       shouldAutoFollowConversationRef,
+      hasMoreMessages: Boolean(messagesNextCursor),
+      messagesLoading,
+      loadingOlderMessages,
+      loadOlderMessages: () => void loadOlderMessages(),
       refreshMessages: () => void refreshMessages(),
       sendMessage: () => void sendMessage(),
       refreshRun: () => void refreshRun(),

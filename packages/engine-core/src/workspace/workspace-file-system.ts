@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 
 import type { WorkspaceFileStat, WorkspaceFileSystem, WorkspaceFileSystemEntry } from "../types.js";
 
@@ -37,8 +37,12 @@ export function createLocalWorkspaceFileSystem(): WorkspaceFileSystem {
     async mkdir(targetPath, options) {
       await mkdir(targetPath, options);
     },
-    async writeFile(targetPath, data) {
+    async writeFile(targetPath, data, options) {
       await writeFile(targetPath, data);
+      if (typeof options?.mtimeMs === "number" && Number.isFinite(options.mtimeMs) && options.mtimeMs > 0) {
+        const modifiedAt = new Date(options.mtimeMs);
+        await utimes(targetPath, modifiedAt, modifiedAt);
+      }
     },
     async rm(targetPath, options) {
       await rm(targetPath, options);

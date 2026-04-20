@@ -58,6 +58,7 @@ import {
   type UpdateSessionParams,
   type CreateWorkspaceParams,
   type MessageListResult,
+  type MessagePageDirection,
   type EngineMessageListResult,
   type EngineServiceOptions,
   type SessionEvent,
@@ -213,6 +214,16 @@ export class EngineService {
       nowIso,
       resolveRunModel: (workspace, session, run, activeAgentName) =>
         this.#modelInputs.resolveRunModel(workspace, session, run, activeAgentName),
+      buildModelContextMessages: (workspace, session, run, engineMessages, activeAgentName, options) =>
+        this.#modelInputs.buildModelContextMessages(
+          workspace,
+          session,
+          run,
+          engineMessages,
+          activeAgentName,
+          false,
+          options
+        ),
       buildEngineMessagesForSession: (sessionId, persistedMessages) =>
         this.#engineMessageSync.buildEngineMessagesForSession(sessionId, persistedMessages)
     });
@@ -453,7 +464,7 @@ export class EngineService {
 
   async uploadWorkspaceFile(
     workspaceId: string,
-    input: { path: string; data: Buffer; overwrite?: boolean | undefined; ifMatch?: string | undefined }
+    input: { path: string; data: Buffer; overwrite?: boolean | undefined; ifMatch?: string | undefined; mtimeMs?: number | undefined }
   ): Promise<WorkspaceEntry> {
     return this.#workspaceRuntime.uploadWorkspaceFile(workspaceId, input);
   }
@@ -567,8 +578,13 @@ export class EngineService {
     return this.#sessionRuntime.listWorkspaceSessions(workspaceId, pageSize, cursor);
   }
 
-  async listSessionMessages(sessionId: string, pageSize = 100, cursor?: string): Promise<MessageListResult> {
-    return this.#sessionRuntime.listSessionMessages(sessionId, pageSize, cursor);
+  async listSessionMessages(
+    sessionId: string,
+    pageSize = 100,
+    cursor?: string,
+    direction: MessagePageDirection = "forward"
+  ): Promise<MessageListResult> {
+    return this.#sessionRuntime.listSessionMessages(sessionId, pageSize, cursor, direction);
   }
 
   async listSessionEngineMessages(sessionId: string, pageSize = 100, cursor?: string): Promise<EngineMessageListResult> {

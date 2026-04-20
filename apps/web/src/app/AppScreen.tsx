@@ -41,11 +41,11 @@ export function AppScreen({ theme, onThemeChange }: AppScreenProps) {
 
   return (
     <div className="app-shell h-screen flex flex-col overflow-x-hidden">
-      <AppHeader {...controller.headerProps} theme={theme} onThemeChange={onThemeChange} />
+      <AppHeader {...controller.headerProps} />
 
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         <div className="flex-1 min-h-0 flex overflow-hidden">
-          <AppSidebar {...controller.sidebarSurfaceProps} />
+          <AppSidebar {...controller.sidebarSurfaceProps} theme={theme} onThemeChange={onThemeChange} />
 
           <main className="app-main-surface flex-1 min-h-0 flex flex-col min-w-0">
             {controller.errorMessage ? (

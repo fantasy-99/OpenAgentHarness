@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -38,7 +38,10 @@ async function uploadDirectoryTree(input: {
 
     if (entry.isFile()) {
       const data = await readFile(localPath);
-      await input.sandboxHost.workspaceFileSystem.writeFile(remotePath, data);
+      const fileStats = await stat(localPath);
+      await input.sandboxHost.workspaceFileSystem.writeFile(remotePath, data, {
+        ...(Number.isFinite(fileStats.mtimeMs) && fileStats.mtimeMs > 0 ? { mtimeMs: Number(fileStats.mtimeMs) } : {})
+      });
     }
   }
 }

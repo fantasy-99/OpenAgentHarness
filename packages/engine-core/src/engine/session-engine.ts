@@ -14,6 +14,7 @@ import type {
   ActionRunAcceptedResult,
   CreateSessionMessageParams,
   CreateSessionParams,
+  MessagePageDirection,
   MessageListResult,
   RunListResult,
   RunStepListResult,
@@ -237,9 +238,23 @@ export class SessionEngineService {
     return nextCursor === undefined ? { items } : { items, nextCursor };
   }
 
-  async listSessionMessages(sessionId: string, pageSize = 100, cursor?: string): Promise<MessageListResult> {
+  async listSessionMessages(
+    sessionId: string,
+    pageSize = 100,
+    cursor?: string,
+    direction: MessagePageDirection = "forward"
+  ): Promise<MessageListResult> {
     await this.getSession(sessionId);
     const messages = await this.#messageRepository.listBySessionId(sessionId);
+    if (direction === "backward") {
+      const endIndex = cursor ? parseCursor(cursor) : messages.length;
+      const startIndex = Math.max(0, endIndex - pageSize);
+      const items = messages.slice(startIndex, endIndex);
+      const nextCursor = startIndex > 0 ? String(startIndex) : undefined;
+
+      return nextCursor === undefined ? { items } : { items, nextCursor };
+    }
+
     const startIndex = parseCursor(cursor);
     const items = messages.slice(startIndex, startIndex + pageSize);
     const nextCursor = startIndex + pageSize < messages.length ? String(startIndex + pageSize) : undefined;

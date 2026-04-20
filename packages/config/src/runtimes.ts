@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import yauzl from "yauzl";
 
@@ -156,7 +156,8 @@ async function importRuntimeSkills(
     await cp(sourceDirectory, targetDirectory, {
       recursive: true,
       force: false,
-      errorOnExist: false
+      errorOnExist: false,
+      preserveTimestamps: true
     });
   }
 }
@@ -208,7 +209,8 @@ async function importEngineTools(
     await cp(sourceDirectory, targetDirectory, {
       recursive: true,
       force: false,
-      errorOnExist: false
+      errorOnExist: false,
+      preserveTimestamps: true
     });
 
     if (typeof serializedDefinition.command === "string") {
@@ -240,7 +242,8 @@ export async function initializeWorkspaceFromRuntime(input: InitializeWorkspaceF
   await cp(runtimePath, input.rootPath, {
     recursive: true,
     force: false,
-    errorOnExist: true
+    errorOnExist: true,
+    preserveTimestamps: true
   });
 
   const runtimeSettings = await loadWorkspaceSettings(input.rootPath);
@@ -365,6 +368,12 @@ export async function uploadWorkspaceRuntime(input: {
 
           const data = await readZipEntry(readable);
           await writeFile(resolvedEntryPath, data);
+          if (typeof entry.getLastModDate === "function") {
+            const lastModified = entry.getLastModDate();
+            if (lastModified instanceof Date && Number.isFinite(lastModified.getTime()) && lastModified.getTime() > 0) {
+              await utimes(resolvedEntryPath, lastModified, lastModified);
+            }
+          }
 
           zipfile.readEntry();
         } catch (writeErr) {

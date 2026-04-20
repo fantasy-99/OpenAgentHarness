@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { jsonObjectSchema, jsonValueSchema, timestampSchema } from "./common.js";
+import { pageQuerySchema, jsonObjectSchema, jsonValueSchema, timestampSchema } from "./common.js";
 
 export const textMessagePartSchema = z.object({
   type: z.literal("text"),
@@ -209,6 +209,10 @@ export const messagePageSchema = z.object({
   nextCursor: z.string().optional()
 });
 
+export const messageListQuerySchema = pageQuerySchema.extend({
+  direction: z.enum(["forward", "backward"]).default("forward")
+});
+
 export const chatMessageSchema = z.union([
   systemChatMessageSchema,
   userChatMessageSchema,
@@ -229,6 +233,7 @@ export const messageAcceptedSchema = z.object({
 
 export type Message = z.infer<typeof messageSchema>;
 export type MessagePage = z.infer<typeof messagePageSchema>;
+export type MessageListQuery = z.infer<typeof messageListQuerySchema>;
 export type MessagePart = z.infer<typeof messagePartSchema>;
 export type MessageContent = z.infer<typeof messageContentSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;

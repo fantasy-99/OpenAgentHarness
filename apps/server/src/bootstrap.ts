@@ -110,6 +110,7 @@ import { createServiceRoutedPostgresRuntimePersistence } from "./bootstrap/servi
 import {
   cleanupWorkspaceLocalArtifacts,
   resolveArchiveExportRoot,
+  resolveRuntimeStateDir,
   resolveSqliteShadowRoot,
   resolveWorkspaceMaterializationCacheRoot,
   type WorkspaceLocalArtifactCleanupStatus
@@ -689,6 +690,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   let modelGateway: AiSdkModelGateway | undefined;
   const platformModelService = await createPlatformModelCatalogService({
     modelDir,
+    stateDir: path.join(resolveRuntimeStateDir(config.paths), "platform-models"),
     defaultModel: config.llm.default_model,
     onLoadError: ({ filePath, error }) => {
       logModelLoadError(filePath, error);

@@ -18,6 +18,7 @@ import type {
   DiscoveredSkill,
   DiscoveredToolServer,
   DiscoveredWorkspaceCatalog,
+  PlatformModelDefinition,
   PlatformModelRegistry,
   PromptSource,
   ResolvedPromptSource,
@@ -182,6 +183,80 @@ export async function listYamlFilesRecursively(rootPath: string): Promise<string
   return results;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parsePositiveNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  return undefined;
+}
+
+export function normalizeModelMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!isRecord(metadata)) {
+    return undefined;
+  }
+
+  const normalized: Record<string, unknown> = { ...metadata };
+  const contextWindowTokens =
+    parsePositiveNumber(metadata.contextWindowTokens) ??
+    parsePositiveNumber(metadata.context_window_tokens) ??
+    parsePositiveNumber(metadata.max_model_len) ??
+    parsePositiveNumber(metadata.maxInputTokens) ??
+    parsePositiveNumber(metadata.max_input_tokens) ??
+    parsePositiveNumber(metadata.contextWindow) ??
+    parsePositiveNumber(metadata.context_window);
+
+  if (contextWindowTokens) {
+    normalized.contextWindowTokens = contextWindowTokens;
+  }
+
+  delete normalized.max_model_len;
+  delete normalized.context_window_tokens;
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+export function normalizePlatformModelDefinition(definition: PlatformModelDefinition): PlatformModelDefinition {
+  const metadata = normalizeModelMetadata(definition.metadata);
+  return {
+    ...definition,
+    ...(metadata ? { metadata } : {})
+  };
+}
+
+export function normalizePlatformModelRegistry(registry: PlatformModelRegistry): PlatformModelRegistry {
+  return Object.fromEntries(
+    Object.entries(registry).map(([name, definition]) => [name, normalizePlatformModelDefinition(definition)])
+  );
+}
+
+export function mergePlatformModelDefinitions(
+  current: PlatformModelDefinition,
+  incoming: PlatformModelDefinition
+): PlatformModelDefinition {
+  const metadata = normalizeModelMetadata({
+    ...(current.metadata ?? {}),
+    ...(incoming.metadata ?? {})
+  });
+
+  return {
+    ...current,
+    ...incoming,
+    ...(metadata ? { metadata } : {})
+  };
+}
+
 export interface ModelRegistryLoadOptions {
   onError?: ((input: { filePath: string; error: unknown }) => void) | undefined;
 }
@@ -203,7 +278,11 @@ export async function loadModelRegistryFromDirectory(
         throw new Error(`Invalid model config in ${filePath}: ${validationMessage(validate.errors)}`);
       }
 
-      Object.assign(registry, parsed);
+      for (const [modelName, definition] of Object.entries(parsed)) {
+        registry[modelName] = registry[modelName]
+          ? mergePlatformModelDefinitions(registry[modelName], definition)
+          : normalizePlatformModelDefinition(definition);
+      }
     } catch (error) {
       if (!options?.onError) {
         throw error;

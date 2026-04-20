@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { DeleteObjectsCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
@@ -628,12 +628,18 @@ export async function syncRemotePrefixToLocal(
     const targetPath = path.join(localDir, relativePath);
     if (entry.key.endsWith("/")) {
       await mkdir(targetPath, { recursive: true });
+      if (entry.lastModified) {
+        await utimes(targetPath, entry.lastModified, entry.lastModified);
+      }
       continue;
     }
 
     await mkdir(path.dirname(targetPath), { recursive: true });
     const body = await store.getObject(entry.key);
     await writeFile(targetPath, body);
+    if (entry.lastModified) {
+      await utimes(targetPath, entry.lastModified, entry.lastModified);
+    }
   }
 }
 

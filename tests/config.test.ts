@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -834,6 +834,51 @@ compat-qwen-max:
         url: "https://example.test/v1"
       }
     });
+  });
+
+  it("normalizes and deep-merges model metadata across files", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-models-merge-"));
+    tempDirs.push(tempDir);
+
+    await writeFile(
+      path.join(tempDir, "base.yaml"),
+      `
+compat-main:
+  provider: openai-compatible
+  name: qwen-max
+  url: https://example.test/v1
+  metadata:
+    max_model_len: 131072
+    tier: base
+`,
+      "utf8"
+    );
+    await writeFile(
+      path.join(tempDir, "override.yaml"),
+      `
+compat-main:
+  provider: openai-compatible
+  name: qwen-max
+  url: https://example.test/v1
+  metadata:
+    tier: override
+    supportsReasoning: true
+`,
+      "utf8"
+    );
+
+    const models = await loadPlatformModels(tempDir);
+    expect(models["compat-main"]).toMatchObject({
+      provider: "openai-compatible",
+      name: "qwen-max",
+      url: "https://example.test/v1",
+      metadata: {
+        contextWindowTokens: 131072,
+        tier: "override",
+        supportsReasoning: true
+      }
+    });
+    expect(models["compat-main"]?.metadata).not.toHaveProperty("max_model_len");
   });
 
   it("defaults new workspace roots into workspace_dir using workspace id when provided", async () => {
@@ -1802,6 +1847,8 @@ Implement requested changes.
 `,
       "utf8"
     );
+    const runtimeBuilderMtime = new Date("2026-04-18T09:08:07.000Z");
+    await utimes(path.join(runtimeRoot, ".openharness", "agents", "builder.md"), runtimeBuilderMtime, runtimeBuilderMtime);
     await writeFile(
       path.join(runtimeRoot, ".openharness", "models", "workspace.yaml"),
       `
@@ -1896,6 +1943,9 @@ Platform-provided helper.
 
     expect(agentsMd).toContain("Follow runtime rules.");
     expect(agentsMd).toContain("Always mention assumptions.");
+    expect((await stat(path.join(workspaceRoot, ".openharness", "agents", "builder.md"))).mtime.toISOString()).toBe(
+      "2026-04-18T09:08:07.000Z"
+    );
     expect(workspace.defaultAgent).toBe("builder");
     expect(workspace.toolServers["docs-server"]).toMatchObject({
       transportType: "http",

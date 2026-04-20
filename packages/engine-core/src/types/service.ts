@@ -133,6 +133,8 @@ export interface EngineMessageListResult {
   nextCursor?: string | undefined;
 }
 
+export type MessagePageDirection = "forward" | "backward";
+
 export interface MessageListResult {
   items: Message[];
   nextCursor?: string | undefined;

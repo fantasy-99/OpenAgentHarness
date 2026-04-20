@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -42,6 +42,11 @@ describe("sandbox-backed workspace initializer", () => {
       writeFile(path.join(runtimeRoot, ".openharness", "settings.yaml"), "default_agent: assistant\n", "utf8"),
       writeFile(path.join(runtimeRoot, "README.md"), "# Seeded from runtime\n", "utf8"),
       writeFile(path.join(runtimeRoot, "nested", "notes.txt"), "hello from runtime\n", "utf8")
+    ]);
+    const sourceMtime = new Date("2026-04-18T12:34:56.000Z");
+    await Promise.all([
+      utimes(path.join(runtimeRoot, "README.md"), sourceMtime, sourceMtime),
+      utimes(path.join(runtimeRoot, "nested", "notes.txt"), sourceMtime, sourceMtime)
     ]);
 
     const sandboxHost: SandboxHost = {
@@ -138,6 +143,7 @@ describe("sandbox-backed workspace initializer", () => {
     await expect(readFile(path.join(remoteWorkspaceRoot, "nested", "notes.txt"), "utf8")).resolves.toBe(
       "hello from runtime\n"
     );
+    expect((await stat(path.join(remoteWorkspaceRoot, "README.md"))).mtime.toISOString()).toBe("2026-04-18T12:34:56.000Z");
     await expect(readFile(path.join(remoteWorkspaceRoot, ".openharness", "settings.yaml"), "utf8")).resolves.toBe(
       "default_agent: assistant\nruntime: workspace\n"
     );
