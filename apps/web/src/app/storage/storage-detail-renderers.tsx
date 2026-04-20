@@ -504,7 +504,7 @@ function StorageArchiveRowDetail(props: { row: Record<string, unknown> }) {
             sessions: props.row.sessions ?? [],
             runs: props.row.runs ?? [],
             messages: props.row.messages ?? [],
-            runtimeMessages: props.row.runtime_messages ?? [],
+            engineMessages: props.row.runtime_messages ?? [],
             runSteps: props.row.run_steps ?? [],
             toolCalls: props.row.tool_calls ?? [],
             hookRuns: props.row.hook_runs ?? [],

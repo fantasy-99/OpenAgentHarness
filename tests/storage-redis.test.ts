@@ -362,8 +362,8 @@ describe("storage redis", () => {
   });
 
   it("deduplicates primary and bus deliveries for subscribers", async () => {
-    let primaryListener: ((event: import("@oah/runtime-core").SessionEvent) => void) | undefined;
-    let busListener: ((event: import("@oah/runtime-core").SessionEvent) => void) | undefined;
+    let primaryListener: ((event: import("@oah/engine-core").SessionEvent) => void) | undefined;
+    let busListener: ((event: import("@oah/engine-core").SessionEvent) => void) | undefined;
 
     const primary = {
       async append() {
@@ -375,7 +375,7 @@ describe("storage redis", () => {
       async deleteById() {
         return undefined;
       },
-      subscribe(_sessionId: string, listener: (event: import("@oah/runtime-core").SessionEvent) => void) {
+      subscribe(_sessionId: string, listener: (event: import("@oah/engine-core").SessionEvent) => void) {
         primaryListener = listener;
         return () => {
           primaryListener = undefined;
@@ -386,7 +386,7 @@ describe("storage redis", () => {
       async publish() {
         return undefined;
       },
-      async subscribe(_sessionId: string, listener: (event: import("@oah/runtime-core").SessionEvent) => void) {
+      async subscribe(_sessionId: string, listener: (event: import("@oah/engine-core").SessionEvent) => void) {
         busListener = listener;
         return () => {
           busListener = undefined;
@@ -607,6 +607,35 @@ describe("storage redis", () => {
     expect(redis.expiries.get("test:workspace-lease:ws_1:live:worker_1")).toBe(9_000);
   });
 
+  it("can remove all lease state for a workspace", async () => {
+    const redis = createInMemoryRedisCommands();
+    const registry = new RedisWorkspaceLeaseRegistry({
+      url: "redis://unused",
+      keyPrefix: "test",
+      commands: redis.commands
+    });
+
+    await registry.heartbeat(
+      {
+        workspaceId: "ws_remove",
+        version: "live",
+        ownerWorkerId: "worker_1",
+        sourceKind: "object_store",
+        localPath: "/tmp/materialized/ws_remove",
+        dirty: false,
+        refCount: 0,
+        lastActivityAt: "2026-04-01T00:00:00.000Z",
+        lastSeenAt: "2026-04-01T00:00:00.000Z"
+      },
+      9_000
+    );
+
+    await registry.removeWorkspace("ws_remove");
+
+    await expect(registry.getByWorkspaceId("ws_remove")).resolves.toBeUndefined();
+    await expect(registry.listActive()).resolves.toEqual([]);
+  });
+
   it("stores first-class workspace placement state and preserves assigned user affinity", async () => {
     const redis = createInMemoryRedisCommands();
     const registry = new RedisWorkspacePlacementRegistry({
@@ -758,6 +787,28 @@ describe("storage redis", () => {
       lastActivityAt: "2026-04-01T00:00:03.000Z",
       updatedAt: "2026-04-01T00:00:05.000Z"
     });
+  });
+
+  it("can remove all placement state for a workspace", async () => {
+    const redis = createInMemoryRedisCommands();
+    const registry = new RedisWorkspacePlacementRegistry({
+      url: "redis://unused",
+      keyPrefix: "test",
+      commands: redis.commands
+    });
+
+    await registry.upsert({
+      workspaceId: "ws_remove",
+      version: "live",
+      ownerWorkerId: "worker_1",
+      state: "active",
+      updatedAt: "2026-04-01T00:00:00.000Z"
+    });
+
+    await registry.removeWorkspace("ws_remove");
+
+    await expect(registry.getByWorkspaceId("ws_remove")).resolves.toBeUndefined();
+    await expect(registry.listAll()).resolves.toEqual([]);
   });
 
   it("can set a preferred worker hint without changing ownership truth", async () => {

@@ -13,11 +13,11 @@ import type {
   GenerateModelInput,
   ModelGateway,
   ModelStreamOptions,
-  RuntimeLogger,
+  EngineLogger,
   ToolServerDefinition,
   StreamedModelResponse
-} from "@oah/runtime-core";
-import { AppError } from "@oah/runtime-core";
+} from "@oah/engine-core";
+import { AppError } from "@oah/engine-core";
 import {
   extractToolErrors,
   mergeToolSets,
@@ -46,13 +46,13 @@ export {
 export interface AiSdkModelGatewayOptions {
   defaultModelName: string;
   models: PlatformModelRegistry;
-  logger?: RuntimeLogger | undefined;
+  logger?: EngineLogger | undefined;
 }
 
 export class AiSdkModelGateway implements ModelGateway {
   readonly #defaultModelName: string;
   readonly #models: PlatformModelRegistry;
-  readonly #logger: RuntimeLogger | undefined;
+  readonly #logger: EngineLogger | undefined;
   readonly #clients = new Map<string, LanguageModel>();
 
   constructor(options: AiSdkModelGatewayOptions) {
@@ -98,12 +98,12 @@ export class AiSdkModelGateway implements ModelGateway {
   async stream(input: GenerateModelInput, options?: ModelStreamOptions): Promise<StreamedModelResponse> {
     const modelName = input.model ?? this.#defaultModelName;
     const model = this.#resolveModel(modelName, input.modelDefinition);
-    const runtimeTools = toAiTools(options?.tools, options?.signal, options?.parallelToolCalls);
+    const engineTools = toAiTools(options?.tools, options?.signal, options?.parallelToolCalls);
     const preparedToolServers = await prepareToolServers(
       (options as ModelStreamOptions & { toolServers?: ToolServerDefinition[] | undefined })?.toolServers,
       { logger: this.#logger }
     );
-    const aiTools = mergeToolSets(runtimeTools, preparedToolServers.tools);
+    const aiTools = mergeToolSets(engineTools, preparedToolServers.tools);
     let cleanedUp = false;
     const cleanup = async () => {
       if (cleanedUp) {

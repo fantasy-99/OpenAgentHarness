@@ -2,6 +2,11 @@
 
 Open Agent Harness 设计文档的导航入口。
 
+## 术语约定
+
+- [术语约定](./terminology.md) -- `Agent Engine`、`Agent Runtime`、`Agent Spec` 的边界与命名规则
+- [概念关系](./concept-relationships.md) -- `Workspace`、`Worker`、`Sandbox`、`Runtime` 的层级关系图
+
 ## 三个核心概念
 
 | 概念 | 定位 | 说明 |
@@ -24,11 +29,11 @@ Open Agent Harness 设计文档的导航入口。
 - [Settings](./workspace/settings.md) | [Agents](./workspace/agents.md) | [Models](./workspace/models.md)
 - [Skills](./workspace/skills.md) | [External Tools](./workspace/mcp.md) | [Hooks](./workspace/hooks.md)
 
-### 运行时
+### Engine
 
-- [Runtime 导航](./runtime/README.md)
-- [生命周期](./runtime/lifecycle.md) | [上下文引擎](./runtime/context-engine.md)
-- [Queue 与可靠性](./runtime/queue-and-reliability.md) | [事件与审计](./runtime/events-and-audit.md)
+- [Engine 导航](./engine/README.md)
+- [生命周期](./engine/lifecycle.md) | [上下文引擎](./engine/context-engine.md)
+- [Queue 与可靠性](./engine/queue-and-reliability.md) | [事件与审计](./engine/events-and-audit.md)
 
 ### 对外接口
 
@@ -43,9 +48,11 @@ Open Agent Harness 设计文档的导航入口。
 ### 平台开发者
 
 1. [架构总览](./architecture-overview.md)
-2. [领域模型](./domain-model.md)
-3. [Workspace 导航](./workspace/README.md)
-4. [Runtime 导航](./runtime/README.md)
+2. [术语约定](./terminology.md)
+3. [概念关系](./concept-relationships.md)
+4. [领域模型](./domain-model.md)
+5. [Workspace 导航](./workspace/README.md)
+6. [Engine 导航](./engine/README.md)
 
 ### 接入方 / 产品团队
 
@@ -57,6 +64,6 @@ Open Agent Harness 设计文档的导航入口。
 ### 排查问题
 
 1. [部署与运行](./deploy.md)
-2. [生命周期](./runtime/lifecycle.md)
-3. [Queue 与可靠性](./runtime/queue-and-reliability.md)
-4. [事件与审计](./runtime/events-and-audit.md)
+2. [生命周期](./engine/lifecycle.md)
+3. [Queue 与可靠性](./engine/queue-and-reliability.md)
+4. [事件与审计](./engine/events-and-audit.md)

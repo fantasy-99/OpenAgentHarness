@@ -18,11 +18,12 @@ import type {
   WorkspaceFileSystemEntry,
   WorkspaceForegroundCommandExecutionResult,
   WorkspaceRecord
-} from "@oah/runtime-core";
+} from "@oah/engine-core";
 
 import type { SandboxHost } from "./sandbox-host.js";
 
 const VIRTUAL_SANDBOX_ROOT = "/__oah_sandbox__";
+const SANDBOX_LIST_PAGE_SIZE = 200;
 
 export interface E2BCompatibleSandboxLease {
   sandboxId: string;
@@ -213,7 +214,7 @@ export function createHttpE2BCompatibleSandboxService(
     const sandbox = await createClientForWorkspace.createSandbox({
       workspaceId: workspace.id,
       ...(workspace.name ? { name: workspace.name } : {}),
-      ...(workspace.blueprint ? { blueprint: workspace.blueprint } : {}),
+      ...(workspace.runtime ? { runtime: workspace.runtime } : {}),
       ...(workspace.externalRef ? { externalRef: workspace.externalRef } : {}),
       ...(workspace.ownerId ? { ownerId: workspace.ownerId } : {}),
       ...(workspace.serviceName ? { serviceName: workspace.serviceName } : {}),
@@ -291,13 +292,22 @@ export function createHttpE2BCompatibleSandboxService(
       );
     },
     async readdir(input) {
-      const page = await clientForSandbox(input.sandboxId).listEntries(input.sandboxId, {
-        path: input.path,
-        pageSize: 1000,
-        sortBy: "name",
-        sortOrder: "asc"
-      });
-      return page.items.map((entry) => ({
+      const items = [];
+      let cursor: string | undefined;
+
+      do {
+        const page = await clientForSandbox(input.sandboxId).listEntries(input.sandboxId, {
+          path: input.path,
+          pageSize: SANDBOX_LIST_PAGE_SIZE,
+          ...(cursor ? { cursor } : {}),
+          sortBy: "name",
+          sortOrder: "asc"
+        });
+        items.push(...page.items);
+        cursor = page.nextCursor;
+      } while (cursor);
+
+      return items.map((entry) => ({
         name: path.posix.basename(entry.path),
         kind: entry.type,
         ...(entry.updatedAt ? { updatedAt: entry.updatedAt } : {}),

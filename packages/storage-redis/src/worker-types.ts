@@ -1,4 +1,4 @@
-import type { SessionRunQueue, SessionRunQueuePressure, WorkerRegistry } from "@oah/runtime-core";
+import type { SessionRunQueue, SessionRunQueuePressure, WorkerRegistry } from "@oah/engine-core";
 
 export interface RedisRunWorkerLogger {
   info?(message: string): void;

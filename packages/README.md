@@ -6,10 +6,10 @@
 
 | Package | Responsibility |
 | --- | --- |
-| `@oah/api-contracts` | API schema、共享 DTO、catalog/runtime event 合约 |
-| `@oah/config` | 服务配置加载、workspace 发现、blueprint 导入、平台模型与能力目录扫描 |
+| `@oah/api-contracts` | API schema、共享 DTO、catalog/engine event 合约 |
+| `@oah/config` | 服务配置加载、workspace 发现、runtime 导入、平台模型与能力目录扫描 |
 | `@oah/model-gateway` | 模型提供方适配、AI SDK 集成、MCP/tool server 装配 |
-| `@oah/runtime-core` | 运行时核心编排、workspace 访问抽象、能力装配、运行执行主流程 |
+| `@oah/engine-core` | Agent Engine 核心编排、workspace 访问抽象、能力装配、运行执行主流程 |
 | `@oah/storage-memory` | 轻量内存仓储实现，用于测试和简单场景 |
 | `@oah/storage-postgres` | PostgreSQL 持久化实现 |
 | `@oah/storage-sqlite` | SQLite 持久化实现 |
@@ -21,7 +21,7 @@
 
 - `api-contracts` 负责合约
 - `config` 负责发现和配置解释
-- `runtime-core` 负责运行时内核
+- `engine-core` 负责 Agent Engine 内核
 - `storage-*` 负责存储与协调后端适配
 - `model-gateway` 负责模型和外部 tool server 接入
 
@@ -40,11 +40,11 @@
 
 - `storage-redis` 偏重是因为把 queue、event bus、worker registry、workspace registry、worker pool 都放在了一个入口文件
 - `storage-sqlite` / `storage-postgres` 偏重是因为 schema、row mapper、repository 实现、factory 都放在同一文件
-- `config` 偏重是因为 server config、object storage policy、workspace discovery、blueprint 逻辑都叠在一个文件
+- `config` 偏重是因为 server config、object storage policy、workspace discovery、runtime 逻辑都叠在一个文件
 
 ## 已完成的整理方向
 
-- `runtime-core` 已经完成按子域分层：
+- `engine-core` 已经完成按子域分层：
   - `capabilities/`
   - `native-tools/`
   - `runtime/`
@@ -62,7 +62,7 @@
 - `server-config.ts`
 - `object-storage.ts`
 - `workspace-discovery.ts`
-- `blueprints.ts`
+- `runtimes.ts`
 - `models.ts`
 
 ### `@oah/storage-postgres`
@@ -101,7 +101,7 @@
 以后在 `packages/` 下新增代码时，优先遵循：
 
 1. 如果是在解释配置或发现 workspace 资源，放 `config`
-2. 如果是在编排 agent runtime 生命周期，放 `runtime-core`
+2. 如果是在编排 agent runtime 生命周期，放 `engine-core`
 3. 如果是在适配数据库或 Redis 协调原语，放对应 `storage-*`
 4. 如果是在适配模型提供方或 MCP/tool server，放 `model-gateway`
 5. 如果一个文件同时承担 schema、mapper、repository、factory 四种职责，就应该继续拆

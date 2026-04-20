@@ -1,6 +1,8 @@
 # Settings
 
-`.openharness/settings.yaml` is the main configuration entry point for a workspace.
+`.openharness/settings.yaml` now holds only core workspace configuration: the default agent, model aliases, imports, and extra skill directories.
+
+Prompt configuration has moved to the dedicated [`prompts.yaml`](./prompts.en.md) file.
 
 ## Minimal Config
 
@@ -8,42 +10,27 @@
 default_agent: build
 ```
 
-This designates the `build` agent as the default primary agent. Everything else is optional.
-
 ## Full Example
 
 ```yaml
 default_agent: build
+
+models:
+  default:
+    ref: platform/openai-default
+    temperature: 0.2
+    max_tokens: 2048
+  planner:
+    ref: workspace/repo-planner
+
 skill_dirs:
   - ./.codex/skills
 
-system_prompt:
-  base:
-    inline: |-
-      You are Open Agent Harness running inside the current workspace.
-      Prefer workspace-local configuration and tools.
-
-  llm_optimized:
-    providers:
-      openai:
-        inline: |-
-          Be concise, tool-oriented, and explicit about assumptions.
-      anthropic:
-        file: ./.openharness/prompts/anthropic.md
-    models:
-      platform/openai-default:
-        inline: |-
-          Prefer short, direct tool call arguments.
-
-  compose:
-    order:
-      - base
-      - llm_optimized
-      - agent
-      - actions
-      - project_agents_md
-      - skills
-    include_environment: false
+imports:
+  tools:
+    - docs-server
+  skills:
+    - repo-explorer
 ```
 
 ## Top-Level Fields
@@ -51,14 +38,39 @@ system_prompt:
 | Field | Required | Description |
 | --- | --- | --- |
 | `default_agent` | No | Default primary agent. Must exist and not be a pure `subagent` |
+| `models` | No | Model alias map that agents can reference |
 | `skill_dirs` | No | Additional skill search directories |
-| `blueprint` | No | Records which blueprint the workspace was initialized from |
-| `imports` | No | Tools/skills to import during blueprint initialization |
-| `system_prompt` | No | Workspace-level system prompt configuration |
+| `runtime` | No | Records which runtime the workspace was initialized from |
+| `imports` | No | Tools and skills to import during runtime initialization |
 
 !!! tip
 
-    Workspaces use one shared structure. Actions and tools become available according to the workspace declaration and runtime capabilities.
+    If a runtime needs stable model selection, prefer having agents reference these aliases via `model: <alias>`. Then switching models only requires editing `settings.yaml`.
+
+## `models`
+
+```yaml
+models:
+  default:
+    ref: platform/openai-default
+    temperature: 0.2
+    top_p: 0.9
+    max_tokens: 2048
+  fast:
+    ref: platform/kimi-k25
+  repo:
+    ref: workspace/repo-model
+```
+
+| Rule | Details |
+| --- | --- |
+| key | Alias used by agent frontmatter, for example `model: default` |
+| `ref` | Concrete model ref, must be `platform/<name>` or `workspace/<name>` |
+| `temperature` / `top_p` / `max_tokens` | Default inference parameters for that model alias |
+| resolution time | Resolved when the workspace loads; the runtime still operates on concrete `model_ref`s internally |
+| scope | Only affects agents that declare `model`; agents without an explicit model still use normal default-model resolution |
+
+Use this file to decide both which concrete model each alias points to and which inference defaults it carries; use agent frontmatter only to choose the alias.
 
 ## `skill_dirs`
 
@@ -71,79 +83,11 @@ skill_dirs:
 | Rule | Details |
 | --- | --- |
 | Default directory | `.openharness/skills/*` is always scanned |
-| Additive | `skill_dirs` adds directories; does not replace the default |
-| Path resolution | Relative to workspace root |
-| Priority | `.openharness/skills/*` > `skill_dirs` in declaration order |
-| Cross-tier name conflict | Warning logged, higher priority wins |
-| Same-tier name conflict | Config error, loading fails |
-
-## `system_prompt`
-
-Controls how the system prompt is assembled.
-
-### `base`
-
-Workspace-level base prompt. Supports `inline` or `file` (mutually exclusive):
-
-```yaml
-base:
-  inline: |-
-    You are Open Agent Harness.
-```
-
-```yaml
-base:
-  file: ./.openharness/prompts/base.md
-```
-
-File paths resolve relative to the workspace root. Recommended extensions: `.md` or `.txt`.
-
-### `llm_optimized`
-
-Provider- or model-specific prompt optimizations:
-
-```yaml
-llm_optimized:
-  providers:
-    openai:
-      inline: |-
-        Be concise and tool-oriented.
-  models:
-    platform/openai-default:
-      file: ./.openharness/prompts/openai-default.md
-```
-
-| Rule | Details |
-| --- | --- |
-| Priority | `models` exact match > `providers` |
-| Provider key | AI SDK provider identifier |
-| Model key | Full `model_ref` |
-
-### `compose`
-
-Controls the assembly order of static system prompt segments:
-
-```yaml
-compose:
-  order:
-    - base
-    - llm_optimized
-    - agent
-    - actions
-    - project_agents_md
-    - skills
-  include_environment: false
-```
-
-Available segments: `base`, `llm_optimized`, `agent`, `actions`, `project_agents_md`, `skills`
-
-| Rule | Details |
-| --- | --- |
-| `system_reminder` | Not configured here; injected dynamically by the runtime |
-| `actions` | Auto-skipped if the current agent has no visible actions |
-| `project_agents_md` | Auto-skipped if `AGENTS.md` does not exist |
-| `skills` | Auto-skipped if the current agent has no visible skills |
-| `include_environment` | Whether to append a runtime environment summary (default: `false`) |
+| Additive | `skill_dirs` adds directories; it does not replace the default |
+| Path resolution | Relative to the workspace root |
+| Priority | `.openharness/skills/*` > `skill_dirs` declaration order |
+| Cross-tier conflict | Warning logged; higher priority wins |
+| Same-tier conflict | Config error; loading fails |
 
 ## `imports`
 
@@ -160,4 +104,4 @@ imports:
 | `tools` | Platform tools to copy into the workspace from `paths.tool_dir` |
 | `skills` | Platform skills to copy into the workspace from `paths.skill_dir` |
 
-Only used during blueprint initialization. After import, the workspace uses its local copy and no longer depends on the platform directory. Referencing a nonexistent tool or skill causes initialization to fail.
+These are only used during runtime initialization. After import, the workspace uses its `Active Workspace Copy` and no longer depends on the platform directory. Referencing a nonexistent tool or skill causes initialization to fail.

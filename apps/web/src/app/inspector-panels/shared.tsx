@@ -9,7 +9,7 @@ import {
   contentToolRefs,
   type ModelCallTrace,
   type ModelCallTraceMessage,
-  type ModelCallTraceRuntimeTool,
+  type ModelCallTraceEngineTool,
   type ModelCallTraceToolServer
 } from "../support";
 import {
@@ -130,9 +130,9 @@ function ToolNameChips(props: { names: string[]; emptyLabel: string }) {
   );
 }
 
-function RuntimeToolList(props: { tools: ModelCallTraceRuntimeTool[] }) {
+function EngineToolList(props: { tools: ModelCallTraceEngineTool[] }) {
   if (props.tools.length === 0) {
-    return <p className="text-sm text-muted-foreground">No runtime tool definitions recorded.</p>;
+    return <p className="text-sm text-muted-foreground">No engine tool definitions recorded.</p>;
   }
 
   return (
@@ -179,15 +179,15 @@ function ToolServerList(props: { servers: ModelCallTraceToolServer[] }) {
 }
 
 function ToolSnapshotBrowser(props: {
-  runtimeTools: ModelCallTraceRuntimeTool[];
-  runtimeToolNames: string[];
+  engineTools: ModelCallTraceEngineTool[];
+  engineToolNames: string[];
   activeToolNames: string[];
   toolServers: ModelCallTraceToolServer[];
 }) {
   const [selectedKey, setSelectedKey] = useState("");
-  const runtimeEntries = props.runtimeTools.map((tool) => ({
-      key: `runtime:${tool.name}`,
-      kind: "runtime" as const,
+  const runtimeEntries = props.engineTools.map((tool) => ({
+      key: `engine:${tool.name}`,
+      kind: "engine" as const,
       name: tool.name,
       searchName: tool.name.toLowerCase(),
       active: props.activeToolNames.includes(tool.name),
@@ -207,13 +207,13 @@ function ToolSnapshotBrowser(props: {
   return (
     <div className="space-y-4">
       <div className="grid gap-2 sm:grid-cols-3">
-        <CatalogLine label="runtimeDefs" value={props.runtimeTools.length} />
+        <CatalogLine label="runtimeDefs" value={props.engineTools.length} />
         <CatalogLine label="activeTools" value={props.activeToolNames.length} />
         <CatalogLine label="toolServers" value={props.toolServers.length} />
       </div>
 
       {entries.length === 0 ? (
-        <EmptyState title="No tool snapshot" description="Run a session with tool exposure to inspect runtime tools and tool servers here." />
+        <EmptyState title="No tool snapshot" description="Run a session with tool exposure to inspect engine tools and tool servers here." />
       ) : (
         <div className="grid gap-4 xl:grid-cols-[minmax(260px,0.82fr)_minmax(0,1.18fr)]">
           <div className="space-y-3">
@@ -229,11 +229,11 @@ function ToolSnapshotBrowser(props: {
               <div className="mt-4 space-y-4">
                 <div>
                   <div className="flex items-center justify-between gap-3">
-                    <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Runtime Tools</p>
+                    <p className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Engine Tools</p>
                     <Badge variant="secondary">{runtimeEntries.length}</Badge>
                   </div>
                   {runtimeEntries.length === 0 ? (
-                    <p className="mt-2 text-sm text-muted-foreground">No runtime tool definitions recorded.</p>
+                    <p className="mt-2 text-sm text-muted-foreground">No engine tool definitions recorded.</p>
                   ) : (
                     <div className="mt-2 space-y-1.5">
                       {runtimeEntries.map((entry) => (
@@ -252,7 +252,7 @@ function ToolSnapshotBrowser(props: {
                             {entry.active ? <Badge variant="secondary">active</Badge> : null}
                           </div>
                           <p className="mt-1 text-xs text-muted-foreground">
-                            {entry.detail.retryPolicy ? `Retry ${entry.detail.retryPolicy}` : "Runtime definition"}
+                            {entry.detail.retryPolicy ? `Retry ${entry.detail.retryPolicy}` : "Engine definition"}
                           </p>
                         </button>
                       ))}
@@ -303,26 +303,26 @@ function ToolSnapshotBrowser(props: {
                 </div>
               </div>
               <div className="rounded-[18px] border border-border/70 bg-muted/10 p-4">
-                <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Runtime Tool Names</p>
+                <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Engine Tool Names</p>
                 <div className="mt-3">
-                  <ToolNameChips names={props.runtimeToolNames} emptyLabel="No runtime tool names recorded." />
+                  <ToolNameChips names={props.engineToolNames} emptyLabel="No engine tool names recorded." />
                 </div>
               </div>
             </div>
           </div>
 
           <div className="rounded-[18px] border border-border/70 bg-background/70 p-4">
-            {activeEntry?.kind === "runtime" ? (
+            {activeEntry?.kind === "engine" ? (
               <div className="space-y-4">
                 <div className="border-b border-border/70 pb-4">
-                  <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Runtime Tool</p>
+                  <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Engine Tool</p>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <p className="text-lg font-semibold text-foreground">{activeEntry.detail.name}</p>
                     {activeEntry.active ? <Badge variant="secondary">active</Badge> : null}
                     {activeEntry.detail.retryPolicy ? <Badge variant="outline">{activeEntry.detail.retryPolicy}</Badge> : null}
                   </div>
                   <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                    {activeEntry.detail.description ?? "This runtime tool did not record a description."}
+                    {activeEntry.detail.description ?? "This engine tool did not record a description."}
                   </p>
                 </div>
 
@@ -444,7 +444,7 @@ export {
   MessageContentDetail,
   InspectorDisclosure,
   ToolNameChips,
-  RuntimeToolList,
+  EngineToolList,
   ToolServerList,
   ToolSnapshotBrowser,
   TraceSummaryStat,
@@ -452,4 +452,4 @@ export {
   TimelineListButton,
   ModelMessageList
 };
-export type { ModelCallTrace, ModelCallTraceMessage, ModelCallTraceRuntimeTool, ModelCallTraceToolServer };
+export type { ModelCallTrace, ModelCallTraceMessage, ModelCallTraceEngineTool, ModelCallTraceToolServer };

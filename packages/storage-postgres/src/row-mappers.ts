@@ -5,7 +5,7 @@ import type {
   HistoryEventRecord,
   HookRunAuditRecord,
   Message,
-  RuntimeMessage,
+  EngineMessage,
   Run,
   RunStep,
   Session,
@@ -13,8 +13,8 @@ import type {
   ToolCallAuditRecord,
   WorkspaceArchiveRecord,
   WorkspaceRecord
-} from "@oah/runtime-core";
-import { isMessageContentForRole, isMessageRole, isRuntimeMessageKind } from "@oah/runtime-core";
+} from "@oah/engine-core";
+import { isMessageContentForRole, isMessageRole, isEngineMessageKind } from "@oah/engine-core";
 import { eq } from "drizzle-orm";
 import type { OahExecutor } from "./schema.js";
 import {
@@ -25,7 +25,7 @@ import {
   messages,
   runSteps,
   runs,
-  runtimeMessages,
+  engineMessages,
   sessionEvents,
   sessions,
   toolCalls,
@@ -223,7 +223,7 @@ export function toMessage(row: typeof messages.$inferSelect): Message {
   });
 }
 
-export function buildRuntimeMessageRow(input: RuntimeMessage) {
+export function buildEngineMessageRow(input: EngineMessage) {
   return {
     id: input.id,
     sessionId: input.sessionId,
@@ -236,13 +236,13 @@ export function buildRuntimeMessageRow(input: RuntimeMessage) {
   };
 }
 
-export function toRuntimeMessageRecord(row: typeof runtimeMessages.$inferSelect): RuntimeMessage {
+export function toEngineMessageRecord(row: typeof engineMessages.$inferSelect): EngineMessage {
   return {
     id: row.id,
     sessionId: row.sessionId,
     ...(row.runId ? { runId: row.runId } : {}),
     role: isMessageRole(row.role) ? row.role : "assistant",
-    kind: isRuntimeMessageKind(row.kind) ? row.kind : "assistant_text",
+    kind: isEngineMessageKind(row.kind) ? row.kind : "assistant_text",
     content: row.content,
     ...(isRecord(row.metadata) ? { metadata: row.metadata } : {}),
     createdAt: normalizeTimestamp(row.createdAt) ?? row.createdAt
@@ -455,7 +455,7 @@ export function buildWorkspaceArchiveRow(input: WorkspaceArchiveRecord) {
     sessions: input.sessions,
     runs: input.runs,
     messages: input.messages,
-    runtimeMessages: input.runtimeMessages,
+    engineMessages: input.engineMessages,
     runSteps: input.runSteps,
     toolCalls: input.toolCalls,
     hookRuns: input.hookRuns,
@@ -479,7 +479,7 @@ export function toWorkspaceArchiveRecord(row: typeof archives.$inferSelect): Wor
     sessions: row.sessions,
     runs: row.runs,
     messages: row.messages,
-    runtimeMessages: row.runtimeMessages,
+    engineMessages: row.engineMessages,
     runSteps: row.runSteps,
     toolCalls: row.toolCalls,
     hookRuns: row.hookRuns,

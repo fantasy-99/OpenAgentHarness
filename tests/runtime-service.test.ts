@@ -4,14 +4,14 @@ import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { RuntimeService, createLocalWorkspaceFileSystem } from "@oah/runtime-core";
+import { EngineService, createLocalWorkspaceFileSystem } from "@oah/engine-core";
 import type {
   HookRunAuditRecord,
   ToolCallAuditRecord,
   WorkspaceActivityTracker,
   WorkspaceArchiveRecord,
   WorkspaceFileSystem
-} from "@oah/runtime-core";
+} from "@oah/engine-core";
 import { createMemoryRuntimePersistence } from "@oah/storage-memory";
 import type { Message } from "@oah/api-contracts";
 
@@ -111,14 +111,16 @@ async function createRuntime(
   delayMs = 0,
   options?: {
     workspaceActivityTracker?: WorkspaceActivityTracker | undefined;
+    platformModels?: Record<string, { provider: string; name: string; metadata?: Record<string, unknown> }> | undefined;
   }
 ) {
   const gateway = new FakeModelGateway(delayMs);
   const persistence = createMemoryRuntimePersistence();
-  const runtimeService = new RuntimeService({
+  const runtimeService = new EngineService({
     defaultModel: "openai-default",
     modelGateway: gateway,
     ...(options?.workspaceActivityTracker ? { workspaceActivityTracker: options.workspaceActivityTracker } : {}),
+    ...(options?.platformModels ? { platformModels: options.platformModels } : {}),
     ...persistence,
     workspaceInitializer: {
       async initialize(input) {
@@ -136,7 +138,7 @@ async function createRuntime(
           toolServers: {},
           hooks: {},
           catalog: {
-            workspaceId: "blueprint",
+            workspaceId: "runtime",
             agents: [],
             models: [],
             actions: [],
@@ -153,7 +155,7 @@ async function createRuntime(
   const workspace = await runtimeService.createWorkspace({
     input: {
       name: "demo",
-      blueprint: "workspace",
+      runtime: "workspace",
       rootPath: "/tmp/demo",
       executionPolicy: "local"
     }
@@ -163,10 +165,10 @@ async function createRuntime(
 }
 
 describe("runtime service", () => {
-  it("creates workspaces from a blueprint initializer result", async () => {
+  it("creates workspaces from a runtime initializer result", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence,
@@ -201,7 +203,7 @@ describe("runtime service", () => {
             toolServers: {},
             hooks: {},
             catalog: {
-              workspaceId: "blueprint",
+              workspaceId: "runtime",
               agents: [{ name: "builder", mode: "primary", source: "workspace" }],
               models: [],
               actions: [],
@@ -218,7 +220,7 @@ describe("runtime service", () => {
     const workspace = await runtimeService.createWorkspace({
       input: {
         name: "demo",
-        blueprint: "workspace",
+        runtime: "workspace",
         rootPath: "/tmp/demo",
         serviceName: "svc-alpha",
         executionPolicy: "local"
@@ -239,7 +241,7 @@ describe("runtime service", () => {
   it("treats explicit workspaceId creation as idempotent when the workspace already exists", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence,
@@ -250,7 +252,7 @@ describe("runtime service", () => {
             rootPath: "/workspace",
             settings: {
               defaultAgent: "builder",
-              blueprint: input.blueprint,
+              runtime: input.runtime,
               skillDirs: []
             },
             defaultAgent: "builder",
@@ -261,7 +263,7 @@ describe("runtime service", () => {
             toolServers: {},
             hooks: {},
             catalog: {
-              workspaceId: "blueprint",
+              workspaceId: "runtime",
               agents: [],
               models: [],
               actions: [],
@@ -287,7 +289,7 @@ describe("runtime service", () => {
       defaultAgent: "builder",
       settings: {
         defaultAgent: "builder",
-        blueprint: "workspace",
+        runtime: "workspace",
         skillDirs: []
       },
       workspaceModels: {},
@@ -313,12 +315,12 @@ describe("runtime service", () => {
     const workspace = await runtimeService.createWorkspace({
       input: {
         name: "already-created",
-        blueprint: "workspace",
+        runtime: "workspace",
         executionPolicy: "local",
         workspaceId: "ws_existing_shared"
       } as {
         name: string;
-        blueprint: string;
+        runtime: string;
         executionPolicy: "local";
         workspaceId: string;
       }
@@ -332,7 +334,7 @@ describe("runtime service", () => {
   it("treats initializer-provided workspace ids as idempotent when the workspace already exists", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence,
@@ -343,7 +345,7 @@ describe("runtime service", () => {
             rootPath: "/workspace",
             settings: {
               defaultAgent: "builder",
-              blueprint: input.blueprint,
+              runtime: input.runtime,
               skillDirs: []
             },
             defaultAgent: "builder",
@@ -354,7 +356,7 @@ describe("runtime service", () => {
             toolServers: {},
             hooks: {},
             catalog: {
-              workspaceId: "blueprint",
+              workspaceId: "runtime",
               agents: [],
               models: [],
               actions: [],
@@ -380,7 +382,7 @@ describe("runtime service", () => {
       defaultAgent: "builder",
       settings: {
         defaultAgent: "builder",
-        blueprint: "workspace",
+        runtime: "workspace",
         skillDirs: []
       },
       workspaceModels: {},
@@ -406,7 +408,7 @@ describe("runtime service", () => {
     const workspace = await runtimeService.createWorkspace({
       input: {
         name: "shared-from-initializer",
-        blueprint: "workspace",
+        runtime: "workspace",
         executionPolicy: "local"
       }
     });
@@ -418,7 +420,7 @@ describe("runtime service", () => {
   it("normalizes legacy chat workspaces when listing and loading", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -479,7 +481,7 @@ describe("runtime service", () => {
   it("preserves the initializer workspace id when creating a workspace", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence,
@@ -500,7 +502,7 @@ describe("runtime service", () => {
             toolServers: {},
             hooks: {},
             catalog: {
-              workspaceId: "blueprint",
+              workspaceId: "runtime",
               agents: [],
               models: [],
               actions: [],
@@ -517,7 +519,7 @@ describe("runtime service", () => {
     const workspace = await runtimeService.createWorkspace({
       input: {
         name: "demo",
-        blueprint: "workspace",
+        runtime: "workspace",
         rootPath: "/tmp/demo",
         executionPolicy: "local"
       }
@@ -532,7 +534,7 @@ describe("runtime service", () => {
     const archivedWorkspaces: WorkspaceArchiveRecord[] = [];
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence,
@@ -551,7 +553,7 @@ describe("runtime service", () => {
             sessions: [],
             runs: [],
             messages: [],
-            runtimeMessages: [],
+            engineMessages: [],
             runSteps: [],
             toolCalls: [],
             hookRuns: [],
@@ -574,7 +576,7 @@ describe("runtime service", () => {
             sessions: [],
             runs: [],
             messages: [],
-            runtimeMessages: [],
+            engineMessages: [],
             runSteps: [],
             toolCalls: [],
             hookRuns: [],
@@ -615,7 +617,7 @@ describe("runtime service", () => {
             toolServers: {},
             hooks: {},
             catalog: {
-              workspaceId: "blueprint",
+              workspaceId: "runtime",
               agents: [],
               models: [],
               actions: [],
@@ -632,7 +634,7 @@ describe("runtime service", () => {
     const workspace = await runtimeService.createWorkspace({
       input: {
         name: "demo",
-        blueprint: "workspace",
+        runtime: "workspace",
         rootPath: "/tmp/workspace-delete-demo",
         executionPolicy: "local"
       }
@@ -674,7 +676,7 @@ describe("runtime service", () => {
     const releases: Array<{ dirty?: boolean | undefined }> = [];
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence,
@@ -707,7 +709,7 @@ describe("runtime service", () => {
             toolServers: {},
             hooks: {},
             catalog: {
-              workspaceId: "blueprint",
+              workspaceId: "runtime",
               agents: [],
               models: [],
               actions: [],
@@ -725,7 +727,7 @@ describe("runtime service", () => {
       const workspace = await runtimeService.createWorkspace({
         input: {
           name: "demo",
-          blueprint: "workspace",
+          runtime: "workspace",
           rootPath: sourceRoot,
           executionPolicy: "local"
         }
@@ -752,7 +754,7 @@ describe("runtime service", () => {
     const materializedRoot = await mkdtemp(path.join(tmpdir(), "oah-workspace-materialized-"));
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence,
@@ -785,7 +787,7 @@ describe("runtime service", () => {
             toolServers: {},
             hooks: {},
             catalog: {
-              workspaceId: "blueprint",
+              workspaceId: "runtime",
               agents: [],
               models: [],
               actions: [],
@@ -804,7 +806,7 @@ describe("runtime service", () => {
       const workspace = await runtimeService.createWorkspace({
         input: {
           name: "demo",
-          blueprint: "workspace",
+          runtime: "workspace",
           rootPath: sourceRoot,
           executionPolicy: "local"
         }
@@ -841,7 +843,7 @@ describe("runtime service", () => {
 
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence,
@@ -862,7 +864,7 @@ describe("runtime service", () => {
             toolServers: {},
             hooks: {},
             catalog: {
-              workspaceId: "blueprint",
+              workspaceId: "runtime",
               agents: [],
               models: [],
               actions: [],
@@ -880,7 +882,7 @@ describe("runtime service", () => {
       const workspace = await runtimeService.createWorkspace({
         input: {
           name: "demo",
-          blueprint: "workspace",
+          runtime: "workspace",
           rootPath: sourceRoot,
           executionPolicy: "local"
         }
@@ -912,7 +914,7 @@ describe("runtime service", () => {
     const releases: Array<{ dirty?: boolean | undefined }> = [];
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence,
@@ -945,7 +947,7 @@ describe("runtime service", () => {
             toolServers: {},
             hooks: {},
             catalog: {
-              workspaceId: "blueprint",
+              workspaceId: "runtime",
               agents: [],
               models: [],
               actions: [],
@@ -964,7 +966,7 @@ describe("runtime service", () => {
       const workspace = await runtimeService.createWorkspace({
         input: {
           name: "demo",
-          blueprint: "workspace",
+          runtime: "workspace",
           rootPath: sourceRoot,
           executionPolicy: "local"
         }
@@ -987,7 +989,7 @@ describe("runtime service", () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
     const archivedSessionTrees: WorkspaceArchiveRecord[] = [];
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence,
@@ -1006,7 +1008,7 @@ describe("runtime service", () => {
             sessions: [],
             runs: [],
             messages: [],
-            runtimeMessages: [],
+            engineMessages: [],
             runSteps: [],
             toolCalls: [],
             hookRuns: [],
@@ -1036,7 +1038,7 @@ describe("runtime service", () => {
             })),
             runs: [],
             messages: [],
-            runtimeMessages: [],
+            engineMessages: [],
             runSteps: [],
             toolCalls: [],
             hookRuns: [],
@@ -1072,7 +1074,7 @@ describe("runtime service", () => {
             toolServers: {},
             hooks: {},
             catalog: {
-              workspaceId: "blueprint",
+              workspaceId: "runtime",
               agents: [],
               models: [],
               actions: [],
@@ -1089,7 +1091,7 @@ describe("runtime service", () => {
     const workspace = await runtimeService.createWorkspace({
       input: {
         name: "demo",
-        blueprint: "workspace",
+        runtime: "workspace",
         rootPath: "/tmp/demo-delete-session-tree",
         executionPolicy: "local"
       }
@@ -1160,7 +1162,7 @@ describe("runtime service", () => {
     await expect(runtimeService.getSession("ses-sibling")).resolves.toMatchObject({ id: "ses-sibling" });
   });
 
-  it("serializes runs inside a session", async () => {
+  it("interrupts an active session run when a new message is submitted", async () => {
     const { runtimeService, workspace } = await createRuntime(30);
     const caller = {
       subjectRef: "dev:test",
@@ -1180,6 +1182,19 @@ describe("runtime service", () => {
       caller,
       input: { content: "first" }
     });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(first.runId);
+      return run.status === "running";
+    });
+
+    await waitFor(async () => {
+      const messages = await runtimeService.listSessionMessages(session.id);
+      return messages.items.some(
+        (message) => message.role === "assistant" && message.runId === first.runId && (messageText(message)?.length ?? 0) > 0
+      );
+    });
+
     const second = await runtimeService.createSessionMessage({
       sessionId: session.id,
       caller,
@@ -1187,36 +1202,161 @@ describe("runtime service", () => {
     });
 
     await waitFor(async () => {
-      const events = await runtimeService.listSessionEvents(session.id);
-      return events.filter((event) => event.event === "run.completed").length === 2;
+      const [firstRun, secondRun] = await Promise.all([
+        runtimeService.getRun(first.runId),
+        runtimeService.getRun(second.runId)
+      ]);
+      return firstRun.status === "cancelled" && secondRun.status === "completed";
     });
 
+    const messages = await runtimeService.listSessionMessages(session.id);
+    const userMessages = messages.items.filter((message) => message.role === "user");
+    const firstAssistant = messages.items.find((message) => message.role === "assistant" && message.runId === first.runId);
+    const secondAssistant = messages.items.find((message) => message.role === "assistant" && message.runId === second.runId);
     const events = await runtimeService.listSessionEvents(session.id);
     const runStarted = events.filter((event) => event.event === "run.started").map((event) => event.runId);
+    const runCancelled = events.filter((event) => event.event === "run.cancelled").map((event) => event.runId);
     const runCompleted = events.filter((event) => event.event === "run.completed").map((event) => event.runId);
 
     expect(runStarted).toEqual([first.runId, second.runId]);
-    expect(runCompleted).toEqual([first.runId, second.runId]);
+    expect(runCancelled).toEqual([first.runId]);
+    expect(runCompleted).toEqual([second.runId]);
+    expect(userMessages.map((message) => messageText(message))).toEqual(["first", "second"]);
+    expect(messageText(firstAssistant)).toBeTruthy();
+    expect(messageText(secondAssistant)).toBe("reply:second");
+  });
+
+  it("auto compacts older context into boundary and summary artifacts before the next model call", async () => {
+    const { gateway, runtimeService, workspace } = await createRuntime(0, {
+      platformModels: {
+        "openai-default": {
+          provider: "openai",
+          name: "gpt-5",
+          metadata: {
+            contextWindowTokens: 80,
+            compactThresholdTokens: 20,
+            compactRecentGroupCount: 3
+          }
+        }
+      }
+    });
+    gateway.generateResponseFactory = (input) => {
+      const systemPrompt = input.messages?.find((message) => message.role === "system");
+      if (typeof systemPrompt?.content === "string" && systemPrompt.content.includes("Summarize the earlier conversation context")) {
+        return {
+          model: input.model ?? "openai-default",
+          text: "Compacted summary of prior work",
+          finishReason: "stop",
+          usage: {
+            inputTokens: 12,
+            outputTokens: 6,
+            totalTokens: 18
+          }
+        };
+      }
+
+      return undefined;
+    };
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: workspace.id,
+      caller,
+      input: {}
+    });
+    const firstContent = "FIRST-CONTENT ".repeat(12).trim();
+    const secondContent = "SECOND-CONTENT ".repeat(12).trim();
+    const thirdContent = "THIRD-CONTENT ".repeat(12).trim();
+
+    const firstAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: firstContent }
+    });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(firstAccepted.runId);
+      return run.status === "completed";
+    });
+
+    const secondAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: secondContent }
+    });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(secondAccepted.runId);
+      return run.status === "completed";
+    });
+
+    const thirdAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: thirdContent }
+    });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(thirdAccepted.runId);
+      return run.status === "completed";
+    });
+    await waitFor(() => gateway.invocations.length >= 4);
+
+    const messages = await runtimeService.listSessionMessages(session.id, 20);
+    const boundaryMessage = messages.items.find(
+      (message) =>
+        message.role === "system" &&
+        ((message.metadata as { runtimeKind?: string } | undefined)?.runtimeKind ?? "") === "compact_boundary"
+    );
+    const summaryMessage = messages.items.find(
+      (message) =>
+        message.role === "system" &&
+        ((message.metadata as { runtimeKind?: string } | undefined)?.runtimeKind ?? "") === "compact_summary"
+    );
+    const events = await runtimeService.listSessionEvents(session.id);
+    const compactEventMessageIds = events
+      .filter((event) => event.event === "message.completed")
+      .map((event) => String(event.data.messageId ?? ""));
+    const compactInvocation = gateway.invocations.at(2);
+    const finalInvocation = gateway.invocations.at(3);
+    const finalInvocationText = (finalInvocation?.input.messages ?? [])
+      .map((message) => (typeof message.content === "string" ? message.content : JSON.stringify(message.content)))
+      .join("\n\n");
+
+    expect(boundaryMessage).toBeDefined();
+    expect(summaryMessage).toBeDefined();
+    expect(messageText(summaryMessage)).toBe("Compacted summary of prior work");
+    expect(compactEventMessageIds).toContain(boundaryMessage?.id ?? "");
+    expect(compactEventMessageIds).toContain(summaryMessage?.id ?? "");
+    expect(typeof compactInvocation?.input.messages?.[0]?.content).toBe("string");
+    expect(String(compactInvocation?.input.messages?.[0]?.content)).toContain(
+      "Summarize the earlier conversation context"
+    );
+    expect(finalInvocationText).toContain("Compacted summary of prior work");
+    expect(finalInvocationText).toContain(thirdContent);
+    expect(finalInvocationText).not.toContain(firstContent);
   });
 
   it("skips redundant runtime message rewrites when later events do not change the projection", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
     let replaceCalls = 0;
-    const runtimeMessageRepository = {
-      async replaceBySessionId(sessionId: string, messages: Awaited<ReturnType<typeof persistence.runtimeMessageRepository.listBySessionId>>) {
+    const engineMessageRepository = {
+      async replaceBySessionId(sessionId: string, messages: Awaited<ReturnType<typeof persistence.engineMessageRepository.listBySessionId>>) {
         replaceCalls += 1;
-        await persistence.runtimeMessageRepository.replaceBySessionId(sessionId, messages);
+        await persistence.engineMessageRepository.replaceBySessionId(sessionId, messages);
       },
       listBySessionId(sessionId: string) {
-        return persistence.runtimeMessageRepository.listBySessionId(sessionId);
+        return persistence.engineMessageRepository.listBySessionId(sessionId);
       }
     };
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence,
-      runtimeMessageRepository,
+      engineMessageRepository,
       workspaceInitializer: {
         async initialize(input) {
           return {
@@ -1233,7 +1373,7 @@ describe("runtime service", () => {
             toolServers: {},
             hooks: {},
             catalog: {
-              workspaceId: "blueprint",
+              workspaceId: "runtime",
               agents: [],
               models: [],
               actions: [],
@@ -1249,9 +1389,9 @@ describe("runtime service", () => {
 
     const workspace = await runtimeService.createWorkspace({
       input: {
-        name: "runtime-message-sync",
-        blueprint: "workspace",
-        rootPath: "/tmp/runtime-message-sync",
+        name: "engine-message-sync",
+        runtime: "workspace",
+        rootPath: "/tmp/engine-message-sync",
         executionPolicy: "local"
       }
     });
@@ -1279,7 +1419,7 @@ describe("runtime service", () => {
     });
 
     expect(replaceCalls).toBe(2);
-    await expect(persistence.runtimeMessageRepository.listBySessionId(session.id)).resolves.toEqual(
+    await expect(persistence.engineMessageRepository.listBySessionId(session.id)).resolves.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ role: "user" }),
         expect.objectContaining({ role: "assistant" })
@@ -1396,7 +1536,7 @@ describe("runtime service", () => {
     });
   });
 
-  it("supports a third session message and lists persisted messages with the default page size", async () => {
+  it("supports multiple completed session messages and lists persisted messages with the default page size", async () => {
     const { runtimeService, workspace } = await createRuntime();
     const caller = {
       subjectRef: "dev:test",
@@ -1416,11 +1556,23 @@ describe("runtime service", () => {
       caller,
       input: { content: "first" }
     });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(first.runId);
+      return run.status === "completed";
+    });
+
     const second = await runtimeService.createSessionMessage({
       sessionId: session.id,
       caller,
       input: { content: "second" }
     });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(second.runId);
+      return run.status === "completed";
+    });
+
     const third = await runtimeService.createSessionMessage({
       sessionId: session.id,
       caller,
@@ -1470,6 +1622,12 @@ describe("runtime service", () => {
       caller,
       input: { content: "first" }
     });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(first.runId);
+      return run.status === "completed";
+    });
+
     const second = await runtimeService.createSessionMessage({
       sessionId: session.id,
       caller,
@@ -1595,7 +1753,7 @@ describe("runtime service", () => {
   it("uses a discovered workspace default agent when session input omits agentName", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -1666,7 +1824,7 @@ describe("runtime service", () => {
   it("falls back to the platform assistant when a workspace has no explicit default agent", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -1751,7 +1909,7 @@ describe("runtime service", () => {
   it("updates the session active agent for subsequent runs and rejects non-primary targets", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -1905,7 +2063,7 @@ describe("runtime service", () => {
   it("injects AGENTS.md and the active agent prompt without a system reminder when the session explicitly selects an agent", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -1999,7 +2157,7 @@ describe("runtime service", () => {
   it("does not inject system reminder for default-agent sessions before any agent switch", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -2087,7 +2245,7 @@ describe("runtime service", () => {
   it("injects a system reminder on the next user turn after the session agent is manually switched", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -2245,7 +2403,7 @@ describe("runtime service", () => {
     });
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -2447,7 +2605,7 @@ describe("runtime service", () => {
     });
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -2618,7 +2776,7 @@ describe("runtime service", () => {
     };
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       platformModels: {
@@ -2810,7 +2968,7 @@ describe("runtime service", () => {
     };
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -2924,7 +3082,7 @@ describe("runtime service", () => {
   it("persists reasoning-only assistant completions as message parts", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -3049,7 +3207,7 @@ describe("runtime service", () => {
     });
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -3180,7 +3338,7 @@ describe("runtime service", () => {
     };
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -3371,7 +3529,7 @@ describe("runtime service", () => {
     };
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -3517,7 +3675,7 @@ describe("runtime service", () => {
   it("forwards agent sampling settings including topP to the model gateway", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -3665,7 +3823,7 @@ describe("runtime service", () => {
     };
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -3856,7 +4014,7 @@ describe("runtime service", () => {
     });
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -3987,7 +4145,7 @@ describe("runtime service", () => {
     };
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -4139,7 +4297,7 @@ describe("runtime service", () => {
   it("runs an action command and stores the result on the run", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -4231,7 +4389,7 @@ describe("runtime service", () => {
   it("rejects invalid API action input against input_schema before enqueueing the run", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -4324,7 +4482,7 @@ describe("runtime service", () => {
   it("rejects user-triggered action runs when callableByUser is false", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -4405,7 +4563,7 @@ describe("runtime service", () => {
   it("streams session-attached action runs as tool-call and tool-result messages", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -4570,7 +4728,7 @@ describe("runtime service", () => {
   it("executes user-triggered session-attached action runs without entering the model loop", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -4695,7 +4853,7 @@ describe("runtime service", () => {
   it("persists failed tool output for session-attached action runs", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -4838,7 +4996,7 @@ describe("runtime service", () => {
   it("resolves workspace model refs for agent execution", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -4937,7 +5095,7 @@ describe("runtime service", () => {
   it("times out action runs with a terminal timed_out status", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -5034,7 +5192,7 @@ describe("runtime service", () => {
   it("enforces agent run_timeout_seconds with a terminal timed_out status", async () => {
     const gateway = new FakeModelGateway(40);
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -5150,7 +5308,7 @@ describe("runtime service", () => {
     });
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -5250,7 +5408,7 @@ describe("runtime service", () => {
   it("persists heartbeatAt while a run is active", async () => {
     const gateway = new FakeModelGateway(120);
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       runHeartbeatIntervalMs: 30,
@@ -5343,7 +5501,7 @@ describe("runtime service", () => {
 
   it("recovers stale active runs as failed", async () => {
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: new FakeModelGateway(),
       ...persistence
@@ -5479,7 +5637,7 @@ describe("runtime service", () => {
   it("requeues stale running runs when stale-run recovery is enabled", async () => {
     const persistence = createMemoryRuntimePersistence();
     const enqueuedRuns: Array<{ sessionId: string; runId: string }> = [];
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: new FakeModelGateway(),
       ...persistence,
@@ -5609,7 +5767,7 @@ describe("runtime service", () => {
   it("quarantines stale runs after recovery attempts are exhausted", async () => {
     const persistence = createMemoryRuntimePersistence();
     const enqueuedRuns: Array<{ sessionId: string; runId: string }> = [];
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: new FakeModelGateway(),
       ...persistence,
@@ -5747,7 +5905,7 @@ describe("runtime service", () => {
   it("manually requeues quarantined recovery runs", async () => {
     const persistence = createMemoryRuntimePersistence();
     const enqueuedRuns: Array<{ sessionId: string; runId: string }> = [];
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: new FakeModelGateway(),
       ...persistence,
@@ -5903,7 +6061,7 @@ describe("runtime service", () => {
   it("requeues active runs after a drain timeout when configured to requeue", async () => {
     const persistence = createMemoryRuntimePersistence();
     const enqueuedRuns: Array<{ sessionId: string; runId: string }> = [];
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: new FakeModelGateway(),
       ...persistence,
@@ -6022,7 +6180,7 @@ describe("runtime service", () => {
 
   it("quarantines waiting_tool runs after a drain timeout when only running requeue is allowed", async () => {
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: new FakeModelGateway(),
       ...persistence,
@@ -6170,7 +6328,7 @@ describe("runtime service", () => {
     });
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -6314,7 +6472,7 @@ describe("runtime service", () => {
     });
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -6401,7 +6559,7 @@ describe("runtime service", () => {
   it("composes system prompts with llm-optimized prompt, actions catalog, skills catalog, and environment summary", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       platformModels: {
@@ -6640,7 +6798,7 @@ describe("runtime service", () => {
     });
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -6791,8 +6949,8 @@ describe("runtime service", () => {
       },
       runtime: {
         messageCount: 2,
-        runtimeToolNames: expect.arrayContaining(["Skill"]),
-        runtimeTools: expect.arrayContaining([
+        engineToolNames: expect.arrayContaining(["Skill"]),
+        engineTools: expect.arrayContaining([
           expect.objectContaining({
             name: "Skill",
             description: expect.any(String),
@@ -6879,7 +7037,7 @@ describe("runtime service", () => {
     });
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -7060,7 +7218,7 @@ describe("runtime service", () => {
     });
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -7190,7 +7348,7 @@ describe("runtime service", () => {
   it("projects native tool visibility per agent and exposes them in the workspace catalog", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -7298,7 +7456,7 @@ describe("runtime service", () => {
       "WebFetch",
       "TodoWrite"
     ]);
-    expect(catalog.runtimeTools).toEqual(expect.arrayContaining(["Bash", "Read", "run_action", "Skill", "AgentSwitch", "SubAgent"]));
+    expect(catalog.engineTools).toEqual(expect.arrayContaining(["Bash", "Read", "run_action", "Skill", "AgentSwitch", "SubAgent"]));
 
     const caller = {
       subjectRef: "dev:test",
@@ -7367,7 +7525,7 @@ describe("runtime service", () => {
     });
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -7531,7 +7689,7 @@ describe("runtime service", () => {
     };
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -7664,7 +7822,7 @@ describe("runtime service", () => {
     });
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -7800,7 +7958,7 @@ describe("runtime service", () => {
     const persistence = createMemoryRuntimePersistence();
     const recordedToolCalls: ToolCallAuditRecord[] = [];
     const recordedHookRuns: HookRunAuditRecord[] = [];
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence,
@@ -7987,7 +8145,7 @@ describe("runtime service", () => {
     });
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -8083,7 +8241,7 @@ describe("runtime service", () => {
   it("does not inject environment summaries when compose order omits the environment segment", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -8183,7 +8341,7 @@ describe("runtime service", () => {
     };
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -8291,7 +8449,7 @@ describe("runtime service", () => {
     expect(catalog.tools).toEqual([{ name: "docs", transportType: "http" }]);
     expect(catalog.hooks).toEqual([{ name: "rewrite-request", handlerType: "command", events: ["before_model_call"] }]);
     expect(catalog.nativeTools).toEqual(expect.arrayContaining(["Bash", "Read", "Write"]));
-    expect(catalog.runtimeTools).toEqual(expect.arrayContaining(["run_action", "Skill"]));
+    expect(catalog.engineTools).toEqual(expect.arrayContaining(["run_action", "Skill"]));
 
     const caller = {
       subjectRef: "dev:test",
@@ -8331,7 +8489,7 @@ describe("runtime service", () => {
   it("applies before_model_call command hooks to patch request and inject context", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -8443,7 +8601,7 @@ describe("runtime service", () => {
   it("treats command hook timeout_seconds as a non-blocking timeout and emits a notice", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -8551,7 +8709,7 @@ describe("runtime service", () => {
     const gateway = new FakeModelGateway();
     gateway.generateDelayMs = 2_000;
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -8660,7 +8818,7 @@ describe("runtime service", () => {
   it("applies context build hooks before and after composing model messages", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -8803,7 +8961,7 @@ describe("runtime service", () => {
     });
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -8980,7 +9138,7 @@ describe("runtime service", () => {
     };
 
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence

@@ -1,6 +1,6 @@
 import { createClient, type RedisClientType } from "redis";
 
-import type { SessionRunQueue, SessionRunQueuePressure } from "@oah/runtime-core";
+import type { SessionRunQueue, SessionRunQueuePressure } from "@oah/engine-core";
 import type { CreateRedisSessionRunQueueOptions } from "./coordination-types.js";
 
 type RunQueuePriority = "normal" | "subagent";

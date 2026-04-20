@@ -5,7 +5,7 @@ import path from "node:path";
 import { DeleteObjectsCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import type { ServerConfig } from "@oah/config";
 
-export type ManagedPathKey = "workspace" | "blueprint" | "model" | "tool" | "skill";
+export type ManagedPathKey = "workspace" | "runtime" | "model" | "tool" | "skill";
 type ObjectStorageConfig = NonNullable<ServerConfig["object_storage"]> & {
   managed_paths?: ManagedPathKey[] | undefined;
 };
@@ -42,7 +42,7 @@ interface ManagedPathMapping {
 
 const DEFAULT_KEY_PREFIXES: Record<ManagedPathKey, string> = {
   workspace: "workspace",
-  blueprint: "blueprint",
+  runtime: "runtime",
   model: "model",
   tool: "tool",
   skill: "skill"

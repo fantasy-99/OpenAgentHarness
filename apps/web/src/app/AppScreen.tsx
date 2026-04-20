@@ -7,11 +7,11 @@ import { toneBadgeClass } from "./support";
 import type { AppThemeName } from "./theme";
 import { useAppController } from "./use-app-controller";
 
-const RuntimeWorkspace = lazy(async () => ({
-  default: (await import("./layout/RuntimeWorkspace")).RuntimeWorkspace
+const EngineWorkspace = lazy(async () => ({
+  default: (await import("./layout/EngineWorkspace")).EngineWorkspace
 }));
-const RuntimeConsolePanel = lazy(async () => ({
-  default: (await import("./console/RuntimeConsolePanel")).RuntimeConsolePanel
+const EngineConsolePanel = lazy(async () => ({
+  default: (await import("./console/EngineConsolePanel")).EngineConsolePanel
 }));
 const ProviderWorkspace = lazy(async () => ({
   default: (await import("./provider/ProviderWorkspace")).ProviderWorkspace
@@ -54,7 +54,7 @@ export function AppScreen({ theme, onThemeChange }: AppScreenProps) {
                 <button
                   type="button"
                   onClick={() => {
-                    setSurfaceMode("runtime");
+                    setSurfaceMode("engine");
                     controller.consolePanelProps.openErrors();
                   }}
                   className={`rounded-full border px-3 py-1 text-xs font-medium transition ${toneBadgeClass("rose")} bg-background/86 hover:bg-background`}
@@ -77,15 +77,15 @@ export function AppScreen({ theme, onThemeChange }: AppScreenProps) {
                 </Suspense>
               </div>
             ) : (
-              <Suspense fallback={<SurfaceFallback label="Loading runtime workspace..." />}>
-                <RuntimeWorkspace {...controller.runtimeDetailSurfaceProps} />
+              <Suspense fallback={<SurfaceFallback label="Loading engine workspace..." />}>
+                <EngineWorkspace {...controller.runtimeDetailSurfaceProps} />
               </Suspense>
             )}
           </main>
         </div>
 
         <Suspense fallback={null}>
-          <RuntimeConsolePanel {...controller.consolePanelProps} />
+          <EngineConsolePanel {...controller.consolePanelProps} />
         </Suspense>
       </div>
     </div>

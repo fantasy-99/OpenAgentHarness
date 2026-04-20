@@ -5,7 +5,7 @@
 - [架构总览](./architecture-overview.md) -- 产品与架构边界
 - [快速开始](./getting-started.md) / [部署与运行](./deploy.md) -- 启动与部署
 - [实施路线](./implementation-roadmap.md) -- 历史设计顺序
-- [Runtime / Worker 执行层成熟化路线图](./runtime/worker-scaling-roadmap.md) -- worker、扩缩容与控制面后续实现计划
+- [Engine / Worker 执行层成熟化路线图](./engine/worker-scaling-roadmap.md) -- worker、扩缩容与控制面后续实现计划
 
 ## 当前重点
 
@@ -21,4 +21,4 @@
 
 - 本页负责描述当前状态与近期重点
 - [实施路线](./implementation-roadmap.md) 保留历史实施顺序
-- [Runtime / Worker 执行层成熟化路线图](./runtime/worker-scaling-roadmap.md) 继续承载 worker / 扩缩容 / 控制面相关专题演进
+- [Engine / Worker 执行层成熟化路线图](./engine/worker-scaling-roadmap.md) 继续承载 worker / 扩缩容 / 控制面相关专题演进

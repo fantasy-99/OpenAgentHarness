@@ -1,13 +1,13 @@
 import type { StorageAdmin } from "../storage-admin.js";
 
-export interface RuntimeAdminCapabilities {
+export interface EngineAdminCapabilities {
   storageAdmin: StorageAdmin;
   close(): Promise<void>;
 }
 
-export function createRuntimeAdminCapabilities(input: {
+export function createEngineAdminCapabilities(input: {
   storageAdmin: StorageAdmin;
-}): RuntimeAdminCapabilities {
+}): EngineAdminCapabilities {
   return {
     storageAdmin: input.storageAdmin,
     close() {

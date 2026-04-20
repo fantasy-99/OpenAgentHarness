@@ -102,8 +102,8 @@ function InspectorWorkspaceImpl(props: RuntimeProps) {
                 latestModelMessageCounts={props.latestModelMessageCounts}
                 resolvedModelNames={props.resolvedModelNames}
                 resolvedModelRefs={props.resolvedModelRefs}
-                runtimeTools={props.allRuntimeTools}
-                runtimeToolNames={props.allRuntimeToolNames}
+                engineTools={props.allEngineTools}
+                engineToolNames={props.allEngineToolNames}
                 activeToolNames={props.allAdvertisedToolNames}
                 toolServers={props.allToolServers}
                 onDownload={props.downloadSessionTrace}
@@ -122,8 +122,8 @@ function InspectorWorkspaceImpl(props: RuntimeProps) {
                 session={props.session}
                 run={run}
                 catalog={props.catalog}
-                runtimeTools={props.allRuntimeTools}
-                runtimeToolNames={props.allRuntimeToolNames}
+                engineTools={props.allEngineTools}
+                engineToolNames={props.allEngineToolNames}
                 activeToolNames={props.allAdvertisedToolNames}
                 toolServers={props.allToolServers}
                 triggerWorkspaceAction={props.triggerWorkspaceAction}

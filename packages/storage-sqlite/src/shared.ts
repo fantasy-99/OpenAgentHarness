@@ -11,7 +11,7 @@ import type {
   Session,
   ToolCallAuditRecord,
   WorkspaceRecord
-} from "@oah/runtime-core";
+} from "@oah/engine-core";
 import {
   isMessageContentForRole,
   isMessageRole,
@@ -19,7 +19,7 @@ import {
   normalizePersistedMessages,
   normalizePersistedRunStep,
   nowIso
-} from "@oah/runtime-core";
+} from "@oah/engine-core";
 
 export interface DatabaseHandle {
   dbPath: string;

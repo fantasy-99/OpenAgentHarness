@@ -45,7 +45,7 @@ RUN corepack enable \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /etc/oah \
   && mkdir -p /var/lib/oah/workspaces \
-  && mkdir -p /var/lib/oah/blueprints \
+  && mkdir -p /var/lib/oah/runtimes \
   && mkdir -p /var/lib/oah/models \
   && mkdir -p /var/lib/oah/tools \
   && mkdir -p /var/lib/oah/skills \

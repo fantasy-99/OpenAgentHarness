@@ -10,13 +10,13 @@ import type {
   Message,
   Run,
   RunStep,
-  RuntimeMessage,
+  EngineMessage,
   Session,
   ToolCallAuditRecord,
   WorkspaceArchiveRecord,
   WorkspaceArchiveRepository
-} from "@oah/runtime-core";
-import { nowIso } from "@oah/runtime-core";
+} from "@oah/engine-core";
+import { nowIso } from "@oah/engine-core";
 
 export interface WorkspaceArchiveExporterLogger {
   info?(message: string): void;
@@ -318,7 +318,7 @@ interface ArchiveInsertStatements {
   session: ReturnType<DatabaseSync["prepare"]>;
   run: ReturnType<DatabaseSync["prepare"]>;
   message: ReturnType<DatabaseSync["prepare"]>;
-  runtimeMessage: ReturnType<DatabaseSync["prepare"]>;
+  engineMessage: ReturnType<DatabaseSync["prepare"]>;
   runStep: ReturnType<DatabaseSync["prepare"]>;
   toolCall: ReturnType<DatabaseSync["prepare"]>;
   hookRun: ReturnType<DatabaseSync["prepare"]>;
@@ -351,7 +351,7 @@ function createArchiveInsertStatements(db: DatabaseSync): ArchiveInsertStatement
         archive_id, id, session_id, run_id, role, created_at, content, metadata
       ) values (?, ?, ?, ?, ?, ?, ?, ?)`
     ),
-    runtimeMessage: db.prepare(
+    engineMessage: db.prepare(
       `insert or replace into runtime_messages (
         archive_id, id, session_id, run_id, role, kind, created_at, content, metadata
       ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -436,12 +436,12 @@ function insertMessageRows(statement: ArchiveInsertStatements["message"], archiv
   }
 }
 
-function insertRuntimeMessageRows(
-  statement: ArchiveInsertStatements["runtimeMessage"],
+function insertEngineMessageRows(
+  statement: ArchiveInsertStatements["engineMessage"],
   archiveId: string,
-  runtimeMessages: RuntimeMessage[]
+  engineMessages: EngineMessage[]
 ): void {
-  for (const message of runtimeMessages) {
+  for (const message of engineMessages) {
     statement.run(
       archiveId,
       message.id,
@@ -568,7 +568,7 @@ function insertArchiveRows(
     insertSessionRows(statements.session, archive.id, archive.sessions);
     insertRunRows(statements.run, archive.id, archive.runs);
     insertMessageRows(statements.message, archive.id, archive.messages);
-    insertRuntimeMessageRows(statements.runtimeMessage, archive.id, archive.runtimeMessages);
+    insertEngineMessageRows(statements.engineMessage, archive.id, archive.engineMessages);
     insertRunStepRows(statements.runStep, archive.id, archive.runSteps);
     insertToolCallRows(statements.toolCall, archive.id, archive.toolCalls);
     insertHookRunRows(statements.hookRun, archive.id, archive.hookRuns);

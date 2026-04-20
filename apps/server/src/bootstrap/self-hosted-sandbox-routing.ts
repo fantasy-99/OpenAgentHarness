@@ -7,7 +7,7 @@ import type {
   WorkspacePlacementEntry,
   WorkspacePlacementRegistry,
   WorkspaceRecord
-} from "@oah/runtime-core";
+} from "@oah/engine-core";
 
 function trimToUndefined(value: string | undefined): string | undefined {
   const trimmed = value?.trim();

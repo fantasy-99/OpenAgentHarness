@@ -38,7 +38,7 @@
 | Frontmatter 解析 | Agent Markdown frontmatter 可解析性 |
 | YAML 解析 | 所有 YAML 文件语法正确 |
 | JSON Schema | 按对应 schema 校验结构 |
-| 引用存在性 | model_ref、action、skill、tool 引用目标存在 |
+| 引用存在性 | agent model / model_ref、action、skill、tool 引用目标存在 |
 | 名称唯一性 | 同层级内名称不重复 |
 | 工具名冲突 | 暴露名称不冲突 |
 
@@ -47,12 +47,13 @@ Schema 文件：
 | 类型 | Schema |
 | --- | --- |
 | settings | [settings.schema.json](../schemas/settings.schema.json) |
+| prompts | [prompts.schema.json](../schemas/prompts.schema.json) |
 | models | [models.schema.json](../schemas/models.schema.json) |
 | action | [action.schema.json](../schemas/action.schema.json) |
 | MCP tools | [mcp-settings.schema.json](../schemas/mcp-settings.schema.json) |
 | hook | [hook.schema.json](../schemas/hook.schema.json) |
 
-Agent 不使用 JSON Schema 强约束，运行时校验 frontmatter 可解析性、`model.model_ref` 存在性、`tools` 引用存在性。
+Agent 不使用 JSON Schema 强约束，运行时校验 frontmatter 可解析性、`model` / `model.model_ref` 存在性、`tools` 引用存在性。
 
 ## 常见加载错误
 
@@ -64,13 +65,13 @@ Error: Failed to parse .openharness/hooks/block-cmd.yaml: unexpected token
 
 原因：缩进不正确或使用了 tab。用 YAML linter 检查，确保一致使用空格。
 
-### Agent model_ref 不存在
+### Agent 模型别名不存在
 
 ```
-Error: Agent "builder" references model "workspace/gpt-5" which does not exist
+Error: Unknown workspace model alias "default" in agent builder model.
 ```
 
-检查 `.openharness/models/*.yaml` 是否定义了对应模型，或使用 `platform/` 前缀引用平台模型。
+检查 `.openharness/settings.yaml` 的 `models` 是否声明了对应别名，并确认它解析到存在的 `platform/<name>` 或 `workspace/<name>`。
 
 ### Skill 同层名称冲突
 

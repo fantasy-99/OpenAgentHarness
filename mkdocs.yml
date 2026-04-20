@@ -70,6 +70,8 @@ plugins:
             部署与运行: Deploy and Run
             服务端配置: Server Config
             设计总览: Overview
+            术语约定: Terminology
+            概念关系: Concept Relationships
             架构与设计: Architecture
             架构总览: Architecture Overview
             领域模型: Domain Model
@@ -124,6 +126,8 @@ nav:
   - 部署与运行: deploy.md
   - 服务端配置: server-config.md
   - 设计总览: design-overview.md
+  - 术语约定: terminology.md
+  - 概念关系: concept-relationships.md
   - 架构与设计:
       - 架构总览: architecture-overview.md
       - 领域模型: domain-model.md
@@ -132,6 +136,7 @@ nav:
   - Workspace:
       - 导航: workspace/README.md
       - Settings: workspace/settings.md
+      - Prompts: workspace/prompts.md
       - Agents: workspace/agents.md
       - Models: workspace/models.md
       - Providers: workspace/model-providers.md
@@ -140,18 +145,18 @@ nav:
       - Hooks: workspace/hooks.md
       - MCP: workspace/mcp.md
       - 加载与校验: workspace/loading-and-validation.md
-  - Runtime:
-      - 导航: runtime/README.md
-      - 生命周期: runtime/lifecycle.md
-      - 上下文引擎: runtime/context-engine.md
-      - 消息投影: runtime/message-projections.md
-      - 模型网关: runtime/model-gateway.md
-      - Projection 与 Executors: runtime/projection-and-executors.md
-      - 执行后端: runtime/execution-backend.md
-      - Hook Runtime: runtime/hook-runtime.md
-      - Queue 与可靠性: runtime/queue-and-reliability.md
-      - Worker 成熟化路线图: runtime/worker-scaling-roadmap.md
-      - 事件与审计: runtime/events-and-audit.md
+  - Engine:
+      - 导航: engine/README.md
+      - 生命周期: engine/lifecycle.md
+      - 上下文引擎: engine/context-engine.md
+      - 消息投影: engine/message-projections.md
+      - 模型网关: engine/model-gateway.md
+      - Projection 与 Executors: engine/projection-and-executors.md
+      - 执行后端: engine/execution-backend.md
+      - Hook Runtime: engine/hook-runtime.md
+      - Queue 与可靠性: engine/queue-and-reliability.md
+      - Worker 成熟化路线图: engine/worker-scaling-roadmap.md
+      - 事件与审计: engine/events-and-audit.md
   - API 参考:
       - 导航: openapi/README.md
       - Workspaces: openapi/workspaces.md

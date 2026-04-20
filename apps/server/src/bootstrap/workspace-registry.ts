@@ -4,8 +4,8 @@ import { readdir } from "node:fs/promises";
 
 import { discoverWorkspace, type DiscoveredWorkspace } from "@oah/config";
 import type { ServerConfig } from "@oah/config";
-import { parseCursor } from "@oah/runtime-core";
-import type { WorkspaceRecord, WorkspaceRepository } from "@oah/runtime-core";
+import { parseCursor } from "@oah/engine-core";
+import type { WorkspaceRecord, WorkspaceRepository } from "@oah/engine-core";
 
 export type PlatformAgentRegistry = Record<string, import("@oah/config").DiscoveredAgent>;
 
@@ -88,6 +88,9 @@ export function reconcileDiscoveredWorkspaces(
       status: persisted.status,
       createdAt: persisted.createdAt,
       updatedAt: persisted.updatedAt,
+      ...(persisted.ownerId ? { ownerId: persisted.ownerId } : {}),
+      ...(persisted.serviceName ? { serviceName: persisted.serviceName } : {}),
+      ...(persisted.runtime ? { runtime: persisted.runtime } : {}),
       ...(persisted.externalRef ? { externalRef: persisted.externalRef } : {})
     };
   });

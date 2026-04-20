@@ -2,6 +2,11 @@
 
 Navigation hub for the Open Agent Harness design documents.
 
+## Terminology
+
+- [Terminology](./terminology.en.md) -- shared boundaries for `Agent Engine`, `Agent Runtime`, and `Agent Spec`
+- [Concept Relationships](./concept-relationships.en.md) -- one map for `Workspace`, `Worker`, `Sandbox`, and `Runtime`
+
 ## Three Core Concepts
 
 | Concept | Role | Description |
@@ -24,11 +29,11 @@ Navigation hub for the Open Agent Harness design documents.
 - [Settings](./workspace/settings.md) | [Agents](./workspace/agents.md) | [Models](./workspace/models.md)
 - [Skills](./workspace/skills.md) | [External Tools](./workspace/mcp.md) | [Hooks](./workspace/hooks.md)
 
-### Runtime
+### Engine
 
-- [Runtime Overview](./runtime/README.md)
-- [Lifecycle](./runtime/lifecycle.md) | [Context Engine](./runtime/context-engine.md)
-- [Queue and Reliability](./runtime/queue-and-reliability.md) | [Events and Audit](./runtime/events-and-audit.md)
+- [Engine Overview](./engine/README.md)
+- [Lifecycle](./engine/lifecycle.md) | [Context Engine](./engine/context-engine.md)
+- [Queue and Reliability](./engine/queue-and-reliability.md) | [Events and Audit](./engine/events-and-audit.md)
 
 ### External Interfaces
 
@@ -43,9 +48,11 @@ Navigation hub for the Open Agent Harness design documents.
 ### Platform Engineers
 
 1. [Architecture Overview](./architecture-overview.en.md)
-2. [Domain Model](./domain-model.md)
-3. [Workspace Overview](./workspace/README.md)
-4. [Runtime Overview](./runtime/README.md)
+2. [Terminology](./terminology.en.md)
+3. [Concept Relationships](./concept-relationships.en.md)
+4. [Domain Model](./domain-model.md)
+5. [Workspace Overview](./workspace/README.md)
+6. [Engine Overview](./engine/README.md)
 
 ### Product / Integration Teams
 
@@ -57,9 +64,9 @@ Navigation hub for the Open Agent Harness design documents.
 ### Troubleshooting
 
 1. [Deploy and Run](./deploy.md)
-2. [Lifecycle](./runtime/lifecycle.md)
-3. [Queue and Reliability](./runtime/queue-and-reliability.md)
-4. [Events and Audit](./runtime/events-and-audit.md)
+2. [Lifecycle](./engine/lifecycle.md)
+3. [Queue and Reliability](./engine/queue-and-reliability.md)
+4. [Events and Audit](./engine/events-and-audit.md)
 
 ## Translation Note
 

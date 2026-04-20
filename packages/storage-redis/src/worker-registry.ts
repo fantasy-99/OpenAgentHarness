@@ -1,6 +1,6 @@
 import { createClient, type RedisClientType } from "redis";
 
-import type { WorkerLeaseInput, WorkerRegistry, WorkerRegistryEntry } from "@oah/runtime-core";
+import type { WorkerLeaseInput, WorkerRegistry, WorkerRegistryEntry } from "@oah/engine-core";
 import type { CreateRedisWorkerRegistryOptions } from "./registry-types.js";
 
 const DEFAULT_WORKER_LEASE_TTL_MS = 5_000;

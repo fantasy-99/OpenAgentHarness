@@ -5,7 +5,7 @@ import type {
   SessionRunQueue,
   WorkerRegistry
 } from "@oah/storage-redis";
-import type { ExecutionRuntimeOperations } from "@oah/runtime-core";
+import type { ExecutionRuntimeOperations } from "@oah/engine-core";
 
 import { createWorkerHost, resolveWorkerMode, summarizeActiveWorkers, type WorkerHost } from "./worker-host.js";
 
@@ -93,6 +93,7 @@ export function createWorkerRuntimeControl(options: {
   redisRunQueue?: SessionRunQueue | undefined;
   redisWorkerRegistry?: WorkerRegistry | undefined;
   runtimeService: ExecutionRuntimeOperations;
+  describeQueuedRun?: ((runId: string) => Promise<{ workspaceId?: string | undefined } | undefined>) | undefined;
   logger?: RedisRunWorkerLogger | undefined;
   hostFactory?: WorkerHostFactory | undefined;
 }): WorkerRuntimeControl {
@@ -110,6 +111,7 @@ export function createWorkerRuntimeControl(options: {
     redisRunQueue: options.redisRunQueue,
     redisWorkerRegistry: options.redisWorkerRegistry,
     runtimeService: options.runtimeService,
+    ...(options.describeQueuedRun ? { describeQueuedRun: options.describeQueuedRun } : {}),
     logger: options.logger
   });
   let drainStartedAt: string | undefined;

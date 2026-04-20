@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 
-import type { WorkspaceRecord } from "@oah/runtime-core";
+import type { WorkspaceRecord } from "@oah/engine-core";
 import type { WorkspaceLeaseRegistry, WorkspacePlacementRegistry } from "@oah/storage-redis";
 
 import {

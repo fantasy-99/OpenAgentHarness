@@ -118,7 +118,7 @@ describe("storage memory", () => {
       content: "still here",
       createdAt: "2026-04-10T00:00:05.250Z"
     };
-    const siblingRuntimeMessages = [
+    const siblingEngineMessages = [
       {
         id: "rtm_memory_sibling",
         sessionId: siblingSession.id,
@@ -138,7 +138,7 @@ describe("storage memory", () => {
     await persistence.runStepRepository.create(siblingStep);
     await persistence.messageRepository.create(message);
     await persistence.messageRepository.create(siblingMessage);
-    await persistence.runtimeMessageRepository.replaceBySessionId(session.id, [
+    await persistence.engineMessageRepository.replaceBySessionId(session.id, [
       {
         id: "rtm_memory_target",
         sessionId: session.id,
@@ -149,7 +149,7 @@ describe("storage memory", () => {
         createdAt: "2026-04-10T00:00:04.500Z"
       }
     ]);
-    await persistence.runtimeMessageRepository.replaceBySessionId(siblingSession.id, siblingRuntimeMessages);
+    await persistence.engineMessageRepository.replaceBySessionId(siblingSession.id, siblingEngineMessages);
     await persistence.sessionEventStore.append({
       sessionId: session.id,
       runId: run.id,
@@ -169,15 +169,15 @@ describe("storage memory", () => {
     await expect(persistence.runRepository.getById(run.id)).resolves.toBeNull();
     await expect(persistence.runStepRepository.listByRunId(run.id)).resolves.toEqual([]);
     await expect(persistence.messageRepository.listBySessionId(session.id)).resolves.toEqual([]);
-    await expect(persistence.runtimeMessageRepository.listBySessionId(session.id)).resolves.toEqual([]);
+    await expect(persistence.engineMessageRepository.listBySessionId(session.id)).resolves.toEqual([]);
     await expect(persistence.sessionEventStore.listSince(session.id)).resolves.toEqual([]);
 
     await expect(persistence.sessionRepository.getById(siblingSession.id)).resolves.toEqual(siblingSession);
     await expect(persistence.runRepository.getById(siblingRun.id)).resolves.toEqual(siblingRun);
     await expect(persistence.runStepRepository.listByRunId(siblingRun.id)).resolves.toEqual([siblingStep]);
     await expect(persistence.messageRepository.listBySessionId(siblingSession.id)).resolves.toEqual([siblingMessage]);
-    await expect(persistence.runtimeMessageRepository.listBySessionId(siblingSession.id)).resolves.toEqual(
-      siblingRuntimeMessages
+    await expect(persistence.engineMessageRepository.listBySessionId(siblingSession.id)).resolves.toEqual(
+      siblingEngineMessages
     );
     await expect(persistence.sessionEventStore.listSince(siblingSession.id)).resolves.toEqual([siblingEvent]);
   });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { RuntimeService } from "@oah/runtime-core";
+import { EngineService } from "@oah/engine-core";
 import { createMemoryRuntimePersistence } from "@oah/storage-memory";
 
 import { FakeModelGateway } from "./helpers/fake-model-gateway";
@@ -23,7 +23,7 @@ describe("runtime queue integration", () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
     const enqueues: Array<{ sessionId: string; runId: string; priority?: string }> = [];
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence,
@@ -48,7 +48,7 @@ describe("runtime queue integration", () => {
             toolServers: {},
             hooks: {},
             catalog: {
-              workspaceId: "blueprint",
+              workspaceId: "runtime",
               agents: [],
               models: [],
               actions: [],
@@ -65,7 +65,7 @@ describe("runtime queue integration", () => {
     const workspace = await runtimeService.createWorkspace({
       input: {
         name: "demo",
-        blueprint: "workspace",
+        runtime: "workspace",
         rootPath: "/tmp/demo",
         executionPolicy: "local"
       }
@@ -110,7 +110,7 @@ describe("runtime queue integration", () => {
     const acquisitions: string[] = [];
     const releases: Array<{ dirty?: boolean | undefined }> = [];
     const enqueues: Array<{ sessionId: string; runId: string }> = [];
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence,
@@ -149,7 +149,7 @@ describe("runtime queue integration", () => {
             toolServers: {},
             hooks: {},
             catalog: {
-              workspaceId: "blueprint",
+              workspaceId: "runtime",
               agents: [],
               models: [],
               actions: [],
@@ -166,7 +166,7 @@ describe("runtime queue integration", () => {
     const workspace = await runtimeService.createWorkspace({
       input: {
         name: "demo",
-        blueprint: "workspace",
+        runtime: "workspace",
         rootPath: "/tmp/source-demo",
         executionPolicy: "local"
       }

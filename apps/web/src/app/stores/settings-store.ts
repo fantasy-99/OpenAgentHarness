@@ -32,11 +32,11 @@ function resolve<T>(updater: Updater<T>, current: T): T {
 
 type SettingsState = {
   connection: ConnectionSettings;
-  workspaceBlueprintFilter: string;
+  workspaceRuntimeFilter: string;
   serviceScope: ServiceScope;
   modelDraft: ModelDraft;
   setConnection: (updater: Updater<ConnectionSettings>) => void;
-  setWorkspaceBlueprintFilter: (updater: Updater<string>) => void;
+  setWorkspaceRuntimeFilter: (updater: Updater<string>) => void;
   setServiceScope: (updater: Updater<ServiceScope>) => void;
   setModelDraft: (updater: Updater<ModelDraft>) => void;
 };
@@ -49,7 +49,7 @@ const DEFAULT_MODEL_DRAFT: ModelDraft = {
 
 export const useSettingsStore = create<SettingsState>((set) => ({
   connection: hydrate<ConnectionSettings>(storageKeys.connection, DEFAULT_CONNECTION),
-  workspaceBlueprintFilter: hydrate<string>(storageKeys.workspaceBlueprintFilter, ""),
+  workspaceRuntimeFilter: hydrate<string>(storageKeys.workspaceRuntimeFilter, ""),
   serviceScope: hydrate<ServiceScope>(storageKeys.serviceScope, SERVICE_SCOPE_ALL),
   modelDraft: hydrate<ModelDraft>(storageKeys.modelDraft, DEFAULT_MODEL_DRAFT),
   setConnection: (updater) =>
@@ -58,11 +58,11 @@ export const useSettingsStore = create<SettingsState>((set) => ({
       persist(storageKeys.connection, next);
       return { connection: next };
     }),
-  setWorkspaceBlueprintFilter: (updater) =>
+  setWorkspaceRuntimeFilter: (updater) =>
     set((state) => {
-      const next = resolve(updater, state.workspaceBlueprintFilter);
-      persist(storageKeys.workspaceBlueprintFilter, next);
-      return { workspaceBlueprintFilter: next };
+      const next = resolve(updater, state.workspaceRuntimeFilter);
+      persist(storageKeys.workspaceRuntimeFilter, next);
+      return { workspaceRuntimeFilter: next };
     }),
   setServiceScope: (updater) =>
     set((state) => {

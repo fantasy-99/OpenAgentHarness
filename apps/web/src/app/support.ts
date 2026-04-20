@@ -6,9 +6,9 @@ import type {
   Message,
   MessageContent,
   ReadinessReport,
-  RuntimeLogCategory,
-  RuntimeLogEventData,
-  RuntimeLogLevel,
+  EngineLogCategory,
+  EngineLogEventData,
+  EngineLogLevel,
   Run,
   RunStep,
   SessionEventContract,
@@ -23,7 +23,7 @@ interface ConnectionSettings {
 
 interface WorkspaceDraft {
   name: string;
-  blueprint?: string;
+  runtime?: string;
   rootPath: string;
   ownerId: string;
   serviceName: string;
@@ -33,7 +33,7 @@ interface SavedWorkspaceRecord {
   id: string;
   name: string;
   rootPath: string;
-  blueprint?: string;
+  runtime?: string;
   serviceName?: string;
   status: Workspace["status"];
   createdAt?: string;
@@ -100,7 +100,7 @@ interface PlatformModelSnapshotResponse {
 
 type InspectorTab = "overview" | "timeline" | "workspace";
 type MainViewMode = "conversation" | "inspector";
-type SurfaceMode = "runtime" | "storage" | "provider";
+type SurfaceMode = "engine" | "storage" | "provider";
 type StorageBrowserTab = "postgres" | "redis";
 type ServiceScope = string;
 type ConsoleFilter = "all" | "errors" | "runs" | "tools" | "hooks" | "model" | "system";
@@ -155,7 +155,7 @@ interface ModelCallTraceToolServer {
   exclude?: string[];
 }
 
-interface ModelCallTraceRuntimeTool {
+interface ModelCallTraceEngineTool {
   name: string;
   description?: string;
   retryPolicy?: string;
@@ -170,8 +170,8 @@ interface ModelCallTraceInput {
   maxTokens?: number;
   messageCount?: number;
   activeToolNames: string[];
-  runtimeToolNames: string[];
-  runtimeTools: ModelCallTraceRuntimeTool[];
+  engineToolNames: string[];
+  engineTools: ModelCallTraceEngineTool[];
   toolServers: ModelCallTraceToolServer[];
   messages: ModelCallTraceMessage[];
 }
@@ -220,8 +220,8 @@ interface AppRequestErrorSummary {
 interface RuntimeConsoleEntry {
   id: string;
   timestamp: string;
-  level: RuntimeLogLevel;
-  category: RuntimeLogCategory;
+  level: EngineLogLevel;
+  category: EngineLogCategory;
   message: string;
   details?: unknown;
   source: "server" | "web";
@@ -267,7 +267,7 @@ const SERVICE_SCOPE_DEFAULT = "__default__";
 const storageKeys = {
   connection: "oah.web.connection",
   workspaceDraft: "oah.web.workspaceDraft",
-  workspaceBlueprintFilter: "oah.web.workspaceBlueprintFilter",
+  workspaceRuntimeFilter: "oah.web.workspaceRuntimeFilter",
   serviceScope: "oah.web.serviceScope",
   sessionDraft: "oah.web.sessionDraft",
   modelDraft: "oah.web.modelDraft",
@@ -980,7 +980,7 @@ function readModelCallTraceToolServers(value: unknown): ModelCallTraceToolServer
   });
 }
 
-function readModelCallTraceRuntimeTools(value: unknown): ModelCallTraceRuntimeTool[] {
+function readModelCallTraceEngineTools(value: unknown): ModelCallTraceEngineTool[] {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -1069,8 +1069,8 @@ function toModelCallTrace(step: RunStep): ModelCallTrace | null {
       ...(typeof request.maxTokens === "number" ? { maxTokens: request.maxTokens } : {}),
       ...(typeof inputRuntime.messageCount === "number" ? { messageCount: inputRuntime.messageCount } : {}),
       activeToolNames: readStringArray(inputRuntime.activeToolNames),
-      runtimeToolNames: readStringArray(inputRuntime.runtimeToolNames),
-      runtimeTools: readModelCallTraceRuntimeTools(inputRuntime.runtimeTools),
+      engineToolNames: readStringArray(inputRuntime.engineToolNames),
+      engineTools: readModelCallTraceEngineTools(inputRuntime.engineTools),
       toolServers: readModelCallTraceToolServers(inputRuntime.toolServers),
       messages: readModelCallTraceMessages(request.messages)
     },
@@ -1381,23 +1381,23 @@ async function consumeSse(
   }
 }
 
-function isRuntimeLogLevel(value: unknown): value is RuntimeLogLevel {
+function isEngineLogLevel(value: unknown): value is EngineLogLevel {
   return value === "debug" || value === "info" || value === "warn" || value === "error";
 }
 
-function isRuntimeLogCategory(value: unknown): value is RuntimeLogCategory {
+function isEngineLogCategory(value: unknown): value is EngineLogCategory {
   return value === "run" || value === "model" || value === "tool" || value === "hook" || value === "agent" || value === "http" || value === "system";
 }
 
-function runtimeLogDataFromEvent(event: SessionEventContract): RuntimeLogEventData | null {
+function engineLogDataFromEvent(event: SessionEventContract): EngineLogEventData | null {
   if (!isRecord(event.data)) {
     return null;
   }
 
   const { level, category, message, source, timestamp } = event.data;
   if (
-    !isRuntimeLogLevel(level) ||
-    !isRuntimeLogCategory(category) ||
+    !isEngineLogLevel(level) ||
+    !isEngineLogCategory(category) ||
     typeof message !== "string" ||
     (source !== "server" && source !== "web") ||
     typeof timestamp !== "string"
@@ -1416,7 +1416,7 @@ function runtimeLogDataFromEvent(event: SessionEventContract): RuntimeLogEventDa
   };
 }
 
-function levelFromEventName(eventName: SessionEventContract["event"], data: Record<string, unknown>): RuntimeLogLevel {
+function levelFromEventName(eventName: SessionEventContract["event"], data: Record<string, unknown>): EngineLogLevel {
   switch (eventName) {
     case "tool.failed":
     case "run.failed":
@@ -1429,7 +1429,7 @@ function levelFromEventName(eventName: SessionEventContract["event"], data: Reco
   }
 }
 
-function categoryFromEventName(eventName: SessionEventContract["event"]): RuntimeLogCategory | null {
+function categoryFromEventName(eventName: SessionEventContract["event"]): EngineLogCategory | null {
   switch (eventName) {
     case "run.queued":
     case "run.started":
@@ -1500,21 +1500,21 @@ function buildRuntimeConsoleEntries(events: SessionEventContract[], activeError:
         return null;
       }
 
-      const runtimeLog = event.event === "runtime.log" ? runtimeLogDataFromEvent(event) : null;
-      if (runtimeLog) {
+      const engineLog = event.event === "engine.log" ? engineLogDataFromEvent(event) : null;
+      if (engineLog) {
         return {
           id: `console:${event.id}`,
-          timestamp: runtimeLog.timestamp,
-          level: runtimeLog.level,
-          category: runtimeLog.category,
-          message: runtimeLog.message,
-          ...(runtimeLog.details !== undefined ? { details: runtimeLog.details } : {}),
-          source: runtimeLog.source,
+          timestamp: engineLog.timestamp,
+          level: engineLog.level,
+          category: engineLog.category,
+          message: engineLog.message,
+          ...(engineLog.details !== undefined ? { details: engineLog.details } : {}),
+          source: engineLog.source,
           eventId: event.id,
           eventName: event.event,
           ...(event.runId ? { runId: event.runId } : {}),
           cursor: event.cursor,
-          ...(typeof runtimeLog.context?.stepId === "string" ? { stepId: runtimeLog.context.stepId } : {})
+          ...(typeof engineLog.context?.stepId === "string" ? { stepId: engineLog.context.stepId } : {})
         };
       }
 
@@ -1661,7 +1661,7 @@ export type {
   ModelCallTraceToolCall,
   ModelCallTraceToolResult,
   ModelCallTraceToolServer,
-  ModelCallTraceRuntimeTool,
+  ModelCallTraceEngineTool,
   ModelCallTraceInput,
   ModelCallTraceOutput,
   ModelCallTrace,

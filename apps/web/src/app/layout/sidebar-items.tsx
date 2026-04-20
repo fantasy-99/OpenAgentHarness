@@ -86,7 +86,7 @@ export function WorkspaceNavItem(props: {
             </div>
             {props.lastEditedAt ? <DetailLine label="edited" value={formatTimestamp(props.lastEditedAt)} /> : null}
             <DetailLine label="service" value={props.entry.serviceName ?? "default"} />
-            {props.entry.blueprint ? <DetailLine label="blueprint" value={props.entry.blueprint} /> : null}
+            {props.entry.runtime ? <DetailLine label="runtime" value={props.entry.runtime} /> : null}
             <DetailLine label="id" value={props.entry.id} mono />
             {folderName ? <DetailLine label="dir" value={folderName} /> : null}
           </div>

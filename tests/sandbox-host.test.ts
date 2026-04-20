@@ -7,9 +7,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   AppError,
-  RuntimeService,
+  EngineService,
   type WorkspaceRecord
-} from "@oah/runtime-core";
+} from "@oah/engine-core";
 import { createMemoryRuntimePersistence } from "@oah/storage-memory";
 
 import {
@@ -365,7 +365,7 @@ describe("materialization sandbox host", () => {
   it("can consume the http sandbox interface through the e2b-compatible host adapter", async () => {
     const gateway = new FakeModelGateway(20);
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -528,6 +528,132 @@ describe("materialization sandbox host", () => {
     }
   });
 
+  it("paginates sandbox directory listing through the http adapter", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const method = init?.method ?? "GET";
+
+      if (url === "http://gateway.internal/internal/v1/sandboxes" && method === "POST") {
+        return new Response(
+          JSON.stringify({
+            id: "ws_test",
+            workspaceId: "ws_test",
+            provider: "self_hosted",
+            executionModel: "sandbox_hosted",
+            workerPlacement: "inside_sandbox",
+            rootPath: "/workspace",
+            name: "Test",
+            kind: "project",
+            executionPolicy: "local",
+            ownerWorkerId: "worker_owner",
+            ownerBaseUrl: "http://worker-owner.internal:8787/internal/v1",
+            createdAt: "2026-04-16T00:00:00.000Z",
+            updatedAt: "2026-04-16T00:00:00.000Z"
+          }),
+          {
+            status: 201,
+            headers: {
+              "content-type": "application/json"
+            }
+          }
+        );
+      }
+
+      if (
+        url ===
+          "http://worker-owner.internal:8787/internal/v1/sandboxes/ws_test/files/entries?path=%2Fworkspace&pageSize=200&sortBy=name&sortOrder=asc" &&
+        method === "GET"
+      ) {
+        return new Response(
+          JSON.stringify({
+            workspaceId: "ws_test",
+            path: "/workspace",
+            items: [
+              {
+                path: "alpha.txt",
+                name: "alpha.txt",
+                type: "file",
+                readOnly: false
+              }
+            ],
+            nextCursor: "cursor-1"
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json"
+            }
+          }
+        );
+      }
+
+      if (
+        url ===
+          "http://worker-owner.internal:8787/internal/v1/sandboxes/ws_test/files/entries?path=%2Fworkspace&pageSize=200&cursor=cursor-1&sortBy=name&sortOrder=asc" &&
+        method === "GET"
+      ) {
+        return new Response(
+          JSON.stringify({
+            workspaceId: "ws_test",
+            path: "/workspace",
+            items: [
+              {
+                path: "beta.txt",
+                name: "beta.txt",
+                type: "file",
+                readOnly: false
+              }
+            ]
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json"
+            }
+          }
+        );
+      }
+
+      throw new Error(`Unexpected fetch ${method} ${url}`);
+    });
+
+    try {
+      const service = createHttpE2BCompatibleSandboxService({
+        baseUrl: "http://gateway.internal/internal/v1"
+      });
+      const workspace = buildWorkspace({
+        id: "ws_test",
+        rootPath: "/workspace"
+      });
+
+      const lease = await service.acquireFileAccess({
+        workspace,
+        access: "read"
+      });
+      const entries = await service.readdir({
+        sandboxId: lease.sandboxId,
+        path: "/workspace"
+      });
+
+      expect(entries).toEqual([
+        { name: "alpha.txt", kind: "file" },
+        { name: "beta.txt", kind: "file" }
+      ]);
+      expect(fetchSpy).toHaveBeenNthCalledWith(
+        2,
+        "http://worker-owner.internal:8787/internal/v1/sandboxes/ws_test/files/entries?path=%2Fworkspace&pageSize=200&sortBy=name&sortOrder=asc",
+        expect.any(Object)
+      );
+      expect(fetchSpy).toHaveBeenNthCalledWith(
+        3,
+        "http://worker-owner.internal:8787/internal/v1/sandboxes/ws_test/files/entries?path=%2Fworkspace&pageSize=200&cursor=cursor-1&sortBy=name&sortOrder=asc",
+        expect.any(Object)
+      );
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it("includes workspace metadata when creating a missing self-hosted sandbox", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
@@ -537,7 +663,7 @@ describe("materialization sandbox host", () => {
         expect(JSON.parse(String(init?.body))).toMatchObject({
           workspaceId: "ws_test",
           name: "Seed Workspace",
-          blueprint: "test-basic",
+          runtime: "test-basic",
           ownerId: "owner-a",
           serviceName: "svc-a",
           executionPolicy: "local"
@@ -596,7 +722,7 @@ describe("materialization sandbox host", () => {
       const workspace = buildWorkspace({
         id: "ws_test",
         name: "Seed Workspace",
-        blueprint: "test-basic",
+        runtime: "test-basic",
         ownerId: "owner-a",
         serviceName: "svc-a",
         rootPath: "/workspace"

@@ -1,7 +1,7 @@
 import { type Pool } from "pg";
 
-import type { Message, RunStep } from "@oah/runtime-core";
-import { isMessageRole, normalizePersistedMessageRecord, normalizePersistedMessages, normalizePersistedRunStep } from "@oah/runtime-core";
+import type { Message, RunStep } from "@oah/engine-core";
+import { isMessageRole, normalizePersistedMessageRecord, normalizePersistedMessages, normalizePersistedRunStep } from "@oah/engine-core";
 import { createMessage, isRecord } from "./row-mappers.js";
 
 interface SqlQueryable {

@@ -31,7 +31,7 @@ sandbox:
 paths:
   workspace_dir: /srv/openharness/workspaces       # Project workspace root
   runtime_state_dir: /srv/openharness/.openharness  # Runtime-private state root
-  blueprint_dir: /srv/openharness/blueprints        # Workspace blueprint directory
+  runtime_dir: /srv/openharness/runtimes        # Workspace runtime directory
   model_dir: /srv/openharness/models               # Platform model directory
   tool_dir: /srv/openharness/tools                 # Platform tool directory
   skill_dir: /srv/openharness/skills               # Platform skill directory
@@ -78,7 +78,7 @@ llm:
 | `force_path_style` | boolean | Whether to force path-style URLs |
 | `workspace_backing_store.enabled` | boolean | Enables managed workspace object-storage backing. Active workspace writes still flush only on idle / drain / delete |
 | `workspace_backing_store.key_prefix` | string | Object-storage key prefix used for workspace backing |
-| `mirrors.paths` | string[] | Readonly prefixes mirrored locally. Supports `blueprint / model / tool / skill` |
+| `mirrors.paths` | string[] | Readonly prefixes mirrored locally. Supports `runtime / model / tool / skill` |
 | `mirrors.sync_on_boot` | boolean | Whether mirrored prefixes should be pulled from object storage on startup |
 | `mirrors.sync_on_change` | boolean | Whether mirrored readonly prefixes are polled for changes. This does not live-sync active workspace writes |
 | `mirrors.poll_interval_ms` | number | Mirror poll interval |
@@ -86,7 +86,7 @@ llm:
 | `managed_paths` / `key_prefixes.*` / `sync_on_*` | legacy | Backward-compatible legacy fields; prefer `workspace_backing_store` and `mirrors` for new configs. Loading them emits a deprecation warning |
 
 > **tip**
-> `blueprint / model / tool / skill` in `mirrors.paths` are still mirrored through `ObjectStorageMirrorController` on boot and on change polling.
+> `runtime / model / tool / skill` in `mirrors.paths` are still mirrored through `ObjectStorageMirrorController` on boot and on change polling.
 
 > **tip**
 > `workspace_backing_store` only controls managed workspace `externalRef` / backing-store semantics. Active workspace writes do not flush on every change; they flush through the workspace materialization idle / drain lifecycle.
@@ -115,13 +115,19 @@ llm:
 > **tip**
 > The controller now treats sandbox fleet demand as a first-class signal: the same `ownerId` prefers the same real sandbox, while ownerless workspaces fall into a shared pool by default. `fleet.*` defines that capacity boundary and is the contract we can later wire into real sandbox autoscaling targets.
 
+> **tip**
+> Starting with the current version, `createSession` asynchronously prewarms the target workspace after the session is created. With a remote sandbox provider, that eagerly binds the workspace to a sandbox; with workspace materialization enabled, it also prepares the active workspace copy ahead of the first user message. Combined with the remote-provider default `fleet.min_count = 1`, this removes most first-message cold-start latency, although very large first-time materializations can still dominate.
+
+> **tip**
+> `sandbox` is a host-layer concept, not a project-layer concept. One sandbox may carry multiple active workspaces. It answers “where does the worker run?”, while a workspace answers “which project and capability set is being executed?”
+
 ### `paths`
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `workspace_dir` | string | Project workspace root directory |
 | `runtime_state_dir` | string | Runtime-private state root for SQLite shadow data, archive exports, and legacy materialization state. Defaults to `dirname(workspace_dir)/.openharness` |
-| `blueprint_dir` | string | Workspace blueprint directory |
+| `runtime_dir` | string | Workspace runtime directory |
 | `model_dir` | string | Platform model definition directory |
 | `tool_dir` | string | Platform MCP tool server definition directory |
 | `skill_dir` | string | Platform skill directory |
@@ -144,7 +150,7 @@ llm:
 | `embedded.scale_down_window` | number | Consecutive low-pressure samples required before scaling down. |
 | `embedded.cooldown_ms` | number | Cooldown between embedded worker scaling actions. |
 | `embedded.reserved_capacity_for_subagent` | number | Minimum spare embedded capacity reserved for subagent backlog. |
-| `standalone.min_replicas` | number | Minimum sandbox replicas the controller may keep for standalone workers. |
+| `standalone.min_replicas` | number | Minimum sandbox replicas the controller may keep for standalone workers. Set `0` to allow scale-to-zero when idle. |
 | `standalone.max_replicas` | number | Maximum sandbox replicas the controller may target for standalone workers. |
 | `standalone.ready_sessions_per_capacity_unit` | number | Queue-density target used by the controller when translating observed worker capacity into sandbox replica demand. |
 | `standalone.reserved_capacity_for_subagent` | number | Minimum observed execution capacity reserved for subagent backlog. |
@@ -157,9 +163,27 @@ llm:
 
 ## Directory Reference
 
+### Path and Layer Boundaries
+
+| Object | Role | Active execution location |
+| --- | --- | --- |
+| `workspace_dir` | workspace source / managed root | Not always |
+| `runtime_state_dir` | engine-private state root | No |
+| `runtime_dir` | initialization source for new workspaces | No |
+| `Active Workspace Copy` | active execution copy of a workspace | Yes |
+
+Read them like this:
+
+- `workspace_dir` answers “which workspaces exist”
+- `runtime_dir` answers “how a new workspace is initialized”
+- `sandbox` answers “where the current run executes”
+- `runtime_state_dir` answers “where engine-private state lives”
+
 ### `workspace_dir`
 
-Each direct subdirectory is treated as one `project` workspace. Only first-level subdirectories are scanned. This directory should hold live workspaces only and should not be relied on as a runtime-internal state root.
+Each direct subdirectory is treated as one `project` workspace. Only first-level subdirectories are scanned. This directory should hold workspace source roots only and should not be relied on as an engine-internal state root.
+
+In `embedded` mode, active execution often happens directly against the local workspace. In `self_hosted / e2b`, the active execution copy is usually materialized into the owner sandbox, so `workspace_dir` behaves more like a managed source root than the final execution location.
 
 ### `runtime_state_dir`
 
@@ -171,9 +195,11 @@ Stores runtime-private state, including:
 
 The default is `dirname(workspace_dir)/.openharness`, which keeps the live workspace root separate from internal runtime state. If you want this state to survive container restarts, mount it to durable writable storage explicitly.
 
-### `blueprint_dir`
+### `runtime_dir`
 
-Stores workspace blueprints. When creating a new workspace via `POST /workspaces`, a blueprint from this directory is used as the initialization source. Blueprints are never loaded as active workspaces at runtime.
+Stores workspace runtimes. When creating a new workspace via `POST /workspaces`, a runtime from this directory is used as the initialization source. Runtimes are never loaded as active workspaces at runtime.
+
+`runtime_dir` does not participate in run execution and never holds the active execution copy of a workspace. It only answers “how do we initialize a workspace?”, not “where is it currently running?”
 
 ### `model_dir`
 
@@ -197,7 +223,7 @@ Platform-level MCP tool server definitions. Directory structure should match wor
 Platform-level skill definitions. Merged with workspace `.openharness/skills` to form the visible skill set. Workspace-level skills take precedence over platform skills with the same name.
 
 > **warning**
-> Contents of `tool_dir` and `skill_dir` are primarily imported during blueprint initialization. At runtime, workspaces use only capabilities declared in their own `.openharness` directory.
+> Contents of `tool_dir` and `skill_dir` are primarily imported during runtime initialization. At runtime, workspaces use only capabilities declared in their own `.openharness` directory.
 
 ---
 

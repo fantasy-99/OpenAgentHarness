@@ -1,9 +1,9 @@
 # Open Agent Harness
 
 <div class="hero" markdown>
-### 无头 Agent 运行时内核
+### 无头 Agent Engine
 
-用 Markdown 定义 Agent 逻辑，按场景切换，多 Workspace 并行执行。你做产品界面，它做后端运行时。
+用 Markdown 定义 Agent Runtime，按场景切换，多 Workspace 并行执行。你做产品界面，它做后端 Engine。
 
 [快速开始](./getting-started.md){ .md-button .md-button--primary }
 [架构总览](./architecture-overview.md){ .md-button }
@@ -12,12 +12,12 @@
 
 ## 它是什么
 
-Open Agent Harness 是一个可部署的 Agent 后端运行时。它管理 Workspace 的生命周期、Agent 执行循环、工具调用和状态持久化。它不提供产品界面——你接自己的前端，它负责把 Agent 跑起来。
+Open Agent Harness 是一个可部署的 Agent Engine。它运行 Agent Runtime，并通过 Agent Spec 扩展运行行为。它管理 workspace 生命周期、agent 执行循环、工具调用和状态持久化，但不提供产品界面。
 
 ## 核心能力
 
 - **多 Workspace 并行** — PostgreSQL 持久化 + Redis 队列调度，支撑大量 Workspace 同时运行
-- **声明式 Agent 配置** — 用 YAML frontmatter 的 Markdown 文件定义 Agent，热加载生效
+- **声明式 Runtime 组织** — 用 Markdown 和 YAML 组织 agent/runtime 能力，热加载生效
 - **能力自由组合** — agent / skill / action / tool / hook / context 按 Workspace 独立配置
 - **统一 Workspace 结构** — 同一套目录结构承载对话、工具调用和执行能力
 - **REST + SSE API** — 全部能力通过 `/api/v1` 暴露，前端无关
@@ -58,6 +58,14 @@ pnpm dev:web                                        # 启动调试控制台
     分层设计、核心模块、请求链路
 
     [:octicons-arrow-right-24: 查看](./architecture-overview.md)
+
+-   :material-tag-outline:{ .lg .middle } **术语约定**
+
+    ---
+
+    Engine、Runtime、Spec 的统一边界
+
+    [:octicons-arrow-right-24: 查看](./terminology.md)
 
 -   :material-folder-cog-outline:{ .lg .middle } **Workspace 配置**
 

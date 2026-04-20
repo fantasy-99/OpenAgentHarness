@@ -12,7 +12,7 @@ import {
   prettyJson,
   toneBadgeClass,
   type ModelCallTrace,
-  type ModelCallTraceRuntimeTool,
+  type ModelCallTraceEngineTool,
   type SavedSessionRecord,
   type SavedWorkspaceRecord
 } from "./support";
@@ -29,7 +29,7 @@ function WorkspaceSidebarItem(props: {
 }) {
   const ExpandIcon = props.expanded ? ChevronDown : ChevronRight;
   const subtitleParts = [
-    props.entry.blueprint,
+    props.entry.runtime,
     `${props.sessionCount} sessions`,
     props.entry.lastOpenedAt ? formatTimestamp(props.entry.lastOpenedAt) : undefined
   ].filter(Boolean);
@@ -270,7 +270,7 @@ function compactPreviewText(value: Message["content"], limit = 120) {
   return `${compact.slice(0, limit)}...`;
 }
 
-function buildAiSdkToolsObject(tools: ModelCallTraceRuntimeTool[]) {
+function buildAiSdkToolsObject(tools: ModelCallTraceEngineTool[]) {
   return Object.fromEntries(
     tools.map((tool) => [
       tool.name,
@@ -294,7 +294,7 @@ function buildAiSdkLikeRequest(trace: ModelCallTrace | null) {
     ...(trace.input.temperature !== undefined ? { temperature: trace.input.temperature } : {}),
     ...(trace.input.maxTokens !== undefined ? { maxTokens: trace.input.maxTokens } : {}),
     messages: trace.input.messages,
-    tools: buildAiSdkToolsObject(trace.input.runtimeTools),
+    tools: buildAiSdkToolsObject(trace.input.engineTools),
     activeTools: trace.input.activeToolNames,
     toolServers: trace.input.toolServers
   };

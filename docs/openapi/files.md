@@ -2,13 +2,15 @@
 
 Sandbox 文件管理 API，支撑 web 文件管理以及 `embedded` / `self_hosted` / `e2b` 三类 sandbox provider。当前以 `sandboxes` 作为主语义，文件路径使用 sandbox 内绝对路径，例如 `/workspace/notes/todo.md`。
 
+这里故意不用 `workspace` 作为文件接口主语，因为文件与命令操作面对的是“活跃执行副本”，而不是抽象的 workspace 元数据。
+
 暂不包括：全 workspace 递归树、批量操作、全文搜索、分片上传、文件变更推送。
 
 ## 接口
 
 ### `POST /sandboxes`
 
-创建或解析一个 sandbox。可以直接传 `workspaceId` 绑定已有 workspace，也可以传 `name + blueprint` 新建。
+创建或解析一个 sandbox。可以直接传 `workspaceId` 绑定已有 workspace，也可以传 `name + runtime` 新建。
 
 ### `GET /sandboxes/{sandboxId}`
 
@@ -67,6 +69,7 @@ Sandbox 文件管理 API，支撑 web 文件管理以及 `embedded` / `self_host
 ## 设计说明
 
 - **统一 sandbox 语义：** 文件与命令执行都围绕 sandbox 暴露，便于在 `embedded`、`self_hosted` 与 `e2b` provider 之间做配置级切换
+- **workspace / sandbox 分层：** `workspace` 负责项目身份、catalog 和生命周期；`sandbox` 负责该 workspace 当前活跃副本的文件系统与进程上下文
 - **worker 位置明确：** `embedded` 表示 worker 在 `oah-api` 进程内；`self_hosted / e2b` 表示 standalone worker 在真实 sandbox 内
 - **不用全量树：** 大 workspace 全量树慢，懒加载更适合虚拟滚动和分页
 - **目录列表与文件内容分离：** 列表高频轻量，内容低频体积大

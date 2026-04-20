@@ -43,15 +43,15 @@ export type {
   WorkspacePlacementInput,
   WorkspacePlacementRegistry,
   WorkspacePlacementState
-} from "@oah/runtime-core";
+} from "@oah/engine-core";
 
-export type RedisWorkerLeaseInput = import("@oah/runtime-core").WorkerLeaseInput;
-export type RedisWorkerRegistryEntry = import("@oah/runtime-core").WorkerRegistryEntry;
-export type RedisWorkspaceLeaseInput = import("@oah/runtime-core").WorkspaceLeaseInput;
-export type RedisWorkspaceLeaseEntry = import("@oah/runtime-core").WorkspaceLeaseEntry;
-export type RedisWorkspacePlacementState = import("@oah/runtime-core").WorkspacePlacementState;
-export type RedisWorkspacePlacementInput = import("@oah/runtime-core").WorkspacePlacementInput;
-export type RedisWorkspacePlacementEntry = import("@oah/runtime-core").WorkspacePlacementEntry;
+export type RedisWorkerLeaseInput = import("@oah/engine-core").WorkerLeaseInput;
+export type RedisWorkerRegistryEntry = import("@oah/engine-core").WorkerRegistryEntry;
+export type RedisWorkspaceLeaseInput = import("@oah/engine-core").WorkspaceLeaseInput;
+export type RedisWorkspaceLeaseEntry = import("@oah/engine-core").WorkspaceLeaseEntry;
+export type RedisWorkspacePlacementState = import("@oah/engine-core").WorkspacePlacementState;
+export type RedisWorkspacePlacementInput = import("@oah/engine-core").WorkspacePlacementInput;
+export type RedisWorkspacePlacementEntry = import("@oah/engine-core").WorkspacePlacementEntry;
 
 export type {
   CreateRedisSessionEventBusOptions,

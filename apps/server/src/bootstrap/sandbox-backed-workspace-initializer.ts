@@ -4,12 +4,12 @@ import path from "node:path";
 
 import {
   discoverWorkspace,
-  initializeWorkspaceFromBlueprint,
+  initializeWorkspaceFromRuntime,
   type DiscoveredAgent,
   type PlatformModelRegistry
 } from "@oah/config";
-import type { CreateWorkspaceRequest } from "@oah/api-contracts";
-import { createId, type WorkspaceInitializationResult } from "@oah/runtime-core";
+import { sandboxSchema, type CreateWorkspaceRequest } from "@oah/api-contracts";
+import { createId, type WorkspaceInitializationResult } from "@oah/engine-core";
 
 import type { SandboxHost } from "./sandbox-host.js";
 
@@ -48,12 +48,14 @@ async function uploadWorkspaceSeed(input: {
   initialized: WorkspaceInitializationResult;
   stagingWorkspaceRoot: string;
   sandboxHost: SandboxHost;
+  remoteRootPath?: string | undefined;
 }): Promise<void> {
   const lease = await input.sandboxHost.workspaceFileAccessProvider.acquire({
     workspace: createSandboxSeedWorkspace({
       workspaceId: input.workspaceId,
       request: input.request,
-      initialized: input.initialized
+      initialized: input.initialized,
+      remoteRootPath: input.remoteRootPath
     }),
     access: "write"
   });
@@ -78,6 +80,7 @@ function createSandboxSeedWorkspace(input: {
   workspaceId: string;
   request: CreateWorkspaceRequest;
   initialized: WorkspaceInitializationResult;
+  remoteRootPath?: string | undefined;
 }) {
   const now = new Date().toISOString();
   return {
@@ -101,9 +104,9 @@ function createSandboxSeedWorkspace(input: {
     ...(input.request.externalRef ? { externalRef: input.request.externalRef } : {}),
     ...(input.request.ownerId ? { ownerId: input.request.ownerId } : {}),
     ...(input.request.serviceName ? { serviceName: input.request.serviceName } : {}),
-    ...(input.request.blueprint ? { blueprint: input.request.blueprint } : {}),
+    ...(input.request.runtime ? { runtime: input.request.runtime } : {}),
     name: input.request.name,
-    rootPath: SANDBOX_WORKSPACE_ROOT,
+    rootPath: input.remoteRootPath ?? SANDBOX_WORKSPACE_ROOT,
     executionPolicy: input.request.executionPolicy ?? "local",
     status: "active" as const,
     createdAt: now,
@@ -111,8 +114,37 @@ function createSandboxSeedWorkspace(input: {
   };
 }
 
+async function createSelfHostedSandbox(input: {
+  request: CreateWorkspaceRequest;
+  baseUrl: string;
+  headers?: Record<string, string> | undefined;
+}) {
+  const response = await fetch(`${input.baseUrl.replace(/\/$/, "")}/sandboxes`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(input.headers ?? {})
+    },
+    body: JSON.stringify({
+      name: input.request.name,
+      runtime: input.request.runtime,
+      executionPolicy: input.request.executionPolicy,
+      ...(input.request.externalRef ? { externalRef: input.request.externalRef } : {}),
+      ...(input.request.ownerId ? { ownerId: input.request.ownerId } : {}),
+      ...(input.request.userId ? { userId: input.request.userId } : {}),
+      ...(input.request.serviceName ? { serviceName: input.request.serviceName } : {})
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to create self-hosted sandbox: ${response.status} ${response.statusText}`);
+  }
+
+  return sandboxSchema.parse(await response.json());
+}
+
 export function createSandboxBackedWorkspaceInitializer(options: {
-  blueprintDir: string;
+  runtimeDir: string;
   platformToolDir: string;
   platformSkillDir: string;
   toolDir: string;
@@ -133,11 +165,12 @@ export function createSandboxBackedWorkspaceInitializer(options: {
       ).workspaceId?.trim() || createId("ws");
       const stagingRoot = await mkdtemp(path.join(os.tmpdir(), "oah-sandbox-workspace-"));
       const stagingWorkspaceRoot = path.join(stagingRoot, "workspace");
+      let remoteRootPath = SANDBOX_WORKSPACE_ROOT;
 
       try {
-        await initializeWorkspaceFromBlueprint({
-          blueprintDir: options.blueprintDir,
-          blueprintName: input.blueprint,
+        await initializeWorkspaceFromRuntime({
+          runtimeDir: options.runtimeDir,
+          runtimeName: input.runtime,
           rootPath: stagingWorkspaceRoot,
           platformToolDir: options.platformToolDir,
           platformSkillDir: options.platformSkillDir,
@@ -153,18 +186,28 @@ export function createSandboxBackedWorkspaceInitializer(options: {
           platformToolDir: options.toolDir
         });
 
+        if (options.selfHosted) {
+          const sandbox = await createSelfHostedSandbox({
+            request: input,
+            baseUrl: options.selfHosted.baseUrl,
+            headers: options.selfHosted.headers
+          });
+          remoteRootPath = sandbox.rootPath;
+        }
+
         await uploadWorkspaceSeed({
           workspaceId,
           request: input,
           initialized: discovered,
           stagingWorkspaceRoot,
-          sandboxHost: options.sandboxHost
+          sandboxHost: options.sandboxHost,
+          remoteRootPath
         });
 
         return {
           ...discovered,
           id: workspaceId,
-          rootPath: SANDBOX_WORKSPACE_ROOT
+          rootPath: remoteRootPath
         };
       } finally {
         await rm(stagingRoot, { recursive: true, force: true });

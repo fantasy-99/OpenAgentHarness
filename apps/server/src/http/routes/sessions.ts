@@ -14,7 +14,7 @@ import {
   runStepPageSchema,
   updateSessionRequestSchema
 } from "@oah/api-contracts";
-import type { SessionEvent } from "@oah/runtime-core";
+import type { SessionEvent } from "@oah/engine-core";
 
 import { assertWorkspaceAccess, createParamsSchema, toCallerContext, writeSseEvent } from "../context.js";
 import type { AppDependencies } from "../types.js";

@@ -21,7 +21,7 @@ import {
   workspaceFileUploadQuerySchema,
   workspacePageSchema
 } from "@oah/api-contracts";
-import { AppError, createId } from "@oah/runtime-core";
+import { AppError, createId } from "@oah/engine-core";
 
 import { assertWorkspaceAccess, createParamsSchema, sendError, toCallerContext } from "../context.js";
 import {
@@ -335,7 +335,15 @@ async function handleDeleteWorkspace(
   workspaceId: string,
   reply: FastifyReply
 ) {
-  await dependencies.runtimeService.deleteWorkspace(workspaceId);
+  try {
+    await dependencies.runtimeService.deleteWorkspace(workspaceId);
+  } catch (error) {
+    if (!(error instanceof Error) || (error as Error & { code?: string }).code !== "workspace_not_found") {
+      throw error;
+    }
+  }
+
+  await dependencies.clearWorkspaceCoordination?.(workspaceId);
   return reply.status(204).send();
 }
 

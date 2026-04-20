@@ -3,7 +3,7 @@ import type {
   HookRunAuditRecord,
   HistoryEventRecord,
   Message,
-  RuntimeMessage,
+  EngineMessage,
   Run,
   RunStep,
   Session,
@@ -11,7 +11,7 @@ import type {
   ToolCallAuditRecord,
   WorkspaceArchiveRecord,
   WorkspaceRecord
-} from "@oah/runtime-core";
+} from "@oah/engine-core";
 import { type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { boolean, integer, jsonb, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
 
@@ -94,7 +94,7 @@ export const messages = pgTable("messages", {
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull()
 });
 
-export const runtimeMessages = pgTable("runtime_messages", {
+export const engineMessages = pgTable("runtime_messages", {
   id: text("id").primaryKey(),
   sessionId: text("session_id")
     .notNull()
@@ -102,8 +102,8 @@ export const runtimeMessages = pgTable("runtime_messages", {
   runId: text("run_id").references(() => runs.id, { onDelete: "cascade" }),
   role: text("role").notNull(),
   kind: text("kind").notNull(),
-  content: jsonb("content").$type<RuntimeMessage["content"]>().notNull(),
-  metadata: jsonb("metadata").$type<RuntimeMessage["metadata"]>(),
+  content: jsonb("content").$type<EngineMessage["content"]>().notNull(),
+  metadata: jsonb("metadata").$type<EngineMessage["metadata"]>(),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull()
 });
 
@@ -205,7 +205,7 @@ export const archives = pgTable("archives", {
   sessions: jsonb("sessions").$type<WorkspaceArchiveRecord["sessions"]>().notNull(),
   runs: jsonb("runs").$type<WorkspaceArchiveRecord["runs"]>().notNull(),
   messages: jsonb("messages").$type<WorkspaceArchiveRecord["messages"]>().notNull(),
-  runtimeMessages: jsonb("runtime_messages").$type<WorkspaceArchiveRecord["runtimeMessages"]>().notNull(),
+  engineMessages: jsonb("runtime_messages").$type<WorkspaceArchiveRecord["engineMessages"]>().notNull(),
   runSteps: jsonb("run_steps").$type<WorkspaceArchiveRecord["runSteps"]>().notNull(),
   toolCalls: jsonb("tool_calls").$type<WorkspaceArchiveRecord["toolCalls"]>().notNull(),
   hookRuns: jsonb("hook_runs").$type<WorkspaceArchiveRecord["hookRuns"]>().notNull(),
@@ -217,7 +217,7 @@ export const oahPostgresSchema = {
   sessions,
   runs,
   messages,
-  runtimeMessages,
+  engineMessages,
   runSteps,
   sessionEvents,
   toolCalls,

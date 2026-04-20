@@ -19,7 +19,7 @@ storage: {}
 #     key_prefix: workspace
 #   mirrors:
 #     paths:
-#       - blueprint
+#       - runtime
 #       - model
 #       - tool
 #       - skill
@@ -27,7 +27,7 @@ storage: {}
 #     sync_on_change: true
 #     poll_interval_ms: 5000
 #     key_prefixes:
-#       blueprint: blueprint
+#       runtime: runtime
 #       model: model
 #       tool: tool
 #       skill: skill
@@ -57,7 +57,7 @@ paths:
   workspace_dir: ./tmp/workspaces
   # runtime_state_dir defaults to a sibling ./.openharness directory when omitted.
   # runtime_state_dir: ./tmp/.openharness
-  blueprint_dir: ./tmp/blueprints
+  runtime_dir: ./tmp/runtimes
   model_dir: ./tests/fixtures/models
   tool_dir: ./tmp/tools
   skill_dir: ./tmp/skills

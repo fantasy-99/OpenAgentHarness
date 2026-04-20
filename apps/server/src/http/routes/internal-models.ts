@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 
 import { modelGenerateRequestSchema, modelGenerateResponseSchema, platformModelSnapshotSchema } from "@oah/api-contracts";
-import { AppError } from "@oah/runtime-core";
+import { AppError } from "@oah/engine-core";
 
 import { writeSseEvent } from "../context.js";
 import type { AppDependencies } from "../types.js";

@@ -12,7 +12,7 @@
     }
   },
   "dependencies": {
-    "@oah/runtime-core": "workspace:*",
+    "@oah/engine-core": "workspace:*",
     "drizzle-orm": "0.45.2",
     "pg": "8.16.3"
   }

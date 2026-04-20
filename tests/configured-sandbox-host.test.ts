@@ -13,7 +13,7 @@ function buildConfig(overrides?: Partial<ServerConfig>): ServerConfig {
     storage: {},
     paths: {
       workspace_dir: "/tmp/workspaces",
-      blueprint_dir: "/tmp/blueprints",
+      runtime_dir: "/tmp/runtimes",
       model_dir: "/tmp/models",
       tool_dir: "/tmp/tools",
       skill_dir: "/tmp/skills"

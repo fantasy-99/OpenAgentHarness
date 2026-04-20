@@ -3,7 +3,7 @@ import type {
   HistoryEventRepository,
   HookRunAuditRepository,
   MessageRepository,
-  RuntimeMessageRepository,
+  EngineMessageRepository,
   RunRepository,
   RunStepRepository,
   SessionEventStore,
@@ -11,7 +11,7 @@ import type {
   ToolCallAuditRepository,
   WorkspaceRecord,
   WorkspaceRepository
-} from "@oah/runtime-core";
+} from "@oah/engine-core";
 import { SQLitePersistenceCoordinator, SQLiteWorkspaceRepository } from "./coordinator.js";
 import {
   SQLiteArtifactRepository,
@@ -20,7 +20,7 @@ import {
   SQLiteMessageRepository,
   SQLiteRunRepository,
   SQLiteRunStepRepository,
-  SQLiteRuntimeMessageRepository,
+  SQLiteEngineMessageRepository,
   SQLiteSessionEventStore,
   SQLiteSessionRepository,
   SQLiteToolCallAuditRepository
@@ -32,7 +32,7 @@ export interface SQLiteRuntimePersistence {
   workspaceRepository: WorkspaceRepository;
   sessionRepository: SessionRepository;
   messageRepository: MessageRepository;
-  runtimeMessageRepository: RuntimeMessageRepository;
+  engineMessageRepository: EngineMessageRepository;
   runRepository: RunRepository;
   runStepRepository: RunStepRepository;
   sessionEventStore: SessionEventStore;
@@ -74,7 +74,7 @@ export async function createSQLiteRuntimePersistence(
   });
   const sessionRepository = new SQLiteSessionRepository(coordinator);
   const messageRepository = new SQLiteMessageRepository(coordinator);
-  const runtimeMessageRepository = new SQLiteRuntimeMessageRepository(coordinator);
+  const engineMessageRepository = new SQLiteEngineMessageRepository(coordinator);
   const runRepository = new SQLiteRunRepository(coordinator);
   const runStepRepository = new SQLiteRunStepRepository(coordinator);
   const sessionEventStore = new SQLiteSessionEventStore(coordinator);
@@ -91,7 +91,7 @@ export async function createSQLiteRuntimePersistence(
     workspaceRepository,
     sessionRepository,
     messageRepository,
-    runtimeMessageRepository,
+    engineMessageRepository,
     runRepository,
     runStepRepository,
     sessionEventStore,

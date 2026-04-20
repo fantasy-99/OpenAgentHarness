@@ -1,5 +1,5 @@
 import type { ServerConfig } from "@oah/config";
-import type { WorkerRegistry, WorkspacePlacementRegistry } from "@oah/runtime-core";
+import type { WorkerRegistry, WorkspacePlacementRegistry } from "@oah/engine-core";
 
 import {
   createE2BCompatibleSandboxHost,

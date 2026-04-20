@@ -1,8 +1,8 @@
 import { type FastifyReply, type FastifyRequest } from "fastify";
 
 import { errorResponseSchema } from "@oah/api-contracts";
-import type { CallerContext } from "@oah/runtime-core";
-import { AppError } from "@oah/runtime-core";
+import type { CallerContext } from "@oah/engine-core";
+import { AppError } from "@oah/engine-core";
 
 export function sendError(
   reply: FastifyReply,

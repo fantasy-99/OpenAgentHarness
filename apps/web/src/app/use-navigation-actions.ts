@@ -8,7 +8,7 @@ import type {
   SessionPage,
   Workspace,
   WorkspaceCatalog,
-  WorkspaceBlueprintList
+  WorkspaceRuntimeList
 } from "@oah/api-contracts";
 
 import {
@@ -52,7 +52,7 @@ export function useNavigationActions(params: {
     setExpandedSessionIds: Dispatch<SetStateAction<string[]>>;
     workspace: Workspace | null;
     setWorkspace: Dispatch<SetStateAction<Workspace | null>>;
-    setWorkspaceBlueprints: Dispatch<SetStateAction<string[]>>;
+    setWorkspaceRuntimes: Dispatch<SetStateAction<string[]>>;
     setCatalog: Dispatch<SetStateAction<WorkspaceCatalog | null>>;
     session: Session | null;
     setSession: Dispatch<SetStateAction<Session | null>>;
@@ -72,10 +72,31 @@ export function useNavigationActions(params: {
     runPollingTimerRef: MutableRefObject<number | undefined>;
   };
 }) {
+  async function requestWorkspaceRuntimeEndpoint<T>(path: string, legacyPath: string, init?: RequestInit) {
+    try {
+      return await params.request<T>(path, init);
+    } catch (error) {
+      if (!isNotFoundError(error)) {
+        throw error;
+      }
+
+      return params.request<T>(legacyPath, init);
+    }
+  }
+
+  async function fetchWorkspaceRuntimeEndpoint(path: string, legacyPath: string, init: RequestInit) {
+    const response = await fetch(buildUrl(params.connection.baseUrl, path), init);
+    if (response.status !== 404) {
+      return response;
+    }
+
+    return fetch(buildUrl(params.connection.baseUrl, legacyPath), init);
+  }
+
   function rememberWorkspace(
     workspaceRecord: Workspace,
     options?: {
-      blueprint?: string;
+      runtime?: string;
     }
   ) {
     const now = new Date().toISOString();
@@ -90,9 +111,9 @@ export function useNavigationActions(params: {
         lastOpenedAt: now,
         ...(workspaceRecord.serviceName ? { serviceName: workspaceRecord.serviceName } : {})
       };
-      const blueprintValue = options?.blueprint ?? existing?.blueprint;
-      if (blueprintValue) {
-        nextRecord.blueprint = blueprintValue;
+      const runtimeValue = options?.runtime ?? existing?.runtime;
+      if (runtimeValue) {
+        nextRecord.runtime = runtimeValue;
       }
 
       if (existing) {
@@ -271,6 +292,7 @@ export function useNavigationActions(params: {
     } catch (error) {
       if (isNotFoundError(error)) {
         forgetWorkspace(workspaceToRemoveId);
+        void refreshWorkspaceIndex(true);
         params.setActivity(`Workspace ${workspaceToRemoveId} 已从列表清理`);
         params.setErrorMessage("");
         return;
@@ -415,26 +437,31 @@ export function useNavigationActions(params: {
     }
   }
 
-  async function refreshWorkspaceBlueprints(quiet = false) {
+  async function refreshWorkspaceRuntimes(quiet = false) {
     try {
-      const response = await params.request<WorkspaceBlueprintList>("/api/v1/blueprints");
+      const response = await requestWorkspaceRuntimeEndpoint<WorkspaceRuntimeList>(
+        "/api/v1/runtimes",
+        "/api/v1/blueprints"
+      );
       startTransition(() => {
         params.navigation.setWorkspaceManagementEnabled(true);
-        params.navigation.setWorkspaceBlueprints(response.items.map((item) => item.name));
+        params.navigation.setWorkspaceRuntimes(response.items.map((item) => item.name));
       });
       if (!quiet) {
-        params.setActivity(`已加载 ${response.items.length} 个蓝图`);
+        params.setActivity(`已加载 ${response.items.length} 个运行时`);
         params.setErrorMessage("");
       }
     } catch (error) {
       if (
         error instanceof Error &&
-        (error.message.includes("workspace_blueprints_unavailable") ||
+        (error.message.includes("workspace_runtimes_unavailable") ||
+          error.message.includes("workspace_blueprints_unavailable") ||
+          error.message.toLowerCase().includes("workspace runtimes are not available") ||
           error.message.toLowerCase().includes("workspace blueprints are not available"))
       ) {
         startTransition(() => {
           params.navigation.setWorkspaceManagementEnabled(false);
-          params.navigation.setWorkspaceBlueprints([]);
+          params.navigation.setWorkspaceRuntimes([]);
         });
         if (!quiet) {
           params.setErrorMessage("");
@@ -448,19 +475,23 @@ export function useNavigationActions(params: {
     }
   }
 
-  async function uploadWorkspaceBlueprint(file: File, name: string, overwrite: boolean): Promise<boolean> {
+  async function uploadWorkspaceRuntime(file: File, name: string, overwrite: boolean): Promise<boolean> {
     try {
       const query = new URLSearchParams({ name, overwrite: String(overwrite) });
-      const response = await fetch(buildUrl(params.connection.baseUrl, `/api/v1/blueprints/upload?${query.toString()}`), {
-        method: "POST",
-        headers: buildAuthHeaders(params.connection, { "content-type": "application/octet-stream" }),
-        body: file
-      });
+      const response = await fetchWorkspaceRuntimeEndpoint(
+        `/api/v1/runtimes/upload?${query.toString()}`,
+        `/api/v1/blueprints/upload?${query.toString()}`,
+        {
+          method: "POST",
+          headers: buildAuthHeaders(params.connection, { "content-type": "application/octet-stream" }),
+          body: file
+        }
+      );
       if (!response.ok) {
         throw await createHttpRequestError(response);
       }
-      await refreshWorkspaceBlueprints(true);
-      params.setActivity(`蓝图 "${name}" 上传成功`);
+      await refreshWorkspaceRuntimes(true);
+      params.setActivity(`运行时 "${name}" 上传成功`);
       params.setErrorMessage("");
       return true;
     } catch (error) {
@@ -469,17 +500,22 @@ export function useNavigationActions(params: {
     }
   }
 
-  async function deleteWorkspaceBlueprint(blueprintName: string): Promise<boolean> {
+  async function deleteWorkspaceRuntime(runtimeName: string): Promise<boolean> {
     try {
-      const response = await fetch(buildUrl(params.connection.baseUrl, `/api/v1/blueprints/${encodeURIComponent(blueprintName)}`), {
-        method: "DELETE",
-        headers: buildAuthHeaders(params.connection)
-      });
+      const encodedRuntimeName = encodeURIComponent(runtimeName);
+      const response = await fetchWorkspaceRuntimeEndpoint(
+        `/api/v1/runtimes/${encodedRuntimeName}`,
+        `/api/v1/blueprints/${encodedRuntimeName}`,
+        {
+          method: "DELETE",
+          headers: buildAuthHeaders(params.connection)
+        }
+      );
       if (!response.ok) {
         throw await createHttpRequestError(response);
       }
-      await refreshWorkspaceBlueprints(true);
-      params.setActivity(`蓝图 "${blueprintName}" 已删除`);
+      await refreshWorkspaceRuntimes(true);
+      params.setActivity(`运行时 "${runtimeName}" 已删除`);
       params.setErrorMessage("");
       return true;
     } catch (error) {
@@ -575,10 +611,10 @@ export function useNavigationActions(params: {
               createdAt: item.createdAt,
               lastOpenedAt: existing?.lastOpenedAt ?? item.updatedAt,
               ...(item.serviceName ? { serviceName: item.serviceName } : {}),
-              ...(item.blueprint
-                ? { blueprint: item.blueprint }
-                : existing?.blueprint
-                  ? { blueprint: existing.blueprint }
+              ...(item.runtime
+                ? { runtime: item.runtime }
+                : existing?.runtime
+                  ? { runtime: existing.runtime }
                   : {})
             } satisfies SavedWorkspaceRecord;
           });
@@ -615,17 +651,25 @@ export function useNavigationActions(params: {
         params.navigation.setExpandedWorkspaceIds((current) => current.filter((entry) => visibleWorkspaceIds.has(entry)));
       });
 
-      if (response.items.length === 1) {
+      const selectedWorkspaceId = params.navigation.workspaceId.trim();
+      const selectedWorkspaceExists =
+        selectedWorkspaceId.length > 0 && response.items.some((item) => item.id === selectedWorkspaceId);
+
+      if (!params.navigation.sessionId.trim() && selectedWorkspaceId) {
+        if (selectedWorkspaceExists) {
+          if (params.navigation.workspace?.id !== selectedWorkspaceId) {
+            expandWorkspaceInSidebar(selectedWorkspaceId);
+            void refreshWorkspace(selectedWorkspaceId, true);
+          }
+        } else {
+          clearWorkspaceSelection(selectedWorkspaceId);
+        }
+      } else if (response.items.length === 1) {
         const onlyWorkspace = response.items[0]!;
         if (!params.navigation.sessionId.trim() && params.navigation.workspaceId !== onlyWorkspace.id) {
           expandWorkspaceInSidebar(onlyWorkspace.id);
           void refreshWorkspace(onlyWorkspace.id, true);
         }
-      } else if (
-        params.navigation.workspaceId.trim() &&
-        !response.items.some((item) => item.id === params.navigation.workspaceId)
-      ) {
-        clearWorkspaceSelection(params.navigation.workspaceId);
       }
 
       if (!quiet) {
@@ -671,7 +715,13 @@ export function useNavigationActions(params: {
       params.navigation.setWorkspace(null);
       params.navigation.setCatalog(null);
       if (isNotFoundError(error)) {
-        clearWorkspaceSelection(targetId);
+        forgetWorkspace(targetId);
+        void refreshWorkspaceIndex(true);
+        if (!quiet) {
+          params.setActivity(`Workspace ${targetId} 不存在，已从列表清理`);
+          params.setErrorMessage("");
+        }
+        return;
       }
       if (!quiet) {
         params.setErrorMessage(toErrorMessage(error));
@@ -684,7 +734,7 @@ export function useNavigationActions(params: {
       const rootPath = params.navigation.workspaceDraft.rootPath?.trim() ?? "";
       const ownerId = params.navigation.workspaceDraft.ownerId?.trim() ?? "";
       const serviceName = params.navigation.workspaceDraft.serviceName?.trim() ?? "";
-      const blueprint = params.navigation.workspaceDraft.blueprint?.trim() ?? "";
+      const runtime = params.navigation.workspaceDraft.runtime?.trim() ?? "";
       const created = await params.request<Workspace>("/api/v1/workspaces", {
         method: "POST",
         headers: {
@@ -692,7 +742,7 @@ export function useNavigationActions(params: {
         },
         body: JSON.stringify({
           name: params.navigation.workspaceDraft.name.trim(),
-          blueprint,
+          runtime,
           ...(rootPath ? { rootPath } : {}),
           ...(ownerId ? { ownerId } : {}),
           ...(serviceName ? { serviceName } : {}),
@@ -713,12 +763,12 @@ export function useNavigationActions(params: {
         params.navigation.setRecentWorkspaces((current) => addRecentId(current, created.id));
       });
       rememberWorkspace(created, {
-        blueprint
+        runtime
       });
       params.runtime.lastCursorRef.current = undefined;
       params.navigation.setWorkspaceDraft((current) => ({
         ...current,
-        blueprint: "",
+        runtime: "",
         ownerId: "",
         serviceName: ""
       }));
@@ -865,9 +915,9 @@ export function useNavigationActions(params: {
     clearSessionSelection,
     clearWorkspaceSelection,
     openWorkspace,
-    refreshWorkspaceBlueprints,
-    uploadWorkspaceBlueprint,
-    deleteWorkspaceBlueprint,
+    refreshWorkspaceRuntimes,
+    uploadWorkspaceRuntime,
+    deleteWorkspaceRuntime,
     refreshWorkspaceIndex,
     refreshWorkspace,
     createWorkspace,

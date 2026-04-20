@@ -2,7 +2,7 @@ import type { AddressInfo } from "node:net";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { SessionEvent } from "@oah/runtime-core";
+import type { SessionEvent } from "@oah/engine-core";
 
 import { createApp } from "../apps/server/src/app.ts";
 import type { AppDependencies } from "../apps/server/src/http/types.ts";

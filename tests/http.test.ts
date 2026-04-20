@@ -6,8 +6,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { discoverWorkspace } from "@oah/config";
-import type { CallerContext, WorkspaceRecord } from "@oah/runtime-core";
-import { RuntimeService } from "@oah/runtime-core";
+import type { CallerContext, WorkspaceRecord } from "@oah/engine-core";
+import { EngineService } from "@oah/engine-core";
 import { createMemoryRuntimePersistence } from "@oah/storage-memory";
 
 import { createApp } from "../apps/server/src/app.ts";
@@ -158,7 +158,7 @@ async function readSseEvents(
 async function createStartedApp(options?: { sandboxHostProviderKind?: "embedded" | "self_hosted" | "e2b" }) {
   const gateway = new FakeModelGateway(20);
   const persistence = createMemoryRuntimePersistence();
-  const runtimeService = new RuntimeService({
+  const runtimeService = new EngineService({
     defaultModel: "openai-default",
     modelGateway: gateway,
     ...persistence,
@@ -180,7 +180,7 @@ async function createStartedApp(options?: { sandboxHostProviderKind?: "embedded"
           toolServers: {},
           hooks: {},
           catalog: {
-            workspaceId: "blueprint",
+            workspaceId: "runtime",
             agents: [],
             models: [],
             actions: [],
@@ -194,11 +194,11 @@ async function createStartedApp(options?: { sandboxHostProviderKind?: "embedded"
     }
   });
 
-  return createStartedAppWithRuntimeService(runtimeService, gateway, options);
+  return createStartedAppWithEngineService(runtimeService, gateway, options);
 }
 
-async function createStartedAppWithRuntimeService(
-  runtimeService: RuntimeService,
+async function createStartedAppWithEngineService(
+  runtimeService: EngineService,
   gateway: FakeModelGateway,
   options?: {
     listPlatformModels?: () => Promise<
@@ -247,6 +247,7 @@ async function createStartedAppWithRuntimeService(
       workspaceId: string;
       state?: "unassigned" | "draining" | "evicted" | undefined;
     }) => Promise<void>;
+    clearWorkspaceCoordination?: (workspaceId: string) => Promise<void>;
     sandboxHostProviderKind?: "embedded" | "self_hosted" | "e2b";
     sandboxOwnerFallbackBaseUrl?: string;
     localOwnerBaseUrl?: string;
@@ -257,7 +258,7 @@ async function createStartedAppWithRuntimeService(
     modelGateway: gateway,
     defaultModel: "openai-default",
     logger: false,
-    listWorkspaceBlueprints: async () => [{ name: "workspace" }],
+    listWorkspaceRuntimes: async () => [{ name: "workspace" }],
     ...(options?.listPlatformModels ? { listPlatformModels: options.listPlatformModels } : {}),
     ...(options?.getPlatformModelSnapshot ? { getPlatformModelSnapshot: options.getPlatformModelSnapshot } : {}),
     ...(options?.refreshPlatformModels ? { refreshPlatformModels: options.refreshPlatformModels } : {}),
@@ -275,6 +276,7 @@ async function createStartedAppWithRuntimeService(
       ? { assignWorkspacePlacementUser: options.assignWorkspacePlacementUser }
       : {}),
     ...(options?.releaseWorkspacePlacement ? { releaseWorkspacePlacement: options.releaseWorkspacePlacement } : {}),
+    ...(options?.clearWorkspaceCoordination ? { clearWorkspaceCoordination: options.clearWorkspaceCoordination } : {}),
     ...(options?.sandboxHostProviderKind ? { sandboxHostProviderKind: options.sandboxHostProviderKind } : {}),
     ...(options?.sandboxOwnerFallbackBaseUrl ? { sandboxOwnerFallbackBaseUrl: options.sandboxOwnerFallbackBaseUrl } : {}),
     ...(options?.localOwnerBaseUrl ? { localOwnerBaseUrl: options.localOwnerBaseUrl } : {}),
@@ -299,13 +301,13 @@ async function createStartedAppWithWorkspaceAndGateway(
 ) {
   const persistence = createMemoryRuntimePersistence();
   await persistence.workspaceRepository.upsert(workspace);
-  const runtimeService = new RuntimeService({
+  const runtimeService = new EngineService({
     defaultModel: "openai-default",
     modelGateway: gateway,
     ...persistence
   });
 
-  return createStartedAppWithRuntimeService(runtimeService, gateway);
+  return createStartedAppWithEngineService(runtimeService, gateway);
 }
 
 const tempWorkspaceRoots: string[] = [];
@@ -493,19 +495,30 @@ describe("http api", () => {
     });
   });
 
-  it("lists workspace blueprints from blueprint_dir", async () => {
+  it("lists workspace runtimes from runtime_dir", async () => {
     activeApp = await createStartedApp();
 
-    const blueprintsResponse = await fetch(`${activeApp.baseUrl}/api/v1/blueprints`);
+    const runtimesResponse = await fetch(`${activeApp.baseUrl}/api/v1/runtimes`);
 
-    expect(blueprintsResponse.status).toBe(200);
-    await expect(blueprintsResponse.json()).resolves.toEqual({
+    expect(runtimesResponse.status).toBe(200);
+    await expect(runtimesResponse.json()).resolves.toEqual({
+      items: [{ name: "workspace" }]
+    });
+  });
+
+  it("keeps the legacy /blueprints route as an alias for runtimes", async () => {
+    activeApp = await createStartedApp();
+
+    const runtimesResponse = await fetch(`${activeApp.baseUrl}/api/v1/blueprints`);
+
+    expect(runtimesResponse.status).toBe(200);
+    await expect(runtimesResponse.json()).resolves.toEqual({
       items: [{ name: "workspace" }]
     });
   });
 
   it("lists platform models loaded from model_dir", async () => {
-    activeApp = await createStartedAppWithRuntimeService(new RuntimeService({
+    activeApp = await createStartedAppWithEngineService(new EngineService({
       defaultModel: "openai-default",
       modelGateway: new FakeModelGateway(20),
       ...createMemoryRuntimePersistence()
@@ -575,8 +588,8 @@ describe("http api", () => {
     };
     const listeners = new Set<(snapshot: PlatformModelSnapshot) => void>();
 
-    activeApp = await createStartedAppWithRuntimeService(
-      new RuntimeService({
+    activeApp = await createStartedAppWithEngineService(
+      new EngineService({
         defaultModel: "openai-default",
         modelGateway: new FakeModelGateway(20),
         ...createMemoryRuntimePersistence()
@@ -701,8 +714,8 @@ describe("http api", () => {
       return currentSnapshot;
     });
 
-    activeApp = await createStartedAppWithRuntimeService(
-      new RuntimeService({
+    activeApp = await createStartedAppWithEngineService(
+      new EngineService({
         defaultModel: "openai-default",
         modelGateway: new FakeModelGateway(20),
         ...createMemoryRuntimePersistence()
@@ -814,8 +827,8 @@ describe("http api", () => {
       ]
     };
 
-    activeApp = await createStartedAppWithRuntimeService(
-      new RuntimeService({
+    activeApp = await createStartedAppWithEngineService(
+      new EngineService({
         defaultModel: "openai-default",
         modelGateway: new FakeModelGateway(20),
         ...createMemoryRuntimePersistence()
@@ -1043,12 +1056,12 @@ describe("http api", () => {
 
     const gateway = new FakeModelGateway(20);
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
     });
-    activeApp = await createStartedAppWithRuntimeService(runtimeService, gateway, {
+    activeApp = await createStartedAppWithEngineService(runtimeService, gateway, {
       storageAdmin
     });
 
@@ -1225,7 +1238,7 @@ describe("http api", () => {
       },
       body: JSON.stringify({
         name: "no-auth-workspace",
-        blueprint: "workspace",
+        runtime: "workspace",
         rootPath: "/tmp/no-auth-workspace"
       })
     });
@@ -1238,7 +1251,7 @@ describe("http api", () => {
     const initializerWorkspaceIds: string[] = [];
     const gateway = new FakeModelGateway(20);
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence,
@@ -1261,7 +1274,7 @@ describe("http api", () => {
             toolServers: {},
             hooks: {},
             catalog: {
-              workspaceId: "blueprint",
+              workspaceId: "runtime",
               agents: [],
               models: [],
               actions: [],
@@ -1275,7 +1288,7 @@ describe("http api", () => {
       }
     });
 
-    activeApp = await createStartedAppWithRuntimeService(runtimeService, gateway, {
+    activeApp = await createStartedAppWithEngineService(runtimeService, gateway, {
       assignWorkspacePlacementUser: async (input) => {
         assignedUsers.push(input);
       },
@@ -1289,7 +1302,7 @@ describe("http api", () => {
       },
       body: JSON.stringify({
         name: "placement-user-workspace",
-        blueprint: "workspace",
+        runtime: "workspace",
         rootPath: "/tmp/placement-user-workspace",
         ownerId: "user_explicit",
         serviceName: "Acme-App"
@@ -1335,7 +1348,7 @@ describe("http api", () => {
       headers: authHeaders,
       body: JSON.stringify({
         name: "demo-a",
-        blueprint: "workspace",
+        runtime: "workspace",
         rootPath: "/tmp/demo-a"
       })
     });
@@ -1346,7 +1359,7 @@ describe("http api", () => {
       headers: authHeaders,
       body: JSON.stringify({
         name: "demo-b",
-        blueprint: "workspace",
+        runtime: "workspace",
         rootPath: "/tmp/demo-b"
       })
     });
@@ -1501,13 +1514,13 @@ describe("http api", () => {
       }
     });
 
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
     });
 
-    activeApp = await createStartedAppWithRuntimeService(runtimeService, gateway);
+    activeApp = await createStartedAppWithEngineService(runtimeService, gateway);
 
     const authHeaders = {
       authorization: "Bearer token-1",
@@ -1547,13 +1560,13 @@ describe("http api", () => {
 
     const gateway = new FakeModelGateway(20);
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
     });
 
-    activeApp = await createStartedAppWithRuntimeService(runtimeService, gateway, {
+    activeApp = await createStartedAppWithEngineService(runtimeService, gateway, {
       async importWorkspace(input) {
         const discovered = await discoverWorkspace(input.rootPath, input.kind ?? "project", {
           platformModels: {}
@@ -1596,8 +1609,8 @@ describe("http api", () => {
   });
 
   it("locks workspace management routes in single-workspace mode", async () => {
-    activeApp = await createStartedAppWithRuntimeService(
-      new RuntimeService({
+    activeApp = await createStartedAppWithEngineService(
+      new EngineService({
         defaultModel: "openai-default",
         modelGateway: new FakeModelGateway(20),
         ...createMemoryRuntimePersistence()
@@ -1608,8 +1621,8 @@ describe("http api", () => {
       }
     );
 
-    const [blueprintsResponse, createResponse, importResponse, deleteResponse] = await Promise.all([
-      fetch(`${activeApp.baseUrl}/api/v1/blueprints`),
+    const [runtimesResponse, createResponse, importResponse, deleteResponse] = await Promise.all([
+      fetch(`${activeApp.baseUrl}/api/v1/runtimes`),
       fetch(`${activeApp.baseUrl}/api/v1/workspaces`, {
         method: "POST",
         headers: {
@@ -1617,7 +1630,7 @@ describe("http api", () => {
         },
         body: JSON.stringify({
           name: "blocked-workspace",
-          blueprint: "workspace"
+          runtime: "workspace"
         })
       }),
       fetch(`${activeApp.baseUrl}/api/v1/workspaces/import`, {
@@ -1634,7 +1647,7 @@ describe("http api", () => {
       })
     ]);
 
-    expect(blueprintsResponse.status).toBe(501);
+    expect(runtimesResponse.status).toBe(501);
     expect(createResponse.status).toBe(501);
     expect(importResponse.status).toBe(501);
     expect(deleteResponse.status).toBe(501);
@@ -1648,7 +1661,7 @@ describe("http api", () => {
 
     const gateway = new FakeModelGateway(20);
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence,
@@ -1681,7 +1694,7 @@ describe("http api", () => {
             toolServers: {},
             hooks: {},
             catalog: {
-              workspaceId: "blueprint",
+              workspaceId: "runtime",
               agents: [],
               models: [],
               actions: [],
@@ -1695,7 +1708,7 @@ describe("http api", () => {
       }
     });
 
-    activeApp = await createStartedAppWithRuntimeService(runtimeService, gateway);
+    activeApp = await createStartedAppWithEngineService(runtimeService, gateway);
 
     const authHeaders = {
       authorization: "Bearer token-1",
@@ -1707,7 +1720,7 @@ describe("http api", () => {
       headers: authHeaders,
       body: JSON.stringify({
         name: "managed-workspace",
-        blueprint: "workspace",
+        runtime: "workspace",
         rootPath: workspaceRoot
       })
     });
@@ -1747,13 +1760,37 @@ describe("http api", () => {
     await expect(access(workspaceRoot)).rejects.toBeDefined();
   });
 
+  it("treats deleting an already-missing workspace as idempotent and clears coordination state", async () => {
+    const clearedWorkspaceIds: string[] = [];
+    activeApp = await createStartedAppWithEngineService(
+      new EngineService({
+        defaultModel: "openai-default",
+        modelGateway: new FakeModelGateway(20),
+        ...createMemoryRuntimePersistence()
+      }),
+      new FakeModelGateway(20),
+      {
+        clearWorkspaceCoordination: async (workspaceId: string) => {
+          clearedWorkspaceIds.push(workspaceId);
+        }
+      }
+    );
+
+    const response = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/ws_missing`, {
+      method: "DELETE"
+    });
+
+    expect(response.status).toBe(204);
+    expect(clearedWorkspaceIds).toEqual(["ws_missing"]);
+  });
+
   it("manages sandbox files over HTTP", async () => {
     const gateway = new FakeModelGateway(20);
     const persistence = createMemoryRuntimePersistence();
     const workspace = await createWorkspaceRecord();
     await persistence.workspaceRepository.upsert(workspace);
-    activeApp = await createStartedAppWithRuntimeService(
-      new RuntimeService({
+    activeApp = await createStartedAppWithEngineService(
+      new EngineService({
         defaultModel: "openai-default",
         modelGateway: gateway,
         ...persistence
@@ -1850,8 +1887,8 @@ describe("http api", () => {
     const persistence = createMemoryRuntimePersistence();
     const workspace = await createWorkspaceRecord();
     await persistence.workspaceRepository.upsert(workspace);
-    activeApp = await createStartedAppWithRuntimeService(
-      new RuntimeService({
+    activeApp = await createStartedAppWithEngineService(
+      new EngineService({
         defaultModel: "openai-default",
         modelGateway: gateway,
         ...persistence
@@ -1898,8 +1935,8 @@ describe("http api", () => {
     const persistence = createMemoryRuntimePersistence();
     const workspace = await createWorkspaceRecord();
     await persistence.workspaceRepository.upsert(workspace);
-    activeApp = await createStartedAppWithRuntimeService(
-      new RuntimeService({
+    activeApp = await createStartedAppWithEngineService(
+      new EngineService({
         defaultModel: "openai-default",
         modelGateway: gateway,
         ...persistence
@@ -1957,7 +1994,7 @@ describe("http api", () => {
   it("proxies sandbox file requests to the owner when an internal owner base url is available", async () => {
     const ownerGateway = new FakeModelGateway(20);
     const ownerPersistence = createMemoryRuntimePersistence();
-    const ownerRuntime = new RuntimeService({
+    const ownerRuntime = new EngineService({
       defaultModel: "openai-default",
       modelGateway: ownerGateway,
       ...ownerPersistence
@@ -1982,8 +2019,8 @@ describe("http api", () => {
 
     const proxyGateway = new FakeModelGateway(20);
     const proxyPersistence = createMemoryRuntimePersistence();
-    activeApp = await createStartedAppWithRuntimeService(
-      new RuntimeService({
+    activeApp = await createStartedAppWithEngineService(
+      new EngineService({
         defaultModel: "openai-default",
         modelGateway: proxyGateway,
         ...proxyPersistence
@@ -2046,7 +2083,7 @@ describe("http api", () => {
       },
       body: JSON.stringify({
         name: "sandbox-demo",
-        blueprint: "workspace"
+        runtime: "workspace"
       })
     });
     expect(createResponse.status).toBe(201);
@@ -2110,7 +2147,7 @@ describe("http api", () => {
     });
   });
 
-  it("creates an internal sandbox-backed workspace when a missing workspaceId is supplied with blueprint metadata", async () => {
+  it("creates an internal sandbox-backed workspace when a missing workspaceId is supplied with runtime metadata", async () => {
     activeApp = await createStartedApp();
 
     const sandboxId = "ws_internal_sandbox_create";
@@ -2122,7 +2159,7 @@ describe("http api", () => {
       body: JSON.stringify({
         workspaceId: sandboxId,
         name: "internal-sandbox-create",
-        blueprint: "workspace"
+        runtime: "workspace"
       })
     });
 
@@ -2170,7 +2207,7 @@ describe("http api", () => {
       },
       body: JSON.stringify({
         name: "sandbox-provider-demo",
-        blueprint: "workspace"
+        runtime: "workspace"
       })
     });
 
@@ -2185,7 +2222,7 @@ describe("http api", () => {
   it("projects workspace root paths to the sandbox root for remote sandbox providers", async () => {
     const gateway = new FakeModelGateway(20);
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -2202,7 +2239,7 @@ describe("http api", () => {
       historyMirrorEnabled: true,
       settings: {
         defaultAgent: "default",
-        blueprint: "workspace",
+        runtime: "workspace",
         skillDirs: []
       },
       defaultAgent: "default",
@@ -2226,7 +2263,7 @@ describe("http api", () => {
       updatedAt: "2026-04-16T00:00:00.000Z"
     });
 
-    activeApp = await createStartedAppWithRuntimeService(runtimeService, gateway, {
+    activeApp = await createStartedAppWithEngineService(runtimeService, gateway, {
       sandboxHostProviderKind: "self_hosted"
     });
 
@@ -2260,7 +2297,7 @@ describe("http api", () => {
   it("proxies workspace deletion to the owner worker", async () => {
     const ownerGateway = new FakeModelGateway(20);
     const ownerPersistence = createMemoryRuntimePersistence();
-    const ownerRuntime = new RuntimeService({
+    const ownerRuntime = new EngineService({
       defaultModel: "openai-default",
       modelGateway: ownerGateway,
       ...ownerPersistence
@@ -2284,8 +2321,8 @@ describe("http api", () => {
 
     const proxyGateway = new FakeModelGateway(20);
     const proxyPersistence = createMemoryRuntimePersistence();
-    activeApp = await createStartedAppWithRuntimeService(
-      new RuntimeService({
+    activeApp = await createStartedAppWithEngineService(
+      new EngineService({
         defaultModel: "openai-default",
         modelGateway: proxyGateway,
         ...proxyPersistence
@@ -2321,7 +2358,7 @@ describe("http api", () => {
   it("proxies sandbox requests to the owner worker", async () => {
     const ownerGateway = new FakeModelGateway(20);
     const ownerPersistence = createMemoryRuntimePersistence();
-    const ownerRuntime = new RuntimeService({
+    const ownerRuntime = new EngineService({
       defaultModel: "openai-default",
       modelGateway: ownerGateway,
       ...ownerPersistence
@@ -2346,8 +2383,8 @@ describe("http api", () => {
 
     const proxyGateway = new FakeModelGateway(20);
     const proxyPersistence = createMemoryRuntimePersistence();
-    activeApp = await createStartedAppWithRuntimeService(
-      new RuntimeService({
+    activeApp = await createStartedAppWithEngineService(
+      new EngineService({
         defaultModel: "openai-default",
         modelGateway: proxyGateway,
         ...proxyPersistence
@@ -2404,7 +2441,7 @@ describe("http api", () => {
   it("falls back to the configured sandbox owner base url for sandbox requests", async () => {
     const ownerGateway = new FakeModelGateway(20);
     const ownerPersistence = createMemoryRuntimePersistence();
-    const ownerRuntime = new RuntimeService({
+    const ownerRuntime = new EngineService({
       defaultModel: "openai-default",
       modelGateway: ownerGateway,
       ...ownerPersistence
@@ -2429,8 +2466,8 @@ describe("http api", () => {
 
     const proxyGateway = new FakeModelGateway(20);
     const proxyPersistence = createMemoryRuntimePersistence();
-    activeApp = await createStartedAppWithRuntimeService(
-      new RuntimeService({
+    activeApp = await createStartedAppWithEngineService(
+      new EngineService({
         defaultModel: "openai-default",
         modelGateway: proxyGateway,
         ...proxyPersistence
@@ -2467,8 +2504,8 @@ describe("http api", () => {
     const workspace = await createWorkspaceRecord();
     await persistence.workspaceRepository.upsert(workspace);
 
-    activeApp = await createStartedAppWithRuntimeService(
-      new RuntimeService({
+    activeApp = await createStartedAppWithEngineService(
+      new EngineService({
         defaultModel: "openai-default",
         modelGateway: gateway,
         ...persistence
@@ -2504,8 +2541,8 @@ describe("http api", () => {
       readOnly: true
     });
     await persistence.workspaceRepository.upsert(workspace);
-    activeApp = await createStartedAppWithRuntimeService(
-      new RuntimeService({
+    activeApp = await createStartedAppWithEngineService(
+      new EngineService({
         defaultModel: "openai-default",
         modelGateway: gateway,
         ...persistence
@@ -2543,7 +2580,7 @@ describe("http api", () => {
   it("returns run steps even when step output contains non-object JSON", async () => {
     const gateway = new FakeModelGateway(20);
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
@@ -2601,7 +2638,7 @@ describe("http api", () => {
       endedAt: "2026-04-01T00:00:01.000Z"
     });
 
-    activeApp = await createStartedAppWithRuntimeService(runtimeService, gateway);
+    activeApp = await createStartedAppWithEngineService(runtimeService, gateway);
 
     const response = await fetch(`${activeApp.baseUrl}/api/v1/runs/run_http_scalar/steps?pageSize=200`, {
       headers: {
@@ -2708,13 +2745,13 @@ describe("http api", () => {
         nativeTools: ["shell"]
       }
     });
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
     });
 
-    activeApp = await createStartedAppWithRuntimeService(runtimeService, gateway);
+    activeApp = await createStartedAppWithEngineService(runtimeService, gateway);
 
     const response = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/project_http_catalog/catalog`, {
       headers: {
@@ -2732,7 +2769,7 @@ describe("http api", () => {
       tools: [{ name: "docs", transportType: "http" }],
       hooks: [{ name: "rewrite-request", handlerType: "prompt", events: ["before_model_call"] }],
       nativeTools: expect.arrayContaining(["Bash", "Read", "Write"]),
-      runtimeTools: expect.arrayContaining(["run_action", "Skill"])
+      engineTools: expect.arrayContaining(["run_action", "Skill"])
     });
   });
 
@@ -2746,7 +2783,7 @@ describe("http api", () => {
       },
       body: JSON.stringify({
         name: "demo",
-        blueprint: "workspace",
+        runtime: "workspace",
         rootPath: "/tmp/demo"
       })
     });
@@ -2772,7 +2809,7 @@ describe("http api", () => {
   it("accepts host-injected caller context without relying on the bearer stub", async () => {
     const gateway = new FakeModelGateway(20);
     const persistence = createMemoryRuntimePersistence();
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence,
@@ -2792,7 +2829,7 @@ describe("http api", () => {
             toolServers: {},
             hooks: {},
             catalog: {
-              workspaceId: "blueprint",
+              workspaceId: "runtime",
               agents: [],
               models: [],
               actions: [],
@@ -2806,7 +2843,7 @@ describe("http api", () => {
       }
     });
 
-    activeApp = await createStartedAppWithRuntimeService(runtimeService, gateway, {
+    activeApp = await createStartedAppWithEngineService(runtimeService, gateway, {
       resolveCallerContext: (request) => {
         if (request.headers["x-test-auth"] !== "ok") {
           return undefined;
@@ -2829,7 +2866,7 @@ describe("http api", () => {
       },
       body: JSON.stringify({
         name: "resolver-demo",
-        blueprint: "workspace",
+        runtime: "workspace",
         rootPath: "/tmp/resolver-demo"
       })
     });
@@ -2853,8 +2890,8 @@ describe("http api", () => {
   });
 
   it("returns missing caller context when host auth owns the boundary", async () => {
-    activeApp = await createStartedAppWithRuntimeService(
-      new RuntimeService({
+    activeApp = await createStartedAppWithEngineService(
+      new EngineService({
         defaultModel: "openai-default",
         modelGateway: new FakeModelGateway(20),
         ...createMemoryRuntimePersistence(),
@@ -2874,7 +2911,7 @@ describe("http api", () => {
               toolServers: {},
               hooks: {},
               catalog: {
-                workspaceId: "blueprint",
+                workspaceId: "runtime",
                 agents: [],
                 models: [],
                 actions: [],
@@ -2901,7 +2938,7 @@ describe("http api", () => {
       },
       body: JSON.stringify({
         name: "no-context",
-        blueprint: "workspace",
+        runtime: "workspace",
         rootPath: "/tmp/no-context"
       })
     });
@@ -2973,7 +3010,7 @@ describe("http api", () => {
       headers: authHeaders,
       body: JSON.stringify({
         name: "demo",
-        blueprint: "workspace",
+        runtime: "workspace",
         rootPath: "/tmp/demo"
       })
     });
@@ -3035,7 +3072,7 @@ describe("http api", () => {
             messages?: Array<{ role: string; content: string }>;
           };
           runtime?: {
-            runtimeToolNames?: string[];
+            engineToolNames?: string[];
           };
         };
         output?: {
@@ -3085,7 +3122,7 @@ describe("http api", () => {
     const gateway = new FakeModelGateway(20);
     const persistence = createMemoryRuntimePersistence();
     const enqueuedRuns: Array<{ sessionId: string; runId: string }> = [];
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence,
@@ -3193,7 +3230,7 @@ describe("http api", () => {
       }
     });
 
-    activeApp = await createStartedAppWithRuntimeService(runtimeService, gateway);
+    activeApp = await createStartedAppWithEngineService(runtimeService, gateway);
 
     const response = await fetch(`${activeApp.baseUrl}/api/v1/runs/run_http_requeue/requeue`, {
       method: "POST",
@@ -3227,7 +3264,7 @@ describe("http api", () => {
     const gateway = new FakeModelGateway(20);
     const persistence = createMemoryRuntimePersistence();
     const enqueuedRuns: Array<{ sessionId: string; runId: string }> = [];
-    const runtimeService = new RuntimeService({
+    const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence,
@@ -3351,7 +3388,7 @@ describe("http api", () => {
       endedAt: "2026-04-01T00:00:50.000Z"
     });
 
-    activeApp = await createStartedAppWithRuntimeService(runtimeService, gateway);
+    activeApp = await createStartedAppWithEngineService(runtimeService, gateway);
 
     const response = await fetch(`${activeApp.baseUrl}/api/v1/runs/requeue`, {
       method: "POST",
@@ -3675,7 +3712,7 @@ Use ripgrep first.
       headers: authHeaders,
       body: JSON.stringify({
         name: "demo-cursor",
-        blueprint: "workspace",
+        runtime: "workspace",
         rootPath: "/tmp/demo-cursor"
       })
     });
@@ -3747,7 +3784,7 @@ Use ripgrep first.
       headers: authHeaders,
       body: JSON.stringify({
         name: "demo-multi-turn",
-        blueprint: "workspace",
+        runtime: "workspace",
         rootPath: "/tmp/demo-multi-turn"
       })
     });

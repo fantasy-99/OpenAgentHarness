@@ -6,7 +6,7 @@ storage: {}
 
 paths:
   workspace_dir: ../.runtime/workspaces
-  blueprint_dir: ../.runtime/blueprints
+  runtime_dir: ../.runtime/runtimes
   model_dir: ./models
   tool_dir: ../.runtime/tools
   skill_dir: ../.runtime/skills

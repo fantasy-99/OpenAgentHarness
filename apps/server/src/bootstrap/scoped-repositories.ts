@@ -1,4 +1,4 @@
-import { AppError, parseCursor } from "@oah/runtime-core";
+import { AppError, parseCursor } from "@oah/engine-core";
 import type {
   Run,
   RunRepository,
@@ -6,7 +6,7 @@ import type {
   SessionRepository,
   WorkspaceRecord,
   WorkspaceRepository
-} from "@oah/runtime-core";
+} from "@oah/engine-core";
 
 async function listVisibleWorkspaces(
   repository: WorkspaceRepository,
@@ -25,6 +25,22 @@ async function listVisibleWorkspaces(
 
   const startIndex = parseCursor(cursor);
   return visibleItems.slice(startIndex, startIndex + pageSize);
+}
+
+export async function describeQueuedRunWithScopedVisibility(
+  repository: Pick<RunRepository, "getById">,
+  visibleWorkspaceIds: Set<string>,
+  runId: string
+): Promise<{ workspaceId?: string | undefined } | undefined> {
+  const run = await repository.getById(runId);
+  if (!run) {
+    return undefined;
+  }
+
+  visibleWorkspaceIds.add(run.workspaceId);
+  return {
+    workspaceId: run.workspaceId
+  };
 }
 
 export class ScopedWorkspaceRepository implements WorkspaceRepository {

@@ -12,7 +12,7 @@
     }
   },
   "dependencies": {
-    "@oah/runtime-core": "workspace:*",
+    "@oah/engine-core": "workspace:*",
     "redis": "4.7.1"
   }
 }

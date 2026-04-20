@@ -18,7 +18,7 @@ import type {
   WorkspaceFileSystemEntry,
   WorkspaceForegroundCommandExecutionResult,
   WorkspaceRecord
-} from "@oah/runtime-core";
+} from "@oah/engine-core";
 
 import type { E2BCompatibleSandboxLease, E2BCompatibleSandboxService } from "./e2b-compatible-sandbox-host.js";
 import { trimToUndefined } from "./string-utils.js";

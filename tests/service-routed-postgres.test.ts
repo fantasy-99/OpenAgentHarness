@@ -6,13 +6,13 @@ import type {
   Message,
   Run,
   RunStep,
-  RuntimeMessage,
+  EngineMessage,
   Session,
   SessionEvent,
   ToolCallAuditRecord,
   WorkspaceArchiveRecord,
   WorkspaceRecord
-} from "@oah/runtime-core";
+} from "@oah/engine-core";
 import {
   buildServiceDatabaseConnectionString,
   createServiceRoutedPostgresRuntimePersistence
@@ -33,7 +33,7 @@ function createInMemoryPostgresPersistence(label: string, options?: { supportRou
   const sessions = new Map<string, Session>();
   const runs = new Map<string, Run>();
   const messages = new Map<string, Message>();
-  const runtimeMessages = new Map<string, RuntimeMessage[]>();
+  const engineMessages = new Map<string, EngineMessage[]>();
   const runSteps = new Map<string, RunStep>();
   const sessionEvents = new Map<string, SessionEvent[]>();
   const artifacts = new Map<string, ArtifactRecord>();
@@ -431,12 +431,12 @@ function createInMemoryPostgresPersistence(label: string, options?: { supportRou
         return sortIsoAscending([...messages.values()].filter((message) => message.sessionId === sessionId));
       }
     },
-    runtimeMessageRepository: {
-      async replaceBySessionId(sessionId: string, items: RuntimeMessage[]) {
-        runtimeMessages.set(sessionId, items);
+    engineMessageRepository: {
+      async replaceBySessionId(sessionId: string, items: EngineMessage[]) {
+        engineMessages.set(sessionId, items);
       },
       async listBySessionId(sessionId: string) {
-        return runtimeMessages.get(sessionId) ?? [];
+        return engineMessages.get(sessionId) ?? [];
       }
     },
     runRepository: {
@@ -519,7 +519,7 @@ function createInMemoryPostgresPersistence(label: string, options?: { supportRou
       }
     },
     historyEventRepository: {
-      async append(input: Omit<import("@oah/runtime-core").HistoryEventRecord, "id">) {
+      async append(input: Omit<import("@oah/engine-core").HistoryEventRecord, "id">) {
         return {
           id: 1,
           ...input
@@ -550,7 +550,7 @@ function createInMemoryPostgresPersistence(label: string, options?: { supportRou
           sessions: [],
           runs: [],
           messages: [],
-          runtimeMessages: [],
+          engineMessages: [],
           runSteps: [],
           toolCalls: [],
           hookRuns: [],
@@ -581,7 +581,7 @@ function createInMemoryPostgresPersistence(label: string, options?: { supportRou
           sessions: [],
           runs: [],
           messages: [],
-          runtimeMessages: [],
+          engineMessages: [],
           runSteps: [],
           toolCalls: [],
           hookRuns: [],

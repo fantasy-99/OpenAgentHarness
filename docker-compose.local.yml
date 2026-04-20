@@ -81,7 +81,7 @@ services:
     volumes:
       - ${OAH_DOCKER_API_CONFIG:?set OAH_DOCKER_API_CONFIG}:/config/server.docker.yaml:ro
       - oah-api-workspaces:/data/workspaces
-      - oah-blueprints:/data/blueprints:ro
+      - oah-runtimes:/data/runtimes:ro
       - oah-models:/data/models:ro
       - oah-tools:/data/tools:ro
       - oah-skills:/data/skills:ro
@@ -142,7 +142,7 @@ services:
     volumes:
       - ${OAH_DOCKER_SANDBOX_CONFIG:?set OAH_DOCKER_SANDBOX_CONFIG}:/config/server.docker.yaml:ro
       - /data/workspaces
-      - oah-blueprints:/data/blueprints:ro
+      - oah-runtimes:/data/runtimes:ro
       - oah-models:/data/models:ro
       - oah-tools:/data/tools:ro
       - oah-skills:/data/skills:ro
@@ -153,11 +153,11 @@ volumes:
   redisdata:
   minio-data:
   oah-api-workspaces:
-  oah-blueprints:
+  oah-runtimes:
     driver: rclone
     driver_opts:
       type: s3
-      path: test-oah-server/blueprint
+      path: test-oah-server/runtime
       s3_provider: Minio
       s3_access_key_id: oahadmin
       s3_secret_access_key: oahadmin123

@@ -1,6 +1,6 @@
 import type { Pool } from "pg";
 
-import { AppError } from "@oah/runtime-core";
+import { AppError } from "@oah/engine-core";
 import type {
   ArtifactRecord,
   ArtifactRepository,
@@ -14,8 +14,8 @@ import type {
   RunRepository,
   RunStep,
   RunStepRepository,
-  RuntimeMessage,
-  RuntimeMessageRepository,
+  EngineMessage,
+  EngineMessageRepository,
   Session,
   SessionEvent,
   SessionEventStore,
@@ -26,7 +26,7 @@ import type {
   WorkspaceArchiveRepository,
   WorkspaceRecord,
   WorkspaceRepository
-} from "@oah/runtime-core";
+} from "@oah/engine-core";
 import {
   createPostgresRuntimePersistence,
   type CreatePostgresRuntimePersistenceOptions,
@@ -48,7 +48,7 @@ export interface ServiceRoutedPostgresRuntimePersistence {
   workspaceArchiveRepository: WorkspaceArchiveRepository;
   sessionRepository: SessionRepository;
   messageRepository: MessageRepository;
-  runtimeMessageRepository: RuntimeMessageRepository;
+  engineMessageRepository: EngineMessageRepository;
   runRepository: RunRepository;
   runStepRepository: RunStepRepository;
   sessionEventStore: SessionEventStore;
@@ -1008,15 +1008,15 @@ class RoutedMessageRepository implements MessageRepository {
   }
 }
 
-class RoutedRuntimeMessageRepository implements RuntimeMessageRepository {
+class RoutedEngineMessageRepository implements EngineMessageRepository {
   constructor(private readonly router: ServiceBackendRouter) {}
 
-  async replaceBySessionId(sessionId: string, messages: RuntimeMessage[]): Promise<void> {
-    await (await this.router.getBackendForSessionId(sessionId)).runtimeMessageRepository.replaceBySessionId(sessionId, messages);
+  async replaceBySessionId(sessionId: string, messages: EngineMessage[]): Promise<void> {
+    await (await this.router.getBackendForSessionId(sessionId)).engineMessageRepository.replaceBySessionId(sessionId, messages);
   }
 
-  async listBySessionId(sessionId: string): Promise<RuntimeMessage[]> {
-    return (await this.router.getBackendForSessionId(sessionId)).runtimeMessageRepository.listBySessionId(sessionId);
+  async listBySessionId(sessionId: string): Promise<EngineMessage[]> {
+    return (await this.router.getBackendForSessionId(sessionId)).engineMessageRepository.listBySessionId(sessionId);
   }
 }
 
@@ -1211,7 +1211,7 @@ export async function createServiceRoutedPostgresRuntimePersistence(
     workspaceArchiveRepository: new RoutedWorkspaceArchiveRepository(router),
     sessionRepository: new RoutedSessionRepository(router),
     messageRepository: new RoutedMessageRepository(router),
-    runtimeMessageRepository: new RoutedRuntimeMessageRepository(router),
+    engineMessageRepository: new RoutedEngineMessageRepository(router),
     runRepository: new RoutedRunRepository(router),
     runStepRepository: new RoutedRunStepRepository(router),
     sessionEventStore: new RoutedSessionEventStore(router),

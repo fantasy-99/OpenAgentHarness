@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { WorkspaceArchiveRecord, WorkspaceArchiveRepository } from "@oah/runtime-core";
+import type { WorkspaceArchiveRecord, WorkspaceArchiveRepository } from "@oah/engine-core";
 
 import { WorkspaceArchiveExporter } from "../apps/server/src/workspace-archive-export.ts";
 
@@ -96,7 +96,7 @@ function createArchiveRecord(overrides: Partial<WorkspaceArchiveRecord> = {}): W
         createdAt: "2026-04-08T11:06:00.000Z"
       }
     ],
-    runtimeMessages: overrides.runtimeMessages ?? [],
+    engineMessages: overrides.engineMessages ?? [],
     runSteps: overrides.runSteps ?? [],
     toolCalls: overrides.toolCalls ?? [],
     hookRuns: overrides.hookRuns ?? [],

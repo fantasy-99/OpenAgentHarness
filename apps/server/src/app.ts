@@ -1,6 +1,6 @@
 import Fastify, { type FastifyRequest } from "fastify";
 
-import { isAppError } from "@oah/runtime-core";
+import { isAppError } from "@oah/engine-core";
 
 import { createStandaloneCallerContext, isLoopbackAddress, isPrivateNetworkAddress, sendError } from "./http/context.js";
 import { registerPublicRoutes } from "./http/routes/public.js";
@@ -54,8 +54,8 @@ export function createApp(dependencies: AppDependencies, options: CreateAppOptio
       resolvedSessionId = run?.sessionId;
     }
 
-    if (resolvedSessionId && dependencies.appendRuntimeLog) {
-      await dependencies.appendRuntimeLog({
+    if (resolvedSessionId && dependencies.appendEngineLog) {
+      await dependencies.appendEngineLog({
         sessionId: resolvedSessionId,
         ...(runIdFromParams ? { runId: runIdFromParams } : {}),
         level: "error",

@@ -2,8 +2,8 @@ import { createMCPClient } from "@ai-sdk/mcp";
 import { Experimental_StdioMCPTransport } from "@ai-sdk/mcp/mcp-stdio";
 import type { ToolSet } from "ai";
 
-import type { ToolServerDefinition } from "@oah/runtime-core";
-import { AppError } from "@oah/runtime-core";
+import type { ToolServerDefinition } from "@oah/engine-core";
+import { AppError } from "@oah/engine-core";
 import { createCompatibilityHttpClient, resolveCompatibleProtocolVersion } from "./mcp-http-compat.js";
 import type {
   PreparedToolServers,

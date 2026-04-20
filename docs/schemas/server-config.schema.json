@@ -100,7 +100,7 @@
               "items": {
                 "type": "string",
                 "enum": [
-                  "blueprint",
+                  "runtime",
                   "model",
                   "tool",
                   "skill"
@@ -123,7 +123,7 @@
               "type": "object",
               "additionalProperties": false,
               "properties": {
-                "blueprint": {
+                "runtime": {
                   "type": "string"
                 },
                 "model": {
@@ -157,7 +157,7 @@
             "type": "string",
             "enum": [
               "workspace",
-              "blueprint",
+              "runtime",
               "model",
               "tool",
               "skill"
@@ -172,7 +172,7 @@
             "workspace": {
               "type": "string"
             },
-            "blueprint": {
+            "runtime": {
               "type": "string"
             },
             "model": {
@@ -283,7 +283,7 @@
       "type": "object",
       "required": [
         "workspace_dir",
-        "blueprint_dir",
+        "runtime_dir",
         "model_dir",
         "tool_dir",
         "skill_dir"
@@ -297,7 +297,7 @@
           "type": "string",
           "description": "Runtime-private state root for SQLite shadow data, archives, and legacy materialization state."
         },
-        "blueprint_dir": {
+        "runtime_dir": {
           "type": "string"
         },
         "model_dir": {
@@ -382,7 +382,7 @@
           "properties": {
             "min_replicas": {
               "type": "integer",
-              "minimum": 1
+              "minimum": 0
             },
             "max_replicas": {
               "type": "integer",

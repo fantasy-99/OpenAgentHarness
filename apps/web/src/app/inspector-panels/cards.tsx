@@ -23,7 +23,7 @@ import {
   statusTone,
   type ModelCallTrace,
   type ModelCallTraceMessage,
-  type ModelCallTraceRuntimeTool,
+  type ModelCallTraceEngineTool,
   type ModelCallTraceToolServer
 } from "../support";
 import {
@@ -102,8 +102,8 @@ function LlmSummaryCard(props: {
   latestModelMessageCounts: ReturnType<typeof countMessagesByRole>;
   resolvedModelNames: string[];
   resolvedModelRefs: string[];
-  runtimeTools: ModelCallTraceRuntimeTool[];
-  runtimeToolNames: string[];
+  engineTools: ModelCallTraceEngineTool[];
+  engineToolNames: string[];
   activeToolNames: string[];
   toolServers: ModelCallTraceToolServer[];
   onDownload: () => void;
@@ -130,7 +130,7 @@ function LlmSummaryCard(props: {
 
       <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         <CatalogLine label="model calls" value={props.modelCallCount} />
-        <CatalogLine label="runtime tools" value={props.runtimeToolNames.length} />
+        <CatalogLine label="engine tools" value={props.engineToolNames.length} />
         <CatalogLine label="active tools" value={props.activeToolNames.length} />
         <CatalogLine label="tool servers" value={props.toolServers.length} />
       </div>
@@ -167,17 +167,17 @@ function LlmSummaryCard(props: {
       <InspectorDisclosure
         title="Tool Snapshot"
         description="详细工具快照已移到 Workspace 页；这里保留摘要，避免 timeline 视图过长。"
-        badge={props.runtimeTools.length}
+        badge={props.engineTools.length}
       >
         <div className="space-y-3">
           <div className="grid gap-2 sm:grid-cols-3">
-            <CatalogLine label="runtimeDefs" value={props.runtimeTools.length} />
+            <CatalogLine label="runtimeDefs" value={props.engineTools.length} />
             <CatalogLine label="activeTools" value={props.activeToolNames.length} />
             <CatalogLine label="toolServers" value={props.toolServers.length} />
           </div>
           <div>
-            <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Runtime Tool Names</p>
-            <ToolNameChips names={props.runtimeToolNames} emptyLabel="No runtime tool names recorded." />
+            <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Engine Tool Names</p>
+            <ToolNameChips names={props.engineToolNames} emptyLabel="No engine tool names recorded." />
           </div>
           <div>
             <p className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Active Tool Names</p>
@@ -302,7 +302,7 @@ function ModelCallTraceCard(props: { trace: ModelCallTrace }) {
       </div>
 
       <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-        <CatalogLine label="runtime tools" value={trace.input.runtimeToolNames.length} />
+        <CatalogLine label="engine tools" value={trace.input.engineToolNames.length} />
         <CatalogLine label="active tools" value={trace.input.activeToolNames.length} />
         <CatalogLine label="tool calls" value={trace.output.toolCalls.length} />
         <CatalogLine label="tool results" value={trace.output.toolResults.length} />
@@ -456,7 +456,7 @@ function SessionEventsCard(props: { events: SessionEventContract[] }) {
         description="这里看 SSE event feed，适合核对前端实时流、cursor 以及 event payload。"
       />
       {props.events.length === 0 ? (
-        <EmptyState title="No events" description="SSE events appear here when the current session emits runtime updates." />
+        <EmptyState title="No events" description="SSE events appear here when the current session emits engine updates." />
       ) : (
         <div className="space-y-3">
           {props.events.map((event) => (

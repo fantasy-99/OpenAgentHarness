@@ -11,6 +11,16 @@
 > **tip**
 > 不确定选哪个？先用「一体模式」跑通，后续随时可以切到分离部署。
 
+## 层级关系
+
+部署时建议始终按下面这条关系理解：
+
+- `workspace` 是项目与能力边界
+- `worker` 是执行角色
+- `sandbox` 是 worker 的宿主环境
+
+在 split 部署里，通常不是“一个 workspace 对应一个进程”，而是“一个 sandbox 内的 standalone worker 按容量承载一个或多个活跃 workspace”。
+
 ---
 
 ## 本地开发

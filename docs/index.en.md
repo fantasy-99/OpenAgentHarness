@@ -1,9 +1,9 @@
 # Open Agent Harness
 
 <div class="hero" markdown>
-### A Headless Agent Runtime Kernel
+### A Headless Agent Engine
 
-Define agent logic in Markdown, switch agents by scenario, run many workspaces in parallel. You build the product UI. This is the backend runtime.
+Define agent runtimes in Markdown, switch by scenario, run many workspaces in parallel. You build the product UI. This is the backend engine.
 
 [Get Started](./getting-started.md){ .md-button .md-button--primary }
 [Architecture](./architecture-overview.md){ .md-button }
@@ -12,12 +12,12 @@ Define agent logic in Markdown, switch agents by scenario, run many workspaces i
 
 ## What It Is
 
-Open Agent Harness is a deployable backend runtime for agent products. It manages workspace lifecycles, agent execution loops, tool invocations, and state persistence. It does not ship a product UI — you bring your own frontend, and it runs the agents.
+Open Agent Harness is a deployable Agent Engine. It runs Agent Runtime units and extends them with Agent Spec. It manages workspace lifecycles, agent execution loops, tool invocations, and state persistence without shipping a product UI.
 
 ## Core Capabilities
 
 - **Parallel workspaces** — PostgreSQL for persistence, Redis for queues and coordination. Many workspaces run concurrently.
-- **Declarative agent config** — Define agents in Markdown files with YAML frontmatter. Hot-reloaded.
+- **Declarative runtime structure** — Define agent/runtime behavior in Markdown and YAML. Hot-reloaded.
 - **Composable capabilities** — agent / skill / action / tool / hook / context are configured independently per workspace.
 - **One workspace model** — the same directory structure supports conversation, tools, and execution.
 - **REST + SSE API** — Everything exposed under `/api/v1`. Frontend-agnostic.
@@ -58,6 +58,14 @@ After startup:
     Layered design, core modules, request flow
 
     [:octicons-arrow-right-24: View](./architecture-overview.md)
+
+-   :material-tag-outline:{ .lg .middle } **Terminology**
+
+    ---
+
+    Shared boundaries for Engine, Runtime, and Spec
+
+    [:octicons-arrow-right-24: View](./terminology.en.md)
 
 -   :material-folder-cog-outline:{ .lg .middle } **Workspace Config**
 

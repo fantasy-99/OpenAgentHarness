@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { ModelMessageSerializer } from "../packages/runtime-core/src/runtime/ai-sdk-message-serializer";
-import { RuntimeMessageProjector } from "../packages/runtime-core/src/runtime/message-projections";
+import { ModelMessageSerializer } from "../packages/engine-core/src/engine/ai-sdk-message-serializer";
+import { EngineMessageProjector } from "../packages/engine-core/src/engine/message-projections";
 import {
-  buildSessionRuntimeMessages,
-  type RuntimeMessage
-} from "../packages/runtime-core/src/runtime/runtime-messages";
+  buildSessionEngineMessages,
+  type EngineMessage
+} from "../packages/engine-core/src/engine/engine-messages";
 import type { Message } from "@oah/api-contracts";
-import type { SessionEvent } from "../packages/runtime-core/src/types";
+import type { SessionEvent } from "../packages/engine-core/src/types";
 
 describe("runtime message projections", () => {
   it("builds segmented runtime messages from interrupted assistant output", () => {
@@ -128,26 +128,26 @@ describe("runtime message projections", () => {
       }
     ];
 
-    const runtimeMessages = buildSessionRuntimeMessages({
+    const engineMessages = buildSessionEngineMessages({
       messages,
       events
     });
 
-    expect(runtimeMessages.map((message) => message.id)).toEqual([
+    expect(engineMessages.map((message) => message.id)).toEqual([
       "msg_user",
       "msg_streamed:segment:1",
       "msg_tool_call",
       "msg_tool_result",
       "msg_streamed:segment:2"
     ]);
-    expect(runtimeMessages.map((message) => message.kind)).toEqual([
+    expect(engineMessages.map((message) => message.kind)).toEqual([
       "user_input",
       "assistant_text",
       "tool_call",
       "tool_result",
       "assistant_text"
     ]);
-    expect(runtimeMessages.map((message) => message.content)).toEqual([
+    expect(engineMessages.map((message) => message.content)).toEqual([
       "hello",
       "first part",
       messages[2]!.content,
@@ -157,8 +157,8 @@ describe("runtime message projections", () => {
   });
 
   it("replaces compacted tool results with a stub in model projection", () => {
-    const projector = new RuntimeMessageProjector();
-    const runtimeMessages: RuntimeMessage[] = [
+    const projector = new EngineMessageProjector();
+    const engineMessages: EngineMessage[] = [
       {
         id: "msg_1",
         sessionId: "sess_1",
@@ -190,7 +190,7 @@ describe("runtime message projections", () => {
       }
     ];
 
-    const result = projector.projectToModel(runtimeMessages, {
+    const result = projector.projectToModel(engineMessages, {
       sessionId: "sess_1",
       activeAgentName: "default"
     });
@@ -215,8 +215,8 @@ describe("runtime message projections", () => {
   });
 
   it("applies the latest compact boundary when projecting model messages", () => {
-    const projector = new RuntimeMessageProjector();
-    const runtimeMessages: RuntimeMessage[] = [
+    const projector = new EngineMessageProjector();
+    const engineMessages: EngineMessage[] = [
       {
         id: "msg_old",
         sessionId: "sess_1",
@@ -251,13 +251,82 @@ describe("runtime message projections", () => {
       }
     ];
 
-    const result = projector.projectToModel(runtimeMessages, {
+    const result = projector.projectToModel(engineMessages, {
       sessionId: "sess_1",
       activeAgentName: "default"
     });
 
     expect(result.diagnostics.appliedCompactBoundaryId).toBe("boundary_1");
     expect(result.messages.map((message) => message.sourceMessageIds[0])).toEqual(["summary_1", "msg_new"]);
+  });
+
+  it("reconstructs summary plus recent messages when compact artifacts are appended at the end", () => {
+    const projector = new EngineMessageProjector();
+    const engineMessages: EngineMessage[] = [
+      {
+        id: "msg_old",
+        sessionId: "sess_1",
+        role: "user",
+        kind: "user_input",
+        content: "old request",
+        createdAt: "2026-04-08T00:00:00.000Z"
+      },
+      {
+        id: "msg_recent_user",
+        sessionId: "sess_1",
+        role: "user",
+        kind: "user_input",
+        content: "recent request",
+        createdAt: "2026-04-08T00:00:01.000Z"
+      },
+      {
+        id: "msg_recent_reply",
+        sessionId: "sess_1",
+        role: "assistant",
+        kind: "assistant_text",
+        content: "recent reply",
+        createdAt: "2026-04-08T00:00:02.000Z",
+        metadata: {
+          modelCallStepSeq: 1
+        }
+      },
+      {
+        id: "boundary_2",
+        sessionId: "sess_1",
+        role: "system",
+        kind: "compact_boundary",
+        content: "Conversation compacted",
+        createdAt: "2026-04-08T00:00:03.000Z",
+        metadata: {
+          extra: {
+            compactThroughMessageId: "msg_old"
+          }
+        }
+      },
+      {
+        id: "summary_2",
+        sessionId: "sess_1",
+        role: "system",
+        kind: "compact_summary",
+        content: "Summary of earlier work",
+        createdAt: "2026-04-08T00:00:04.000Z",
+        metadata: {
+          summaryForBoundaryId: "boundary_2"
+        }
+      }
+    ];
+
+    const result = projector.projectToModel(engineMessages, {
+      sessionId: "sess_1",
+      activeAgentName: "default"
+    });
+
+    expect(result.diagnostics.appliedCompactBoundaryId).toBe("boundary_2");
+    expect(result.messages.map((message) => message.sourceMessageIds[0])).toEqual([
+      "summary_2",
+      "msg_recent_user",
+      "msg_recent_reply"
+    ]);
   });
 
   it("serializes model messages into AI SDK-compatible messages", () => {

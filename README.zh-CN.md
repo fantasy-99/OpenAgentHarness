@@ -8,7 +8,7 @@
 <h1 align="center">Open Agent Harness</h1>
 
 <p align="center">
-  Headless、workspace-first 的 Agent Runtime，面向构建 Agent 产品、企业内部 AI 平台和嵌入式 Copilot 的团队。
+  Headless、workspace-first 的 Agent Engine，面向构建 Agent 产品、企业内部 AI 平台和嵌入式 Copilot 的团队。
 </p>
 
 <p align="center">
@@ -19,12 +19,12 @@
 
 ## 它是什么？
 
-Open Agent Harness 是一个**可部署的后端运行时**，负责承载 Agent 对话和任务执行。你保留自己的前端、认证体系和产品体验——runtime 负责底下的一切。
+Open Agent Harness 是一个**可部署的 Agent Engine**，负责承载 Agent Runtime 的对话和任务执行。你保留自己的前端、认证体系和产品体验，Engine 负责底下的一切。
 
-**你做自己的 Agent 产品，我们提供可复用的 runtime。**
+**你做自己的 Agent 产品，我们提供可复用的 Engine。**
 
 > 不是开箱即用的聊天产品，不是身份系统，也不是 SaaS 控制平面。
-> 它是这些产品背后那个可编程的运行时内核。
+> 它是这些产品背后那个可编程的 Engine 内核。
 
 ## Web 控制台
 
@@ -41,7 +41,7 @@ Open Agent Harness 是一个**可部署的后端运行时**，负责承载 Agent
 
 ## 架构概览
 
-运行时分为清晰的层次：
+Engine 分为清晰的层次：
 
 | 层次 | 职责 |
 | --- | --- |
@@ -54,7 +54,7 @@ Open Agent Harness 是一个**可部署的后端运行时**，负责承载 Agent
 
 ## Workspace-First 设计
 
-**Workspace** 是核心定制边界。一套 runtime 可以同时承载多个 workspace，每个 workspace 可以自带：
+**Workspace** 是核心定制边界。一套 Engine 可以同时承载多个 workspace，每个 workspace 可以自带：
 
 - Agent 和 prompt 策略
 - Skills、actions、tools
@@ -62,7 +62,7 @@ Open Agent Harness 是一个**可部署的后端运行时**，负责承载 Agent
 - 模型配置
 - Tool servers（本地或远程）
 
-两个 workspace 即使跑在同一个 runtime 上，也可以为不同团队、仓库或产品场景表现出完全不同的行为。
+两个 workspace 即使跑在同一个 Engine 上，也可以为不同团队、仓库或产品场景表现出完全不同的行为。
 
 | Workspace 类型 | 说明 |
 | --- | --- |
@@ -152,13 +152,14 @@ pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/worker.ts
 ```
 
 如果 `server.docker.yaml` 没有显式配置 `workers.embedded`，`pnpm local:up` 现在会为 sandbox 内 worker 池补上 `min_count: 2`、`max_count: 4` 的本地默认值，这样后台工具和 subagent 默认就能并行，而不会退回单个执行槽。
+如果没有显式配置 `workers.standalone.min_replicas` 或 `sandbox.fleet.min_count`，本地 stack 现在默认允许 `oah-sandbox` 缩到 `0`，没有 workspace / session 时不会再额外常驻一个空 sandbox。
 
 ## 适用场景
 
 **很适合：**
-- 构建企业内部 AI 平台或 Agent 产品——开发者定义 agent 工作逻辑，用户根据场景切换不同 agent，共用同一套 runtime
+- 构建企业内部 AI 平台或 Agent 产品——开发者定义 agent 工作逻辑，用户根据场景切换不同 agent，共用同一套 Engine
 - 需要一个后端同时服务多个 workspace
-- 希望保留自己的前端、认证体系和产品体验，复用共享 runtime
+- 希望保留自己的前端、认证体系和产品体验，复用共享 Engine
 - 需要比固定 Agent UI 或本地 agent loop 更强的控制力
 
 **不太适合：**
@@ -170,9 +171,9 @@ pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/worker.ts
 
 | 场景 | 为什么适合 |
 | --- | --- |
-| 企业内部研发 Copilot | 不同仓库/团队共享 runtime，各自配置不同 agent |
-| 多 Agent 产品 | 开发者定义 agent 逻辑，用户按场景切换，共用一套 runtime |
-| 现有产品中的嵌入式 Copilot | Runtime 保持 headless，放在现有产品后面 |
+| 企业内部研发 Copilot | 不同仓库/团队共享 Engine，各自配置不同 agent |
+| 多 Agent 产品 | 开发者定义 agent 逻辑，用户按场景切换，共用一套 Engine |
+| 现有产品中的嵌入式 Copilot | Engine 保持 headless，放在现有产品后面 |
 | 单 repo 专属后端 | `single workspace` 模式直接聚焦部署 |
 
 ## 文档导航
@@ -182,6 +183,6 @@ pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/worker.ts
 | [快速开始](./docs/getting-started.md) | 环境搭建和第一步 |
 | [设计概览](./docs/design-overview.md) | 设计原则和系统架构 |
 | [Workspace 指南](./docs/workspace/README.md) | Workspace 配置和能力定义 |
-| [运行时内部](./docs/runtime/README.md) | 运行时生命周期和 Context Engine |
+| [Engine 内部](./docs/engine/README.md) | Engine 生命周期和 Context Engine |
 | [API 参考](./docs/openapi/README.md) | OpenAPI 规范和接口说明 |
-| [蓝图](./blueprints/README.md) | Workspace 蓝图使用方法 |
+| [Runtimes](./runtimes/README.md) | Workspace Runtime 使用方法 |

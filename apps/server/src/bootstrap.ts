@@ -9,30 +9,31 @@ import {
   type ReadinessReport
 } from "@oah/api-contracts";
 import {
-  deleteWorkspaceBlueprint,
+  deleteWorkspaceRuntime,
   discoverWorkspace,
   discoverWorkspaces,
-  initializeWorkspaceFromBlueprint,
-  listWorkspaceBlueprints,
+  initializeWorkspaceFromRuntime,
+  listWorkspaceRuntimes,
   loadServerConfig,
   resolveWorkspaceCreationRoot,
-  uploadWorkspaceBlueprint
+  uploadWorkspaceRuntime
 } from "@oah/config";
 import type { ServerConfig } from "@oah/config";
 import {
   AppError,
-  ControlPlaneRuntimeService,
-  ExecutionRuntimeService,
-  RuntimeService,
+  ControlPlaneEngineService,
+  ExecutionEngineService,
+  EngineService,
   createId
-} from "@oah/runtime-core";
+} from "@oah/engine-core";
 import type {
   ControlPlaneRuntimeOperations,
   ExecutionRuntimeOperations,
-  RuntimeLogger,
+  EngineLogger,
   SandboxHostProviderKind,
+  WorkspacePrewarmer,
   WorkspaceRecord
-} from "@oah/runtime-core";
+} from "@oah/engine-core";
 import { AiSdkModelGateway } from "@oah/model-gateway";
 import { createSQLiteRuntimePersistence } from "@oah/storage-sqlite";
 import {
@@ -60,16 +61,17 @@ import {
   ObjectStorageMirrorController,
   seedWorkspaceRootToExternalRef
 } from "./object-storage.js";
-import { appendRuntimeLogEvent, buildRuntimeConsoleLogger } from "./runtime-console.js";
+import { appendEngineLogEvent, buildRuntimeConsoleLogger } from "./engine-console.js";
 import { createSandboxBackedWorkspaceInitializer } from "./bootstrap/sandbox-backed-workspace-initializer.js";
 import {
   describeObjectStoragePolicy,
+  objectStorageBacksManagedWorkspaces,
   resolveManagedWorkspaceExternalRef,
   resolveObjectStorageMirrorConfig
 } from "./bootstrap/object-storage-policy.js";
 import {
-  createRuntimeAdminCapabilities,
-  type RuntimeAdminCapabilities
+  createEngineAdminCapabilities,
+  type EngineAdminCapabilities
 } from "./bootstrap/admin-capabilities.js";
 import {
   createPlatformModelCatalogService,
@@ -77,13 +79,14 @@ import {
 } from "./bootstrap/platform-model-service.js";
 import {
   buildSingleWorkspaceConfig,
-  describeRuntimeProcess,
-  type RuntimeProcessDescriptor,
+  describeEngineProcess,
+  type EngineProcessDescriptor,
   parseConfigPath,
   parseSingleWorkspaceOptions,
   shouldStartEmbeddedWorker
-} from "./bootstrap/runtime-process.js";
+} from "./bootstrap/engine-process.js";
 import {
+  describeQueuedRunWithScopedVisibility,
   ScopedRunRepository,
   ScopedSessionRepository,
   ScopedWorkspaceRepository
@@ -109,38 +112,69 @@ import {
   resolveSqliteShadowRoot,
   resolveWorkspaceMaterializationCacheRoot,
   type WorkspaceLocalArtifactCleanupStatus
-} from "./bootstrap/runtime-paths.js";
+} from "./bootstrap/engine-state-paths.js";
 
-export { cleanupWorkspaceLocalArtifacts } from "./bootstrap/runtime-paths.js";
-export type { WorkspaceLocalArtifactCleanupStatus } from "./bootstrap/runtime-paths.js";
+export { cleanupWorkspaceLocalArtifacts } from "./bootstrap/engine-state-paths.js";
+export type { WorkspaceLocalArtifactCleanupStatus } from "./bootstrap/engine-state-paths.js";
+
+function hasRemoteErrorCode(error: unknown, code: string): boolean {
+  if (error instanceof AppError) {
+    return error.code === code;
+  }
+
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  try {
+    const payload = JSON.parse(error.message) as {
+      error?: {
+        code?: unknown;
+      };
+    };
+    return payload.error?.code === code;
+  } catch {
+    return false;
+  }
+}
 
 async function clearWorkspaceRootContents(input: {
   sandboxHost: SandboxHost;
   workspace: WorkspaceRecord;
 }): Promise<void> {
-  const lease = await input.sandboxHost.workspaceFileAccessProvider.acquire({
-    workspace: input.workspace,
-    access: "write"
-  });
+  let lease: Awaited<ReturnType<typeof input.sandboxHost.workspaceFileAccessProvider.acquire>> | undefined;
 
   try {
-    const entries = await input.sandboxHost.workspaceFileSystem.readdir(lease.workspace.rootPath);
+    lease = await input.sandboxHost.workspaceFileAccessProvider.acquire({
+      workspace: input.workspace,
+      access: "write"
+    });
+    const rootPath = lease.workspace.rootPath;
+    const entries = await input.sandboxHost.workspaceFileSystem.readdir(rootPath);
     console.info(
-      `[oah-bootstrap] Clearing sandbox workspace root for ${input.workspace.id} at ${lease.workspace.rootPath} (${entries.length} top-level entr${
+      `[oah-bootstrap] Clearing sandbox workspace root for ${input.workspace.id} at ${rootPath} (${entries.length} top-level entr${
         entries.length === 1 ? "y" : "ies"
       })`
     );
     await Promise.all(
       entries.map((entry) =>
-        input.sandboxHost.workspaceFileSystem.rm(path.posix.join(lease.workspace.rootPath, entry.name), {
+        input.sandboxHost.workspaceFileSystem.rm(path.posix.join(rootPath, entry.name), {
           recursive: true,
           force: true
         })
       )
     );
-    console.info(`[oah-bootstrap] Cleared sandbox workspace root contents for ${input.workspace.id} at ${lease.workspace.rootPath}`);
+    console.info(`[oah-bootstrap] Cleared sandbox workspace root contents for ${input.workspace.id} at ${rootPath}`);
+  } catch (error) {
+    if (hasRemoteErrorCode(error, "workspace_not_found")) {
+      console.warn(
+        `[oah-bootstrap] Remote sandbox cleanup skipped for ${input.workspace.id}; workspace was already missing during deletion`
+      );
+      return;
+    }
+    throw error;
   } finally {
-    await lease.release();
+    await lease?.release();
   }
 }
 
@@ -291,12 +325,12 @@ export function createPlacementAwareSessionRunQueue<TQueue extends PlacementAwar
 
 export {
   buildSingleWorkspaceConfig,
-  describeRuntimeProcess,
+  describeEngineProcess,
   parseConfigPath,
   parseSingleWorkspaceOptions,
   shouldStartEmbeddedWorker,
   shouldStartInlineWorker
-} from "./bootstrap/runtime-process.js";
+} from "./bootstrap/engine-process.js";
 export { resolveEmbeddedWorkerPoolConfig, resolveWorkerMode } from "./bootstrap/worker-host.js";
 export { findManagedWorkspaceIdsToDelete, reconcileDiscoveredWorkspaces } from "./bootstrap/workspace-registry.js";
 
@@ -370,11 +404,11 @@ function withManagedWorkspaceExternalRef(
 
 export interface BootstrappedRuntime {
   config: Awaited<ReturnType<typeof loadServerConfig>>;
-  controlPlaneRuntimeService: ControlPlaneRuntimeOperations;
-  executionRuntimeService: ExecutionRuntimeOperations;
-  runtimeService: RuntimeService;
+  controlPlaneEngineService: ControlPlaneRuntimeOperations;
+  executionEngineService: ExecutionRuntimeOperations;
+  runtimeService: EngineService;
   modelGateway: AiSdkModelGateway;
-  process: RuntimeProcessDescriptor;
+  process: EngineProcessDescriptor;
   workspaceMode:
     | {
         kind: "multi";
@@ -385,13 +419,13 @@ export interface BootstrappedRuntime {
         workspaceKind: "project";
         rootPath: string;
       };
-  listWorkspaceBlueprints?: () => Promise<Array<{ name: string }>>;
-  uploadWorkspaceBlueprint?: (input: {
-    blueprintName: string;
+  listWorkspaceRuntimes?: () => Promise<Array<{ name: string }>>;
+  uploadWorkspaceRuntime?: (input: {
+    runtimeName: string;
     zipBuffer: Buffer;
     overwrite?: boolean | undefined;
   }) => Promise<{ name: string }>;
-  deleteWorkspaceBlueprint?: (input: { blueprintName: string }) => Promise<void>;
+  deleteWorkspaceRuntime?: (input: { runtimeName: string }) => Promise<void>;
   listPlatformModels?: () => Promise<
     Array<{
       id: string;
@@ -428,17 +462,18 @@ export interface BootstrappedRuntime {
     remotePrefix?: string | undefined;
     isLocalOwner: boolean;
   } | undefined>;
-  adminCapabilities: RuntimeAdminCapabilities;
+  clearWorkspaceCoordination?: (workspaceId: string) => Promise<void>;
+  adminCapabilities: EngineAdminCapabilities;
   sandboxHostProviderKind?: SandboxHostProviderKind | undefined;
   localOwnerBaseUrl?: string | undefined;
-  appendRuntimeLog(input: {
+  appendEngineLog(input: {
     sessionId: string;
     runId?: string | undefined;
     level: "debug" | "info" | "warn" | "error";
     category: "run" | "model" | "tool" | "hook" | "agent" | "http" | "system";
     message: string;
     details?: unknown;
-    context?: import("@oah/api-contracts").RuntimeLogEventContext | undefined;
+    context?: import("@oah/api-contracts").EngineLogEventContext | undefined;
   }): Promise<void>;
   healthReport(): Promise<HealthReport>;
   readinessReport(): Promise<ReadinessReport>;
@@ -536,6 +571,45 @@ function resolveRuntimeInstanceId(processKind: "api" | "worker"): string {
   }
 
   return `${processKind}:${process.pid}`;
+}
+
+function createWorkspacePrewarmer(options: {
+  sandboxHost: SandboxHost;
+  getWorkspaceRecord(workspaceId: string): Promise<WorkspaceRecord>;
+}): WorkspacePrewarmer {
+  const inFlightByWorkspaceId = new Map<string, Promise<void>>();
+
+  return {
+    async prewarmWorkspace(workspaceId: string): Promise<void> {
+      const normalizedWorkspaceId = workspaceId.trim();
+      if (normalizedWorkspaceId.length === 0) {
+        return;
+      }
+
+      const existingTask = inFlightByWorkspaceId.get(normalizedWorkspaceId);
+      if (existingTask) {
+        await existingTask;
+        return;
+      }
+
+      let task: Promise<void>;
+      task = (async () => {
+        const workspace = await options.getWorkspaceRecord(normalizedWorkspaceId);
+        const lease = await options.sandboxHost.workspaceFileAccessProvider.acquire({
+          workspace,
+          access: "read"
+        });
+        await lease.release();
+      })().finally(() => {
+        if (inFlightByWorkspaceId.get(normalizedWorkspaceId) === task) {
+          inFlightByWorkspaceId.delete(normalizedWorkspaceId);
+        }
+      });
+
+      inFlightByWorkspaceId.set(normalizedWorkspaceId, task);
+      await task;
+    }
+  };
 }
 
 export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<BootstrappedRuntime> {
@@ -765,7 +839,9 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     });
   }
   const redisConfigured = Boolean(config.storage.redis_url && config.storage.redis_url.trim().length > 0);
-  const adminCapabilities = createRuntimeAdminCapabilities({
+  const useSandboxBackedWorkspaceInitializer =
+    remoteSandboxProvider && sandboxHost && !objectStorageBacksManagedWorkspaces(config);
+  const adminCapabilities = createEngineAdminCapabilities({
     storageAdmin: createStorageAdmin({
       ...("pool" in persistence ? { postgresPool: persistence.pool } : {}),
       ...(config.storage.postgres_url ? { postgresConnectionString: config.storage.postgres_url } : {}),
@@ -778,7 +854,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       archiveExportRoot: resolveArchiveExportRoot(config.paths)
     })
   });
-  const runtimeProcess = describeRuntimeProcess({
+  const runtimeProcess = describeEngineProcess({
     processKind,
     startWorker,
     hasRedisRunQueue: Boolean(redisRunQueue)
@@ -831,10 +907,69 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   let workspaceSyncTimer: NodeJS.Timeout | undefined;
   let workspaceMaterializationMaintenanceTimer: NodeJS.Timeout | undefined;
 
+  async function clearWorkspaceCoordination(workspaceId: string): Promise<void> {
+    const normalizedWorkspaceId = workspaceId.trim();
+    if (normalizedWorkspaceId.length === 0) {
+      return;
+    }
+
+    const results = await Promise.allSettled([
+      redisWorkspaceLeaseRegistry?.removeWorkspace(normalizedWorkspaceId) ?? Promise.resolve(),
+      redisWorkspacePlacementRegistry?.removeWorkspace(normalizedWorkspaceId) ?? Promise.resolve()
+    ]);
+    const failures = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (failures.length > 0) {
+      console.warn(
+        `[oah-bootstrap] Failed to clear coordination state for workspace ${normalizedWorkspaceId}.`,
+        failures.map((failure) => failure.reason)
+      );
+    }
+  }
+
+  async function clearOrphanedWorkspaceCoordination(
+    workspaces: Iterable<Pick<WorkspaceRecord, "id">>,
+    reason: string
+  ): Promise<void> {
+    if (!redisWorkspaceLeaseRegistry && !redisWorkspacePlacementRegistry) {
+      return;
+    }
+
+    const knownWorkspaceIds = new Set([...workspaces].map((workspace) => workspace.id));
+    const orphanWorkspaceIds = new Set<string>();
+
+    if (redisWorkspacePlacementRegistry) {
+      for (const placement of await redisWorkspacePlacementRegistry.listAll()) {
+        if (!knownWorkspaceIds.has(placement.workspaceId)) {
+          orphanWorkspaceIds.add(placement.workspaceId);
+        }
+      }
+    }
+
+    if (redisWorkspaceLeaseRegistry) {
+      for (const lease of await redisWorkspaceLeaseRegistry.listActive()) {
+        if (!knownWorkspaceIds.has(lease.workspaceId)) {
+          orphanWorkspaceIds.add(lease.workspaceId);
+        }
+      }
+    }
+
+    if (orphanWorkspaceIds.size === 0) {
+      return;
+    }
+
+    await Promise.all([...orphanWorkspaceIds].map(async (workspaceId) => clearWorkspaceCoordination(workspaceId)));
+    console.info(
+      `[oah-bootstrap] Cleared orphaned workspace coordination for ${orphanWorkspaceIds.size} workspace(s) during ${reason}: ${[
+        ...orphanWorkspaceIds
+      ].join(", ")}`
+    );
+  }
+
   reconciledWorkspaces.forEach((workspace) => {
     visibleWorkspaceIds.add(workspace.id);
   });
   await Promise.all(reconciledWorkspaces.map((workspace) => workspaceRepository.upsert(workspace)));
+  await clearOrphanedWorkspaceCoordination(reconciledWorkspaces, "bootstrap");
 
   const syncWorkspaceRegistry =
     managesWorkspaceRegistry
@@ -893,6 +1028,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
             latestReconciledWorkspaces.forEach((workspace) => {
               visibleWorkspaceIds.add(workspace.id);
             });
+            await clearOrphanedWorkspaceCoordination(latestReconciledWorkspaces, "workspace_registry_sync");
             updateWatchedProjectRoots(latestReconciledWorkspaces);
             lastWorkspaceRegistrySyncAt = Date.now();
           })().finally(() => {
@@ -1030,7 +1166,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     }, workspaceMaterializationConfig.maintenanceIntervalMs);
     workspaceMaterializationMaintenanceTimer.unref?.();
   }
-  const runtimeService = new RuntimeService({
+  const runtimeService = new EngineService({
     defaultModel: config.llm.default_model,
     modelGateway: resolvedModelGateway,
     logger: runtimeDebugLogger,
@@ -1109,6 +1245,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
                 paths: config.paths,
                 sqliteShadowRoot
               });
+              await clearWorkspaceCoordination(workspace.id);
               console.info(
                 `[oah-bootstrap] Cleaned local artifacts for deleted workspace ${workspace.id} (${cleanup.mode}): ${cleanup.removedPaths.join(", ")}${
                   deletedCopies && deletedCopies.length > 0 ? `; evicted copies: ${deletedCopies.map((copy) => copy.localPath).join(", ")}` : ""
@@ -1121,16 +1258,16 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     ...(singleWorkspace === undefined
       ? {
           workspaceInitializer: {
-            initialize: remoteSandboxProvider && sandboxHost
+            initialize: useSandboxBackedWorkspaceInitializer
               ? createSandboxBackedWorkspaceInitializer({
-                  blueprintDir: config.paths.blueprint_dir,
+                  runtimeDir: config.paths.runtime_dir,
                   platformToolDir: config.paths.tool_dir,
                   platformSkillDir: config.paths.skill_dir,
                   toolDir,
                   platformModels: models,
                   platformAgents,
-                  sandboxHost,
-                  ...(sandboxHost.providerKind === "self_hosted" && config.sandbox?.self_hosted?.base_url?.trim()
+                  sandboxHost: sandboxHost!,
+                  ...(sandboxHost?.providerKind === "self_hosted" && config.sandbox?.self_hosted?.base_url?.trim()
                     ? {
                         selfHosted: {
                           baseUrl: config.sandbox.self_hosted.base_url.trim(),
@@ -1152,17 +1289,17 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
                     rootPath: input.rootPath
                   });
 
-                  await initializeWorkspaceFromBlueprint(
+                  await initializeWorkspaceFromRuntime(
                     {
-                      blueprintDir: config.paths.blueprint_dir,
-                      blueprintName: input.blueprint,
+                      runtimeDir: config.paths.runtime_dir,
+                      runtimeName: input.runtime,
                       rootPath: workspaceRoot,
                       platformToolDir: config.paths.tool_dir,
                       platformSkillDir: config.paths.skill_dir,
                       agentsMd: input.agentsMd,
                       toolServers: (input as typeof input & { toolServers?: Record<string, Record<string, unknown>> | undefined }).toolServers,
                       skills: input.skills
-                    } as Parameters<typeof initializeWorkspaceFromBlueprint>[0]
+                    } as Parameters<typeof initializeWorkspaceFromRuntime>[0]
                   );
 
                   const inferredExternalRef = resolveManagedWorkspaceExternalRef(workspaceRoot, "project", config);
@@ -1193,7 +1330,13 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         }
       : {})
   });
-  const controlPlaneRuntimeService = new ControlPlaneRuntimeService(runtimeService, {
+  const workspacePrewarmer = sandboxHost
+    ? createWorkspacePrewarmer({
+        sandboxHost,
+        getWorkspaceRecord: (workspaceId: string) => runtimeService.getWorkspaceRecord(workspaceId)
+      })
+    : undefined;
+  const controlPlaneEngineService = new ControlPlaneEngineService(runtimeService, {
     ...(workspaceMaterializationManager
       ? {
           workspaceActivityTracker: {
@@ -1202,9 +1345,11 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
             }
           }
         }
-      : {})
+      : {}),
+    ...(workspacePrewarmer ? { workspacePrewarmer } : {}),
+    ...(runtimeDebugLogger ? { logger: runtimeDebugLogger } : {})
   });
-  const executionRuntimeService = new ExecutionRuntimeService(runtimeService);
+  const executionEngineService = new ExecutionEngineService(runtimeService);
   const workerRuntime = assemblyProfile.enableWorkerRuntime
     ? createWorkerRuntimeControl({
         startWorker,
@@ -1214,7 +1359,9 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         config,
         redisRunQueue,
         redisWorkerRegistry,
-        runtimeService: executionRuntimeService,
+        runtimeService: executionEngineService,
+        describeQueuedRun: (runId) =>
+          describeQueuedRunWithScopedVisibility(persistence.runRepository, visibleWorkspaceIds, runId),
         logger: {
           info(message) {
             console.info(message);
@@ -1361,8 +1508,8 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
 
   return {
     config,
-    controlPlaneRuntimeService,
-    executionRuntimeService,
+    controlPlaneEngineService,
+    executionEngineService,
     runtimeService,
     modelGateway: resolvedModelGateway,
     process: runtimeProcess,
@@ -1374,18 +1521,18 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     subscribePlatformModelSnapshot: (listener) => platformModelService.subscribe(listener),
     ...(singleWorkspace === undefined
       ? {
-          listWorkspaceBlueprints: () => listWorkspaceBlueprints(config.paths.blueprint_dir),
-          uploadWorkspaceBlueprint: (input: { blueprintName: string; zipBuffer: Buffer; overwrite?: boolean | undefined }) =>
-            uploadWorkspaceBlueprint({
-              blueprintDir: config.paths.blueprint_dir,
-              blueprintName: input.blueprintName,
+          listWorkspaceRuntimes: () => listWorkspaceRuntimes(config.paths.runtime_dir),
+          uploadWorkspaceRuntime: (input: { runtimeName: string; zipBuffer: Buffer; overwrite?: boolean | undefined }) =>
+            uploadWorkspaceRuntime({
+              runtimeDir: config.paths.runtime_dir,
+              runtimeName: input.runtimeName,
               zipBuffer: input.zipBuffer,
               ...(input.overwrite !== undefined ? { overwrite: input.overwrite } : {})
             }),
-          deleteWorkspaceBlueprint: (input: { blueprintName: string }) =>
-            deleteWorkspaceBlueprint({
-              blueprintDir: config.paths.blueprint_dir,
-              blueprintName: input.blueprintName
+          deleteWorkspaceRuntime: (input: { runtimeName: string }) =>
+            deleteWorkspaceRuntime({
+              runtimeDir: config.paths.runtime_dir,
+              runtimeName: input.runtimeName
             }),
           ...(!remoteSandboxProvider
             ? {
@@ -1456,6 +1603,11 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
           }
         }
       : {}),
+    ...((redisWorkspaceLeaseRegistry || redisWorkspacePlacementRegistry)
+      ? {
+          clearWorkspaceCoordination
+        }
+      : {}),
     ...(redisWorkspaceLeaseRegistry
       ? {
           resolveWorkspaceOwnership: async (workspaceId: string) => {
@@ -1479,8 +1631,8 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     adminCapabilities,
     ...(sandboxHost ? { sandboxHostProviderKind: sandboxHost.providerKind } : {}),
     ...(ownerBaseUrl ? { localOwnerBaseUrl: ownerBaseUrl } : {}),
-    appendRuntimeLog(input) {
-      return appendRuntimeLogEvent(primarySessionEventStore, {
+    appendEngineLog(input) {
+      return appendEngineLogEvent(primarySessionEventStore, {
         ...input,
         timestamp: new Date().toISOString()
       });

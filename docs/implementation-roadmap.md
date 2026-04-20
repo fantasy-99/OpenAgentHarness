@@ -6,11 +6,11 @@
 
 对于 worker 执行层、扩缩容、控制面与商业化治理的后续路线，请看专门维护的文档：
 
-- [Runtime / Worker 执行层成熟化路线图](./runtime/worker-scaling-roadmap.md)
+- [Engine / Worker 执行层成熟化路线图](./engine/worker-scaling-roadmap.md)
 
 ## 1. 当前目标
 
-在可信内网 / 自有环境前提下，交付一个可用的 Agent Runtime 服务，满足：
+在可信内网 / 自有环境前提下，交付一个可用的 Agent Engine 服务，满足：
 
 - 多用户共享一个实例
 - 多 workspace 自动发现本地能力

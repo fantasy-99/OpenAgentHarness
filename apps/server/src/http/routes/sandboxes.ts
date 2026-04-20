@@ -31,8 +31,8 @@ import type {
   WorkspaceEntry,
   WorkspaceEntryPage,
   WorkspaceFileContentResult
-} from "@oah/runtime-core";
-import { AppError, createId } from "@oah/runtime-core";
+} from "@oah/engine-core";
+import { AppError, createId } from "@oah/engine-core";
 
 import { assertWorkspaceAccess, createParamsSchema, sendError, toCallerContext } from "../context.js";
 import {
@@ -553,7 +553,7 @@ function registerSandboxCoreRoutes(
         }
       }
 
-      if (!input.name || !input.blueprint) {
+      if (!input.name || !input.runtime) {
         throw new AppError(404, "workspace_not_found", `Workspace ${input.workspaceId} was not found.`);
       }
 
@@ -563,7 +563,7 @@ function registerSandboxCoreRoutes(
 
       const createWorkspaceInput = {
         name: input.name,
-        blueprint: input.blueprint,
+        runtime: input.runtime,
         executionPolicy: input.executionPolicy,
         ...(input.externalRef ? { externalRef: input.externalRef } : {}),
         ...(ownerId ? { ownerId } : {}),
@@ -625,14 +625,14 @@ function registerSandboxCoreRoutes(
       const workspace = await dependencies.runtimeService.createWorkspace({
         input: {
           name: input.name as string,
-          blueprint: input.blueprint as string,
+          runtime: input.runtime as string,
           executionPolicy: input.executionPolicy,
           ...(input.externalRef ? { externalRef: input.externalRef } : {}),
           ...(input.serviceName ? { serviceName: input.serviceName } : {}),
           ...(reservedPlacement.workspaceId ? { workspaceId: reservedPlacement.workspaceId } : {})
         } as {
           name: string;
-          blueprint: string;
+          runtime: string;
           executionPolicy: "local" | "container" | "remote_runner";
           externalRef?: string | undefined;
           serviceName?: string | undefined;

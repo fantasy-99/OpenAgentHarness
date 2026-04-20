@@ -50,9 +50,7 @@ Agents are defined in `.openharness/agents/*.md` using Markdown with YAML frontm
 ---
 mode: primary
 description: Implement requested changes in the current workspace
-model:
-  model_ref: platform/openai-default
-  temperature: 0.2
+model: default
 system_reminder: |
   You are now acting as the builder agent.
   Focus on making concrete code changes.
@@ -91,7 +89,7 @@ Prefer making concrete progress in the current workspace.
 | --- | --- | --- |
 | `mode` | No | `primary`, `subagent`, or `all`. Default: `primary` |
 | `description` | No | Short description of the agent |
-| `model` | Recommended | Model reference and inference parameters |
+| `model` | Recommended | Model alias or direct model reference |
 | `system_reminder` | No | Reminder injected after agent switch |
 | `tools` | No | Allowlist of native tools, actions, skills, external tools |
 | `switch` | No | Agents this agent can switch to within a run |
@@ -120,16 +118,14 @@ Fields not placed in frontmatter: `name` (redundant with filename), `context` (r
 ### `model`
 
 ```yaml
-model:
-  model_ref: platform/openai-default
-  temperature: 0.2
+model: default
 ```
 
 | Field | Description |
 | --- | --- |
-| `model_ref` | Format: `platform/<name>` or `workspace/<name>` |
-| `temperature` | Sampling temperature |
-| `max_tokens` | Maximum output tokens |
+| `model` | Alias declared in `settings.yaml -> models`; direct `model_ref` is also accepted for compatibility |
+
+The runtime resolves `model` to a concrete `model_ref` during load. Model parameters such as `temperature`, `top_p`, and `max_tokens` should be configured under `settings.yaml -> models.<alias>`. Legacy `model: { alias: ... }`, `model_ref`, and frontmatter-level model params are still accepted for compatibility.
 
 `model` is the only recommended-required structured field in frontmatter.
 
@@ -237,9 +233,7 @@ A reminder segment injected when switching agents.
 ---
 mode: primary
 description: Analyze tasks and create implementation plans
-model:
-  model_ref: platform/openai-default
-  temperature: 0.3
+model: default
 tools:
   native:
     - Read
@@ -262,9 +256,7 @@ switch to the builder agent.
 ---
 mode: primary
 description: Implement changes in the workspace
-model:
-  model_ref: platform/openai-default
-  temperature: 0.2
+model: default
 tools:
   native:
     - Bash
@@ -293,9 +285,7 @@ When done, delegate to the reviewer for a code review.
 ---
 mode: subagent
 description: Review code changes
-model:
-  model_ref: platform/openai-default
-  temperature: 0.1
+model: default
 tools:
   native:
     - Read

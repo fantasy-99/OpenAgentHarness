@@ -4,7 +4,7 @@ export {
   MessageContentDetail,
   InspectorDisclosure,
   ToolNameChips,
-  RuntimeToolList,
+  EngineToolList,
   ToolServerList,
   ToolSnapshotBrowser,
   TraceSummaryStat,

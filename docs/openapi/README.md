@@ -19,9 +19,9 @@ HTTP API 基于 REST 资源接口 + SSE 事件流。接口定义以 [openapi.yam
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/blueprints` | 列出 workspace blueprints |
-| POST | `/blueprints/upload` | 上传 workspace blueprint |
-| DELETE | `/blueprints/{name}` | 删除 workspace blueprint |
+| GET | `/runtimes` | 列出 workspace runtimes |
+| POST | `/runtimes/upload` | 上传 workspace runtime |
+| DELETE | `/runtimes/{name}` | 删除 workspace runtime |
 | GET | `/workspaces` | 列出 workspace |
 | POST | `/workspaces` | 创建 workspace |
 | POST | `/workspaces/import` | 导入 workspace |

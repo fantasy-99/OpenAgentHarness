@@ -11,7 +11,7 @@ import {
   PostgresMessageRepository,
   PostgresRunRepository,
   PostgresRunStepRepository,
-  PostgresRuntimeMessageRepository,
+  PostgresEngineMessageRepository,
   PostgresSessionEventStore,
   PostgresSessionRepository,
   PostgresToolCallAuditRepository,
@@ -26,7 +26,7 @@ export interface PostgresRuntimePersistence {
   workspaceArchiveRepository: PostgresWorkspaceArchiveRepository;
   sessionRepository: PostgresSessionRepository;
   messageRepository: PostgresMessageRepository;
-  runtimeMessageRepository: PostgresRuntimeMessageRepository;
+  engineMessageRepository: PostgresEngineMessageRepository;
   runRepository: PostgresRunRepository;
   runStepRepository: PostgresRunStepRepository;
   sessionEventStore: PostgresSessionEventStore;
@@ -70,7 +70,7 @@ export async function createPostgresRuntimePersistence(
     workspaceArchiveRepository: new PostgresWorkspaceArchiveRepository(db),
     sessionRepository: new PostgresSessionRepository(db),
     messageRepository: new PostgresMessageRepository(db),
-    runtimeMessageRepository: new PostgresRuntimeMessageRepository(db),
+    engineMessageRepository: new PostgresEngineMessageRepository(db),
     runRepository: new PostgresRunRepository(db),
     runStepRepository: new PostgresRunStepRepository(db),
     sessionEventStore: new PostgresSessionEventStore(db),
@@ -95,7 +95,7 @@ export {
   PostgresMessageRepository,
   PostgresRunRepository,
   PostgresRunStepRepository,
-  PostgresRuntimeMessageRepository,
+  PostgresEngineMessageRepository,
   PostgresSessionEventStore,
   PostgresSessionRepository,
   PostgresToolCallAuditRepository,

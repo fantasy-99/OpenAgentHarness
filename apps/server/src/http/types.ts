@@ -5,13 +5,13 @@ import type {
   ControlPlaneRuntimeOperations,
   ModelGateway,
   SandboxHostProviderKind
-} from "@oah/runtime-core";
+} from "@oah/engine-core";
 import type {
   DistributedPlatformModelRefreshResult,
   HealthReport,
   PlatformModelSnapshot,
   ReadinessReport,
-  RuntimeLogEventContext
+  EngineLogEventContext
 } from "@oah/api-contracts";
 import type { StorageAdmin } from "../storage-admin.js";
 
@@ -39,14 +39,14 @@ export interface AppDependencies {
     isLocalOwner: boolean;
   } | undefined>) | undefined;
   resolveCallerContext?: ((request: FastifyRequest) => Promise<CallerContext | undefined> | CallerContext | undefined) | undefined;
-  listWorkspaceBlueprints?: (() => Promise<import("@oah/config").WorkspaceBlueprintDescriptor[]>) | undefined;
-  uploadWorkspaceBlueprint?: ((input: {
-    blueprintName: string;
+  listWorkspaceRuntimes?: (() => Promise<import("@oah/config").WorkspaceRuntimeDescriptor[]>) | undefined;
+  uploadWorkspaceRuntime?: ((input: {
+    runtimeName: string;
     zipBuffer: Buffer;
     overwrite: boolean;
-  }) => Promise<import("@oah/config").WorkspaceBlueprintDescriptor>) | undefined;
-  deleteWorkspaceBlueprint?: ((input: {
-    blueprintName: string;
+  }) => Promise<import("@oah/config").WorkspaceRuntimeDescriptor>) | undefined;
+  deleteWorkspaceRuntime?: ((input: {
+    runtimeName: string;
   }) => Promise<void>) | undefined;
   listPlatformModels?: (() => Promise<
     Array<{
@@ -80,17 +80,18 @@ export interface AppDependencies {
     workspaceId: string;
     state?: "unassigned" | "draining" | "evicted" | undefined;
   }) => Promise<void>) | undefined;
+  clearWorkspaceCoordination?: ((workspaceId: string) => Promise<void>) | undefined;
   healthCheck?: () => Promise<HealthReport> | HealthReport;
   readinessCheck?: () => Promise<ReadinessReport> | ReadinessReport;
   storageAdmin?: StorageAdmin;
-  appendRuntimeLog?: (input: {
+  appendEngineLog?: (input: {
     sessionId: string;
     runId?: string | undefined;
     level: "debug" | "info" | "warn" | "error";
     category: "run" | "model" | "tool" | "hook" | "agent" | "http" | "system";
     message: string;
     details?: unknown;
-    context?: RuntimeLogEventContext | undefined;
+    context?: EngineLogEventContext | undefined;
   }) => Promise<void>;
   sandboxHostProviderKind?: SandboxHostProviderKind | undefined;
   sandboxOwnerFallbackBaseUrl?: string | undefined;

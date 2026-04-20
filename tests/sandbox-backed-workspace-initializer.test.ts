@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { createLocalWorkspaceCommandExecutor, createLocalWorkspaceFileSystem, type WorkspaceRecord } from "@oah/runtime-core";
+import { createLocalWorkspaceCommandExecutor, createLocalWorkspaceFileSystem, type WorkspaceRecord } from "@oah/engine-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createSandboxBackedWorkspaceInitializer } from "../apps/server/src/bootstrap/sandbox-backed-workspace-initializer.ts";
@@ -20,28 +20,28 @@ afterEach(async () => {
 });
 
 describe("sandbox-backed workspace initializer", () => {
-  it("uploads blueprint files into self-hosted sandbox workspaces", async () => {
+  it("uploads runtime files into self-hosted sandbox workspaces", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-self-hosted-workspace-init-"));
     tempDirs.push(tempDir);
 
-    const blueprintDir = path.join(tempDir, "blueprints");
-    const blueprintRoot = path.join(blueprintDir, "workspace");
+    const runtimeDir = path.join(tempDir, "runtimes");
+    const runtimeRoot = path.join(runtimeDir, "workspace");
     const toolsDir = path.join(tempDir, "tools");
     const skillsDir = path.join(tempDir, "skills");
     const remoteWorkspaceRoot = path.join(tempDir, "remote-workspace");
 
     await Promise.all([
-      mkdir(path.join(blueprintRoot, ".openharness"), { recursive: true }),
-      mkdir(path.join(blueprintRoot, "nested"), { recursive: true }),
+      mkdir(path.join(runtimeRoot, ".openharness"), { recursive: true }),
+      mkdir(path.join(runtimeRoot, "nested"), { recursive: true }),
       mkdir(toolsDir, { recursive: true }),
       mkdir(skillsDir, { recursive: true }),
       mkdir(remoteWorkspaceRoot, { recursive: true })
     ]);
 
     await Promise.all([
-      writeFile(path.join(blueprintRoot, ".openharness", "settings.yaml"), "default_agent: assistant\n", "utf8"),
-      writeFile(path.join(blueprintRoot, "README.md"), "# Seeded from blueprint\n", "utf8"),
-      writeFile(path.join(blueprintRoot, "nested", "notes.txt"), "hello from blueprint\n", "utf8")
+      writeFile(path.join(runtimeRoot, ".openharness", "settings.yaml"), "default_agent: assistant\n", "utf8"),
+      writeFile(path.join(runtimeRoot, "README.md"), "# Seeded from runtime\n", "utf8"),
+      writeFile(path.join(runtimeRoot, "nested", "notes.txt"), "hello from runtime\n", "utf8")
     ]);
 
     const sandboxHost: SandboxHost = {
@@ -114,7 +114,7 @@ describe("sandbox-backed workspace initializer", () => {
     );
 
     const initializer = createSandboxBackedWorkspaceInitializer({
-      blueprintDir,
+      runtimeDir,
       platformToolDir: toolsDir,
       platformSkillDir: skillsDir,
       toolDir: toolsDir,
@@ -128,18 +128,18 @@ describe("sandbox-backed workspace initializer", () => {
 
     const initialized = await initializer.initialize({
       name: "remote-seed",
-      blueprint: "workspace",
+      runtime: "workspace",
       executionPolicy: "local"
     });
 
     expect(initialized.rootPath).toBe("/workspace");
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    await expect(readFile(path.join(remoteWorkspaceRoot, "README.md"), "utf8")).resolves.toBe("# Seeded from blueprint\n");
+    await expect(readFile(path.join(remoteWorkspaceRoot, "README.md"), "utf8")).resolves.toBe("# Seeded from runtime\n");
     await expect(readFile(path.join(remoteWorkspaceRoot, "nested", "notes.txt"), "utf8")).resolves.toBe(
-      "hello from blueprint\n"
+      "hello from runtime\n"
     );
     await expect(readFile(path.join(remoteWorkspaceRoot, ".openharness", "settings.yaml"), "utf8")).resolves.toBe(
-      "default_agent: assistant\nblueprint: workspace\n"
+      "default_agent: assistant\nruntime: workspace\n"
     );
   });
 });

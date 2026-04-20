@@ -4,9 +4,9 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createNativeToolSet } from "../packages/runtime-core/src/native-tools.ts";
-import { createLocalWorkspaceFileSystem } from "../packages/runtime-core/src/workspace/workspace-file-system.ts";
-import type { WorkspaceCommandExecutor, WorkspaceFileSystem } from "../packages/runtime-core/src/types.ts";
+import { createNativeToolSet } from "../packages/engine-core/src/native-tools.ts";
+import { createLocalWorkspaceFileSystem } from "../packages/engine-core/src/workspace/workspace-file-system.ts";
+import type { WorkspaceCommandExecutor, WorkspaceFileSystem } from "../packages/engine-core/src/types.ts";
 
 const tempDirs: string[] = [];
 

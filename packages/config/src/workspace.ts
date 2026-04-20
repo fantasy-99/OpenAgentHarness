@@ -15,6 +15,7 @@ import {
   nowIso,
   pathExists,
   readDirectoryEntriesIfExists,
+  resolveWorkspaceModelPreset,
   resolveWorkspaceSystemPrompt,
   toActionCatalogItems,
   toAgentCatalogItems,
@@ -96,24 +97,40 @@ export async function loadPlatformModels(
 
 export async function loadWorkspaceSettings(workspaceRoot: string): Promise<WorkspaceSettings> {
   const settingsPath = path.join(workspaceRoot, ".openharness", "settings.yaml");
-  if (!(await pathExists(settingsPath))) {
+  const promptsPath = path.join(workspaceRoot, ".openharness", "prompts.yaml");
+  const [settingsExists, promptsExists] = await Promise.all([pathExists(settingsPath), pathExists(promptsPath)]);
+
+  if (!settingsExists && !promptsExists) {
     return {};
   }
 
-  const [schema, fileContent] = await Promise.all([
-    loadSchema<object>("../../../docs/schemas/settings.schema.json"),
-    readFile(settingsPath, "utf8")
-  ]);
+  let parsed: Record<string, unknown> = {};
+  if (settingsExists) {
+    const [schema, fileContent] = await Promise.all([
+      loadSchema<object>("../../../docs/schemas/settings.schema.json"),
+      readFile(settingsPath, "utf8")
+    ]);
 
-  const parsed = expandEnv(YAML.parse(fileContent) ?? {});
-  const validate = createAjv().compile<WorkspaceSettings>(schema);
-  if (!validate(parsed)) {
-    throw new Error(`Invalid workspace settings in ${settingsPath}: ${validationMessage(validate.errors)}`);
+    parsed = expandEnv(YAML.parse(fileContent) ?? {});
+    const validate = createAjv().compile<Record<string, unknown>>(schema);
+    if (!validate(parsed)) {
+      throw new Error(`Invalid workspace settings in ${settingsPath}: ${validationMessage(validate.errors)}`);
+    }
   }
 
-  const typedParsed = parsed as {
+  const typedParsedSettings = parsed as {
     default_agent?: string;
-    blueprint?: string;
+    runtime?: string;
+    models?: Record<
+      string,
+      | string
+      | {
+          ref: string;
+          temperature?: number;
+          top_p?: number;
+          max_tokens?: number;
+        }
+    >;
     skill_dirs?: string[];
     imports?: {
       tools?: string[];
@@ -142,27 +159,86 @@ export async function loadWorkspaceSettings(workspaceRoot: string): Promise<Work
     };
   };
 
+  if (promptsExists && typedParsedSettings.system_prompt) {
+    throw new Error(
+      `Workspace prompt config is defined in both ${settingsPath} and ${promptsPath}. Keep prompts in only one place.`
+    );
+  }
+
+  let promptConfig: {
+    base?: PromptSource;
+    llm_optimized?: {
+      providers?: Record<string, PromptSource>;
+      models?: Record<string, PromptSource>;
+    };
+    compose?: {
+      order?: Array<
+        | "base"
+        | "llm_optimized"
+        | "agent"
+        | "actions"
+        | "project_agents_md"
+        | "skills"
+        | "agent_switches"
+        | "subagents"
+        | "environment"
+      >;
+      include_environment?: boolean;
+    };
+  } | undefined = typedParsedSettings.system_prompt;
+
+  if (promptsExists) {
+    const [schema, fileContent] = await Promise.all([
+      loadSchema<object>("../../../docs/schemas/prompts.schema.json"),
+      readFile(promptsPath, "utf8")
+    ]);
+    const parsedPrompts = expandEnv(YAML.parse(fileContent) ?? {});
+    const validate = createAjv().compile<Record<string, unknown>>(schema);
+    if (!validate(parsedPrompts)) {
+      throw new Error(`Invalid workspace prompts in ${promptsPath}: ${validationMessage(validate.errors)}`);
+    }
+
+    promptConfig = parsedPrompts as typeof promptConfig;
+  }
+
+  const normalizedModels = typedParsedSettings.models
+    ? Object.fromEntries(
+        Object.entries(typedParsedSettings.models).map(([alias, definition]) => [
+          alias,
+          typeof definition === "string"
+            ? { ref: definition }
+            : {
+                ref: definition.ref,
+                ...(typeof definition.temperature === "number" ? { temperature: definition.temperature } : {}),
+                ...(typeof definition.top_p === "number" ? { topP: definition.top_p } : {}),
+                ...(typeof definition.max_tokens === "number" ? { maxTokens: definition.max_tokens } : {})
+              }
+        ])
+      )
+    : undefined;
+
   return {
-    ...(typedParsed.default_agent ? { defaultAgent: typedParsed.default_agent } : {}),
-    ...(typedParsed.blueprint ? { blueprint: typedParsed.blueprint } : {}),
-    ...(typedParsed.skill_dirs ? { skillDirs: typedParsed.skill_dirs } : {}),
-    ...(typedParsed.imports
+    ...(typedParsedSettings.default_agent ? { defaultAgent: typedParsedSettings.default_agent } : {}),
+    ...(typedParsedSettings.runtime ? { runtime: typedParsedSettings.runtime } : {}),
+    ...(normalizedModels ? { models: normalizedModels } : {}),
+    ...(typedParsedSettings.skill_dirs ? { skillDirs: typedParsedSettings.skill_dirs } : {}),
+    ...(typedParsedSettings.imports
       ? {
           imports: {
-            ...(typedParsed.imports.tools ? { tools: typedParsed.imports.tools } : {}),
-            ...(typedParsed.imports.skills ? { skills: typedParsed.imports.skills } : {})
+            ...(typedParsedSettings.imports.tools ? { tools: typedParsedSettings.imports.tools } : {}),
+            ...(typedParsedSettings.imports.skills ? { skills: typedParsedSettings.imports.skills } : {})
           }
         }
       : {}),
-    ...(typedParsed.system_prompt
+    ...(promptConfig
       ? {
-          systemPrompt: await resolveWorkspaceSystemPrompt(typedParsed.system_prompt, workspaceRoot)
+          systemPrompt: await resolveWorkspaceSystemPrompt(promptConfig, workspaceRoot, normalizedModels)
         }
       : {})
   };
 }
 
-export async function updateWorkspaceBlueprintSetting(workspaceRoot: string, blueprint: string): Promise<void> {
+export async function updateWorkspaceRuntimeSetting(workspaceRoot: string, runtime: string): Promise<void> {
   const settingsPath = path.join(workspaceRoot, ".openharness", "settings.yaml");
   await mkdir(path.dirname(settingsPath), { recursive: true });
 
@@ -175,7 +251,7 @@ export async function updateWorkspaceBlueprintSetting(workspaceRoot: string, blu
     settingsPath,
     YAML.stringify({
       ...(currentRaw as Record<string, unknown>),
-      blueprint
+      runtime
     }),
     "utf8"
   );
@@ -327,7 +403,10 @@ export async function loadPlatformToolServers(toolDir: string): Promise<Record<s
   return loadWorkspaceToolServers(toolDir);
 }
 
-export async function loadWorkspaceAgents(workspaceRoot: string): Promise<Record<string, DiscoveredAgent>> {
+export async function loadWorkspaceAgents(
+  workspaceRoot: string,
+  settings: WorkspaceSettings = {}
+): Promise<Record<string, DiscoveredAgent>> {
   const agentsDir = path.join(workspaceRoot, ".openharness", "agents");
   const directoryEntries = await readDirectoryEntriesIfExists(agentsDir);
   const agents: Record<string, DiscoveredAgent> = {};
@@ -348,7 +427,10 @@ export async function loadWorkspaceAgents(workspaceRoot: string): Promise<Record
     const data = parsed.data as Record<string, unknown>;
     const name = entry.name.replace(/\.md$/u, "");
     const mode = data.mode === "primary" || data.mode === "subagent" || data.mode === "all" ? data.mode : "primary";
-    const model = data.model && typeof data.model === "object" ? (data.model as Record<string, unknown>) : undefined;
+    const model =
+      data.model && typeof data.model === "object" && !Array.isArray(data.model)
+        ? (data.model as Record<string, unknown>)
+        : undefined;
     const tools = data.tools && typeof data.tools === "object" ? (data.tools as Record<string, unknown>) : undefined;
     const disallowed =
       data.disallowed && typeof data.disallowed === "object" ? (data.disallowed as Record<string, unknown>) : undefined;
@@ -383,6 +465,24 @@ export async function loadWorkspaceAgents(workspaceRoot: string): Promise<Record
     const disallowedSkills = Array.isArray(disallowed?.skills)
       ? disallowed.skills.filter((item): item is string => typeof item === "string")
       : [];
+    const modelString = typeof data.model === "string" ? data.model.trim() : undefined;
+    const modelAlias = typeof model?.alias === "string" ? model.alias.trim() : undefined;
+    const directModelRef = typeof model?.model_ref === "string" ? model.model_ref.trim() : undefined;
+
+    if (modelString && model) {
+      throw new Error(`Agent definition in ${filePath} must not use both string model and object model config.`);
+    }
+
+    if (modelAlias && directModelRef) {
+      throw new Error(`Agent definition in ${filePath} must not set both model.alias and model.model_ref.`);
+    }
+
+    const modelReference = modelString ?? modelAlias ?? directModelRef;
+    const resolvedModelPreset = modelReference
+      ? modelReference === directModelRef
+        ? { ref: directModelRef }
+        : resolveWorkspaceModelPreset(modelReference, settings.models, `agent ${name} model`)
+      : undefined;
 
     agents[name] = {
       name,
@@ -390,10 +490,28 @@ export async function loadWorkspaceAgents(workspaceRoot: string): Promise<Record
       ...(typeof data.description === "string" ? { description: data.description } : {}),
       prompt,
       ...(typeof data.system_reminder === "string" ? { systemReminder: data.system_reminder } : {}),
-      ...(typeof model?.model_ref === "string" ? { modelRef: model.model_ref } : {}),
-      ...(typeof model?.temperature === "number" ? { temperature: model.temperature } : {}),
-      ...(typeof model?.top_p === "number" ? { topP: model.top_p } : {}),
-      ...(typeof model?.max_tokens === "number" ? { maxTokens: model.max_tokens } : {}),
+      ...(resolvedModelPreset?.ref ? { modelRef: resolvedModelPreset.ref } : {}),
+      ...(typeof data.temperature === "number"
+        ? { temperature: data.temperature }
+        : typeof resolvedModelPreset?.temperature === "number"
+          ? { temperature: resolvedModelPreset.temperature }
+        : typeof model?.temperature === "number"
+          ? { temperature: model.temperature }
+          : {}),
+      ...(typeof data.top_p === "number"
+        ? { topP: data.top_p }
+        : typeof resolvedModelPreset?.topP === "number"
+          ? { topP: resolvedModelPreset.topP }
+          : typeof model?.top_p === "number"
+            ? { topP: model.top_p }
+            : {}),
+      ...(typeof data.max_tokens === "number"
+        ? { maxTokens: data.max_tokens }
+        : typeof resolvedModelPreset?.maxTokens === "number"
+          ? { maxTokens: resolvedModelPreset.maxTokens }
+        : typeof model?.max_tokens === "number"
+          ? { maxTokens: model.max_tokens }
+          : {}),
       ...(typeof data.background === "boolean" ? { background: data.background } : {}),
       ...(typeof data.hidden === "boolean" ? { hidden: data.hidden } : {}),
       ...(typeof data.color === "string" ? { color: data.color } : {}),
@@ -592,7 +710,7 @@ export async function discoverWorkspace(
 ) {
   const settings = await loadWorkspaceSettings(rootPath);
   const workspaceModels = await loadWorkspaceModels(rootPath);
-  const workspaceAgents = await loadWorkspaceAgents(rootPath);
+  const workspaceAgents = await loadWorkspaceAgents(rootPath, settings);
   const agents = Object.keys(workspaceAgents).length > 0 ? workspaceAgents : (input.platformAgents ?? {});
   const agentSources = Object.fromEntries(
     Object.keys(agents).map((name) => [name, name in workspaceAgents ? ("workspace" as const) : ("platform" as const)])
@@ -618,7 +736,7 @@ export async function discoverWorkspace(
   return {
     id,
     name,
-    ...(settings.blueprint ? { blueprint: settings.blueprint } : {}),
+    ...(settings.runtime ? { runtime: settings.runtime } : {}),
     rootPath,
     executionPolicy: "local" as const,
     status: "active" as const,

@@ -1,6 +1,6 @@
 import { createClient, type RedisClientType } from "redis";
 
-import type { SessionEvent, SessionEventBus } from "@oah/runtime-core";
+import type { SessionEvent, SessionEventBus } from "@oah/engine-core";
 import type { CreateRedisSessionEventBusOptions } from "./coordination-types.js";
 
 export class RedisSessionEventBus implements SessionEventBus {

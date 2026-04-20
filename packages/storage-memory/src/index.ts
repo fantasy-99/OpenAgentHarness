@@ -1,7 +1,7 @@
 import type {
   Message,
-  RuntimeMessage,
-  RuntimeMessageRepository,
+  EngineMessage,
+  EngineMessageRepository,
   Run,
   RunStep,
   Session,
@@ -13,8 +13,8 @@ import type {
   MessageRepository,
   RunRepository,
   RunStepRepository
-} from "@oah/runtime-core";
-import { AppError, createId, nowIso, parseCursor } from "@oah/runtime-core";
+} from "@oah/engine-core";
+import { AppError, createId, nowIso, parseCursor } from "@oah/engine-core";
 
 export class InMemoryWorkspaceRepository implements WorkspaceRepository {
   readonly #items = new Map<string, WorkspaceRecord>();
@@ -149,14 +149,14 @@ export class InMemoryMessageRepository implements MessageRepository {
   }
 }
 
-export class InMemoryRuntimeMessageRepository implements RuntimeMessageRepository {
-  readonly #itemsBySession = new Map<string, RuntimeMessage[]>();
+export class InMemoryEngineMessageRepository implements EngineMessageRepository {
+  readonly #itemsBySession = new Map<string, EngineMessage[]>();
 
-  async replaceBySessionId(sessionId: string, messages: RuntimeMessage[]): Promise<void> {
+  async replaceBySessionId(sessionId: string, messages: EngineMessage[]): Promise<void> {
     this.#itemsBySession.set(sessionId, [...messages]);
   }
 
-  async listBySessionId(sessionId: string): Promise<RuntimeMessage[]> {
+  async listBySessionId(sessionId: string): Promise<EngineMessage[]> {
     return [...(this.#itemsBySession.get(sessionId) ?? [])];
   }
 
@@ -362,7 +362,7 @@ export interface MemoryRuntimePersistence {
   workspaceRepository: InMemoryWorkspaceRepository;
   sessionRepository: InMemorySessionRepository;
   messageRepository: InMemoryMessageRepository;
-  runtimeMessageRepository: InMemoryRuntimeMessageRepository;
+  engineMessageRepository: InMemoryEngineMessageRepository;
   runRepository: InMemoryRunRepository;
   runStepRepository: InMemoryRunStepRepository;
   sessionEventStore: InMemorySessionEventStore;
@@ -370,7 +370,7 @@ export interface MemoryRuntimePersistence {
 
 export function createMemoryRuntimePersistence(): MemoryRuntimePersistence {
   const messageRepository = new InMemoryMessageRepository();
-  const runtimeMessageRepository = new InMemoryRuntimeMessageRepository();
+  const engineMessageRepository = new InMemoryEngineMessageRepository();
   const runRepository = new InMemoryRunRepository();
   const runStepRepository = new InMemoryRunStepRepository();
   const sessionEventStore = new InMemorySessionEventStore();
@@ -378,7 +378,7 @@ export function createMemoryRuntimePersistence(): MemoryRuntimePersistence {
     const deletedRunIds = runRepository.deleteBySessionIds([sessionId]);
     sessionEventStore.deleteBySessionIds([sessionId]);
     messageRepository.deleteBySessionIds([sessionId]);
-    runtimeMessageRepository.deleteBySessionIds([sessionId]);
+    engineMessageRepository.deleteBySessionIds([sessionId]);
     runStepRepository.deleteByRunIds(deletedRunIds);
   };
   const sessionRepository = new InMemorySessionRepository(deleteSessionArtifacts);
@@ -392,7 +392,7 @@ export function createMemoryRuntimePersistence(): MemoryRuntimePersistence {
     workspaceRepository,
     sessionRepository,
     messageRepository,
-    runtimeMessageRepository,
+    engineMessageRepository,
     runRepository,
     runStepRepository,
     sessionEventStore

@@ -27,7 +27,7 @@ import {
   statusTone,
   type ModelCallTrace,
   type ModelCallTraceMessage,
-  type ModelCallTraceRuntimeTool,
+  type ModelCallTraceEngineTool,
   type ModelCallTraceToolServer
 } from "../support";
 import {
@@ -164,8 +164,8 @@ function CallsWorkbench(props: {
   latestModelMessageCounts: ReturnType<typeof countMessagesByRole>;
   resolvedModelNames: string[];
   resolvedModelRefs: string[];
-  runtimeTools: ModelCallTraceRuntimeTool[];
-  runtimeToolNames: string[];
+  engineTools: ModelCallTraceEngineTool[];
+  engineToolNames: string[];
   activeToolNames: string[];
   toolServers: ModelCallTraceToolServer[];
   onDownload: () => void;
@@ -179,8 +179,8 @@ function CallsWorkbench(props: {
           latestModelMessageCounts={props.latestModelMessageCounts}
           resolvedModelNames={props.resolvedModelNames}
           resolvedModelRefs={props.resolvedModelRefs}
-          runtimeTools={props.runtimeTools}
-          runtimeToolNames={props.runtimeToolNames}
+          engineTools={props.engineTools}
+          engineToolNames={props.engineToolNames}
           activeToolNames={props.activeToolNames}
           toolServers={props.toolServers}
           onDownload={props.onDownload}
@@ -250,8 +250,8 @@ function TimelineWorkbench(props: {
   latestModelMessageCounts: ReturnType<typeof countMessagesByRole>;
   resolvedModelNames: string[];
   resolvedModelRefs: string[];
-  runtimeTools: ModelCallTraceRuntimeTool[];
-  runtimeToolNames: string[];
+  engineTools: ModelCallTraceEngineTool[];
+  engineToolNames: string[];
   activeToolNames: string[];
   toolServers: ModelCallTraceToolServer[];
   onDownload: () => void;
@@ -446,7 +446,7 @@ function TimelineWorkbench(props: {
           <InspectorDisclosure
             title="Model Context"
             description="这块只保留 run 级别的模型环境信息，避免在每次调用详情里重复展示。"
-            badge={props.runtimeTools.length}
+            badge={props.engineTools.length}
           >
             <div className="space-y-4">
               <div className="grid gap-3 sm:grid-cols-2">
@@ -778,7 +778,7 @@ function OverviewWorkbench(props: {
               active={false}
               eyebrow="event"
               title={latestEvent?.event ?? "No event yet"}
-              subtitle={latestEvent?.runId ? `run ${latestEvent.runId}` : "runtime event"}
+              subtitle={latestEvent?.runId ? `run ${latestEvent.runId}` : "engine event"}
               {...(latestEvent ? { meta: formatTimestamp(latestEvent.createdAt) } : {})}
               onClick={props.onOpenTimeline}
             />
@@ -933,8 +933,8 @@ function WorkspaceWorkbench(props: {
   session: Session | null;
   run: Run | null;
   catalog: WorkspaceCatalog | null;
-  runtimeTools: ModelCallTraceRuntimeTool[];
-  runtimeToolNames: string[];
+  engineTools: ModelCallTraceEngineTool[];
+  engineToolNames: string[];
   activeToolNames: string[];
   toolServers: ModelCallTraceToolServer[];
   triggerWorkspaceAction: (input: { workspaceId: string; actionName: string; input?: unknown }) => Promise<boolean>;
@@ -961,7 +961,7 @@ function WorkspaceWorkbench(props: {
         { label: "skills", value: props.catalog.skills.length },
         { label: "tools", value: props.catalog.tools?.length ?? 0 },
         { label: "hooks", value: props.catalog.hooks.length },
-        { label: "runtimeTools", value: props.catalog.runtimeTools?.length ?? 0 },
+        { label: "engineTools", value: props.catalog.engineTools?.length ?? 0 },
         { label: "nativeTools", value: props.catalog.nativeTools.length }
       ]
     : [];
@@ -1321,8 +1321,8 @@ function WorkspaceWorkbench(props: {
                 description="默认首屏把工具环境放在右侧主区域，目录和详情集中阅读，减少来回跳转。"
               >
                 <ToolSnapshotBrowser
-                  runtimeTools={props.runtimeTools}
-                  runtimeToolNames={props.runtimeToolNames}
+                  engineTools={props.engineTools}
+                  engineToolNames={props.engineToolNames}
                   activeToolNames={props.activeToolNames}
                   toolServers={props.toolServers}
                 />
@@ -1353,9 +1353,9 @@ function WorkspaceWorkbench(props: {
                     <WorkspaceCatalogCollection title="Tools" description="Declared tools and tool exposure." items={props.catalog.tools ?? []} />
                     <WorkspaceCatalogCollection title="Hooks" description="Registered hook definitions." items={props.catalog.hooks} />
                     <WorkspaceCatalogCollection
-                      title="Runtime Tools"
+                      title="Engine Tools"
                       description="Tools the runtime can actually expose across this workspace, including AgentSwitch, Skill, run_action, SubAgent, and native tools."
-                      items={props.catalog.runtimeTools ?? props.catalog.nativeTools}
+                      items={props.catalog.engineTools ?? props.catalog.nativeTools}
                     />
                     <WorkspaceCatalogCollection title="Native Tools" description="Base native tool inventory recorded by the runtime." items={props.catalog.nativeTools} />
                     <InspectorDisclosure title="Raw Catalog JSON" description="完整 catalog 记录，保留给审计或排查边界问题。" badge="raw">

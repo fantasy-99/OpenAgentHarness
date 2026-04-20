@@ -7,8 +7,8 @@ import type {
   HookRunAuditRepository,
   Message,
   MessageRepository,
-  RuntimeMessage,
-  RuntimeMessageRepository,
+  EngineMessage,
+  EngineMessageRepository,
   Run,
   RunRepository,
   RunStep,
@@ -23,8 +23,8 @@ import type {
   WorkspaceArchiveRepository,
   WorkspaceRecord,
   WorkspaceRepository
-} from "@oah/runtime-core";
-import { AppError, createId, nowIso, parseCursor } from "@oah/runtime-core";
+} from "@oah/engine-core";
+import { AppError, createId, nowIso, parseCursor } from "@oah/engine-core";
 import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import type { OahDatabase, OahTransaction } from "./schema.js";
 import {
@@ -35,7 +35,7 @@ import {
   messages,
   runSteps,
   runs,
-  runtimeMessages,
+  engineMessages,
   sessionEvents,
   sessions,
   toolCalls,
@@ -48,7 +48,7 @@ import {
   buildHookRunRow,
   buildMessageRow,
   buildRunRow,
-  buildRuntimeMessageRow,
+  buildEngineMessageRow,
   buildRunStepRow,
   buildSessionRow,
   buildToolCallRow,
@@ -63,7 +63,7 @@ import {
   toHookRunAuditRecord,
   toMessage,
   toRun,
-  toRuntimeMessageRecord,
+  toEngineMessageRecord,
   toRunStep,
   toSession,
   toSessionEvent,
@@ -288,28 +288,28 @@ export class PostgresMessageRepository implements MessageRepository {
   }
 }
 
-export class PostgresRuntimeMessageRepository implements RuntimeMessageRepository {
+export class PostgresEngineMessageRepository implements EngineMessageRepository {
   constructor(private readonly db: OahDatabase) {}
 
-  async replaceBySessionId(sessionId: string, messagesForSession: RuntimeMessage[]): Promise<void> {
+  async replaceBySessionId(sessionId: string, messagesForSession: EngineMessage[]): Promise<void> {
     await this.db.transaction(async (tx) => {
-      await tx.delete(runtimeMessages).where(eq(runtimeMessages.sessionId, sessionId));
+      await tx.delete(engineMessages).where(eq(engineMessages.sessionId, sessionId));
       if (messagesForSession.length === 0) {
         return;
       }
 
-      await tx.insert(runtimeMessages).values(messagesForSession.map((message) => buildRuntimeMessageRow(message)));
+      await tx.insert(engineMessages).values(messagesForSession.map((message) => buildEngineMessageRow(message)));
     });
   }
 
-  async listBySessionId(sessionId: string): Promise<RuntimeMessage[]> {
+  async listBySessionId(sessionId: string): Promise<EngineMessage[]> {
     const rows = await this.db
       .select()
-      .from(runtimeMessages)
-      .where(eq(runtimeMessages.sessionId, sessionId))
-      .orderBy(asc(runtimeMessages.createdAt), asc(runtimeMessages.id));
+      .from(engineMessages)
+      .where(eq(engineMessages.sessionId, sessionId))
+      .orderBy(asc(engineMessages.createdAt), asc(engineMessages.id));
 
-    return rows.map(toRuntimeMessageRecord);
+    return rows.map(toEngineMessageRecord);
   }
 }
 
@@ -652,15 +652,15 @@ export class PostgresWorkspaceArchiveRepository implements WorkspaceArchiveRepos
           ).map(toMessage)
         : [];
 
-    const runtimeMessagesForArchive =
+    const engineMessagesForArchive =
       sessionIds.length > 0
         ? (
             await tx
               .select()
-              .from(runtimeMessages)
-              .where(inArray(runtimeMessages.sessionId, sessionIds))
-              .orderBy(desc(runtimeMessages.createdAt), asc(runtimeMessages.id))
-          ).map(toRuntimeMessageRecord)
+              .from(engineMessages)
+              .where(inArray(engineMessages.sessionId, sessionIds))
+              .orderBy(desc(engineMessages.createdAt), asc(engineMessages.id))
+          ).map(toEngineMessageRecord)
         : [];
 
     const runStepsForArchive =
@@ -720,7 +720,7 @@ export class PostgresWorkspaceArchiveRepository implements WorkspaceArchiveRepos
       sessions: sessionsForArchive,
       runs: runsForArchive,
       messages: messagesForArchive,
-      runtimeMessages: runtimeMessagesForArchive,
+      engineMessages: engineMessagesForArchive,
       runSteps: runStepsForArchive,
       toolCalls: toolCallsForArchive,
       hookRuns: hookRunsForArchive,

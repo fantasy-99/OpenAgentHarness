@@ -48,7 +48,7 @@ type UiState = {
 };
 
 export const useUiStore = create<UiState>((set) => ({
-  surfaceMode: "runtime",
+  surfaceMode: "engine",
   mainViewMode: "conversation",
   inspectorTab: "overview",
   timelineInspectorMode: "all",

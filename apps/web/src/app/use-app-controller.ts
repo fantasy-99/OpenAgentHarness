@@ -52,7 +52,7 @@ import {
 } from "./support";
 import { buildAiSdkLikeRequest, buildAiSdkLikeStoredMessages } from "./primitives";
 import { useNavigationActions } from "./use-navigation-actions";
-import { buildRuntimeViewModel } from "./runtime-view-model";
+import { buildRuntimeViewModel } from "./engine-view-model";
 import { useNavigationState } from "./use-navigation-state";
 import { useStorageController } from "./use-storage-controller";
 import { useWorkspaceFileManager } from "./use-workspace-file-manager";
@@ -68,11 +68,11 @@ const COMPLETED_RUN_RESULT_POLL_LIMIT = 5;
 export function useAppController() {
   const {
     connection,
-    workspaceBlueprintFilter,
+    workspaceRuntimeFilter,
     serviceScope,
     modelDraft,
     setConnection,
-    setWorkspaceBlueprintFilter,
+    setWorkspaceRuntimeFilter,
     setServiceScope,
     setModelDraft
   } = useSettingsStore();
@@ -170,8 +170,8 @@ export function useAppController() {
     setExpandedSessionIds,
     workspace,
     setWorkspace,
-    workspaceBlueprints,
-    setWorkspaceBlueprints,
+    workspaceRuntimes,
+    setWorkspaceRuntimes,
     catalog,
     setCatalog,
     session,
@@ -235,20 +235,20 @@ export function useAppController() {
     }))
   ];
   const selectedServiceScopeLabel = serviceScopeLabel(normalizedServiceScope);
-  const workspaceBlueprintFilterValue = workspaceBlueprintFilter.trim();
-  const workspaceBlueprintFilterOptions = Array.from(
+  const workspaceRuntimeFilterValue = workspaceRuntimeFilter.trim();
+  const workspaceRuntimeFilterOptions = Array.from(
     new Set(
       [
-        ...workspaceBlueprints,
-        ...serviceFilteredWorkspaces.map((entry) => entry.blueprint ?? ""),
-        workspaceBlueprintFilterValue
+        ...workspaceRuntimes,
+        ...serviceFilteredWorkspaces.map((entry) => entry.runtime ?? ""),
+        workspaceRuntimeFilterValue
       ]
         .map((entry) => entry.trim())
         .filter((entry) => entry.length > 0)
     )
   ).sort((left, right) => left.localeCompare(right));
-  const filteredSavedWorkspaces = workspaceBlueprintFilterValue
-    ? serviceFilteredWorkspaces.filter((entry) => (entry.blueprint ?? "").trim() === workspaceBlueprintFilterValue)
+  const filteredSavedWorkspaces = workspaceRuntimeFilterValue
+    ? serviceFilteredWorkspaces.filter((entry) => (entry.runtime ?? "").trim() === workspaceRuntimeFilterValue)
     : serviceFilteredWorkspaces;
   const filteredSavedSessionsCount = filteredSavedWorkspaces.reduce(
     (count, entry) => count + (sessionsByWorkspaceId.get(entry.id)?.length ?? 0),
@@ -277,9 +277,9 @@ export function useAppController() {
     selectedMessageSystemMessages,
     selectedRunStep,
     selectedSessionEvent,
-    allRuntimeToolNames,
+    allEngineToolNames,
     allAdvertisedToolNames,
-    allRuntimeTools,
+    allEngineTools,
     allToolServers,
     resolvedModelNames,
     resolvedModelRefs,
@@ -398,7 +398,7 @@ export function useAppController() {
     request,
     workspaceId: activeWorkspaceId,
     workspace: workspace,
-    enabled: surfaceMode === "runtime" && mainViewMode === "conversation",
+    enabled: surfaceMode === "engine" && mainViewMode === "conversation",
     setActivity,
     setErrorMessage
   });
@@ -426,7 +426,7 @@ export function useAppController() {
       setExpandedSessionIds,
       workspace,
       setWorkspace,
-      setWorkspaceBlueprints,
+      setWorkspaceRuntimes,
       setCatalog,
       session,
       setSession,
@@ -1439,7 +1439,7 @@ export function useAppController() {
 
   useEffect(() => {
     void navigationActions.refreshWorkspaceIndex(true);
-    void navigationActions.refreshWorkspaceBlueprints(true);
+    void navigationActions.refreshWorkspaceRuntimes(true);
     void refreshModelProviders(true);
     void refreshPlatformModels(true);
   }, [connection.baseUrl, connection.token, sessionId, workspaceId]);
@@ -1536,10 +1536,6 @@ export function useAppController() {
       setRunSteps([]);
       setSelectedRunId("");
     });
-
-    if (workspaceId.trim()) {
-      void navigationActions.refreshWorkspace(workspaceId, true);
-    }
   }, [connection.baseUrl, connection.token, sessionId, workspaceId]);
 
   useEffect(() => {
@@ -1771,7 +1767,7 @@ export function useAppController() {
     sidebarSurfaceProps: {
       serviceScope: normalizedServiceScope,
       selectedServiceScopeLabel,
-      workspaceBlueprintFilterOptions,
+      workspaceRuntimeFilterOptions,
       filteredSavedWorkspaces,
       orderedSavedWorkspaces,
       savedSessionsCount: filteredSavedSessionsCount,
@@ -1783,11 +1779,11 @@ export function useAppController() {
       expandWorkspaceInSidebar: navigationActions.expandWorkspaceInSidebar,
       workspaceDraft,
       setWorkspaceDraft,
-      workspaceBlueprints,
+      workspaceRuntimes,
       createWorkspace: () => void navigationActions.createWorkspace(),
-      refreshWorkspaceBlueprints: () => void navigationActions.refreshWorkspaceBlueprints(),
-      uploadWorkspaceBlueprint: navigationActions.uploadWorkspaceBlueprint,
-      deleteWorkspaceBlueprint: navigationActions.deleteWorkspaceBlueprint,
+      refreshWorkspaceRuntimes: () => void navigationActions.refreshWorkspaceRuntimes(),
+      uploadWorkspaceRuntime: navigationActions.uploadWorkspaceRuntime,
+      deleteWorkspaceRuntime: navigationActions.deleteWorkspaceRuntime,
       refreshWorkspaceIndex: () => void navigationActions.refreshWorkspaceIndex(),
       createSession: () => void navigationActions.createSession(),
       sessionId,
@@ -1877,8 +1873,8 @@ export function useAppController() {
       latestModelMessageCounts,
       resolvedModelNames,
       resolvedModelRefs,
-      allRuntimeTools,
-      allRuntimeToolNames,
+      allEngineTools,
+      allEngineToolNames,
       allAdvertisedToolNames,
       allToolServers,
       downloadSessionTrace,
@@ -1895,7 +1891,7 @@ export function useAppController() {
       fileManager: workspaceFileManager.fileManagerSurfaceProps
     },
     consolePanelProps: {
-      isOpen: consoleOpen && surfaceMode === "runtime",
+      isOpen: consoleOpen && surfaceMode === "engine",
       entries: consoleEntries,
       onEntryInspect: inspectConsoleEntry,
       openErrors: openConsoleForErrors

@@ -1,4 +1,4 @@
-import { createId } from "@oah/runtime-core";
+import { createId } from "@oah/engine-core";
 import { calculateWorkerLeaseTtlMs } from "./worker-registry.js";
 import type { RedisRunWorkerLogger, RedisRunWorkerOptions } from "./worker-types.js";
 

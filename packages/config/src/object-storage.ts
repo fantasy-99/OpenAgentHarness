@@ -4,8 +4,8 @@ export type ObjectStorageConfig = NonNullable<ServerConfig["object_storage"]>;
 export type ObjectStorageManagedPath = NonNullable<ObjectStorageConfig["managed_paths"]>[number];
 export type ObjectStorageMirrorPath = Exclude<ObjectStorageManagedPath, "workspace">;
 
-const DEFAULT_OBJECT_STORAGE_MANAGED_PATHS = ["workspace", "blueprint", "model", "tool", "skill"] as const;
-const DEFAULT_OBJECT_STORAGE_MIRROR_PATHS = ["blueprint", "model", "tool", "skill"] as const;
+const DEFAULT_OBJECT_STORAGE_MANAGED_PATHS = ["workspace", "runtime", "model", "tool", "skill"] as const;
+const DEFAULT_OBJECT_STORAGE_MIRROR_PATHS = ["runtime", "model", "tool", "skill"] as const;
 
 function normalizeObjectStoragePrefix(prefix: string): string {
   return prefix.replace(/^\/+|\/+$/g, "");
@@ -100,7 +100,7 @@ export function normalizeObjectStorageConfig(config: ObjectStorageConfig): Objec
       sync_on_change: config.mirrors?.sync_on_change ?? config.sync_on_change ?? true,
       poll_interval_ms: config.mirrors?.poll_interval_ms ?? config.poll_interval_ms ?? 5000,
       key_prefixes: {
-        blueprint: normalizeObjectStoragePrefix(explicitMirrorKeyPrefixes.blueprint ?? legacyKeyPrefixes.blueprint ?? "blueprint"),
+        runtime: normalizeObjectStoragePrefix(explicitMirrorKeyPrefixes.runtime ?? legacyKeyPrefixes.runtime ?? "runtime"),
         model: normalizeObjectStoragePrefix(explicitMirrorKeyPrefixes.model ?? legacyKeyPrefixes.model ?? "model"),
         tool: normalizeObjectStoragePrefix(explicitMirrorKeyPrefixes.tool ?? legacyKeyPrefixes.tool ?? "tool"),
         skill: normalizeObjectStoragePrefix(explicitMirrorKeyPrefixes.skill ?? legacyKeyPrefixes.skill ?? "skill")

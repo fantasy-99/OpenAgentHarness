@@ -2,7 +2,7 @@
 
 ## 1. 定位
 
-Open Agent Harness 是一个 headless Agent Runtime。不提供 UI，通过 OpenAPI + SSE 暴露能力，供 Web、桌面、CLI 或自动化系统接入。
+Open Agent Harness 是一个 headless Agent Engine。不提供 UI，通过 OpenAPI + SSE 暴露能力，供 Web、桌面、CLI 或自动化系统接入。
 
 两类使用者：
 
@@ -28,6 +28,13 @@ Open Agent Harness 是一个 headless Agent Runtime。不提供 UI，通过 Open
 - **Embedded by Default, Controlled in Production** -- 默认可用 `oah-api` 内嵌 embedded worker；生产环境采用 `oah-api + oah-controller + oah-sandbox` 拆分部署。
 
 ## 3. 正式术语
+
+### Agent Engine / Agent Runtime / Agent Spec
+
+- `Agent Engine`：执行、调度、恢复、审计与 API 暴露系统
+- `Agent Runtime`：实际被运行的主对象，旧称 `blueprint`
+- `Agent Spec`：用户额外叠加的扩展层，主要包括 `AGENTS.md`、`MEMORY.md` 与额外加载的 `model` / `tool` / `skill`
+- 记忆方式：`Engine` 关注 how it runs，`Runtime` 关注 what runs，`Spec` 关注 what the user adds
 
 ### API Server
 
@@ -63,11 +70,36 @@ Open Agent Harness 是一个 headless Agent Runtime。不提供 UI，通过 Open
 - 只承载宿主生命周期、文件访问、进程执行等能力，不改变 OAH 的 ownership 与控制面语义
 - 当前 `e2b` 路线也以“真实 sandbox 内承载 standalone worker”为正式语义，而不是外部 worker 间接驱动 E2B
 
+### Workspace
+
+- Workspace 是项目、能力发现和会话归属的逻辑边界
+- 它描述的是“这个 agent 在哪个项目上下文里工作”，不是“运行在哪个宿主里”
+- workspace 可以被 materialize 到某个 worker 持有的 `Active Workspace Copy` 中执行
+- 同一个 sandbox 可以按容量承载多个 workspace；同一个 workspace 在活跃期只应有一个 owner worker 持有其读写真值
+
 ### Workspace Ownership
 
 - `workspace -> owner worker` 是运行与文件路由真值
 - `userId` 是调度亲和键，不是 ownership 真值
-- 活跃 workspace 的当前读写真值位于 owner worker 的本地副本；空闲 flush 后再回到 OSS / 外部存储真值
+- 活跃 workspace 的当前读写真值位于 owner worker 的 `Active Workspace Copy`；空闲 flush 后再回到 OSS / 外部存储真值
+
+### 层级关系
+
+推荐按下面这条链路理解系统层级：
+
+`Agent Engine -> Worker -> Sandbox -> Active Workspace Copy`
+
+同时要和逻辑对象层分开看：
+
+`Agent Engine -> Workspace -> Session -> Run`
+
+换句话说：
+
+- `workspace` 是逻辑对象和能力边界
+- `sandbox` 是执行宿主和文件/进程隔离边界
+- `worker` 是在宿主中运行的执行角色
+- 活跃 workspace 会被 materialize 成 `Active Workspace Copy`
+- `runtime` 只负责初始化 workspace，不替代 workspace / sandbox / worker 任一层概念
 
 ## 4. 分层架构
 
@@ -82,7 +114,7 @@ flowchart TD
     E --> H[Worker]
     D --> G
     D --> I[Kubernetes / Runtime Control Plane]
-    H --> J[Runtime Core]
+    H --> J[Engine Core]
     J --> K[Context Engine]
     J --> L[Invocation Dispatcher]
     J --> M[Hook Runtime]
@@ -92,7 +124,7 @@ flowchart TD
     O --> Q[Sandbox Host API]
     Q --> R[Self-Hosted Sandbox Pod]
     Q -. future / optional .-> S[E2B-Compatible Host Adapter]
-    H --> T[(Workspace Local State)]
+    H --> T[(Workspace Execution State)]
     H --> U[(OSS / Object Storage)]
     J --> F
     J --> G
@@ -111,12 +143,13 @@ flowchart TD
 
 ### Worker
 
-- 复用 `packages/runtime-core` 执行业务逻辑
+- 复用 `packages/engine-core` 执行业务逻辑
 - 消费 run、执行模型 <-> 工具循环
 - 保证同 session 串行
 - 管理取消、超时、失败恢复
 - 负责 workspace materialization、本地文件访问、flush / evict
 - 可以 embedded 在 API Server 中，也可以 standalone 运行于独立 Pod
+- 对远端 provider 而言，worker 持有的是 sandbox 内的 `Active Workspace Copy`，而不是直接在中心存储上原地执行
 
 ### Controller
 
@@ -137,7 +170,7 @@ flowchart TD
   - 健康检查、drain、关闭
 - 当前以自家 sandbox pod 为参考实现，对外只追求与 E2B 的“可兼容切换”，不追求先重塑成 E2B 原生资源模型
 
-### Runtime Core
+### Engine Core
 
 - 加载 workspace 配置：`AGENTS.md`、`settings.yaml`、agents、models
 - 加载平台级 model / tool / skill 目录
@@ -157,6 +190,7 @@ flowchart TD
 - 统一封装 workspace 执行环境（shell、文件读写、进程管理）
 - 屏蔽本地执行、自家 sandbox pod 与未来 E2B 类宿主的差异
 - workspace 统一创建 backend session，并在同一执行后端内处理
+- 文件与命令执行永远发生在活跃 workspace 的 `Active Workspace Copy` 上；这个副本可能在 embedded 进程里，也可能在远端 sandbox 里
 
 ### Hook Runtime
 
@@ -217,19 +251,21 @@ sequenceDiagram
 - 不内建用户系统，只消费外部身份上下文
 - Workspace 是配置和能力发现边界；`.openharness/settings.yaml` 是 workspace 总配置入口
 - 平台内建 agent 与 workspace agent 合并可见；同名时 workspace agent 覆盖
-- 蓝图只用于初始化，运行时只读当前 workspace 文件
-- workspace 统一从 `workspace_dir` 管理，蓝图仅用于初始化复制
+- Runtime 只用于初始化 workspace，Engine 只读取当前 workspace 文件
+- workspace 统一从 `workspace_dir` 管理，`runtime_dir` 仅用于初始化复制
 - `AGENTS.md` 按原文全文注入，不做摘要
 - Agent 以 `agents/*.md` 定义，frontmatter 承载结构化字段，正文承载 system prompt
 - Model / Hook / Tool Server 采用 YAML 声明式定义
 - Action 采用 `actions/*/ACTION.yaml`，Skill 采用 `skills/*/SKILL.md`
 - 所有能力对 LLM 统一投影为 tool calling，但在领域层和治理层保持分离
 - `Worker` 是统一执行角色；`sandbox` 只是 worker 的宿主环境，不作为主术语替代 worker
+- `Workspace` 是逻辑项目边界；`sandbox` 是执行宿主边界，二者不是上下位同类概念
 - `Sandbox Host API` 是宿主兼容边界；首个实现应是自家 sandbox pod，E2B 适合作为后续可插拔后端，而不是先改写 OAH 的主语义
 - `Controller` 是统一控制面角色；负责 placement、lifecycle 与 capacity，不直接执行业务 run
 - 对远端 sandbox provider 而言，controller 现在还承担“逻辑 sandbox fleet”计算职责，为后续真实 sandbox autoscaling target 做准备
 - `workspace -> owner worker` 是运行与文件访问的路由真值；`userId` 只用于亲和调度，不作为 ownership 真值
-- 活跃 workspace 以 owner worker 本地副本为读写真值；flush / evict 后回到 OSS / 外部存储真值
+- 活跃 workspace 以 owner worker 的 `Active Workspace Copy` 为读写真值；flush / evict 后回到 OSS / 外部存储真值
+- `sandbox` API 面向“活跃执行副本”的文件与命令操作；`workspace` API 面向元数据、catalog 与生命周期管理
 - 默认可信内网环境，不做强隔离容器执行；若面向更开放环境，应优先加强 sandbox backend
 - PostgreSQL 是中心事实源；workspace 本地状态文件仅作为本地运行时状态，不承担跨进程同步职责
 

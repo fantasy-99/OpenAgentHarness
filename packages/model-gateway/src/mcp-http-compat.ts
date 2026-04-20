@@ -1,8 +1,8 @@
 import type { ListToolsResult } from "@ai-sdk/mcp";
 import { dynamicTool, jsonSchema } from "ai";
 
-import type { ToolServerDefinition } from "@oah/runtime-core";
-import { AppError } from "@oah/runtime-core";
+import type { ToolServerDefinition } from "@oah/engine-core";
+import { AppError } from "@oah/engine-core";
 import type {
   CompatibilityCallToolResult,
   PrepareToolServersOptions,

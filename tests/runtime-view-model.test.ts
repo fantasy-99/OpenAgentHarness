@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { Message, RunStep, SessionEventContract } from "@oah/api-contracts";
 
-import { buildRuntimeViewModel } from "../apps/web/src/app/runtime-view-model";
+import { buildRuntimeViewModel } from "../apps/web/src/app/engine-view-model";
 import { hasDisplayableRunMessages } from "../apps/web/src/app/support";
 
 function createModelCallStep(input: Partial<RunStep> = {}): RunStep {
@@ -30,7 +30,7 @@ function createModelCallStep(input: Partial<RunStep> = {}): RunStep {
       runtime: {
         messageCount: 2,
         activeToolNames: [],
-        runtimeToolNames: []
+        engineToolNames: []
       }
     },
     output: {

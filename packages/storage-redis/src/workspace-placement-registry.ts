@@ -5,7 +5,7 @@ import type {
   WorkspacePlacementInput,
   WorkspacePlacementRegistry,
   WorkspacePlacementState
-} from "@oah/runtime-core";
+} from "@oah/engine-core";
 import type { CreateRedisWorkspacePlacementRegistryOptions } from "./registry-types.js";
 
 export class RedisWorkspacePlacementRegistry implements WorkspacePlacementRegistry {
@@ -248,6 +248,19 @@ export class RedisWorkspacePlacementRegistry implements WorkspacePlacementRegist
     transaction.hDel(key, "materializedAt");
 
     await transaction.exec();
+  }
+
+  async removeWorkspace(workspaceId: string): Promise<void> {
+    const normalizedWorkspaceId = workspaceId.trim();
+    if (normalizedWorkspaceId.length === 0) {
+      return;
+    }
+
+    await this.#commands
+      .multi()
+      .sRem(this.#registrySetKey(), normalizedWorkspaceId)
+      .del(this.#placementKey(normalizedWorkspaceId))
+      .exec();
   }
 
   async listAll(): Promise<WorkspacePlacementEntry[]> {

@@ -469,9 +469,10 @@ function ConversationWorkspaceImpl(props: RuntimeProps) {
   const messageCount = props.messageFeed.length;
   const hasStreamingMessage = props.messageFeed.some((m) => m.id.startsWith("live:"));
   const isRunning = props.isRunning;
-  const canSend = !isRunning && draftMessage.trim().length > 0;
+  const hasDraftMessage = draftMessage.trim().length > 0;
+  const canSend = !props.isSwitchingSessionAgent && hasDraftMessage;
   const inputPlaceholder = isRunning
-    ? "Agent is running…"
+    ? "Send a follow-up to interrupt the current run"
     : props.isSwitchingSessionAgent
     ? "Updating session agent…"
     : "Message the current session";
@@ -600,7 +601,7 @@ function ConversationWorkspaceImpl(props: RuntimeProps) {
                   <Bot className="h-5 w-5" />
                 </div>
                 <h2 className="text-xl font-semibold tracking-tight text-foreground">OpenAgentHarness</h2>
-                <p className="mt-3 text-sm leading-7 text-muted-foreground">Send a message to start this session. Tool calls, traces, and runtime output will appear as the conversation unfolds.</p>
+                <p className="mt-3 text-sm leading-7 text-muted-foreground">Send a message to start this session. Tool calls, traces, and engine output will appear as the conversation unfolds.</p>
               </div>
             </div>
           ) : (
@@ -717,12 +718,12 @@ function ConversationWorkspaceImpl(props: RuntimeProps) {
                   onChange={(event) => setDraftMessage(event.target.value)}
                   onKeyDown={handleKeyDown}
                   placeholder={inputPlaceholder}
-                  disabled={isRunning}
+                  disabled={props.isSwitchingSessionAgent}
                   rows={1}
                   className="min-h-[24px] max-h-[200px] flex-1 resize-none border-none bg-transparent px-0 py-2 text-sm shadow-none outline-none focus-visible:ring-0 disabled:opacity-50"
                 />
 
-                {isRunning ? (
+                {isRunning && !canSend ? (
                   <Button
                     onClick={props.cancelCurrentRun}
                     size="icon"

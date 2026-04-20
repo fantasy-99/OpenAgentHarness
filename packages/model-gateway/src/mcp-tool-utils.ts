@@ -1,7 +1,7 @@
 import type { ToolSet } from "ai";
 
-import type { RuntimeLogger, ToolServerDefinition } from "@oah/runtime-core";
-import { AppError } from "@oah/runtime-core";
+import type { EngineLogger, ToolServerDefinition } from "@oah/engine-core";
+import { AppError } from "@oah/engine-core";
 import type { JsonValueLike } from "./mcp-types.js";
 
 export function createShellWrappedCommand(command: string): { command: string; args: string[] } {
@@ -46,7 +46,7 @@ export function logToolServerFailure(
   server: ToolServerDefinition,
   phase: string,
   error: unknown,
-  logger: RuntimeLogger | undefined
+  logger: EngineLogger | undefined
 ): void {
   const details = {
     serverName: server.name,

@@ -4,7 +4,7 @@ import {
   assistantNarrativeContentFromModelOutput,
   contentToPromptMessage,
   toolResultContent
-} from "../packages/runtime-core/src/runtime-message-content";
+} from "../packages/engine-core/src/execution-message-content";
 
 describe("runtime message content normalization", () => {
   it("passes structured tool-result outputs through unchanged", () => {

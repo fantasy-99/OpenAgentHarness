@@ -12,9 +12,9 @@ import type {
   GenerateModelInput,
   ModelStepPreparation,
   ModelStepResult,
-  RuntimeToolSet
-} from "@oah/runtime-core";
-import { AppError } from "@oah/runtime-core";
+  EngineToolSet
+} from "@oah/engine-core";
+import { AppError } from "@oah/engine-core";
 
 function maybeToUrl(value: string): string | URL {
   if (!/^[a-z][a-z0-9+.-]*:\/\//iu.test(value)) {
@@ -108,7 +108,7 @@ function createSerialToolExecutor(): <T>(operation: () => Promise<T>) => Promise
 }
 
 export function toAiTools(
-  tools: RuntimeToolSet | undefined,
+  tools: EngineToolSet | undefined,
   signal: AbortSignal | undefined,
   parallelToolCalls: boolean | undefined
 ): ToolSet | undefined {

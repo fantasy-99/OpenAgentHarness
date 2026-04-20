@@ -8,7 +8,7 @@
 <h1 align="center">Open Agent Harness</h1>
 
 <p align="center">
-  Headless, workspace-first agent runtime for teams building agent products, internal AI platforms, and embedded copilots.
+  Headless, workspace-first agent engine for teams building agent products, internal AI platforms, and embedded copilots.
 </p>
 
 <p align="center">
@@ -19,9 +19,9 @@
 
 ## What is Open Agent Harness?
 
-Open Agent Harness is a **deployable backend runtime** that handles agent conversations and task execution. You bring your own frontend, auth, and product experience — the runtime handles everything underneath.
+Open Agent Harness is a **deployable Agent Engine** that runs agent runtimes and task execution flows. You bring your own frontend, auth, and product experience — the engine handles everything underneath.
 
-**Build your own agent product on top of a reusable runtime, instead of rebuilding the runtime itself.**
+**Build your own agent product on top of a reusable engine, instead of rebuilding the engine itself.**
 
 > Not a ready-made chat UI. Not an identity system. Not a SaaS control plane.
 > It is the programmable kernel that sits behind all of those.
@@ -36,12 +36,12 @@ The project ships with a debug web console for development and inspection:
 
 The console provides:
 - **Conversation view** with streaming, tool call chips, and run tracking
-- **Inspector** showing model-facing messages, tools, run steps, and runtime traces
+- **Inspector** showing model-facing messages, tools, run steps, and engine traces
 - **Storage workbench** for PostgreSQL and Redis, including structured `messages.content` inspection
 
 ## Architecture
 
-The runtime is organized into clear layers:
+The engine is organized into clear layers:
 
 | Layer | Responsibility |
 | --- | --- |
@@ -50,11 +50,11 @@ The runtime is organized into clear layers:
 | **Context Engine** | Assembles prompts, history, agent config, and capability catalog at run start |
 | **LLM Loop + Dispatcher** | Model inference, tool calling, routing, and result backfill |
 | **Execution Backend** | Local directory-level execution (swappable to container/VM/remote sandbox) |
-| **Storage** | PostgreSQL (source of truth) + Redis (queues, locks, SSE) + local workspace runtime data |
+| **Storage** | PostgreSQL (source of truth) + Redis (queues, locks, SSE) + local workspace engine state |
 
 ## Workspace-First Design
 
-The **workspace** is the core customization boundary. A single runtime can host many workspaces, each with its own:
+The **workspace** is the core customization boundary. A single engine can host many workspaces, each with its own:
 
 - Agents and prompt strategies
 - Skills, actions, and tools
@@ -62,7 +62,7 @@ The **workspace** is the core customization boundary. A single runtime can host 
 - Model configurations
 - Tool servers (local or remote)
 
-Two workspaces on the same runtime can behave completely differently for different teams, repos, or product scenarios.
+Two workspaces on the same engine can behave completely differently for different teams, repos, or product scenarios.
 
 | Workspace Type | Description |
 | --- | --- |
@@ -80,7 +80,7 @@ Each capability layer stays separate so you can compose them differently per wor
 | `tool` | Built-in or external execution capabilities for agents |
 | `skill` | Reusable know-how packaged for a class of tasks |
 | `action` | Stable named tasks that users, APIs, or agents can trigger |
-| `hook` | Lifecycle interception, policy, and extension logic around runtime events |
+| `hook` | Lifecycle interception, policy, and extension logic around engine events |
 | `context` | Controls how prompts and workspace instructions are assembled for the model |
 
 ## Quick Start
@@ -152,6 +152,7 @@ pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/worker.ts
 ```
 
 If `server.docker.yaml` omits `workers.embedded`, `pnpm local:up` now seeds the sandbox-local worker pool with `min_count: 2` and `max_count: 4`, so background tools and subagents can overlap by default instead of collapsing to a single execution slot.
+If `workers.standalone.min_replicas` and `sandbox.fleet.min_count` are both omitted, the local stack now allows `oah-sandbox` to scale down to `0`, so an idle deployment no longer keeps one empty sandbox resident.
 
 ## Who Is It For?
 
@@ -164,7 +165,7 @@ If `server.docker.yaml` omits `workers.embedded`, `pnpm local:up` now seeds the 
 **Not the best fit:**
 - You just want a ready-made chat UI
 - You only need a tiny single-user local script
-- You don't need workspace isolation or runtime lifecycle management
+- You don't need workspace isolation or engine lifecycle management
 
 ## Use Cases
 
@@ -182,6 +183,6 @@ If `server.docker.yaml` omits `workers.embedded`, `pnpm local:up` now seeds the 
 | [Getting Started](./docs/getting-started.en.md) | Setup guide and first steps |
 | [Architecture Overview](./docs/design-overview.md) | Design principles and system architecture |
 | [Workspace Guide](./docs/workspace/README.en.md) | Workspace configuration and capabilities |
-| [Runtime Internals](./docs/runtime/README.en.md) | Runtime lifecycle and context engine |
+| [Engine Internals](./docs/engine/README.en.md) | Engine lifecycle and context engine |
 | [API Reference](./docs/openapi/README.en.md) | OpenAPI specification and endpoints |
-| [Blueprints](./blueprints/README.md) | Workspace blueprint usage |
+| [Runtimes](./runtimes/README.md) | Workspace runtime usage |

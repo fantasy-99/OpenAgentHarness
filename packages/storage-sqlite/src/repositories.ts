@@ -7,8 +7,8 @@ import type {
   HookRunAuditRepository,
   Message,
   MessageRepository,
-  RuntimeMessage,
-  RuntimeMessageRepository,
+  EngineMessage,
+  EngineMessageRepository,
   Run,
   RunRepository,
   RunStep,
@@ -21,8 +21,8 @@ import type {
   ToolCallAuditRepository,
   WorkspaceRecord,
   WorkspaceRepository
-} from "@oah/runtime-core";
-import { AppError, createId, isMessageRole, isRuntimeMessageKind, nowIso, parseCursor } from "@oah/runtime-core";
+} from "@oah/engine-core";
+import { AppError, createId, isMessageRole, isEngineMessageKind, nowIso, parseCursor } from "@oah/engine-core";
 import type { SQLitePersistenceCoordinator } from "./coordinator.js";
 import type { CursorRow, HistoryEventRow, IdRow, JsonRow } from "./shared.js";
 import {
@@ -249,14 +249,14 @@ export class SQLiteMessageRepository implements MessageRepository {
   workspaceRepository!: WorkspaceRepository;
 }
 
-export class SQLiteRuntimeMessageRepository implements RuntimeMessageRepository {
+export class SQLiteEngineMessageRepository implements EngineMessageRepository {
   readonly #coordinator: SQLitePersistenceCoordinator;
 
   constructor(coordinator: SQLitePersistenceCoordinator) {
     this.#coordinator = coordinator;
   }
 
-  async replaceBySessionId(sessionId: string, messages: RuntimeMessage[]): Promise<void> {
+  async replaceBySessionId(sessionId: string, messages: EngineMessage[]): Promise<void> {
     const handle = await this.#coordinator.getSessionHandle(sessionId);
     runInTransaction(handle.db, () => {
       handle.db.prepare("delete from runtime_messages where session_id = ?").run(sessionId);
@@ -269,18 +269,18 @@ export class SQLiteRuntimeMessageRepository implements RuntimeMessageRepository 
     });
   }
 
-  async listBySessionId(sessionId: string): Promise<RuntimeMessage[]> {
+  async listBySessionId(sessionId: string): Promise<EngineMessage[]> {
     const handle = await this.#coordinator.getSessionHandle(sessionId);
     const rows = coerceRows<JsonRow>(
       handle.db.prepare("select payload from runtime_messages where session_id = ? order by created_at asc, id asc").all(sessionId)
     );
 
     return rows.map((row) => {
-      const message = parseJson<RuntimeMessage>(row.payload);
+      const message = parseJson<EngineMessage>(row.payload);
       return {
         ...message,
         role: isMessageRole(message.role) ? message.role : "assistant",
-        kind: isRuntimeMessageKind(message.kind) ? message.kind : "assistant_text"
+        kind: isEngineMessageKind(message.kind) ? message.kind : "assistant_text"
       };
     });
   }

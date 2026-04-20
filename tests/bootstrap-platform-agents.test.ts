@@ -24,7 +24,7 @@ describe("bootstrap platform agents", () => {
     tempDirs.push(tempDir);
 
     const workspaceDir = path.join(tempDir, "workspaces");
-    const blueprintDir = path.join(tempDir, "blueprints");
+    const runtimeDir = path.join(tempDir, "runtimes");
     const modelsDir = path.join(tempDir, "models");
     const toolDir = path.join(tempDir, "tools");
     const skillDir = path.join(tempDir, "skills");
@@ -33,7 +33,7 @@ describe("bootstrap platform agents", () => {
 
     await Promise.all([
       mkdir(workspaceDir, { recursive: true }),
-      mkdir(blueprintDir, { recursive: true }),
+      mkdir(runtimeDir, { recursive: true }),
       mkdir(modelsDir, { recursive: true }),
       mkdir(toolDir, { recursive: true }),
       mkdir(skillDir, { recursive: true }),
@@ -50,7 +50,7 @@ server:
 storage: {}
 paths:
   workspace_dir: ./workspaces
-  blueprint_dir: ./blueprints
+  runtime_dir: ./runtimes
   model_dir: ./models
   tool_dir: ./tools
   skill_dir: ./skills

@@ -211,8 +211,8 @@ function ToggleRow(props: { label: string; checked: boolean; onCheckedChange: (c
 }
 
 function RuntimeSidebar(props: SidebarProps) {
-  const workspaceBlueprintFilter = useSettingsStore((state) => state.workspaceBlueprintFilter);
-  const setWorkspaceBlueprintFilter = useSettingsStore((state) => state.setWorkspaceBlueprintFilter);
+  const workspaceRuntimeFilter = useSettingsStore((state) => state.workspaceRuntimeFilter);
+  const setWorkspaceRuntimeFilter = useSettingsStore((state) => state.setWorkspaceRuntimeFilter);
   const serviceScope = useSettingsStore((state) => state.serviceScope);
   const autoStream = useUiStore((state) => state.autoStream);
   const setAutoStream = useUiStore((state) => state.setAutoStream);
@@ -312,7 +312,7 @@ function RuntimeSidebar(props: SidebarProps) {
                   variant="ghost"
                   className="h-8 w-8"
                   onClick={() => {
-                    props.setWorkspaceDraft((current) => ({ ...current, blueprint: "" }));
+                    props.setWorkspaceDraft((current) => ({ ...current, runtime: "" }));
                     props.setShowWorkspaceCreator(true);
                   }}
                   title="New Workspace"
@@ -339,19 +339,19 @@ function RuntimeSidebar(props: SidebarProps) {
             </div>
           </div>
           <label className="space-y-1 px-2">
-            <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Blueprint</span>
+            <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Runtime</span>
             <Select
-              value={workspaceBlueprintFilter || "__all_blueprints__"}
-              onValueChange={(value) => setWorkspaceBlueprintFilter(value === "__all_blueprints__" ? "" : value)}
+              value={workspaceRuntimeFilter || "__all_runtimes__"}
+              onValueChange={(value) => setWorkspaceRuntimeFilter(value === "__all_runtimes__" ? "" : value)}
             >
-              <SelectTrigger className="h-8 w-full rounded-xl border-black/10 bg-white/68 text-xs shadow-none" aria-label="Workspace blueprint filter">
-                <SelectValue placeholder="All blueprints" />
+              <SelectTrigger className="h-8 w-full rounded-xl border-black/10 bg-white/68 text-xs shadow-none" aria-label="Workspace runtime filter">
+                <SelectValue placeholder="All runtimes" />
               </SelectTrigger>
               <SelectContent align="start">
-                <SelectItem value="__all_blueprints__">All blueprints</SelectItem>
-                {props.workspaceBlueprintFilterOptions.map((blueprint) => (
-                  <SelectItem key={blueprint} value={blueprint}>
-                    {blueprint}
+                <SelectItem value="__all_runtimes__">All runtimes</SelectItem>
+                {props.workspaceRuntimeFilterOptions.map((runtime) => (
+                  <SelectItem key={runtime} value={runtime}>
+                    {runtime}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -360,11 +360,11 @@ function RuntimeSidebar(props: SidebarProps) {
           {props.filteredSavedWorkspaces.length === 0 ? (
             <div className="rounded-xl border border-dashed border-black/12 bg-white/32 px-4 py-8 text-center">
               <p className="text-sm font-medium text-foreground">
-                {workspaceBlueprintFilter ? "No matching workspaces" : "No workspaces"}
+                {workspaceRuntimeFilter ? "No matching workspaces" : "No workspaces"}
               </p>
               <p className="mt-1 text-sm text-muted-foreground">
-                {workspaceBlueprintFilter
-                  ? "Try another blueprint or service filter."
+                {workspaceRuntimeFilter
+                  ? "Try another runtime or service filter."
                   : serviceScope !== "__all__"
                     ? "Switch service scope or create a workspace in this service."
                     : "Create or load one."}
@@ -847,7 +847,7 @@ function AppSidebarImpl(props: SidebarProps) {
 
   const icon =
     surfaceMode === "storage" ? <Table2 className="h-4 w-4" /> : surfaceMode === "provider" ? <Network className="h-4 w-4" /> : <Bot className="h-4 w-4" />;
-  const title = surfaceMode === "storage" ? "Storage" : surfaceMode === "provider" ? "Provider" : "Runtime";
+  const title = surfaceMode === "storage" ? "Storage" : surfaceMode === "provider" ? "Provider" : "Engine";
   const subtitle =
     surfaceMode === "storage"
       ? "Inspect Postgres tables and Redis keyspace."
@@ -916,22 +916,22 @@ function AppSidebarImpl(props: SidebarProps) {
             <div className="space-y-1">
               <div className="flex items-center gap-1">
                 <Select
-                  value={props.workspaceDraft.blueprint?.trim() ?? ""}
-                  onValueChange={(value) => props.setWorkspaceDraft((current) => ({ ...current, blueprint: value }))}
+                  value={props.workspaceDraft.runtime?.trim() ?? ""}
+                  onValueChange={(value) => props.setWorkspaceDraft((current) => ({ ...current, runtime: value }))}
                 >
-                  <SelectTrigger className="h-10 flex-1 rounded-xl border-black/10 bg-white/68 text-sm shadow-none" aria-label="Workspace blueprint">
-                    <SelectValue placeholder={props.workspaceBlueprints.length > 0 ? "Select blueprint" : "No blueprints available"} />
+                  <SelectTrigger className="h-10 flex-1 rounded-xl border-black/10 bg-white/68 text-sm shadow-none" aria-label="Workspace runtime">
+                    <SelectValue placeholder={props.workspaceRuntimes.length > 0 ? "Select runtime" : "No runtimes available"} />
                   </SelectTrigger>
                   <SelectContent align="start">
-                    {props.workspaceBlueprints.length > 0 ? (
-                      props.workspaceBlueprints.map((blueprint) => (
-                        <SelectItem key={blueprint} value={blueprint}>
-                          {blueprint}
+                    {props.workspaceRuntimes.length > 0 ? (
+                      props.workspaceRuntimes.map((runtime) => (
+                        <SelectItem key={runtime} value={runtime}>
+                          {runtime}
                         </SelectItem>
                       ))
                     ) : (
                       <SelectItem value="__no_templates__" disabled>
-                        No blueprints available
+                        No runtimes available
                       </SelectItem>
                     )}
                   </SelectContent>
@@ -957,15 +957,15 @@ function AppSidebarImpl(props: SidebarProps) {
                   size="icon"
                   className="h-10 w-10 shrink-0 rounded-xl"
                   onClick={() => uploadTemplateInputRef.current?.click()}
-                  title="Upload blueprint (.zip)"
+                  title="Upload runtime (.zip)"
                 >
                   <Upload className="h-4 w-4" />
                 </Button>
               </div>
               <p className="px-1 text-xs leading-5 text-muted-foreground">
-                {props.workspaceBlueprints.length > 0
-                  ? "Choose a blueprint or upload a .zip folder as a new blueprint."
-                  : "Blueprint list is empty. Upload a .zip or use the refresh button."}
+                {props.workspaceRuntimes.length > 0
+                  ? "Choose a runtime or upload a .zip folder as a new runtime."
+                  : "Runtime list is empty. Upload a .zip or use the refresh button."}
               </p>
             </div>
             <Input
@@ -1002,9 +1002,9 @@ function AppSidebarImpl(props: SidebarProps) {
             </p>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => props.refreshWorkspaceBlueprints()}>
+            <Button variant="outline" onClick={() => props.refreshWorkspaceRuntimes()}>
               <RefreshCw className="h-4 w-4" />
-              Blueprints
+              Runtimes
             </Button>
             <Button
               onClick={() => {
@@ -1022,16 +1022,16 @@ function AppSidebarImpl(props: SidebarProps) {
       <Dialog open={showUploadTemplateDialog} onOpenChange={setShowUploadTemplateDialog}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Upload Blueprint</DialogTitle>
+            <DialogTitle>Upload Runtime</DialogTitle>
             <DialogDescription>
-              Upload a .zip file containing the blueprint folder structure. It will be extracted as a new workspace blueprint.
+              Upload a .zip file containing the runtime folder structure. It will be extracted as a new workspace runtime.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <Input
               value={uploadTemplateName}
               onChange={(event) => setUploadTemplateName(event.target.value.replace(/[^a-zA-Z0-9_-]/g, "_"))}
-              placeholder="Blueprint name"
+              placeholder="Runtime name"
             />
             <p className="px-1 text-xs leading-5 text-muted-foreground">
               Only alphanumeric characters, hyphens, and underscores are allowed.
@@ -1040,9 +1040,9 @@ function AppSidebarImpl(props: SidebarProps) {
               <Switch
                 checked={uploadTemplateOverwrite}
                 onCheckedChange={setUploadTemplateOverwrite}
-                id="overwrite-blueprint"
+                id="overwrite-runtime"
               />
-              <label htmlFor="overwrite-blueprint" className="text-sm text-muted-foreground">
+              <label htmlFor="overwrite-runtime" className="text-sm text-muted-foreground">
                 Overwrite if exists
               </label>
             </div>
@@ -1058,7 +1058,7 @@ function AppSidebarImpl(props: SidebarProps) {
               disabled={!uploadTemplateName.trim() || !uploadTemplateFile}
               onClick={async () => {
                 if (!uploadTemplateFile) return;
-                const ok = await props.uploadWorkspaceBlueprint(
+                const ok = await props.uploadWorkspaceRuntime(
                   uploadTemplateFile,
                   uploadTemplateName.trim(),
                   uploadTemplateOverwrite
@@ -1070,7 +1070,7 @@ function AppSidebarImpl(props: SidebarProps) {
                   setUploadTemplateOverwrite(false);
                   props.setWorkspaceDraft((current) => ({
                     ...current,
-                    blueprint: uploadTemplateName.trim()
+                    runtime: uploadTemplateName.trim()
                   }));
                 }
               }}

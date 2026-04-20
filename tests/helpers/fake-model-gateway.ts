@@ -5,7 +5,7 @@ import type {
   ModelStepPreparation,
   ModelStreamOptions,
   StreamedModelResponse
-} from "@oah/runtime-core";
+} from "@oah/engine-core";
 
 function extractText(content: GenerateModelInput["messages"] extends Array<infer T>
   ? T extends { content: infer C }

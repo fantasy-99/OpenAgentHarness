@@ -1,6 +1,6 @@
 import { createClient, type RedisClientType } from "redis";
 
-import type { WorkspaceLeaseEntry, WorkspaceLeaseInput, WorkspaceLeaseRegistry } from "@oah/runtime-core";
+import type { WorkspaceLeaseEntry, WorkspaceLeaseInput, WorkspaceLeaseRegistry } from "@oah/engine-core";
 import type { CreateRedisWorkspaceLeaseRegistryOptions } from "./registry-types.js";
 
 const DEFAULT_WORKSPACE_LEASE_TTL_MS = 15_000;
@@ -108,6 +108,26 @@ export class RedisWorkspaceLeaseRegistry implements WorkspaceLeaseRegistry {
       .sRem(this.#workspaceLeaseSetKey(workspaceId), leaseId)
       .del(this.#leaseKey(leaseId))
       .exec();
+  }
+
+  async removeWorkspace(workspaceId: string): Promise<void> {
+    const normalizedWorkspaceId = workspaceId.trim();
+    if (normalizedWorkspaceId.length === 0) {
+      return;
+    }
+
+    const workspaceSetKey = this.#workspaceLeaseSetKey(normalizedWorkspaceId);
+    const leaseIds = await this.#commands.sMembers(workspaceSetKey);
+    const transaction = this.#commands.multi().del(workspaceSetKey);
+
+    if (leaseIds.length > 0) {
+      transaction.sRem(this.#registrySetKey(), leaseIds);
+      for (const leaseId of leaseIds) {
+        transaction.del(this.#leaseKey(leaseId));
+      }
+    }
+
+    await transaction.exec();
   }
 
   async listActive(nowMs = Date.now()): Promise<WorkspaceLeaseEntry[]> {

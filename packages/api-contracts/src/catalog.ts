@@ -57,7 +57,7 @@ export const workspaceCatalogSchema = z.object({
   tools: z.array(toolCatalogItemSchema).optional(),
   hooks: z.array(hookCatalogItemSchema),
   nativeTools: z.array(z.string()),
-  runtimeTools: z.array(z.string()).optional()
+  engineTools: z.array(z.string()).optional()
 });
 
 export type AgentCatalogItem = z.infer<typeof agentCatalogItemSchema>;

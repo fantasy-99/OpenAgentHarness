@@ -1,4 +1,4 @@
-import { startWorkerServer } from "./runtime-entry.js";
+import { startWorkerServer } from "./engine-entry.js";
 
 async function main() {
   await startWorkerServer(process.argv.slice(2));

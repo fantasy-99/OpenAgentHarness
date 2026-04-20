@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { WorkspaceRecord } from "@oah/runtime-core";
+import type { WorkspaceRecord } from "@oah/engine-core";
 import { createSQLiteRuntimePersistence } from "../packages/storage-sqlite/src/index.ts";
 
 const tempDirs: string[] = [];
@@ -340,7 +340,7 @@ function seedCurrentSchemaWithLegacyPayloads(dbPath: string, workspaceId: string
           }
         ],
         messageCount: 2,
-        runtimeToolNames: ["Bash"],
+        engineToolNames: ["Bash"],
         activeToolNames: ["Bash"]
       },
       output: {
@@ -608,7 +608,7 @@ describe("storage sqlite", () => {
     await persistence.toolCallAuditRepository.create(toolCall);
     await persistence.hookRunAuditRepository.create(hookRun);
     await persistence.artifactRepository.create(artifact);
-    await persistence.runtimeMessageRepository.replaceBySessionId(session.id, [
+    await persistence.engineMessageRepository.replaceBySessionId(session.id, [
       {
         id: "rtm_delete",
         sessionId: session.id,
@@ -1068,7 +1068,7 @@ describe("storage sqlite", () => {
       },
       runtime: {
         messageCount: 2,
-        runtimeToolNames: ["Bash"],
+        engineToolNames: ["Bash"],
         activeToolNames: ["Bash"]
       }
     });

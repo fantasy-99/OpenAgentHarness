@@ -147,7 +147,7 @@ describe("object storage sync", () => {
       },
       {
         workspace_dir: "/tmp/workspaces",
-        blueprint_dir: "/tmp/blueprints",
+        runtime_dir: "/tmp/runtimes",
         model_dir: "/tmp/models",
         tool_dir: "/tmp/tools",
         skill_dir: "/tmp/skills"
@@ -167,11 +167,11 @@ describe("object storage sync", () => {
         region: "us-east-1",
         endpoint: "http://127.0.0.1:9000",
         force_path_style: true,
-        managed_paths: ["blueprint", "model"]
+        managed_paths: ["runtime", "model"]
       },
       {
         workspace_dir: "/tmp/workspaces",
-        blueprint_dir: "/tmp/blueprints",
+        runtime_dir: "/tmp/runtimes",
         model_dir: "/tmp/models",
         tool_dir: "/tmp/tools",
         skill_dir: "/tmp/skills"

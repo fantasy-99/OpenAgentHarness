@@ -1,7 +1,7 @@
 import type { ListToolsResult } from "@ai-sdk/mcp";
 import type { JSONValue, ToolSet } from "ai";
 
-import type { RuntimeLogger } from "@oah/runtime-core";
+import type { EngineLogger } from "@oah/engine-core";
 
 export interface PreparedToolServers {
   tools: ToolSet;
@@ -9,7 +9,7 @@ export interface PreparedToolServers {
 }
 
 export interface PrepareToolServersOptions {
-  logger?: RuntimeLogger | undefined;
+  logger?: EngineLogger | undefined;
 }
 
 export interface ToolServerClient {

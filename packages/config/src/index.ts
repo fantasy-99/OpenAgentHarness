@@ -39,26 +39,27 @@ export type {
   DiscoveredToolServer,
   DiscoveredWorkspace,
   DiscoveredWorkspaceCatalog,
-  InitializeWorkspaceFromBlueprintInput,
+  InitializeWorkspaceFromRuntimeInput,
   PlatformAgentRegistry,
   PlatformModelDefinition,
   PlatformModelRegistry,
   PromptSource,
   ResolvedPromptSource,
   ServerConfig,
-  WorkspaceBlueprintDescriptor,
-  WorkspaceBlueprintSkill,
+  WorkspaceRuntimeDescriptor,
+  WorkspaceRuntimeSkill,
+  WorkspaceModelPreset,
   WorkspaceSettings,
   WorkspaceSystemPromptComposeSettings,
   WorkspaceSystemPromptSettings
 } from "./types.js";
 
 export {
-  deleteWorkspaceBlueprint,
-  initializeWorkspaceFromBlueprint,
-  listWorkspaceBlueprints,
-  uploadWorkspaceBlueprint
-} from "./blueprints.js";
+  deleteWorkspaceRuntime,
+  initializeWorkspaceFromRuntime,
+  listWorkspaceRuntimes,
+  uploadWorkspaceRuntime
+} from "./runtimes.js";
 
 export {
   buildWorkspaceId,
@@ -77,7 +78,7 @@ export {
   loadWorkspaceToolServers,
   normalizeWorkspaceName,
   resolveWorkspaceCreationRoot,
-  updateWorkspaceBlueprintSetting
+  updateWorkspaceRuntimeSetting
 } from "./workspace.js";
 
 export async function loadServerConfig(configPath: string): Promise<ServerConfig> {

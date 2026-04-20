@@ -9,7 +9,7 @@
   "references": [
     { "path": "../../packages/config" },
     { "path": "../../packages/api-contracts" },
-    { "path": "../../packages/runtime-core" },
+    { "path": "../../packages/engine-core" },
     { "path": "../../packages/storage-memory" },
     { "path": "../../packages/storage-sqlite" },
     { "path": "../../packages/storage-postgres" },

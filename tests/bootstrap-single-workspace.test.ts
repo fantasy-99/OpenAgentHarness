@@ -331,7 +331,7 @@ describe("bootstrap single workspace mode", () => {
       toolServers: {},
       hooks: {},
       catalog: {
-        workspaceId: "blueprint",
+        workspaceId: "runtime",
         agents: [],
         models: [],
         actions: [],
@@ -347,6 +347,9 @@ describe("bootstrap single workspace mode", () => {
         ...discovered,
         id: "ws_legacy_random",
         name: "Renamed Workspace",
+        ownerId: "owner-a",
+        serviceName: "svc-demo",
+        runtime: "starter-runtime",
         executionPolicy: "remote",
         createdAt: "2025-01-01T00:00:00.000Z",
         updatedAt: "2025-01-02T00:00:00.000Z"
@@ -358,6 +361,9 @@ describe("bootstrap single workspace mode", () => {
         id: "ws_legacy_random",
         name: "Renamed Workspace",
         rootPath: "/tmp/repo",
+        ownerId: "owner-a",
+        serviceName: "svc-demo",
+        runtime: "starter-runtime",
         executionPolicy: "remote",
         createdAt: "2025-01-01T00:00:00.000Z",
         updatedAt: "2025-01-02T00:00:00.000Z"
@@ -389,7 +395,7 @@ describe("bootstrap single workspace mode", () => {
         toolServers: {},
         hooks: {},
         catalog: {
-          workspaceId: "blueprint",
+          workspaceId: "runtime",
           agents: [],
           models: [],
           actions: [],
@@ -471,7 +477,7 @@ openai-default:
         workspaceKind: "project",
         rootPath: workspaceRoot
       });
-      expect(runtime.listWorkspaceBlueprints).toBeUndefined();
+      expect(runtime.listWorkspaceRuntimes).toBeUndefined();
       expect(runtime.importWorkspace).toBeUndefined();
 
       const workspacePage = await runtime.runtimeService.listWorkspaces(10);
@@ -618,7 +624,7 @@ openai-default:
     tempDirs.push(tempDir);
 
     const workspaceDir = path.join(tempDir, "workspaces");
-    const blueprintsDir = path.join(tempDir, "blueprints");
+    const runtimesDir = path.join(tempDir, "runtimes");
     const modelsDir = path.join(tempDir, "models");
     const toolsDir = path.join(tempDir, "tools");
     const skillsDir = path.join(tempDir, "skills");
@@ -626,7 +632,7 @@ openai-default:
     const configPath = path.join(tempDir, "server.yaml");
     await Promise.all([
       mkdir(path.join(workspaceRoot, ".openharness"), { recursive: true }),
-      mkdir(blueprintsDir, { recursive: true }),
+      mkdir(runtimesDir, { recursive: true }),
       mkdir(modelsDir, { recursive: true }),
       mkdir(toolsDir, { recursive: true }),
       mkdir(skillsDir, { recursive: true })
@@ -662,7 +668,7 @@ server:
 storage: {}
 paths:
   workspace_dir: ./workspaces
-  blueprint_dir: ./blueprints
+  runtime_dir: ./runtimes
   model_dir: ./models
   tool_dir: ./tools
   skill_dir: ./skills
@@ -715,7 +721,7 @@ llm:
     tempDirs.push(tempDir);
 
     const workspaceDir = path.join(tempDir, "workspaces");
-    const blueprintsDir = path.join(tempDir, "blueprints");
+    const runtimesDir = path.join(tempDir, "runtimes");
     const modelsDir = path.join(tempDir, "models");
     const toolsDir = path.join(tempDir, "tools");
     const skillsDir = path.join(tempDir, "skills");
@@ -725,7 +731,7 @@ llm:
     await Promise.all([
       mkdir(path.join(goodWorkspaceRoot, ".openharness"), { recursive: true }),
       mkdir(path.join(badWorkspaceRoot, ".openharness", "models"), { recursive: true }),
-      mkdir(blueprintsDir, { recursive: true }),
+      mkdir(runtimesDir, { recursive: true }),
       mkdir(modelsDir, { recursive: true }),
       mkdir(toolsDir, { recursive: true }),
       mkdir(skillsDir, { recursive: true })
@@ -761,7 +767,7 @@ server:
 storage: {}
 paths:
   workspace_dir: ./workspaces
-  blueprint_dir: ./blueprints
+  runtime_dir: ./runtimes
   model_dir: ./models
   tool_dir: ./tools
   skill_dir: ./skills
@@ -811,7 +817,7 @@ llm:
       mkdir(path.join(workspaceRoot, ".openharness"), { recursive: true }),
       mkdir(modelsDir, { recursive: true }),
       mkdir(path.join(tempDir, "workspaces"), { recursive: true }),
-      mkdir(path.join(tempDir, "blueprints"), { recursive: true }),
+      mkdir(path.join(tempDir, "runtimes"), { recursive: true }),
       mkdir(path.join(tempDir, "tools"), { recursive: true }),
       mkdir(path.join(tempDir, "skills"), { recursive: true })
     ]);
@@ -836,7 +842,7 @@ storage:
   postgres_url: postgres://127.0.0.1:9/oah_test
 paths:
   workspace_dir: ./workspaces
-  blueprint_dir: ./blueprints
+  runtime_dir: ./runtimes
   model_dir: ./models
   tool_dir: ./tools
   skill_dir: ./skills
@@ -860,7 +866,7 @@ llm:
     tempDirs.push(tempDir);
 
     const workspaceDir = path.join(tempDir, "workspaces");
-    const blueprintsDir = path.join(tempDir, "blueprints");
+    const runtimesDir = path.join(tempDir, "runtimes");
     const modelsDir = path.join(tempDir, "models");
     const toolsDir = path.join(tempDir, "tools");
     const skillsDir = path.join(tempDir, "skills");
@@ -870,7 +876,7 @@ llm:
 
     await Promise.all([
       mkdir(path.join(workspaceRoot, ".openharness", "data"), { recursive: true }),
-      mkdir(blueprintsDir, { recursive: true }),
+      mkdir(runtimesDir, { recursive: true }),
       mkdir(modelsDir, { recursive: true }),
       mkdir(toolsDir, { recursive: true }),
       mkdir(skillsDir, { recursive: true })
@@ -895,7 +901,7 @@ server:
 storage: {}
 paths:
   workspace_dir: ./workspaces
-  blueprint_dir: ./blueprints
+  runtime_dir: ./runtimes
   model_dir: ./models
   tool_dir: ./tools
   skill_dir: ./skills
@@ -936,7 +942,7 @@ llm:
     tempDirs.push(tempDir);
 
     const workspaceDir = path.join(tempDir, "workspaces");
-    const blueprintsDir = path.join(tempDir, "blueprints");
+    const runtimesDir = path.join(tempDir, "runtimes");
     const modelsDir = path.join(tempDir, "models");
     const toolsDir = path.join(tempDir, "tools");
     const skillsDir = path.join(tempDir, "skills");
@@ -947,7 +953,7 @@ llm:
 
     await Promise.all([
       mkdir(workspaceDir, { recursive: true }),
-      mkdir(blueprintsDir, { recursive: true }),
+      mkdir(runtimesDir, { recursive: true }),
       mkdir(modelsDir, { recursive: true }),
       mkdir(toolsDir, { recursive: true }),
       mkdir(skillsDir, { recursive: true }),
@@ -973,7 +979,7 @@ server:
 storage: {}
 paths:
   workspace_dir: ./workspaces
-  blueprint_dir: ./blueprints
+  runtime_dir: ./runtimes
   model_dir: ./models
   tool_dir: ./tools
   skill_dir: ./skills
@@ -1040,7 +1046,7 @@ llm:
     tempDirs.push(tempDir);
 
     const workspaceDir = path.join(tempDir, "workspaces");
-    const blueprintsDir = path.join(tempDir, "blueprints");
+    const runtimesDir = path.join(tempDir, "runtimes");
     const modelsDir = path.join(tempDir, "models");
     const toolsDir = path.join(tempDir, "tools");
     const skillsDir = path.join(tempDir, "skills");
@@ -1055,7 +1061,7 @@ llm:
 
     await Promise.all([
       mkdir(workspaceDir, { recursive: true }),
-      mkdir(blueprintsDir, { recursive: true }),
+      mkdir(runtimesDir, { recursive: true }),
       mkdir(modelsDir, { recursive: true }),
       mkdir(toolsDir, { recursive: true }),
       mkdir(skillsDir, { recursive: true })
@@ -1078,7 +1084,7 @@ server:
 storage: {}
 paths:
   workspace_dir: ./workspaces
-  blueprint_dir: ./blueprints
+  runtime_dir: ./runtimes
   model_dir: ./models
   tool_dir: ./tools
   skill_dir: ./skills
@@ -1183,7 +1189,7 @@ llm:
     tempDirs.push(tempDir);
 
     const workspaceDir = path.join(tempDir, "workspaces");
-    const blueprintsDir = path.join(tempDir, "blueprints");
+    const runtimesDir = path.join(tempDir, "runtimes");
     const modelsDir = path.join(tempDir, "models");
     const toolsDir = path.join(tempDir, "tools");
     const skillsDir = path.join(tempDir, "skills");
@@ -1193,7 +1199,7 @@ llm:
 
     await Promise.all([
       mkdir(workspaceDir, { recursive: true }),
-      mkdir(blueprintsDir, { recursive: true }),
+      mkdir(runtimesDir, { recursive: true }),
       mkdir(modelsDir, { recursive: true }),
       mkdir(toolsDir, { recursive: true }),
       mkdir(skillsDir, { recursive: true }),
@@ -1219,7 +1225,7 @@ server:
 storage: {}
 paths:
   workspace_dir: ./workspaces
-  blueprint_dir: ./blueprints
+  runtime_dir: ./runtimes
   model_dir: ./models
   tool_dir: ./tools
   skill_dir: ./skills
@@ -1305,7 +1311,7 @@ compat-fast:
 
     const workspaceDir = path.join(tempDir, "workspaces");
     const workspaceRoot = path.join(workspaceDir, "demo");
-    const blueprintsDir = path.join(tempDir, "blueprints");
+    const runtimesDir = path.join(tempDir, "runtimes");
     const modelsDir = path.join(tempDir, "models");
     const toolsDir = path.join(tempDir, "tools");
     const skillsDir = path.join(tempDir, "skills");
@@ -1313,7 +1319,7 @@ compat-fast:
 
     await Promise.all([
       mkdir(path.join(workspaceRoot, ".openharness"), { recursive: true }),
-      mkdir(blueprintsDir, { recursive: true }),
+      mkdir(runtimesDir, { recursive: true }),
       mkdir(modelsDir, { recursive: true }),
       mkdir(toolsDir, { recursive: true }),
       mkdir(skillsDir, { recursive: true })
@@ -1346,7 +1352,7 @@ object_storage:
     key_prefix: workspace
 paths:
   workspace_dir: ./workspaces
-  blueprint_dir: ./blueprints
+  runtime_dir: ./runtimes
   model_dir: ./models
   tool_dir: ./tools
   skill_dir: ./skills

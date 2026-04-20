@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "../packages/config/node_modules/yaml/dist/index.js";
@@ -11,7 +11,7 @@ const composeFile = path.join(repoRoot, "docker-compose.local.yml");
 const mode = process.argv[2];
 const composeProjectName =
   process.env.COMPOSE_PROJECT_NAME || path.basename(repoRoot).toLowerCase().replace(/[^a-z0-9]/g, "");
-const readonlyObjectStorageVolumeKeys = ["oah-blueprints", "oah-models", "oah-tools", "oah-skills", "oah-archives"];
+const readonlyObjectStorageVolumeKeys = ["oah-runtimes", "oah-models", "oah-tools", "oah-skills", "oah-archives"];
 
 if (mode !== "up" && mode !== "down") {
   console.error("Usage: node ./scripts/local-stack.mjs <up|down>");
@@ -108,6 +108,53 @@ function ensureDeployRoot() {
   }
 }
 
+function directoryHasSubdirectories(directoryPath) {
+  if (!existsSync(directoryPath)) {
+    return false;
+  }
+
+  return readdirSync(directoryPath, { withFileTypes: true }).some((entry) => entry.isDirectory());
+}
+
+function copyDirectoryChildren(sourceRoot, targetRoot) {
+  mkdirSync(targetRoot, { recursive: true });
+  for (const entry of readdirSync(sourceRoot, { withFileTypes: true })) {
+    cpSync(path.join(sourceRoot, entry.name), path.join(targetRoot, entry.name), {
+      recursive: true,
+      force: false,
+      errorOnExist: false
+    });
+  }
+}
+
+function ensureLocalRuntimeSources(deployRoot) {
+  const sourceRoot = path.join(deployRoot, "source");
+  const runtimeSourceRoot = path.join(sourceRoot, "runtimes");
+  if (directoryHasSubdirectories(runtimeSourceRoot)) {
+    return;
+  }
+
+  mkdirSync(sourceRoot, { recursive: true });
+
+  const legacyBlueprintRoot = path.join(sourceRoot, "blueprints");
+  if (directoryHasSubdirectories(legacyBlueprintRoot)) {
+    renameSync(legacyBlueprintRoot, runtimeSourceRoot);
+    console.log(
+      `Migrated legacy ${legacyBlueprintRoot} to ${runtimeSourceRoot} so /api/v1/runtimes uses the current runtime layout.`
+    );
+    return;
+  }
+
+  const bundledRuntimeRoot = path.join(repoRoot, "runtimes");
+  if (directoryHasSubdirectories(bundledRuntimeRoot)) {
+    copyDirectoryChildren(bundledRuntimeRoot, runtimeSourceRoot);
+    console.log(`Seeded ${runtimeSourceRoot} from bundled repo runtimes.`);
+    return;
+  }
+
+  mkdirSync(runtimeSourceRoot, { recursive: true });
+}
+
 function prepareDockerServerConfigs() {
   const deployRoot = process.env.OAH_DEPLOY_ROOT;
   if (!deployRoot) {
@@ -126,6 +173,7 @@ function prepareDockerServerConfigs() {
     copyFileSync(exampleConfigPath, sourceConfigPath);
     console.log(`Seeded ${sourceConfigPath} from server.example.yaml. Edit it to point at your Postgres/Redis/MinIO if the defaults do not fit.`);
   }
+  ensureLocalRuntimeSources(deployRoot);
 
   const generatedDir = path.join(deployRoot, ".oah-local");
   const generatedApiConfigPath = path.join(generatedDir, "api.generated.yaml");
@@ -155,14 +203,15 @@ function prepareDockerServerConfigs() {
   const sandboxReplicaCount = Number.isFinite(parsedReplicaOverride) && parsedReplicaOverride > 0
     ? parsedReplicaOverride
     : Math.max(1, configuredSandboxFleet?.max_count ?? 4);
-  const initialSandboxReplicaCount = Math.max(
+  const localStandaloneMinReplicas = Math.max(
     0,
     apiInt(
       sourceConfig.workers?.standalone?.min_replicas,
       configuredSandboxFleet?.min_count,
-      1
+      0
     )
   );
+  const initialSandboxReplicaCount = localStandaloneMinReplicas;
 
   const apiServerConfig = {
     ...sourceConfig,
@@ -183,11 +232,19 @@ function prepareDockerServerConfigs() {
 
   const controllerConfig = {
     ...apiServerConfig,
+    sandbox: {
+      ...(apiServerConfig.sandbox ?? {}),
+      fleet: {
+        ...(apiServerConfig.sandbox?.fleet ?? {}),
+        min_count: apiServerConfig.sandbox?.fleet?.min_count ?? localStandaloneMinReplicas,
+        max_count: apiServerConfig.sandbox?.fleet?.max_count ?? sandboxReplicaCount
+      }
+    },
     workers: {
       ...(apiServerConfig.workers ?? {}),
       standalone: {
         ...(apiServerConfig.workers?.standalone ?? {}),
-        min_replicas: apiServerConfig.workers?.standalone?.min_replicas ?? (configuredSandboxFleet?.min_count ?? 1),
+        min_replicas: apiServerConfig.workers?.standalone?.min_replicas ?? localStandaloneMinReplicas,
         max_replicas: apiServerConfig.workers?.standalone?.max_replicas ?? sandboxReplicaCount
       },
       controller: {

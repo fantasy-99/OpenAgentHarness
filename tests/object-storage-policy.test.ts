@@ -15,9 +15,9 @@ describe("object storage policy", () => {
         provider: "s3",
         bucket: "test-bucket",
         region: "us-east-1",
-        managed_paths: ["workspace", "blueprint", "model", "tool", "skill"]
+        managed_paths: ["workspace", "runtime", "model", "tool", "skill"]
       })
-    ).toEqual(["blueprint", "model", "tool", "skill"]);
+    ).toEqual(["runtime", "model", "tool", "skill"]);
   });
 
   it("treats workspace as a managed backing-store opt-in", () => {
@@ -38,7 +38,7 @@ describe("object storage policy", () => {
           provider: "s3",
           bucket: "test-bucket",
           region: "us-east-1",
-          managed_paths: ["blueprint", "model"]
+          managed_paths: ["runtime", "model"]
         }
       })
     ).toBe(false);
@@ -55,23 +55,23 @@ describe("object storage policy", () => {
           key_prefix: "workspace-live"
         },
         mirrors: {
-          paths: ["blueprint", "tool"],
+          paths: ["runtime", "tool"],
           sync_on_boot: false,
           sync_on_change: false,
           poll_interval_ms: 12_000,
           key_prefixes: {
-            blueprint: "bp",
+            runtime: "bp",
             tool: "tools"
           }
         }
       })
     ).toMatchObject({
-      managed_paths: ["blueprint", "tool"],
+      managed_paths: ["runtime", "tool"],
       sync_on_boot: false,
       sync_on_change: false,
       poll_interval_ms: 12_000,
       key_prefixes: {
-        blueprint: "bp",
+        runtime: "bp",
         model: "model",
         tool: "tools",
         skill: "skill"
@@ -163,11 +163,11 @@ describe("object storage policy", () => {
           provider: "s3",
           bucket: "test-bucket",
           region: "us-east-1",
-          managed_paths: ["workspace", "blueprint", "tool"]
+          managed_paths: ["workspace", "runtime", "tool"]
         }
       })
     ).toEqual({
-      mirroredPaths: ["blueprint", "tool"],
+      mirroredPaths: ["runtime", "tool"],
       workspaceBackingStoreEnabled: true
     });
   });

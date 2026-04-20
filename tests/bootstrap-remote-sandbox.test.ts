@@ -17,7 +17,10 @@ afterEach(async () => {
   );
 });
 
-function createFilesystemBackedSandboxHost(baseDir: string, options?: { forbidRootDeletion?: boolean }) {
+function createFilesystemBackedSandboxHost(
+  baseDir: string,
+  options?: { forbidRootDeletion?: boolean; failRootReaddirWithWorkspaceNotFound?: boolean }
+) {
   const sandboxRoots = new Map<string, string>();
 
   async function ensureSandbox(workspaceId: string): Promise<{
@@ -103,6 +106,9 @@ function createFilesystemBackedSandboxHost(baseDir: string, options?: { forbidRo
           return readFile(resolveSandboxPath(input.sandboxId, input.path));
         },
         async readdir(input) {
+          if (options?.failRootReaddirWithWorkspaceNotFound && input.path === "/workspace") {
+            throw new Error(`{"error":{"code":"workspace_not_found","message":"Workspace ${input.sandboxId} was not found."}}`);
+          }
           const entries = await readdir(resolveSandboxPath(input.sandboxId, input.path), { withFileTypes: true });
           return entries.map((entry) => ({
             name: entry.name,
@@ -145,35 +151,35 @@ describe("bootstrap remote sandbox mode", () => {
     tempDirs.push(tempDir);
 
     const workspaceDir = path.join(tempDir, "workspaces");
-    const blueprintDir = path.join(tempDir, "blueprints");
+    const runtimeDir = path.join(tempDir, "runtimes");
     const modelsDir = path.join(tempDir, "models");
     const toolsDir = path.join(tempDir, "tools");
     const skillsDir = path.join(tempDir, "skills");
     const sandboxRootsDir = path.join(tempDir, "sandbox-roots");
     const configPath = path.join(tempDir, "server.yaml");
     const ignoredLocalWorkspace = path.join(workspaceDir, "ignored-local-workspace");
-    const blueprintRoot = path.join(blueprintDir, "workspace");
+    const runtimeRoot = path.join(runtimeDir, "workspace");
 
     tempDirs.push(sandboxRootsDir);
 
     await Promise.all([
       mkdir(workspaceDir, { recursive: true }),
-      mkdir(blueprintRoot, { recursive: true }),
+      mkdir(runtimeRoot, { recursive: true }),
       mkdir(modelsDir, { recursive: true }),
       mkdir(toolsDir, { recursive: true }),
       mkdir(skillsDir, { recursive: true }),
       mkdir(sandboxRootsDir, { recursive: true }),
       mkdir(path.join(ignoredLocalWorkspace, ".openharness"), { recursive: true }),
-      mkdir(path.join(blueprintRoot, ".openharness"), { recursive: true }),
-      mkdir(path.join(blueprintRoot, "nested"), { recursive: true })
+      mkdir(path.join(runtimeRoot, ".openharness"), { recursive: true }),
+      mkdir(path.join(runtimeRoot, "nested"), { recursive: true })
     ]);
 
     await Promise.all([
       writeFile(path.join(ignoredLocalWorkspace, ".openharness", "settings.yaml"), "default_agent: assistant\n", "utf8"),
       writeFile(path.join(ignoredLocalWorkspace, "README.md"), "this local workspace should be ignored\n", "utf8"),
-      writeFile(path.join(blueprintRoot, ".openharness", "settings.yaml"), "default_agent: assistant\n", "utf8"),
-      writeFile(path.join(blueprintRoot, "README.md"), "# Remote Blueprint\n", "utf8"),
-      writeFile(path.join(blueprintRoot, "nested", "deep.txt"), "uploaded into sandbox\n", "utf8"),
+      writeFile(path.join(runtimeRoot, ".openharness", "settings.yaml"), "default_agent: assistant\n", "utf8"),
+      writeFile(path.join(runtimeRoot, "README.md"), "# Remote Runtime\n", "utf8"),
+      writeFile(path.join(runtimeRoot, "nested", "deep.txt"), "uploaded into sandbox\n", "utf8"),
       writeFile(
         path.join(modelsDir, "openai.yaml"),
         `
@@ -192,7 +198,7 @@ server:
 storage: {}
 paths:
   workspace_dir: ./workspaces
-  blueprint_dir: ./blueprints
+  runtime_dir: ./runtimes
   model_dir: ./models
   tool_dir: ./tools
   skill_dir: ./skills
@@ -224,7 +230,7 @@ sandbox:
       const workspace = await runtime.runtimeService.createWorkspace({
         input: {
           name: "Remote Sandbox Workspace",
-          blueprint: "workspace"
+          runtime: "workspace"
         }
       });
 
@@ -249,7 +255,7 @@ sandbox:
 
       const sandboxRoot = sandboxHost.sandboxRoots.get(workspace.id);
       expect(sandboxRoot).toBeDefined();
-      await expect(readFile(path.join(sandboxRoot!, "workspace", "README.md"), "utf8")).resolves.toBe("# Remote Blueprint\n");
+      await expect(readFile(path.join(sandboxRoot!, "workspace", "README.md"), "utf8")).resolves.toBe("# Remote Runtime\n");
       await expect(readFile(path.join(sandboxRoot!, "workspace", "nested", "deep.txt"), "utf8")).resolves.toBe(
         "uploaded into sandbox\n"
       );
@@ -263,19 +269,19 @@ sandbox:
     tempDirs.push(tempDir);
 
     const workspaceDir = path.join(tempDir, "workspaces");
-    const blueprintDir = path.join(tempDir, "blueprints");
+    const runtimeDir = path.join(tempDir, "runtimes");
     const modelsDir = path.join(tempDir, "models");
     const toolsDir = path.join(tempDir, "tools");
     const skillsDir = path.join(tempDir, "skills");
     const sandboxRootsDir = path.join(tempDir, "sandbox-roots");
     const configPath = path.join(tempDir, "server.yaml");
-    const blueprintRoot = path.join(blueprintDir, "workspace");
+    const runtimeRoot = path.join(runtimeDir, "workspace");
 
     tempDirs.push(sandboxRootsDir);
 
     await Promise.all([
       mkdir(workspaceDir, { recursive: true }),
-      mkdir(path.join(blueprintRoot, ".openharness"), { recursive: true }),
+      mkdir(path.join(runtimeRoot, ".openharness"), { recursive: true }),
       mkdir(modelsDir, { recursive: true }),
       mkdir(toolsDir, { recursive: true }),
       mkdir(skillsDir, { recursive: true }),
@@ -283,8 +289,8 @@ sandbox:
     ]);
 
     await Promise.all([
-      writeFile(path.join(blueprintRoot, ".openharness", "settings.yaml"), "default_agent: assistant\n", "utf8"),
-      writeFile(path.join(blueprintRoot, "README.md"), "# Remote Blueprint\n", "utf8"),
+      writeFile(path.join(runtimeRoot, ".openharness", "settings.yaml"), "default_agent: assistant\n", "utf8"),
+      writeFile(path.join(runtimeRoot, "README.md"), "# Remote Runtime\n", "utf8"),
       writeFile(
         path.join(modelsDir, "openai.yaml"),
         `
@@ -303,7 +309,7 @@ server:
 storage: {}
 paths:
   workspace_dir: ./workspaces
-  blueprint_dir: ./blueprints
+  runtime_dir: ./runtimes
   model_dir: ./models
   tool_dir: ./tools
   skill_dir: ./skills
@@ -332,17 +338,104 @@ sandbox:
       const workspace = await runtime.runtimeService.createWorkspace({
         input: {
           name: "Remote Sandbox Workspace",
-          blueprint: "workspace"
+          runtime: "workspace"
         }
       });
 
       const sandboxRoot = sandboxHost.sandboxRoots.get(workspace.id);
       expect(sandboxRoot).toBeDefined();
-      await expect(readFile(path.join(sandboxRoot!, "workspace", "README.md"), "utf8")).resolves.toBe("# Remote Blueprint\n");
+      await expect(readFile(path.join(sandboxRoot!, "workspace", "README.md"), "utf8")).resolves.toBe("# Remote Runtime\n");
 
       await runtime.runtimeService.deleteWorkspace(workspace.id);
 
       await expect(readdir(path.join(sandboxRoot!, "workspace"))).resolves.toEqual([]);
+      await expect(runtime.runtimeService.getWorkspace(workspace.id)).rejects.toMatchObject({
+        code: "workspace_not_found"
+      });
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("treats an already-missing remote sandbox workspace as a successful delete cleanup", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-remote-sandbox-delete-missing-"));
+    tempDirs.push(tempDir);
+
+    const workspaceDir = path.join(tempDir, "workspaces");
+    const runtimeDir = path.join(tempDir, "runtimes");
+    const modelsDir = path.join(tempDir, "models");
+    const toolsDir = path.join(tempDir, "tools");
+    const skillsDir = path.join(tempDir, "skills");
+    const sandboxRootsDir = path.join(tempDir, "sandbox-roots");
+    const configPath = path.join(tempDir, "server.yaml");
+    const runtimeRoot = path.join(runtimeDir, "workspace");
+
+    tempDirs.push(sandboxRootsDir);
+
+    await Promise.all([
+      mkdir(workspaceDir, { recursive: true }),
+      mkdir(path.join(runtimeRoot, ".openharness"), { recursive: true }),
+      mkdir(modelsDir, { recursive: true }),
+      mkdir(toolsDir, { recursive: true }),
+      mkdir(skillsDir, { recursive: true }),
+      mkdir(sandboxRootsDir, { recursive: true })
+    ]);
+
+    await Promise.all([
+      writeFile(path.join(runtimeRoot, ".openharness", "settings.yaml"), "default_agent: assistant\n", "utf8"),
+      writeFile(path.join(runtimeRoot, "README.md"), "# Remote Runtime\n", "utf8"),
+      writeFile(
+        path.join(modelsDir, "openai.yaml"),
+        `
+openai-default:
+  provider: openai
+  name: gpt-4o-mini
+`,
+        "utf8"
+      ),
+      writeFile(
+        configPath,
+        `
+server:
+  host: 127.0.0.1
+  port: 8787
+storage: {}
+paths:
+  workspace_dir: ./workspaces
+  runtime_dir: ./runtimes
+  model_dir: ./models
+  tool_dir: ./tools
+  skill_dir: ./skills
+llm:
+  default_model: openai-default
+sandbox:
+  provider: e2b
+  e2b:
+    base_url: https://sandbox.example.test/internal/v1
+`,
+        "utf8"
+      )
+    ]);
+
+    const sandboxHost = createFilesystemBackedSandboxHost(sandboxRootsDir, {
+      failRootReaddirWithWorkspaceNotFound: true
+    });
+    const runtime = await bootstrapRuntime({
+      argv: ["--config", configPath],
+      startWorker: false,
+      processKind: "api",
+      sandboxHostFactory: async () => sandboxHost.host
+    });
+
+    try {
+      const workspace = await runtime.runtimeService.createWorkspace({
+        input: {
+          name: "Remote Sandbox Workspace",
+          runtime: "workspace"
+        }
+      });
+
+      await expect(runtime.runtimeService.deleteWorkspace(workspace.id)).resolves.toBeUndefined();
       await expect(runtime.runtimeService.getWorkspace(workspace.id)).rejects.toMatchObject({
         code: "workspace_not_found"
       });

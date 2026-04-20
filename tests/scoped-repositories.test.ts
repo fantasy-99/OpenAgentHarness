@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import type { WorkspaceRecord, WorkspaceRepository } from "@oah/runtime-core";
+import type { Run, RunRepository, WorkspaceRecord, WorkspaceRepository } from "@oah/engine-core";
 
-import { ScopedWorkspaceRepository } from "../apps/server/src/bootstrap/scoped-repositories.ts";
+import {
+  ScopedWorkspaceRepository,
+  describeQueuedRunWithScopedVisibility
+} from "../apps/server/src/bootstrap/scoped-repositories.ts";
 
 function createWorkspace(id: string): WorkspaceRecord {
   return {
@@ -82,6 +85,27 @@ class StubWorkspaceRepository implements WorkspaceRepository {
   }
 }
 
+class StubRunRepository implements Pick<RunRepository, "getById"> {
+  readonly items = new Map<string, Run>();
+
+  async getById(id: string): Promise<Run | null> {
+    return this.items.get(id) ?? null;
+  }
+}
+
+function createRun(id: string, workspaceId: string): Run {
+  return {
+    id,
+    sessionId: "ses_scoped",
+    workspaceId,
+    status: "queued",
+    triggerType: "message",
+    effectiveAgentName: "default",
+    createdAt: "2026-04-10T00:00:00.000Z",
+    updatedAt: "2026-04-10T00:00:00.000Z"
+  };
+}
+
 describe("scoped repositories", () => {
   it("does not expose a workspace when scoped create fails", async () => {
     const visibleWorkspaceIds = new Set<string>();
@@ -124,5 +148,30 @@ describe("scoped repositories", () => {
     expect(visibleWorkspaceIds.has(workspace.id)).toBe(true);
     await expect(repository.getById(workspace.id)).resolves.toEqual(workspace);
     await expect(repository.list(20)).resolves.toEqual([workspace]);
+  });
+
+  it("describes queued runs from the inner repository and learns their workspace visibility", async () => {
+    const visibleWorkspaceIds = new Set<string>();
+    const runRepository = new StubRunRepository();
+    runRepository.items.set("run_scoped_visible", createRun("run_scoped_visible", "ws_scoped_visible"));
+
+    await expect(
+      describeQueuedRunWithScopedVisibility(runRepository, visibleWorkspaceIds, "run_scoped_visible")
+    ).resolves.toEqual({
+      workspaceId: "ws_scoped_visible"
+    });
+
+    expect(visibleWorkspaceIds.has("ws_scoped_visible")).toBe(true);
+  });
+
+  it("does not mutate visibility when the queued run is missing", async () => {
+    const visibleWorkspaceIds = new Set<string>();
+    const runRepository = new StubRunRepository();
+
+    await expect(
+      describeQueuedRunWithScopedVisibility(runRepository, visibleWorkspaceIds, "run_scoped_missing")
+    ).resolves.toBeUndefined();
+
+    expect(visibleWorkspaceIds.size).toBe(0);
   });
 });

@@ -22,6 +22,7 @@ import type {
   PromptSource,
   ResolvedPromptSource,
   ServerConfig,
+  WorkspaceModelPreset,
   WorkspaceSystemPromptSettings
 } from "./types.js";
 
@@ -105,7 +106,7 @@ export function resolveConfigPaths(config: ServerConfig, configPath: string): Se
     paths: {
       workspace_dir: workspaceDir,
       runtime_state_dir: runtimeStateDir,
-      blueprint_dir: path.resolve(configDir, config.paths.blueprint_dir),
+      runtime_dir: path.resolve(configDir, config.paths.runtime_dir),
       model_dir: path.resolve(configDir, config.paths.model_dir),
       tool_dir: path.resolve(configDir, config.paths.tool_dir),
       skill_dir: path.resolve(configDir, config.paths.skill_dir)
@@ -228,7 +229,7 @@ export function createWorkspaceCatalog(workspaceId: string, models: ModelCatalog
     tools: [],
     hooks: [],
     nativeTools: [],
-    runtimeTools: []
+    engineTools: []
   };
 }
 
@@ -333,6 +334,38 @@ async function resolvePromptSource(promptSource: PromptSource, workspaceRoot: st
   throw new Error("Prompt source must provide either inline or file.");
 }
 
+function isCanonicalModelRef(value: string): boolean {
+  return value.startsWith("platform/") || value.startsWith("workspace/");
+}
+
+export function resolveWorkspaceModelPreset(
+  aliasOrModelRef: string,
+  modelAliases: Record<string, WorkspaceModelPreset> | undefined,
+  label: string
+): WorkspaceModelPreset {
+  const candidate = aliasOrModelRef.trim();
+  if (candidate.length === 0) {
+    throw new Error(`${label} must not be empty.`);
+  }
+
+  if (isCanonicalModelRef(candidate)) {
+    return { ref: candidate };
+  }
+
+  const resolved = modelAliases?.[candidate];
+  if (!resolved) {
+    throw new Error(`Unknown workspace model alias "${candidate}" in ${label}. Define it under .openharness/settings.yaml models.`);
+  }
+
+  if (!isCanonicalModelRef(resolved.ref)) {
+    throw new Error(
+      `Workspace model alias "${candidate}" in ${label} must resolve to a canonical model ref like platform/<name> or workspace/<name>.`
+    );
+  }
+
+  return resolved;
+}
+
 export async function resolveWorkspaceSystemPrompt(
   systemPrompt: {
     base?: PromptSource;
@@ -355,7 +388,8 @@ export async function resolveWorkspaceSystemPrompt(
       include_environment?: boolean;
     };
   },
-  workspaceRoot: string
+  workspaceRoot: string,
+  modelAliases?: Record<string, WorkspaceModelPreset>
 ): Promise<WorkspaceSystemPromptSettings> {
   const providers = systemPrompt.llm_optimized?.providers
     ? Object.fromEntries(
@@ -371,8 +405,8 @@ export async function resolveWorkspaceSystemPrompt(
   const models = systemPrompt.llm_optimized?.models
     ? Object.fromEntries(
         await Promise.all(
-          Object.entries(systemPrompt.llm_optimized.models).map(async ([modelRef, promptSource]) => [
-            modelRef,
+          Object.entries(systemPrompt.llm_optimized.models).map(async ([modelAliasOrRef, promptSource]) => [
+            resolveWorkspaceModelPreset(modelAliasOrRef, modelAliases, `workspace prompts llm_optimized.models.${modelAliasOrRef}`).ref,
             await resolvePromptSource(promptSource as PromptSource, workspaceRoot)
           ])
         )

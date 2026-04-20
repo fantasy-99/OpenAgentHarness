@@ -9,9 +9,46 @@
       "type": "string",
       "minLength": 1
     },
-    "blueprint": {
+    "runtime": {
       "type": "string",
       "minLength": 1
+    },
+    "models": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "string",
+            "pattern": "^(platform|workspace)/.+$"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "ref"
+            ],
+            "properties": {
+              "ref": {
+                "type": "string",
+                "pattern": "^(platform|workspace)/.+$"
+              },
+              "temperature": {
+                "type": "number"
+              },
+              "top_p": {
+                "type": "number"
+              },
+              "max_tokens": {
+                "type": "integer"
+              }
+            }
+          }
+        ]
+      }
     },
     "skill_dirs": {
       "type": "array",
@@ -126,7 +163,7 @@
               "type": "object",
               "propertyNames": {
                 "type": "string",
-                "pattern": "^(platform|workspace)/.+$"
+                "minLength": 1
               },
               "additionalProperties": {
                 "$ref": "#/$defs/promptSource"

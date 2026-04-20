@@ -4,13 +4,13 @@ import type { SessionEventContract } from "@oah/api-contracts";
 import { createMemoryRuntimePersistence } from "@oah/storage-memory";
 
 import {
-  appendRuntimeLogEvent,
+  appendEngineLogEvent,
   buildRuntimeConsoleLogger
-} from "../apps/server/src/runtime-console.ts";
+} from "../apps/server/src/engine-console.ts";
 import { buildRuntimeConsoleEntries } from "../apps/web/src/app/support";
 
 describe("runtime console", () => {
-  it("appends structured runtime.log events to the shared session event store", async () => {
+  it("appends structured engine.log events to the shared session event store", async () => {
     const persistence = createMemoryRuntimePersistence();
     const workspace = await persistence.workspaceRepository.upsert({
       id: "ws_console",
@@ -52,7 +52,7 @@ describe("runtime console", () => {
       updatedAt: "2026-04-09T00:00:00.000Z"
     });
 
-    await appendRuntimeLogEvent(persistence.sessionEventStore, {
+    await appendEngineLogEvent(persistence.sessionEventStore, {
       sessionId: session.id,
       runId: "run_console",
       level: "error",
@@ -75,7 +75,7 @@ describe("runtime console", () => {
     const events = await persistence.sessionEventStore.listSince(session.id);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
-      event: "runtime.log",
+      event: "engine.log",
       data: {
         level: "error",
         category: "tool",
@@ -91,7 +91,7 @@ describe("runtime console", () => {
     expect((events[0]?.data as { details?: Record<string, unknown> }).details?.token).toBe("[redacted]");
   });
 
-  it("bridges runtime logger entries into runtime.log session events", async () => {
+  it("bridges engine logger entries into engine.log session events", async () => {
     const persistence = createMemoryRuntimePersistence();
     const logger = buildRuntimeConsoleLogger({
       enabled: true,
@@ -110,7 +110,7 @@ describe("runtime console", () => {
 
     const events = await persistence.sessionEventStore.listSince("ses_logger");
     expect(events[0]).toMatchObject({
-      event: "runtime.log",
+      event: "engine.log",
       data: {
         level: "error",
         category: "tool",
@@ -119,7 +119,7 @@ describe("runtime console", () => {
     });
   });
 
-  it("projects lifecycle events and runtime.log entries into console rows", () => {
+  it("projects lifecycle events and engine.log entries into console rows", () => {
     const entries = buildRuntimeConsoleEntries(
       [
         {
@@ -127,7 +127,7 @@ describe("runtime console", () => {
           cursor: "2",
           sessionId: "ses_console",
           runId: "run_console",
-          event: "runtime.log",
+          event: "engine.log",
           data: {
             level: "error",
             category: "tool",

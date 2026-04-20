@@ -49,9 +49,9 @@ importers:
       '@oah/model-gateway':
         specifier: workspace:*
         version: link:../../packages/model-gateway
-      '@oah/runtime-core':
+      '@oah/engine-core':
         specifier: workspace:*
-        version: link:../../packages/runtime-core
+        version: link:../../packages/engine-core
       '@oah/storage-memory':
         specifier: workspace:*
         version: link:../../packages/storage-memory
@@ -200,14 +200,14 @@ importers:
       '@oah/config':
         specifier: workspace:*
         version: link:../config
-      '@oah/runtime-core':
+      '@oah/engine-core':
         specifier: workspace:*
-        version: link:../runtime-core
+        version: link:../engine-core
       ai:
         specifier: 6.0.141
         version: 6.0.141(zod@4.3.6)
 
-  packages/runtime-core:
+  packages/engine-core:
     dependencies:
       ajv:
         specifier: 8.18.0
@@ -224,15 +224,15 @@ importers:
 
   packages/storage-memory:
     dependencies:
-      '@oah/runtime-core':
+      '@oah/engine-core':
         specifier: workspace:*
-        version: link:../runtime-core
+        version: link:../engine-core
 
   packages/storage-postgres:
     dependencies:
-      '@oah/runtime-core':
+      '@oah/engine-core':
         specifier: workspace:*
-        version: link:../runtime-core
+        version: link:../engine-core
       drizzle-orm:
         specifier: 0.45.2
         version: 0.45.2(@opentelemetry/api@1.9.0)(@types/pg@8.15.5)(pg@8.16.3)
@@ -242,18 +242,18 @@ importers:
 
   packages/storage-redis:
     dependencies:
-      '@oah/runtime-core':
+      '@oah/engine-core':
         specifier: workspace:*
-        version: link:../runtime-core
+        version: link:../engine-core
       redis:
         specifier: 4.7.1
         version: 4.7.1
 
   packages/storage-sqlite:
     dependencies:
-      '@oah/runtime-core':
+      '@oah/engine-core':
         specifier: workspace:*
-        version: link:../runtime-core
+        version: link:../engine-core
 
 packages:
 

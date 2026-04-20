@@ -1,4 +1,4 @@
-import type { SessionEvent, SessionEventBus, SessionEventStore } from "@oah/runtime-core";
+import type { SessionEvent, SessionEventBus, SessionEventStore } from "@oah/engine-core";
 
 export class FanoutSessionEventStore implements SessionEventStore {
   readonly #primary: SessionEventStore;

@@ -154,7 +154,7 @@ native tool 是否暴露由 workspace 声明与运行时能力共同决定。
 | Platform | 服务端统一注册，公共 provider / 平台托管密钥 | `platform/<model-name>` |
 | Workspace | workspace 本地声明，私有 endpoint / 自带 key | `workspace/<model-name>` |
 
-两层在 workspace 内统一可见。Agent 通过 `model_ref` 选择模型入口。底层 `provider` 字段对齐 AI SDK provider 标识。
+两层在 workspace 内统一可见。Agent 通常通过 `settings.yaml` 中的模型别名选择模型入口，加载后再解析为具体 `model_ref`。底层 `provider` 字段对齐 AI SDK provider 标识。
 
 ### Hook
 

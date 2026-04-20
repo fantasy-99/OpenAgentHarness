@@ -5,7 +5,7 @@ import path from "node:path";
 
 const managedPathDirNames = {
   workspace_dir: "workspaces",
-  blueprint_dir: "blueprints",
+  runtime_dir: "runtimes",
   model_dir: "models",
   tool_dir: "tools",
   skill_dir: "skills",
@@ -14,7 +14,7 @@ const managedPathDirNames = {
 
 const remotePrefixByPathKey = {
   workspace_dir: "workspace",
-  blueprint_dir: "blueprint",
+  runtime_dir: "runtime",
   model_dir: "model",
   tool_dir: "tool",
   skill_dir: "skill",

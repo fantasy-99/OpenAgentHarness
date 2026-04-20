@@ -1,6 +1,8 @@
 # Settings
 
-`.openharness/settings.yaml` 是 workspace 的总配置入口。
+`.openharness/settings.yaml` 现在只负责 workspace 的核心配置：默认 agent、模型别名、导入项和额外 skill 目录。
+
+Prompt 相关配置已拆到独立文件 [`prompts.yaml`](./prompts.md)。
 
 ## 最小配置
 
@@ -8,42 +10,27 @@
 default_agent: build
 ```
 
-指定 `build` 作为默认主 agent。其余字段全部可选。
-
 ## 完整示例
 
 ```yaml
 default_agent: build
+
+models:
+  default:
+    ref: platform/openai-default
+    temperature: 0.2
+    max_tokens: 2048
+  planner:
+    ref: workspace/repo-planner
+
 skill_dirs:
   - ./.codex/skills
 
-system_prompt:
-  base:
-    inline: |-
-      You are Open Agent Harness running inside the current workspace.
-      Prefer workspace-local configuration and tools.
-
-  llm_optimized:
-    providers:
-      openai:
-        inline: |-
-          Be concise, tool-oriented, and explicit about assumptions.
-      anthropic:
-        file: ./.openharness/prompts/anthropic.md
-    models:
-      platform/openai-default:
-        inline: |-
-          Prefer short, direct tool call arguments.
-
-  compose:
-    order:
-      - base
-      - llm_optimized
-      - agent
-      - actions
-      - project_agents_md
-      - skills
-    include_environment: false
+imports:
+  tools:
+    - docs-server
+  skills:
+    - repo-explorer
 ```
 
 ## 顶层字段
@@ -51,14 +38,39 @@ system_prompt:
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
 | `default_agent` | 否 | 默认主 agent。目标必须存在且不能是纯 `subagent` |
+| `models` | 否 | agent 可引用的模型别名表 |
 | `skill_dirs` | 否 | 额外 skill 搜索目录列表 |
-| `blueprint` | 否 | 记录当前 workspace 来源的 blueprint 名称 |
-| `imports` | 否 | blueprint 初始化时导入的公共 tools/skills |
-| `system_prompt` | 否 | Workspace 级 system prompt 配置 |
+| `runtime` | 否 | 记录当前 workspace 来源的 runtime 名称 |
+| `imports` | 否 | runtime 初始化时导入的公共 tools/skills |
 
 !!! tip
 
-    workspace 使用统一结构。是否暴露 actions/tools 由当前 workspace 配置与运行时能力共同决定。
+    如果某个 runtime 需要稳定地切换模型，推荐所有 agent 都通过 `model: <alias>` 引用这里声明的别名。之后只改 `settings.yaml` 就能整体切换。
+
+## `models`
+
+```yaml
+models:
+  default:
+    ref: platform/openai-default
+    temperature: 0.2
+    top_p: 0.9
+    max_tokens: 2048
+  fast:
+    ref: platform/kimi-k25
+  repo:
+    ref: workspace/repo-model
+```
+
+| 规则 | 说明 |
+| --- | --- |
+| key | 别名，由 agent frontmatter 使用，例如 `model: default` |
+| `ref` | 具体模型引用，格式必须是 `platform/<name>` 或 `workspace/<name>` |
+| `temperature` / `top_p` / `max_tokens` | 该模型别名对应的默认推理参数 |
+| 解析时机 | workspace 加载阶段解析；运行时内部仍使用具体 `model_ref` |
+| 适用范围 | 仅影响显式声明 `model` 的 agent；未声明模型的 agent 仍走默认模型选择逻辑 |
+
+推荐把“要不要换模型”和“这个模型档位的推理参数”都放在这里，把“这个 agent 用哪个模型档位”放在 agent frontmatter。
 
 ## `skill_dirs`
 
@@ -77,74 +89,6 @@ skill_dirs:
 | 跨层同名 | 记录 warning，高优先级覆盖 |
 | 同层同名 | 配置错误，加载失败 |
 
-## `system_prompt`
-
-控制 system prompt 的组装方式。
-
-### `base`
-
-Workspace 级基础提示词。支持 `inline` 或 `file`（二选一）：
-
-```yaml
-base:
-  inline: |-
-    You are Open Agent Harness.
-```
-
-```yaml
-base:
-  file: ./.openharness/prompts/base.md
-```
-
-`file` 路径相对 workspace 根目录解析。建议使用 `.md` 或 `.txt`。
-
-### `llm_optimized`
-
-针对 provider 或具体 model 的优化提示词：
-
-```yaml
-llm_optimized:
-  providers:
-    openai:
-      inline: |-
-        Be concise and tool-oriented.
-  models:
-    platform/openai-default:
-      file: ./.openharness/prompts/openai-default.md
-```
-
-| 规则 | 说明 |
-| --- | --- |
-| 优先级 | `models` 精确匹配 > `providers` |
-| Provider key | AI SDK provider 标识 |
-| Model key | 完整 `model_ref` |
-
-### `compose`
-
-控制静态 system prompt 段的拼装顺序：
-
-```yaml
-compose:
-  order:
-    - base
-    - llm_optimized
-    - agent
-    - actions
-    - project_agents_md
-    - skills
-  include_environment: false
-```
-
-可用段名：`base`、`llm_optimized`、`agent`、`actions`、`project_agents_md`、`skills`
-
-| 规则 | 说明 |
-| --- | --- |
-| `system_reminder` | 不在此处配置，由运行时动态注入 |
-| `actions` | 当前 agent 无可见 actions 时自动跳过 |
-| `project_agents_md` | 根目录无 `AGENTS.md` 时自动跳过 |
-| `skills` | 当前 agent 无可见 skills 时自动跳过 |
-| `include_environment` | 是否追加运行环境摘要，默认 `false` |
-
 ## `imports`
 
 ```yaml
@@ -160,4 +104,4 @@ imports:
 | `tools` | 从 `paths.tool_dir` 导入到 workspace 的公共 tool 名称 |
 | `skills` | 从 `paths.skill_dir` 导入到 workspace 的公共 skill 名称 |
 
-仅用于 blueprint 初始化。导入后 workspace 以本地副本为准，不再依赖平台目录。引用不存在的 tool 或 skill 时，初始化失败。
+仅用于 runtime 初始化。导入后 workspace 以它的 `Active Workspace Copy` 为准，不再依赖平台目录。引用不存在的 tool 或 skill 时，初始化失败。

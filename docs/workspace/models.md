@@ -13,13 +13,32 @@
 
 ## 引用方式
 
-Agent 通过 `model.model_ref` 显式引用：
+模型入口本身仍然定义在 `.openharness/models/*.yaml` 或平台 `model_dir` 中，但 agent 不再直接写具体 `model_ref`。
 
-- `platform/openai-default`
-- `workspace/openrouter-personal`
-- `workspace/中文模型`
+推荐做法：
 
-`model_ref` 指向具体模型入口，不是抽象 provider 连接。
+1. 在 `.openharness/settings.yaml` 里声明模型别名
+2. 在 `.openharness/agents/*.md` 里通过 `model` 直接引用
+
+例如：
+
+```yaml
+# .openharness/settings.yaml
+models:
+  default:
+    ref: platform/openai-default
+    temperature: 0.2
+    max_tokens: 2048
+  planner:
+    ref: workspace/openrouter-personal
+```
+
+```yaml
+# .openharness/agents/builder.md
+model: default
+```
+
+加载时，运行时会把别名解析成具体 `model_ref`，并带上该别名对应的默认推理参数。因此“切换具体模型”或调整这组默认参数，都只需要修改 `settings.yaml`。
 
 ## Model YAML 示例
 
@@ -46,4 +65,4 @@ openrouter-main:
 | `url` | 否 | 自定义 endpoint（`openai-compatible` 必填） |
 | `name` | 是 | 对应的模型名 |
 
-一个文件可声明多个模型入口。`model_ref` 中的名称部分支持中文和其他 Unicode 字符。
+一个文件可声明多个模型入口。具体 `model_ref` 中的名称部分支持中文和其他 Unicode 字符。

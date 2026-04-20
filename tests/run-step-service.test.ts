@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import type { RunStep } from "@oah/api-contracts";
 
-import { RunStepService } from "../packages/runtime-core/src/runtime/run-steps.js";
-import type { RunStepRepository } from "../packages/runtime-core/src/types.js";
+import { RunStepService } from "../packages/engine-core/src/engine/run-steps.js";
+import type { RunStepRepository } from "../packages/engine-core/src/types.js";
 
 describe("RunStepService", () => {
   it("serializes step creation per run so concurrent calls do not reuse the same seq", async () => {

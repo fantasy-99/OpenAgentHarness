@@ -29,13 +29,13 @@ export interface ServerConfig {
       | undefined;
     mirrors?:
       | {
-          paths?: Array<"blueprint" | "model" | "tool" | "skill"> | undefined;
+          paths?: Array<"runtime" | "model" | "tool" | "skill"> | undefined;
           sync_on_boot?: boolean | undefined;
           sync_on_change?: boolean | undefined;
           poll_interval_ms?: number | undefined;
           key_prefixes?:
             | {
-                blueprint?: string | undefined;
+                runtime?: string | undefined;
                 model?: string | undefined;
                 tool?: string | undefined;
                 skill?: string | undefined;
@@ -46,11 +46,11 @@ export interface ServerConfig {
     sync_on_boot?: boolean | undefined;
     sync_on_change?: boolean | undefined;
     poll_interval_ms?: number | undefined;
-    managed_paths?: Array<"workspace" | "blueprint" | "model" | "tool" | "skill"> | undefined;
+    managed_paths?: Array<"workspace" | "runtime" | "model" | "tool" | "skill"> | undefined;
     key_prefixes?:
       | {
           workspace?: string | undefined;
-          blueprint?: string | undefined;
+          runtime?: string | undefined;
           model?: string | undefined;
           tool?: string | undefined;
           skill?: string | undefined;
@@ -88,7 +88,7 @@ export interface ServerConfig {
   paths: {
     workspace_dir: string;
     runtime_state_dir?: string | undefined;
-    blueprint_dir: string;
+    runtime_dir: string;
     model_dir: string;
     tool_dir: string;
     skill_dir: string;
@@ -219,7 +219,8 @@ export interface DiscoveredHook {
 
 export interface WorkspaceSettings {
   defaultAgent?: string | undefined;
-  blueprint?: string | undefined;
+  runtime?: string | undefined;
+  models?: Record<string, WorkspaceModelPreset> | undefined;
   skillDirs?: string[] | undefined;
   imports?:
     | {
@@ -228,6 +229,13 @@ export interface WorkspaceSettings {
       }
     | undefined;
   systemPrompt?: WorkspaceSystemPromptSettings | undefined;
+}
+
+export interface WorkspaceModelPreset {
+  ref: string;
+  temperature?: number | undefined;
+  topP?: number | undefined;
+  maxTokens?: number | undefined;
 }
 
 export interface PromptSource {
@@ -347,22 +355,22 @@ export interface DiscoveredWorkspace {
 export type PlatformModelRegistry = Record<string, PlatformModelDefinition>;
 export type PlatformAgentRegistry = Record<string, DiscoveredAgent>;
 
-export interface WorkspaceBlueprintSkill {
+export interface WorkspaceRuntimeSkill {
   name: string;
   content: string;
 }
 
-export interface WorkspaceBlueprintDescriptor {
+export interface WorkspaceRuntimeDescriptor {
   name: string;
 }
 
-export interface InitializeWorkspaceFromBlueprintInput {
-  blueprintDir: string;
-  blueprintName: string;
+export interface InitializeWorkspaceFromRuntimeInput {
+  runtimeDir: string;
+  runtimeName: string;
   rootPath: string;
   platformToolDir?: string | undefined;
   platformSkillDir?: string | undefined;
   agentsMd?: string | undefined;
   toolServers?: Record<string, Record<string, unknown>> | undefined;
-  skills?: WorkspaceBlueprintSkill[] | undefined;
+  skills?: WorkspaceRuntimeSkill[] | undefined;
 }

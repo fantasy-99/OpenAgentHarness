@@ -6,7 +6,7 @@ export const workspaceSchema = z.object({
   externalRef: z.string().optional(),
   ownerId: z.string().optional(),
   name: z.string(),
-  blueprint: z.string().min(1).optional(),
+  runtime: z.string().min(1).optional(),
   serviceName: z.string().optional(),
   rootPath: z.string(),
   executionPolicy: z.enum(["local", "container", "remote_runner"]),
@@ -75,7 +75,7 @@ export const createWorkspaceRequestSchema = z
   .object({
     externalRef: z.string().optional(),
     name: z.string().min(1),
-    blueprint: z.string().min(1),
+    runtime: z.string().min(1),
     rootPath: z.string().min(1).optional(),
     ownerId: z.string().trim().min(1).optional(),
     userId: z.string().trim().min(1).optional(),

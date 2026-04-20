@@ -2,7 +2,7 @@ import { Readable } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { WorkspaceRecord } from "@oah/runtime-core";
+import type { WorkspaceRecord } from "@oah/engine-core";
 
 import {
   createNativeE2BSandboxService,
@@ -37,7 +37,7 @@ function buildWorkspace(overrides?: Partial<WorkspaceRecord>): WorkspaceRecord {
       tools: [],
       hooks: [],
       nativeTools: [],
-      runtimeTools: []
+      engineTools: []
     },
     executionPolicy: "local",
     status: "active",

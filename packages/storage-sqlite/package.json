@@ -12,6 +12,6 @@
     }
   },
   "dependencies": {
-    "@oah/runtime-core": "workspace:*"
+    "@oah/engine-core": "workspace:*"
   }
 }

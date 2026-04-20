@@ -29,6 +29,13 @@ Two workspace kinds:
 
 ## 3. Formal Terms
 
+### Agent Engine / Agent Runtime / Agent Spec
+
+- `Agent Engine`: the execution, scheduling, recovery, audit, and API exposure system
+- `Agent Runtime`: the primary runnable unit, formerly called `blueprint`
+- `Agent Spec`: the user-authored extension layer, mainly `AGENTS.md`, `MEMORY.md`, and extra loaded `model` / `tool` / `skill`
+- mnemonic: `Engine` is how it runs, `Runtime` is what runs, `Spec` is what the user adds
+
 ### API Server
 
 - The unified external entry point for OAH
@@ -63,11 +70,34 @@ Two workspace kinds:
 - It carries host lifecycle, file access, and process execution capabilities only; it does not redefine OAH ownership or control-plane semantics
 - The formal `e2b` semantics now match the self-hosted path: host the standalone worker inside the real sandbox rather than driving E2B indirectly from an external worker
 
+### Workspace
+
+- A workspace is the logical project, capability-discovery, and session-ownership boundary
+- It answers “which project and capability set is this agent working in?”, not “which host is it running on?”
+- A workspace may be materialized into a worker-owned `Active Workspace Copy` for execution
+- One sandbox may carry multiple active workspaces up to capacity; one active workspace should have exactly one owner worker holding its writable truth
+
 ### Workspace Ownership
 
 - `workspace -> owner worker` is the routing truth for execution and file access
 - `userId` is a scheduling affinity key, not an ownership truth key
-- While active, a workspace's read/write truth lives in the owner worker's local copy; after idle flush, truth returns to OSS / external storage
+- While active, a workspace's read/write truth lives in the owner worker's `Active Workspace Copy`; after idle flush, truth returns to OSS / external storage
+
+### Layering Rule
+
+Use these two chains together:
+
+`Agent Engine -> Worker -> Sandbox -> Active Workspace Copy`
+
+`Agent Engine -> Workspace -> Session -> Run`
+
+In other words:
+
+- `workspace` is the logical project and capability boundary
+- `sandbox` is the execution-host and file/process isolation boundary
+- `worker` is the execution role running inside that host
+- active workspaces are materialized into sandbox-local copies
+- `runtime` initializes a workspace but does not replace workspace / sandbox / worker as a concept
 
 ## 4. Layered Architecture
 
@@ -82,7 +112,7 @@ flowchart TD
     E --> H[Worker]
     D --> G
     D --> I[Kubernetes / Runtime Control Plane]
-    H --> J[Runtime Core]
+    H --> J[Engine Core]
     J --> K[Context Engine]
     J --> L[Invocation Dispatcher]
     J --> M[Hook Runtime]
@@ -111,7 +141,7 @@ flowchart TD
 
 ### Worker
 
-- Reuses `packages/runtime-core` for business execution logic
+- Reuses `packages/engine-core` for business execution logic
 - Consumes runs and drives the model <-> tool loop
 - Enforces per-session serial execution
 - Manages cancellation, timeout, and failure recovery
@@ -137,7 +167,7 @@ flowchart TD
   - health, drain, and shutdown
 - The current target is "compatible switching" with E2B, not reshaping OAH around E2B's full native resource model first
 
-### Runtime Core
+### Engine Core
 
 - Loads workspace config: `AGENTS.md`, `settings.yaml`, agents, models
 - Loads platform-level model / tool / skill directories
@@ -217,8 +247,8 @@ sequenceDiagram
 - No built-in user system -- consumes external identity and access context
 - Workspace is the configuration and capability discovery boundary; `.openharness/settings.yaml` is the entry point
 - Platform built-in agents merge with workspace agents; workspace agents override on name collision
-- Blueprints are for initialization only -- runtime reads current workspace files
-- workspaces are managed under `workspace_dir`; blueprints are only initialization sources
+- Runtimes are for initialization only -- runtime reads current workspace files
+- workspaces are managed under `workspace_dir`; runtimes are only initialization sources
 - `AGENTS.md` is injected verbatim (no summarization)
 - Agents defined via `agents/*.md` -- frontmatter for config, body for system prompt
 - Model / Hook / Tool Server configs use declarative YAML
@@ -229,7 +259,7 @@ sequenceDiagram
 - `Controller` is the unified control-plane role; it owns placement, lifecycle, and capacity rather than direct business execution
 - For remote sandbox providers, the controller now also owns logical sandbox-fleet sizing signals so we can later attach real sandbox autoscaling targets without changing API semantics
 - `workspace -> owner worker` is the routing truth for execution and file access; `userId` is used only for affinity scheduling, not as the ownership truth
-- While active, a workspace's read/write truth lives in the owner worker's local copy; after flush / evict, truth returns to OSS / external storage
+- While active, a workspace's read/write truth lives in the owner worker's `Active Workspace Copy`; after flush / evict, truth returns to OSS / external storage
 - Default trusted intranet environment -- no strong container isolation by default; if the platform is exposed more broadly, sandbox backend hardening should be prioritized
 - PostgreSQL is the central source of truth; local workspace state files do not serve as a cross-process sync mechanism
 

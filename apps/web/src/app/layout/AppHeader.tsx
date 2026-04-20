@@ -113,8 +113,8 @@ function AppHeaderImpl(props: AppHeaderProps) {
         </div>
         <Tabs value={surfaceMode} onValueChange={(value) => setSurfaceMode(value as SurfaceMode)}>
           <TabsList className="topbar-chip h-9 rounded-2xl p-1">
-            <TabsTrigger value="runtime" className="topbar-tabs-trigger h-7 rounded-xl px-3 text-xs">
-              Runtime
+            <TabsTrigger value="engine" className="topbar-tabs-trigger h-7 rounded-xl px-3 text-xs">
+              Engine
             </TabsTrigger>
             <TabsTrigger value="storage" className="topbar-tabs-trigger h-7 rounded-xl px-3 text-xs">
               Storage

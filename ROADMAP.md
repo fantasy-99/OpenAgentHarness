@@ -105,7 +105,7 @@ It should not force the rest of OAH to inherit:
 The current roadmap keeps:
 
 - `workspace -> owner worker` as routing truth
-- active workspace read/write truth on the owner worker local copy
+- active workspace read/write truth on the owner worker `Active Workspace Copy`
 - idle flush / eviction returning truth to OSS
 
 This means we are not moving to:
@@ -177,7 +177,7 @@ The codebase now uses `controller` as the only primary control-plane name:
 
 `Worker`
 
-- runtime-core execution
+- engine-core execution
 - session-serial boundaries
 - workspace materialization
 - local file access
@@ -305,7 +305,7 @@ Status:
 
 Implemented so far:
 
-- `runtime-core` now carries a first-class `SandboxHost` contract alongside the existing execution / file-access provider seam
+- `engine-core` now carries a first-class `SandboxHost` contract alongside the existing execution / file-access provider seam
 - the shared host contract now includes:
   - provider kind (`embedded` / `self_hosted` / `e2b`)
   - workspace command execution
@@ -340,7 +340,7 @@ Implemented so far:
   - foreground / process / background command execution
   - file stat / read / readdir / mkdir / write / rm / rename
   - diagnostics / maintain / beginDrain / close lifecycle
-- the adapter uses a virtual sandbox path boundary so runtime-core and server code can keep using normal workspace path semantics while the backend remains remote
+- the adapter uses a virtual sandbox path boundary so engine-core and server code can keep using normal workspace path semantics while the backend remains remote
 - E2B compatibility remains optional and adapter-scoped:
   - `embedded` remains the local materialization backend
   - `self_hosted` remains the remote self-hosted sandbox backend

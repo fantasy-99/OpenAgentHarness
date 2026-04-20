@@ -231,7 +231,7 @@ describe("controller", () => {
       },
       paths: {
         workspace_dir: "/tmp/workspaces",
-        blueprint_dir: "/tmp/blueprints",
+        runtime_dir: "/tmp/runtimes",
         model_dir: "/tmp/models",
         tool_dir: "/tmp/tools",
         skill_dir: "/tmp/skills"
@@ -248,6 +248,38 @@ describe("controller", () => {
       maxCount: 10,
       maxWorkspacesPerSandbox: 5,
       ownerlessPool: "dedicated"
+    });
+  });
+
+  it("defaults remote sandbox fleet min_count to one when not configured", () => {
+    const config = resolveSandboxFleetConfig({
+      server: {
+        host: "127.0.0.1",
+        port: 8787
+      },
+      storage: {},
+      sandbox: {
+        provider: "e2b"
+      },
+      paths: {
+        workspace_dir: "/tmp/workspaces",
+        runtime_dir: "/tmp/runtimes",
+        model_dir: "/tmp/models",
+        tool_dir: "/tmp/tools",
+        skill_dir: "/tmp/skills"
+      },
+      llm: {
+        default_model: "openai-default"
+      }
+    });
+
+    expect(config).toEqual({
+      providerKind: "e2b",
+      managedByController: true,
+      minCount: 1,
+      maxCount: 64,
+      maxWorkspacesPerSandbox: 32,
+      ownerlessPool: "shared"
     });
   });
 
@@ -887,7 +919,7 @@ describe("controller", () => {
       storage: { redis_url: "redis://local/0" },
       paths: {
         workspace_dir: "/tmp/workspaces",
-        blueprint_dir: "/tmp/blueprints",
+        runtime_dir: "/tmp/runtimes",
         model_dir: "/tmp/models",
         tool_dir: "/tmp/tools",
         skill_dir: "/tmp/skills"
@@ -945,7 +977,7 @@ describe("controller", () => {
       },
       paths: {
         workspace_dir: "/tmp/workspaces",
-        blueprint_dir: "/tmp/blueprints",
+        runtime_dir: "/tmp/runtimes",
         model_dir: "/tmp/models",
         tool_dir: "/tmp/tools",
         skill_dir: "/tmp/skills"
@@ -983,7 +1015,7 @@ describe("controller", () => {
       },
       paths: {
         workspace_dir: "/tmp/workspaces",
-        blueprint_dir: "/tmp/blueprints",
+        runtime_dir: "/tmp/runtimes",
         model_dir: "/tmp/models",
         tool_dir: "/tmp/tools",
         skill_dir: "/tmp/skills"
@@ -1589,7 +1621,7 @@ describe("controller", () => {
       storage: { redis_url: "redis://local/0" },
       paths: {
         workspace_dir: "/tmp/workspaces",
-        blueprint_dir: "/tmp/blueprints",
+        runtime_dir: "/tmp/runtimes",
         model_dir: "/tmp/models",
         tool_dir: "/tmp/tools",
         skill_dir: "/tmp/skills"
@@ -1634,7 +1666,7 @@ describe("controller", () => {
       storage: { redis_url: "redis://local/0" },
       paths: {
         workspace_dir: "/tmp/workspaces",
-        blueprint_dir: "/tmp/blueprints",
+        runtime_dir: "/tmp/runtimes",
         model_dir: "/tmp/models",
         tool_dir: "/tmp/tools",
         skill_dir: "/tmp/skills"
@@ -1677,7 +1709,7 @@ describe("controller", () => {
       storage: { redis_url: "redis://local/0" },
       paths: {
         workspace_dir: "/tmp/workspaces",
-        blueprint_dir: "/tmp/blueprints",
+        runtime_dir: "/tmp/runtimes",
         model_dir: "/tmp/models",
         tool_dir: "/tmp/tools",
         skill_dir: "/tmp/skills"
@@ -1712,7 +1744,7 @@ describe("controller", () => {
       storage: { redis_url: "redis://local/0" },
       paths: {
         workspace_dir: "/tmp/workspaces",
-        blueprint_dir: "/tmp/blueprints",
+        runtime_dir: "/tmp/runtimes",
         model_dir: "/tmp/models",
         tool_dir: "/tmp/tools",
         skill_dir: "/tmp/skills"
@@ -1754,7 +1786,7 @@ describe("controller", () => {
       storage: { redis_url: "redis://local/0" },
       paths: {
         workspace_dir: "/tmp/workspaces",
-        blueprint_dir: "/tmp/blueprints",
+        runtime_dir: "/tmp/runtimes",
         model_dir: "/tmp/models",
         tool_dir: "/tmp/tools",
         skill_dir: "/tmp/skills"

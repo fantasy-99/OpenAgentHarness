@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createPlacementAwareSessionRunQueue,
-  describeRuntimeProcess,
+  describeEngineProcess,
   parseSingleWorkspaceOptions,
   resolveRuntimeAssemblyProfile,
   resolveEmbeddedWorkerPoolConfig,
@@ -25,7 +25,7 @@ describe("server runtime process modes", () => {
   it("defaults the api process to an embedded worker", () => {
     expect(shouldStartEmbeddedWorker([])).toBe(true);
     expect(
-      describeRuntimeProcess({
+      describeEngineProcess({
         processKind: "api",
         startWorker: true,
         hasRedisRunQueue: true
@@ -40,7 +40,7 @@ describe("server runtime process modes", () => {
   it("supports explicit api-only mode without an embedded worker", () => {
     expect(shouldStartEmbeddedWorker(["--api-only"])).toBe(false);
     expect(
-      describeRuntimeProcess({
+      describeEngineProcess({
         processKind: "api",
         startWorker: false,
         hasRedisRunQueue: true
@@ -54,7 +54,7 @@ describe("server runtime process modes", () => {
 
   it("keeps local inline execution when api-only runs without redis", () => {
     expect(
-      describeRuntimeProcess({
+      describeEngineProcess({
         processKind: "api",
         startWorker: false,
         hasRedisRunQueue: false
@@ -68,7 +68,7 @@ describe("server runtime process modes", () => {
 
   it("reports the standalone worker process distinctly", () => {
     expect(
-      describeRuntimeProcess({
+      describeEngineProcess({
         processKind: "worker",
         startWorker: true,
         hasRedisRunQueue: true
@@ -338,6 +338,52 @@ describe("server runtime process modes", () => {
     expect(host.close).toHaveBeenCalledTimes(1);
   });
 
+  it("lets worker hosts override queued-run description without relying on scoped getRun", async () => {
+    let capturedOptions: ConstructorParameters<typeof createWorkerHost>[0] | undefined;
+    const describeQueuedRun = vi.fn(async (runId: string) => ({
+      workspaceId: `ws_for_${runId}`
+    }));
+    const getRun = vi.fn(async () => {
+      throw new Error("scoped_get_run_should_not_be_called");
+    });
+
+    createWorkerHost({
+      startWorker: true,
+      processKind: "worker",
+      config: {
+        storage: {
+          redis_url: "redis://local/0"
+        }
+      },
+      redisRunQueue: {} as never,
+      runtimeService: {
+        processQueuedRun: async () => undefined,
+        getRun
+      },
+      describeQueuedRun,
+      poolFactory: (options) => {
+        capturedOptions = options;
+        return {
+          start() {
+            return undefined;
+          },
+          snapshot() {
+            return null;
+          },
+          async close() {
+            return undefined;
+          }
+        };
+      }
+    });
+
+    await expect(capturedOptions?.runtimeService.describeQueuedRun?.("run_override")).resolves.toEqual({
+      workspaceId: "ws_for_run_override"
+    });
+    expect(describeQueuedRun).toHaveBeenCalledWith("run_override");
+    expect(getRun).not.toHaveBeenCalled();
+  });
+
   it("reads embedded worker pool defaults from server config", () => {
     expect(
       resolveEmbeddedWorkerPoolConfig({
@@ -579,21 +625,21 @@ describe("server runtime process modes", () => {
       requeuedRunIds: []
     }));
     const runtimeService = {
-      marker: "runtime-service",
+      marker: "engine-service",
       async processQueuedRun() {
         return undefined;
       },
       async getRun(this: { marker: string }, runId: string) {
-        expect(this.marker).toBe("runtime-service");
+        expect(this.marker).toBe("engine-service");
         return describeQueuedRun(runId);
       },
       async recoverStaleRuns(this: { marker: string }, input?: { staleBefore?: string; limit?: number }) {
-        expect(this.marker).toBe("runtime-service");
+        expect(this.marker).toBe("engine-service");
         return recoverStaleRuns(input);
       }
     };
 
-    let capturedRuntimeService:
+    let capturedEngineService:
       | {
           describeQueuedRun?: ((runId: string) => Promise<{ workspaceId: string } | undefined>) | undefined;
           recoverStaleRuns?:
@@ -616,7 +662,7 @@ describe("server runtime process modes", () => {
       redisRunQueue: {} as never,
       runtimeService,
       poolFactory: (input) => {
-        capturedRuntimeService = input.runtimeService;
+        capturedEngineService = input.runtimeService;
         return {
           start() {
             return undefined;
@@ -633,10 +679,10 @@ describe("server runtime process modes", () => {
 
     host.start();
 
-    await expect(capturedRuntimeService?.describeQueuedRun?.("run_1")).resolves.toEqual({
+    await expect(capturedEngineService?.describeQueuedRun?.("run_1")).resolves.toEqual({
       workspaceId: "ws_bound"
     });
-    await expect(capturedRuntimeService?.recoverStaleRuns?.()).resolves.toEqual({
+    await expect(capturedEngineService?.recoverStaleRuns?.()).resolves.toEqual({
       recoveredRunIds: [],
       requeuedRunIds: []
     });

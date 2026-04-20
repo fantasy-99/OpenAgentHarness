@@ -31,7 +31,7 @@ sandbox:
 paths:
   workspace_dir: /srv/openharness/workspaces       # project workspace 根目录
   runtime_state_dir: /srv/openharness/.openharness  # 运行时私有状态目录
-  blueprint_dir: /srv/openharness/blueprints        # workspace blueprint 目录
+  runtime_dir: /srv/openharness/runtimes        # workspace runtime 目录
   model_dir: /srv/openharness/models               # 平台模型目录
   tool_dir: /srv/openharness/tools                 # 公共 tool 目录
   skill_dir: /srv/openharness/skills               # 公共 skill 目录
@@ -89,7 +89,7 @@ llm:
 | `force_path_style` | boolean | 是否强制 path-style URL |
 | `workspace_backing_store.enabled` | boolean | 是否启用受管 workspace 的对象存储 backing store；启用后 active workspace 只在 idle / drain / delete 时 flush 回对象存储 |
 | `workspace_backing_store.key_prefix` | string | workspace backing store 对应的对象存储 key prefix |
-| `mirrors.paths` | string[] | 只读镜像前缀列表，支持 `blueprint / model / tool / skill` |
+| `mirrors.paths` | string[] | 只读镜像前缀列表，支持 `runtime / model / tool / skill` |
 | `mirrors.sync_on_boot` | boolean | 是否在启动时把 mirrors 管理的前缀从对象存储拉到本地 |
 | `mirrors.sync_on_change` | boolean | 是否轮询同步 mirrors 管理的只读前缀。不会对 active workspace 做实时回写 |
 | `mirrors.poll_interval_ms` | number | mirrors 轮询周期 |
@@ -97,7 +97,7 @@ llm:
 | `managed_paths` / `key_prefixes.*` / `sync_on_*` | legacy | 兼容旧配置；建议迁移到 `workspace_backing_store` 和 `mirrors`，加载时会发出弃用告警 |
 
 > **tip**
-> `mirrors.paths` 里的 `blueprint / model / tool / skill` 仍由 `ObjectStorageMirrorController` 做启动同步和变更轮询。
+> `mirrors.paths` 里的 `runtime / model / tool / skill` 仍由 `ObjectStorageMirrorController` 做启动同步和变更轮询。
 
 > **tip**
 > `workspace_backing_store` 只负责受管 workspace 的 `externalRef` / backing store 语义。active workspace 的本地改动不会按 `mirrors.sync_on_change` 实时回写，而是走 workspace materialization 的 idle / drain flush。
@@ -126,13 +126,19 @@ llm:
 > **tip**
 > 当前 controller 已经开始把 sandbox fleet 视为一等调度对象：同一 `ownerId` 会优先复用同一真实 sandbox；未提供 `ownerId` 的 workspace 默认进入共享池。`fleet.*` 负责描述这层容量边界，后续可继续接到真实的 sandbox autoscaling target。
 
+> **tip**
+> 从当前版本开始，`createSession` 成功后会异步预热对应 workspace：如果配置了远端 sandbox，会提前触发 sandbox 绑定；如果启用了 workspace materialization，也会提前拿到 active workspace copy。配合远端 provider 默认的 `fleet.min_count = 1`，可以显著缩短首条消息的冷启动等待，但首次 materialization 很重时仍会受到 workspace 体积影响。
+
+> **tip**
+> 这里的 `sandbox` 是宿主层，不是项目层。一个 sandbox 可以承载多个活跃 workspace，本质上表示“worker 在哪里运行”；workspace 则表示“agent 正在处理哪个项目与能力集合”。
+
 ### `paths`
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `workspace_dir` | string | project workspace 根目录 |
 | `runtime_state_dir` | string | 运行时私有状态目录；用于 SQLite shadow 数据、归档导出和遗留 materialization 状态。默认是 `dirname(workspace_dir)/.openharness` |
-| `blueprint_dir` | string | workspace blueprint 目录 |
+| `runtime_dir` | string | workspace runtime 目录 |
 | `model_dir` | string | 平台模型定义目录 |
 | `tool_dir` | string | 公共 MCP tool server 定义目录 |
 | `skill_dir` | string | 公共 skill 目录 |
@@ -155,7 +161,7 @@ llm:
 | `embedded.scale_down_window` | number | 连续多少个检查周期都确认可回收后才缩容；默认 `2` |
 | `embedded.cooldown_ms` | number | 两次扩缩容动作之间的冷却时间；默认等于 `scale_interval_ms` |
 | `embedded.reserved_capacity_for_subagent` | number | 当 `subagent` backlog 出现时，希望额外保留的最小空闲 worker 容量；默认 `1` |
-| `standalone.min_replicas` | number | controller 允许的最小 sandbox 副本数；默认 `1` |
+| `standalone.min_replicas` | number | controller 允许的最小 sandbox 副本数；可设为 `0` 以允许空闲时缩到零。默认 `1` |
 | `standalone.max_replicas` | number | controller 允许的最大 sandbox 副本数；默认等于 `min_replicas` |
 | `standalone.ready_sessions_per_capacity_unit` | number | controller 按执行容量单元估算 ready queue 压力时使用的目标密度；默认 `1` |
 | `standalone.reserved_capacity_for_subagent` | number | 预留给 subagent backlog 的最小执行容量；默认 `1` |
@@ -168,9 +174,27 @@ llm:
 
 ## 目录说明
 
+### 路径与层级边界
+
+| 对象 | 作用 | 是否活跃执行位置 |
+| --- | --- | --- |
+| `workspace_dir` | workspace 源目录 / 受管目录 | 不一定 |
+| `runtime_state_dir` | engine 私有状态目录 | 否 |
+| `runtime_dir` | 新建 workspace 时的初始化源 | 否 |
+| `Active Workspace Copy` | 活跃 workspace 实际执行时使用的那份文件副本 | 是 |
+
+理解方式：
+
+- `workspace_dir` 解决“有哪些 workspace”
+- `runtime_dir` 解决“新 workspace 从哪里初始化”
+- `sandbox` 解决“当前 run 在哪里执行”
+- `runtime_state_dir` 解决“engine 私有状态放哪里”
+
 ### `workspace_dir`
 
-每个直接子目录视为一个 `project` workspace。仅扫描一级子目录。这里应只承载 live workspace 本体，不建议再混放 runtime 内部状态目录。
+每个直接子目录视为一个 `project` workspace。仅扫描一级子目录。这里应只承载 workspace 源目录，不建议再混放 engine 内部状态目录。
+
+在 `embedded` 模式下，活跃执行通常直接发生在本地 workspace 上；在 `self_hosted / e2b` 模式下，活跃执行副本通常会 materialize 到 owner sandbox 内部，因此 `workspace_dir` 更接近“受管源目录”，不必等同于最终执行位置。
 
 ### `runtime_state_dir`
 
@@ -182,9 +206,11 @@ llm:
 
 默认值为 `dirname(workspace_dir)/.openharness`，这样可以把 live workspace 根与内部状态根拆开；如果你希望这些状态持久化，请显式把它挂到可写持久卷。
 
-### `blueprint_dir`
+### `runtime_dir`
 
-存放 workspace blueprint。通过 `POST /workspaces` 创建新 workspace 时，从此目录选择 blueprint 作为初始化源。运行时不会把 blueprint 当作活跃 workspace 加载。
+存放 workspace runtime。通过 `POST /workspaces` 创建新 workspace 时，从此目录选择 runtime 作为初始化源。运行时不会把 runtime 当作活跃 workspace 加载。
+
+`runtime_dir` 不参与 run 执行，也不承载活跃 workspace 副本。它只回答“如何初始化一个 workspace”，不回答“当前在哪里运行”。
 
 ### `model_dir`
 
@@ -208,7 +234,7 @@ openai-default:
 公共 skill 定义。与 workspace `.openharness/skills` 合并组成可见 skill 集合。同名 skill 中 workspace 级优先。
 
 > **warning**
-> `tool_dir` 和 `skill_dir` 的内容主要在蓝图初始化时导入。workspace 运行时默认只使用自身 `.openharness` 目录中声明的能力。
+> `tool_dir` 和 `skill_dir` 的内容主要在 runtime 初始化时导入。workspace 运行时默认只使用自身 `.openharness` 目录中声明的能力。
 
 ---
 

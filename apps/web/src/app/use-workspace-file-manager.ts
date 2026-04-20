@@ -410,7 +410,7 @@ export function useWorkspaceFileManager(params: {
       setMutationBusy(true);
       await sandboxClient.deleteEntry(workspaceIdValue, {
         path: workspaceRelativePathToSandboxPath(entry.path),
-        ...(entry.type === "directory" ? { recursive: true } : {})
+        recursive: entry.type === "directory"
       } satisfies WorkspaceDeleteEntryQuery);
       await refreshEntries({ path: currentPath, quiet: true });
       if (selectedEntry?.path === entry.path) {
@@ -470,7 +470,7 @@ export function useWorkspaceFileManager(params: {
       const bytes = await sandboxClient.downloadFile(workspaceIdValue, {
         path: workspaceRelativePathToSandboxPath(entry.path)
       });
-      const blob = new Blob([bytes]);
+      const blob = new Blob([Uint8Array.from(bytes)]);
       const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = objectUrl;

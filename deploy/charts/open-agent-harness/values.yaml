@@ -27,7 +27,7 @@ config:
 
     paths:
       workspace_dir: /var/lib/oah/workspaces
-      blueprint_dir: /var/lib/oah/blueprints
+      runtime_dir: /var/lib/oah/runtimes
       model_dir: /var/lib/oah/models
       tool_dir: /var/lib/oah/tools
       skill_dir: /var/lib/oah/skills

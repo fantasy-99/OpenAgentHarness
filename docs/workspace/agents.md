@@ -50,9 +50,7 @@ Agent 定义存放在 `.openharness/agents/*.md`，使用 Markdown + YAML frontm
 ---
 mode: primary
 description: Implement requested changes in the current workspace
-model:
-  model_ref: platform/openai-default
-  temperature: 0.2
+model: default
 system_reminder: |
   You are now acting as the builder agent.
   Focus on making concrete code changes in the current workspace.
@@ -97,7 +95,7 @@ Prefer making concrete progress in the current workspace.
 | --- | --- | --- |
 | `mode` | 否 | `primary`、`subagent`、`all`，默认 `primary` |
 | `description` | 否 | Agent 简短说明 |
-| `model` | 建议 | 模型入口和推理参数 |
+| `model` | 建议 | 模型别名或直接模型引用 |
 | `system_reminder` | 否 | Agent 切换后的提醒段 |
 | `tools` | 否 | 可见的 native tools、actions、skills、external tools |
 | `switch` | 否 | 允许切换到的其他 agent 列表 |
@@ -126,16 +124,14 @@ Prefer making concrete progress in the current workspace.
 ### `model`
 
 ```yaml
-model:
-  model_ref: platform/openai-default
-  temperature: 0.2
+model: default
 ```
 
 | 字段 | 说明 |
 | --- | --- |
-| `model_ref` | 格式 `platform/<name>` 或 `workspace/<name>` |
-| `temperature` | 采样温度 |
-| `max_tokens` | 最大输出 token 数 |
+| `model` | 指向 `settings.yaml -> models` 中声明的模型别名；也兼容直接写具体 `model_ref` |
+
+运行时会在加载阶段把 `model` 解析成具体 `model_ref`。温度、`top_p`、`max_tokens` 等模型参数推荐统一配置在 `settings.yaml -> models.<alias>` 下。旧写法 `model: { alias: ... }`、`model_ref` 以及 frontmatter 中的遗留模型参数仍可兼容读取。
 
 `model` 是 frontmatter 中唯一建议必填的结构化字段。
 
@@ -243,9 +239,7 @@ Agent 切换时注入的提醒段。
 ---
 mode: primary
 description: Analyze tasks and create implementation plans
-model:
-  model_ref: platform/openai-default
-  temperature: 0.3
+model: default
 tools:
   native:
     - Read
@@ -268,9 +262,7 @@ the builder agent with a summary of what needs to be done.
 ---
 mode: primary
 description: Implement changes in the workspace
-model:
-  model_ref: platform/openai-default
-  temperature: 0.2
+model: default
 system_reminder: |
   You are now the builder. Follow the plan from the planner.
 tools:
@@ -303,9 +295,7 @@ for a code review.
 ---
 mode: subagent
 description: Review code changes for quality and correctness
-model:
-  model_ref: platform/openai-default
-  temperature: 0.1
+model: default
 tools:
   native:
     - Read

@@ -81,7 +81,7 @@ export const createSandboxRequestSchema = z
     workspaceId: z.string().trim().min(1).optional(),
     externalRef: z.string().optional(),
     name: z.string().min(1).optional(),
-    blueprint: z.string().min(1).optional(),
+    runtime: z.string().min(1).optional(),
     rootPath: z.string().min(1).optional(),
     ownerId: z.string().trim().min(1).optional(),
     userId: z.string().trim().min(1).optional(),
@@ -96,13 +96,13 @@ export const createSandboxRequestSchema = z
     executionPolicy: z.enum(["local", "container", "remote_runner"]).default("local")
   })
   .superRefine((value, context) => {
-    if (value.workspaceId || value.rootPath || (value.name && value.blueprint)) {
+    if (value.workspaceId || value.rootPath || (value.name && value.runtime)) {
       return;
     }
 
     context.addIssue({
       code: z.ZodIssueCode.custom,
-      message: "Provide workspaceId, rootPath, or both name and blueprint."
+      message: "Provide workspaceId, rootPath, or both name and runtime."
     });
   });
 

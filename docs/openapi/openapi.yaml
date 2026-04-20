@@ -55,25 +55,25 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ReadinessReport'
-  /blueprints:
+  /runtimes:
     get:
       tags: [Workspaces]
-      summary: List workspace blueprints
-      operationId: listWorkspaceBlueprints
+      summary: List workspace runtimes
+      operationId: listWorkspaceRuntimes
       responses:
         '200':
-          description: Workspace blueprint list
+          description: Workspace runtime list
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/WorkspaceBlueprintList'
+                $ref: '#/components/schemas/WorkspaceRuntimeList'
         default:
           $ref: '#/components/responses/ErrorResponse'
-  /blueprints/upload:
+  /runtimes/upload:
     post:
       tags: [Workspaces]
-      summary: Upload workspace blueprint
-      operationId: uploadWorkspaceBlueprint
+      summary: Upload workspace runtime
+      operationId: uploadWorkspaceRuntime
       parameters:
         - in: query
           name: name
@@ -97,28 +97,28 @@ paths:
               format: binary
       responses:
         '201':
-          description: Workspace blueprint uploaded
+          description: Workspace runtime uploaded
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/WorkspaceBlueprintUploadResponse'
+                $ref: '#/components/schemas/WorkspaceRuntimeUploadResponse'
         default:
           $ref: '#/components/responses/ErrorResponse'
-  /blueprints/{blueprintName}:
+  /runtimes/{runtimeName}:
     delete:
       tags: [Workspaces]
-      summary: Delete workspace blueprint
-      operationId: deleteWorkspaceBlueprint
+      summary: Delete workspace runtime
+      operationId: deleteWorkspaceRuntime
       parameters:
         - in: path
-          name: blueprintName
+          name: runtimeName
           required: true
           schema:
             type: string
             minLength: 1
       responses:
         '204':
-          description: Workspace blueprint deleted
+          description: Workspace runtime deleted
         default:
           $ref: '#/components/responses/ErrorResponse'
   /model-providers:
@@ -1364,21 +1364,21 @@ components:
         checks:
           $ref: '#/components/schemas/HealthChecks'
       additionalProperties: false
-    WorkspaceBlueprint:
+    WorkspaceRuntime:
       type: object
       required: [name]
       properties:
         name:
           type: string
-    WorkspaceBlueprintList:
+    WorkspaceRuntimeList:
       type: object
       required: [items]
       properties:
         items:
           type: array
           items:
-            $ref: '#/components/schemas/WorkspaceBlueprint'
-    WorkspaceBlueprintUploadResponse:
+            $ref: '#/components/schemas/WorkspaceRuntime'
+    WorkspaceRuntimeUploadResponse:
       type: object
       required: [name]
       properties:
@@ -1435,9 +1435,9 @@ components:
           type: string
         name:
           type: string
-        blueprint:
+        runtime:
           type: string
-          description: Preferred field for the workspace blueprint name.
+          description: Preferred field for the workspace runtime name.
         rootPath:
           type: string
         executionPolicy:
@@ -2160,10 +2160,10 @@ components:
         name:
           type: string
           minLength: 1
-        blueprint:
+        runtime:
           type: string
           minLength: 1
-          description: Preferred field for selecting the workspace blueprint.
+          description: Preferred field for selecting the workspace runtime.
         rootPath:
           type: string
           minLength: 1
@@ -2203,7 +2203,7 @@ components:
           default: local
       required:
         - name
-        - blueprint
+        - runtime
       additionalProperties: false
     CreateSandboxRequest:
       type: object
@@ -2216,10 +2216,10 @@ components:
         name:
           type: string
           minLength: 1
-        blueprint:
+        runtime:
           type: string
           minLength: 1
-          description: Preferred field for selecting the workspace blueprint when creating a sandbox-backed workspace.
+          description: Preferred field for selecting the workspace runtime when creating a sandbox-backed workspace.
         rootPath:
           type: string
           minLength: 1

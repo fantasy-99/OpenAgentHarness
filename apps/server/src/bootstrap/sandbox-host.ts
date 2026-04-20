@@ -4,8 +4,8 @@ import type {
   WorkspaceExecutionLease,
   WorkspaceFileAccessLease,
   WorkspaceRecord
-} from "@oah/runtime-core";
-import { AppError, createLocalWorkspaceCommandExecutor, createLocalWorkspaceFileSystem } from "@oah/runtime-core";
+} from "@oah/engine-core";
+import { AppError, createLocalWorkspaceCommandExecutor, createLocalWorkspaceFileSystem } from "@oah/engine-core";
 
 import type {
   WorkspaceMaterializationDiagnostics,
@@ -22,7 +22,7 @@ export interface SandboxHostDiagnostics {
 }
 
 /**
- * Local mirror of the runtime-core SandboxHost contract.
+ * Local mirror of the engine-core SandboxHost contract.
  *
  * This keeps the server package on a stable type-check path while the broader
  * workspace incrementally adopts the shared contract surface.
