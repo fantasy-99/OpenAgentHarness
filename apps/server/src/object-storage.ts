@@ -514,6 +514,65 @@ export async function syncWorkspaceRootToObjectStore(
   });
 }
 
+export async function deleteRemotePrefixFromObjectStore(
+  store: DirectoryObjectStore,
+  remotePrefix: string,
+  logger?: (message: string) => void,
+  label?: string
+): Promise<void> {
+  const normalizedPrefix = normalizePrefix(remotePrefix);
+  if (!normalizedPrefix) {
+    throw new Error("Refusing to delete an empty object storage prefix.");
+  }
+
+  logger?.(`scanning object storage prefix ${(label ?? normalizedPrefix) || "."} for deletion`);
+  const entries = await store.listEntries(normalizedPrefix);
+  const keys = [...new Set([normalizedPrefix, `${normalizedPrefix}/`, ...entries.map((entry) => entry.key)])];
+  logger?.(
+    `deleting ${keys.length} object storage entr${keys.length === 1 ? "y" : "ies"} from ${(label ?? normalizedPrefix) || "."}`
+  );
+  if (keys.length > 0) {
+    await store.deleteObjects(keys);
+  }
+  logger?.(`deleted object storage prefix ${(label ?? normalizedPrefix) || "."}`);
+}
+
+export async function deleteWorkspaceExternalRefFromObjectStore(
+  config: ObjectStorageConfig,
+  externalRef: string,
+  logger?: (message: string) => void
+): Promise<boolean> {
+  let parsed: URL;
+  try {
+    parsed = new URL(externalRef);
+  } catch {
+    return false;
+  }
+
+  if (parsed.protocol !== "s3:") {
+    return false;
+  }
+
+  if (parsed.hostname && parsed.hostname !== config.bucket) {
+    throw new Error(
+      `Workspace externalRef bucket ${parsed.hostname} does not match configured object storage bucket ${config.bucket}.`
+    );
+  }
+
+  const remotePrefix = normalizePrefix(parsed.pathname);
+  if (!remotePrefix) {
+    throw new Error(`Workspace externalRef ${externalRef} does not resolve to a deletable object storage prefix.`);
+  }
+
+  const store = new S3DirectoryStore(config);
+  try {
+    await deleteRemotePrefixFromObjectStore(store, remotePrefix, logger, path.basename(remotePrefix) || remotePrefix);
+    return true;
+  } finally {
+    await store.close();
+  }
+}
+
 export async function seedWorkspaceRootToExternalRef(
   config: ObjectStorageConfig,
   externalRef: string,

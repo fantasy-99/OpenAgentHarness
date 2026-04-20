@@ -89,8 +89,8 @@ Each capability layer stays separate so you can compose them differently per wor
 # Install dependencies
 pnpm install
 
-# Point to your external test environment directory
-export OAH_TEST_ROOT=/absolute/path/to/test_oah_server
+# Point to your external deploy root directory
+export OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server
 
 # Start the local stack (PostgreSQL + Redis + MinIO + oah-api + oah-controller + oah-sandbox)
 # This also waits for MinIO and auto-runs one storage sync.
@@ -104,7 +104,7 @@ pnpm dev:web
 
 ```bash
 cd /Users/wumengsong/Code/OpenAgentHarness
-export OAH_TEST_ROOT=/absolute/path/to/test_oah_server
+export OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server
 
 pnpm local:up
 ```
@@ -144,9 +144,9 @@ pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts 
 ```bash
 pnpm build          # Build all packages
 pnpm test           # Run tests
-OAH_TEST_ROOT=/absolute/path/to/test_oah_server pnpm storage:sync  # Push readonly source prefixes to MinIO
-OAH_TEST_ROOT=/absolute/path/to/test_oah_server pnpm storage:sync -- --include-workspaces  # Also sync source/workspaces
-OAH_TEST_ROOT=/absolute/path/to/test_oah_server pnpm local:up      # Start oah-api + oah-controller + oah-sandbox and auto-sync once
+OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server pnpm storage:sync  # Push readonly source prefixes to MinIO
+OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server pnpm storage:sync -- --include-workspaces  # Also sync source/workspaces
+OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server pnpm local:up      # Start oah-api + oah-controller + oah-sandbox and auto-sync once
 pnpm local:down                                                    # Stop local Docker stack
 pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/worker.ts -- --config ./server.example.yaml  # Advanced: start a standalone worker (typically sandbox-hosted)
 ```

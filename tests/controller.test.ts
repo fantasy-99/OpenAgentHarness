@@ -295,8 +295,8 @@ describe("controller", () => {
     ] satisfies RedisWorkerRegistryEntry[]);
 
     expect(summary).toEqual({
-      totalWorkspaces: 4,
-      assignedUsers: 2,
+      totalWorkspaces: 3,
+      assignedUsers: 1,
       unassignedUsers: 2,
       ownedWorkspaces: 2,
       workersWithPlacements: 1,
@@ -310,6 +310,100 @@ describe("controller", () => {
       draining: 0,
       evicted: 1,
       unassigned: 1
+    });
+  });
+
+  it("ignores evicted placements when computing missing-owner policy signals", () => {
+    const policy = summarizePlacementPolicy({
+      placements: [
+        {
+          workspaceId: "ws_evicted",
+          version: "live",
+          userId: "user_1",
+          ownerWorkerId: "worker_missing",
+          state: "evicted",
+          updatedAt: "2026-04-15T00:00:00.000Z"
+        }
+      ] satisfies RedisWorkspacePlacementEntry[],
+      activeWorkers: [] satisfies RedisWorkerRegistryEntry[],
+      maxWorkspacesPerSandbox: 1
+    });
+
+    expect(policy).toEqual({
+      attentionRequired: false,
+      unassignedWorkspaces: 0,
+      missingOwnerWorkspaces: 0,
+      lateOwnerWorkspaces: 0,
+      drainingOwnerWorkspaces: 0,
+      usersSpanningWorkers: 0,
+      maxWorkersPerUser: 0,
+      sandboxesAboveWorkspaceCapacity: 0,
+      maxWorkspaceRefsPerSandbox: 0
+    });
+  });
+
+  it("matches placement owners against worker runtimeInstanceId for replica-scoped sandboxes", () => {
+    const summary = summarizeWorkspacePlacements([
+      {
+        workspaceId: "ws_replica",
+        version: "live",
+        userId: "user_replica",
+        ownerWorkerId: "worker:sandbox-1",
+        state: "idle",
+        updatedAt: "2026-04-15T00:00:00.000Z"
+      }
+    ] satisfies RedisWorkspacePlacementEntry[], [
+      {
+        workerId: "worker_slot_1",
+        runtimeInstanceId: "worker:sandbox-1",
+        processKind: "standalone",
+        state: "idle",
+        health: "healthy",
+        lastSeenAt: "2026-04-15T00:00:00.000Z",
+        leaseTtlMs: 5_000,
+        expiresAt: "2026-04-15T00:00:05.000Z",
+        lastSeenAgeMs: 0
+      }
+    ] satisfies RedisWorkerRegistryEntry[]);
+
+    expect(summary).toMatchObject({
+      totalWorkspaces: 1,
+      ownedByActiveWorkers: 1,
+      ownedByMissingWorkers: 0,
+      workersWithPlacements: 1
+    });
+
+    const policy = summarizePlacementPolicy({
+      placements: [
+        {
+          workspaceId: "ws_replica",
+          version: "live",
+          userId: "user_replica",
+          ownerWorkerId: "worker:sandbox-1",
+          state: "idle",
+          updatedAt: "2026-04-15T00:00:00.000Z"
+        }
+      ] satisfies RedisWorkspacePlacementEntry[],
+      activeWorkers: [
+        {
+          workerId: "worker_slot_1",
+          runtimeInstanceId: "worker:sandbox-1",
+          processKind: "standalone",
+          state: "idle",
+          health: "healthy",
+          lastSeenAt: "2026-04-15T00:00:00.000Z",
+          leaseTtlMs: 5_000,
+          expiresAt: "2026-04-15T00:00:05.000Z",
+          lastSeenAgeMs: 0
+        }
+      ] satisfies RedisWorkerRegistryEntry[],
+      maxWorkspacesPerSandbox: 1
+    });
+
+    expect(policy).toMatchObject({
+      attentionRequired: false,
+      missingOwnerWorkspaces: 0,
+      lateOwnerWorkspaces: 0
     });
   });
 
@@ -671,6 +765,45 @@ describe("controller", () => {
         state: "active",
         action: "release_ownership",
         reason: "owner_missing"
+      }
+    ]);
+  });
+
+  it("matches placement ownership against worker runtimeInstanceId when building execution operations", () => {
+    const operations = buildPlacementExecutionOperations({
+      placements: [
+        {
+          workspaceId: "ws_drain",
+          version: "live",
+          ownerWorkerId: "worker:sandbox-1",
+          state: "draining",
+          updatedAt: "2026-04-15T00:00:01.000Z"
+        }
+      ] satisfies RedisWorkspacePlacementEntry[],
+      activeWorkers: [
+        {
+          workerId: "worker_slot_1",
+          runtimeInstanceId: "worker:sandbox-1",
+          processKind: "standalone",
+          state: "stopping",
+          health: "healthy",
+          lastSeenAt: "2026-04-15T00:00:00.000Z",
+          leaseTtlMs: 5_000,
+          expiresAt: "2026-04-15T00:00:05.000Z",
+          lastSeenAgeMs: 0
+        }
+      ] satisfies RedisWorkerRegistryEntry[]
+    });
+
+    expect(operations).toEqual([
+      {
+        id: "finish_draining_owner:ws_drain",
+        kind: "finish_draining_owner",
+        workspaceId: "ws_drain",
+        ownerWorkerId: "worker:sandbox-1",
+        state: "draining",
+        action: "release_ownership",
+        reason: "worker_draining"
       }
     ]);
   });
@@ -1178,7 +1311,7 @@ describe("controller", () => {
             workspaceId: "ws_1",
             version: "live",
             userId: "user_1",
-            ownerWorkerId: "worker_1",
+            ownerWorkerId: "pod-a",
             state: "active",
             refCount: 2,
             updatedAt: "2026-04-15T00:00:00.000Z"
@@ -1187,7 +1320,7 @@ describe("controller", () => {
             workspaceId: "ws_2",
             version: "live",
             userId: "user_1",
-            ownerWorkerId: "worker_2",
+            ownerWorkerId: "pod-b",
             state: "draining",
             updatedAt: "2026-04-15T00:00:01.000Z"
           }
@@ -1244,7 +1377,7 @@ describe("controller", () => {
         priority: "medium",
         workspaceCount: 1,
         sampleWorkspaceIds: ["ws_2"],
-        sampleWorkerIds: ["worker_2"],
+        sampleWorkerIds: ["pod-b"],
         message: "finish draining or hand off 1 workspace(s) on workers that are stopping"
       },
       {
@@ -1266,7 +1399,7 @@ describe("controller", () => {
         priority: "medium",
         blockers: ["worker_draining"],
         workspaceIds: ["ws_2"],
-        workerIds: ["worker_2"],
+        workerIds: ["pod-b"],
         summary: "finish draining or hand off 1 workspace(s) on workers that are stopping"
       },
       items: [
@@ -1277,7 +1410,7 @@ describe("controller", () => {
           priority: "medium",
           blockers: ["worker_draining"],
           workspaceIds: ["ws_2"],
-          workerIds: ["worker_2"],
+          workerIds: ["pod-b"],
           summary: "finish draining or hand off 1 workspace(s) on workers that are stopping"
         },
         {

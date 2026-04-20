@@ -23,7 +23,7 @@ const remotePrefixByPathKey = {
 
 function parseArgs(argv) {
   const options = {
-    root: process.env.OAH_TEST_ROOT,
+    root: process.env.OAH_DEPLOY_ROOT,
     bucket: "test-oah-server",
     awsEndpointUrl: process.env.MINIO_AWS_ENDPOINT_URL || "http://host.docker.internal:9000",
     accessKey: process.env.MINIO_ROOT_USER || "oahadmin",
@@ -115,7 +115,7 @@ function printUsage() {
   console.log("Usage: node ./scripts/storage-sync.mjs [options]");
   console.log("");
   console.log("Options:");
-  console.log("  --root <path>                Test root. Defaults to $OAH_TEST_ROOT.");
+  console.log("  --root <path>                Deploy root. Defaults to $OAH_DEPLOY_ROOT.");
   console.log("  --source-root <path>         Source directory root. Defaults to <root>/source.");
   console.log("  --bucket <name>              Bucket name. Defaults to test-oah-server.");
   console.log("  --aws-endpoint-url <url>     Docker-reachable MinIO endpoint.");
@@ -277,14 +277,14 @@ function syncDirectory(pathKey, directory, options) {
 function main() {
   const options = parseArgs(process.argv.slice(2));
   if (!options.root) {
-    throw new Error("Test root not provided. Pass --root or set OAH_TEST_ROOT.");
+    throw new Error("Deploy root not provided. Pass --root or set OAH_DEPLOY_ROOT.");
   }
 
   const root = path.resolve(options.root);
   const sourceRoot = path.resolve(options.sourceRoot || path.join(root, "source"));
   const pathMap = loadPublishPaths(root, sourceRoot);
 
-  console.log(`Test root: ${root}`);
+  console.log(`Deploy root: ${root}`);
   console.log(`Docker aws-cli endpoint: ${options.awsEndpointUrl}`);
   console.log(`Target bucket: ${options.bucket}`);
   console.log(`Source root: ${sourceRoot}`);

@@ -492,6 +492,10 @@ export function summarizeStandaloneWorkerFleet(activeWorkers: RedisWorkerRegistr
   };
 }
 
+function workerPlacementReference(worker: Pick<RedisWorkerRegistryEntry, "workerId" | "runtimeInstanceId">): string {
+  return worker.runtimeInstanceId ?? worker.workerId;
+}
+
 export function calculateStandaloneWorkerReplicas(input: {
   config: StandaloneControllerConfig;
   activeWorkers: RedisWorkerRegistryEntry[];
@@ -535,7 +539,8 @@ export function summarizeWorkspacePlacements(
     return undefined;
   }
 
-  const workerHealthById = new Map(activeWorkers?.map((worker) => [worker.workerId, worker.health]) ?? []);
+  const trackedPlacements = placements.filter((placement) => placement.state !== "evicted");
+  const workerHealthById = new Map(activeWorkers?.map((worker) => [workerPlacementReference(worker), worker.health]) ?? []);
   const ownerWorkers = new Set<string>();
   const lateOwnerWorkers = new Set<string>();
   const missingOwnerWorkers = new Set<string>();
@@ -551,24 +556,6 @@ export function summarizeWorkspacePlacements(
   let ownedByMissingWorkers = 0;
 
   for (const placement of placements) {
-    if (placement.userId) {
-      assignedUsers += 1;
-    }
-    if (placement.ownerWorkerId) {
-      ownedWorkspaces += 1;
-      ownerWorkers.add(placement.ownerWorkerId);
-      const health = workerHealthById.get(placement.ownerWorkerId);
-      if (health === "healthy") {
-        ownedByActiveWorkers += 1;
-      } else if (health === "late") {
-        ownedByLateWorkers += 1;
-        lateOwnerWorkers.add(placement.ownerWorkerId);
-      } else {
-        ownedByMissingWorkers += 1;
-        missingOwnerWorkers.add(placement.ownerWorkerId);
-      }
-    }
-
     switch (placement.state) {
       case "active":
         active += 1;
@@ -588,10 +575,30 @@ export function summarizeWorkspacePlacements(
     }
   }
 
+  for (const placement of trackedPlacements) {
+    if (placement.userId) {
+      assignedUsers += 1;
+    }
+    if (placement.ownerWorkerId) {
+      ownedWorkspaces += 1;
+      ownerWorkers.add(placement.ownerWorkerId);
+      const health = workerHealthById.get(placement.ownerWorkerId);
+      if (health === "healthy") {
+        ownedByActiveWorkers += 1;
+      } else if (health === "late") {
+        ownedByLateWorkers += 1;
+        lateOwnerWorkers.add(placement.ownerWorkerId);
+      } else {
+        ownedByMissingWorkers += 1;
+        missingOwnerWorkers.add(placement.ownerWorkerId);
+      }
+    }
+  }
+
   return {
-    totalWorkspaces: placements.length,
+    totalWorkspaces: trackedPlacements.length,
     assignedUsers,
-    unassignedUsers: Math.max(0, placements.length - assignedUsers),
+    unassignedUsers: Math.max(0, trackedPlacements.length - assignedUsers),
     ownedWorkspaces,
     workersWithPlacements: ownerWorkers.size,
     ownedByActiveWorkers,
@@ -670,8 +677,8 @@ export function summarizePlacementPolicy(input: {
     return undefined;
   }
 
-  const workerStateById = new Map(activeWorkers.map((worker) => [worker.workerId, worker.state]));
-  const workerHealthById = new Map(activeWorkers.map((worker) => [worker.workerId, worker.health]));
+  const workerHealthById = new Map(activeWorkers.map((worker) => [workerPlacementReference(worker), worker.health]));
+  const workerStateByIdByReference = new Map(activeWorkers.map((worker) => [workerPlacementReference(worker), worker.state]));
   const userWorkers = new Map<string, Set<string>>();
   const workerRefLoads = new Map<string, number>();
   let unassignedWorkspaces = 0;
@@ -680,6 +687,10 @@ export function summarizePlacementPolicy(input: {
   let drainingOwnerWorkspaces = 0;
 
   for (const placement of placements) {
+    if (placement.state === "evicted") {
+      continue;
+    }
+
     if (placement.state === "unassigned" || !placement.ownerWorkerId) {
       unassignedWorkspaces += 1;
       continue;
@@ -693,21 +704,19 @@ export function summarizePlacementPolicy(input: {
     if (workerHealth === "late") {
       lateOwnerWorkspaces += 1;
     }
-    if (workerStateById.get(placement.ownerWorkerId) === "stopping" || placement.state === "draining") {
+    if (workerStateByIdByReference.get(placement.ownerWorkerId) === "stopping" || placement.state === "draining") {
       drainingOwnerWorkspaces += 1;
     }
 
-    if (placement.userId && placement.state !== "evicted") {
+    if (placement.userId) {
       const workers = userWorkers.get(placement.userId) ?? new Set<string>();
       workers.add(placement.ownerWorkerId);
       userWorkers.set(placement.userId, workers);
     }
 
-    if (placement.state !== "evicted") {
-      const refLoad =
-        typeof placement.refCount === "number" ? Math.max(0, placement.refCount) : placement.state === "active" ? 1 : 0;
-      workerRefLoads.set(placement.ownerWorkerId, (workerRefLoads.get(placement.ownerWorkerId) ?? 0) + refLoad);
-    }
+    const refLoad =
+      typeof placement.refCount === "number" ? Math.max(0, placement.refCount) : placement.state === "active" ? 1 : 0;
+    workerRefLoads.set(placement.ownerWorkerId, (workerRefLoads.get(placement.ownerWorkerId) ?? 0) + refLoad);
   }
 
   const userWorkerCounts = [...userWorkers.values()].map((workers) => workers.size);
@@ -750,7 +759,7 @@ export function summarizePlacementRecommendations(input: {
   }
 
   const placements = input.placements ?? [];
-  const workerHealthById = new Map((input.activeWorkers ?? []).map((worker) => [worker.workerId, worker.health]));
+  const workerHealthById = new Map((input.activeWorkers ?? []).map((worker) => [workerPlacementReference(worker), worker.health]));
   const userWorkers = new Map<string, Set<string>>();
   const workerRefLoads = new Map<string, number>();
   const workspaceCapacity = Math.max(1, input.maxWorkspacesPerSandbox ?? 1);
@@ -813,10 +822,10 @@ export function summarizePlacementRecommendations(input: {
         ? { workerCount: placementSummary.workersWithMissingPlacements }
         : {}),
       sampleWorkspaceIds: sampleWorkspaceIds(
-        (placement) => Boolean(placement.ownerWorkerId) && !workerHealthById.has(placement.ownerWorkerId!)
+        (placement) => placement.state !== "evicted" && Boolean(placement.ownerWorkerId) && !workerHealthById.has(placement.ownerWorkerId!)
       ),
       sampleWorkerIds: sampleWorkerIds(
-        (placement) => Boolean(placement.ownerWorkerId) && !workerHealthById.has(placement.ownerWorkerId!)
+        (placement) => placement.state !== "evicted" && Boolean(placement.ownerWorkerId) && !workerHealthById.has(placement.ownerWorkerId!)
       ),
       message: `recover or reassign ${placementPolicy?.missingOwnerWorkspaces ?? 0} workspace(s) still pointing at missing owners`
     });
@@ -829,8 +838,12 @@ export function summarizePlacementRecommendations(input: {
       ...(typeof placementSummary?.workersWithLatePlacements === "number"
         ? { workerCount: placementSummary.workersWithLatePlacements }
         : {}),
-      sampleWorkspaceIds: sampleWorkspaceIds((placement) => workerHealthById.get(placement.ownerWorkerId ?? "") === "late"),
-      sampleWorkerIds: sampleWorkerIds((placement) => workerHealthById.get(placement.ownerWorkerId ?? "") === "late"),
+      sampleWorkspaceIds: sampleWorkspaceIds(
+        (placement) => placement.state !== "evicted" && workerHealthById.get(placement.ownerWorkerId ?? "") === "late"
+      ),
+      sampleWorkerIds: sampleWorkerIds(
+        (placement) => placement.state !== "evicted" && workerHealthById.get(placement.ownerWorkerId ?? "") === "late"
+      ),
       message: `stabilize or reassign ${placementPolicy?.lateOwnerWorkspaces ?? 0} workspace(s) currently attached to late owners`
     });
   }
@@ -935,8 +948,8 @@ export function buildPlacementExecutionOperations(input: {
     return [];
   }
 
-  const workerHealthById = new Map((input.activeWorkers ?? []).map((worker) => [worker.workerId, worker.health]));
-  const workerStateById = new Map((input.activeWorkers ?? []).map((worker) => [worker.workerId, worker.state]));
+  const workerHealthById = new Map((input.activeWorkers ?? []).map((worker) => [workerPlacementReference(worker), worker.health]));
+  const workerStateById = new Map((input.activeWorkers ?? []).map((worker) => [workerPlacementReference(worker), worker.state]));
   const nonEvictedPlacements = placements.filter((placement) => placement.state !== "evicted");
   const scheduledWorkspaceIds = new Set<string>();
   const operations: ControllerPlacementExecutionOperation[] = [];
@@ -964,7 +977,11 @@ export function buildPlacementExecutionOperations(input: {
   const selectTargetWorker = (placement: RedisWorkspacePlacementEntry, excludeWorkerIds?: Iterable<string>) => {
     const excluded = new Set(excludeWorkerIds ?? []);
     const candidateWorkers = (input.activeWorkers ?? []).filter(
-      (worker) => worker.health === "healthy" && worker.state !== "stopping" && !excluded.has(worker.workerId)
+      (worker) =>
+        worker.health === "healthy" &&
+        worker.state !== "stopping" &&
+        !excluded.has(worker.workerId) &&
+        !excluded.has(workerPlacementReference(worker))
     );
     if (candidateWorkers.length === 0) {
       return undefined;
@@ -974,11 +991,12 @@ export function buildPlacementExecutionOperations(input: {
       ? candidateWorkers
           .map((worker) => ({
             workerId: worker.workerId,
+            placementReference: workerPlacementReference(worker),
             workspaceCount: nonEvictedPlacements.filter(
               (item) =>
                 item.userId === placement.userId &&
                 item.workspaceId !== placement.workspaceId &&
-                item.ownerWorkerId === worker.workerId &&
+                item.ownerWorkerId === workerPlacementReference(worker) &&
                 item.state !== "unassigned"
             ).length
           }))
@@ -1006,12 +1024,20 @@ export function buildPlacementExecutionOperations(input: {
     const preferredCandidate = affinity.candidates.find(
       (candidate) => candidate.health === "healthy" && candidate.state !== "stopping"
     );
-    return preferredCandidate
-      ? {
-          workerId: preferredCandidate.workerId,
-          reasons: preferredCandidate.reasons
-        }
-      : undefined;
+    if (!preferredCandidate) {
+      return undefined;
+    }
+
+    const selectedWorker = candidateWorkers.find((worker) => worker.workerId === preferredCandidate.workerId);
+    if (!selectedWorker) {
+      return undefined;
+    }
+
+    return {
+      workerId: preferredCandidate.workerId,
+      placementReference: workerPlacementReference(selectedWorker),
+      reasons: preferredCandidate.reasons
+    };
   };
 
   for (const placement of placements) {
@@ -1021,7 +1047,7 @@ export function buildPlacementExecutionOperations(input: {
 
     if (!placement.ownerWorkerId || placement.state === "unassigned") {
       const target = selectTargetWorker(placement);
-      if (target && target.workerId !== placement.preferredWorkerId) {
+      if (target && target.placementReference !== placement.preferredWorkerId && target.workerId !== placement.preferredWorkerId) {
         operations.push({
           id: `assign_unassigned:${placement.workspaceId}`,
           kind: "assign_unassigned",
@@ -1029,7 +1055,7 @@ export function buildPlacementExecutionOperations(input: {
           state: placement.state,
           action: "set_preferred_worker",
           reason: "unassigned_workspace",
-          targetWorkerId: target.workerId,
+          targetWorkerId: target.placementReference,
           targetWorkerReasons: target.reasons
         });
         scheduledWorkspaceIds.add(placement.workspaceId);
@@ -1067,7 +1093,9 @@ export function buildPlacementExecutionOperations(input: {
     } else if (workerHealth === "late") {
       operation =
         placement.state === "active"
-          ? target && target.workerId !== placement.preferredWorkerId
+          ? target &&
+            target.placementReference !== placement.preferredWorkerId &&
+            target.workerId !== placement.preferredWorkerId
             ? {
                 id: `reassign_late_owner:${placement.workspaceId}`,
                 kind: "reassign_late_owner",
@@ -1076,7 +1104,7 @@ export function buildPlacementExecutionOperations(input: {
                 state: placement.state,
                 action: "set_preferred_worker",
                 reason: "owner_late",
-                targetWorkerId: target.workerId,
+                targetWorkerId: target.placementReference,
                 targetWorkerReasons: target.reasons
               }
             : undefined
@@ -1111,7 +1139,12 @@ export function buildPlacementExecutionOperations(input: {
     }
 
     const target = selectTargetWorker(placement);
-    if (!target || target.workerId === placement.ownerWorkerId || target.workerId === placement.preferredWorkerId) {
+    if (
+      !target ||
+      target.placementReference === placement.ownerWorkerId ||
+      target.placementReference === placement.preferredWorkerId ||
+      target.workerId === placement.preferredWorkerId
+    ) {
       continue;
     }
 
@@ -1123,7 +1156,7 @@ export function buildPlacementExecutionOperations(input: {
       state: placement.state,
       action: "set_preferred_worker",
       reason: "user_affinity_split",
-      targetWorkerId: target.workerId,
+      targetWorkerId: target.placementReference,
       targetWorkerReasons: target.reasons
     });
     scheduledWorkspaceIds.add(placement.workspaceId);
@@ -1140,7 +1173,7 @@ export function buildPlacementExecutionOperations(input: {
     }
 
     const target = selectTargetWorker(placement, new Set([...overloadedWorkers, placement.ownerWorkerId]));
-    if (!target || target.workerId === placement.preferredWorkerId) {
+    if (!target || target.placementReference === placement.preferredWorkerId || target.workerId === placement.preferredWorkerId) {
       continue;
     }
 
@@ -1152,7 +1185,7 @@ export function buildPlacementExecutionOperations(input: {
       state: placement.state,
       action: "set_preferred_worker",
       reason: "workspace_capacity_exceeded",
-      targetWorkerId: target.workerId,
+      targetWorkerId: target.placementReference,
       targetWorkerReasons: target.reasons
     });
   }

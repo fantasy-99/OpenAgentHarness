@@ -21,7 +21,7 @@ pnpm install
 启动 PostgreSQL 和 Redis（开发用 Docker Compose）：
 
 ```bash
-export OAH_TEST_ROOT=/absolute/path/to/test_oah_server
+export OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server
 pnpm local:up
 ```
 
@@ -76,10 +76,10 @@ pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts 
 | 命令 | 作用 |
 | --- | --- |
 | `pnpm install` | 安装依赖 |
-| `OAH_TEST_ROOT=/absolute/path pnpm storage:sync` | 同步只读测试数据到 MinIO（默认不含 `source/workspaces`） |
-| `OAH_TEST_ROOT=/absolute/path pnpm storage:sync -- --include-workspaces` | 连同 `source/workspaces` 一起同步到 MinIO |
-| `OAH_TEST_ROOT=/absolute/path pnpm local:up` | 启动本地整套服务（`oah-api` / `oah-controller` / `oah-sandbox`） |
-| `OAH_TEST_ROOT=/absolute/path OAH_SKIP_BUILD=1 pnpm local:up` | 复用本地已有 OAH 镜像，跳过 Docker 构建 |
+| `OAH_DEPLOY_ROOT=/absolute/path pnpm storage:sync` | 把部署根目录里的只读数据同步到 MinIO（默认不含 `source/workspaces`） |
+| `OAH_DEPLOY_ROOT=/absolute/path pnpm storage:sync -- --include-workspaces` | 连同 `source/workspaces` 一起同步到 MinIO |
+| `OAH_DEPLOY_ROOT=/absolute/path pnpm local:up` | 启动本地整套服务（`oah-api` / `oah-controller` / `oah-sandbox`） |
+| `OAH_DEPLOY_ROOT=/absolute/path OAH_SKIP_BUILD=1 pnpm local:up` | 复用本地已有 OAH 镜像，跳过 Docker 构建 |
 | `pnpm local:down` | 停止本地整套服务 |
 | `pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts -- --api-only --config ./server.example.yaml` | 仅启动 `oah-api` |
 | `pnpm exec tsx --tsconfig ./apps/controller/tsconfig.json ./apps/controller/src/index.ts -- --config ./server.example.yaml` | 单独启动 `oah-controller` |
@@ -104,7 +104,7 @@ pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts 
 
 - 如果本地已经有 `openagentharness-oah:latest`，可以直接跳过构建：
   ```bash
-  OAH_TEST_ROOT=/absolute/path OAH_SKIP_BUILD=1 pnpm local:up
+  OAH_DEPLOY_ROOT=/absolute/path OAH_SKIP_BUILD=1 pnpm local:up
   ```
 - 如果必须重新构建，先确认 Docker Desktop 自身能访问 Docker Hub，再重试。
 

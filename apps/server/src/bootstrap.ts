@@ -54,7 +54,12 @@ import {
   summarizeWorkerRuntimeStatus,
   type WorkerRuntimeStatus
 } from "./bootstrap/worker-runtime.js";
-import { createDirectoryObjectStore, ObjectStorageMirrorController, seedWorkspaceRootToExternalRef } from "./object-storage.js";
+import {
+  createDirectoryObjectStore,
+  deleteWorkspaceExternalRefFromObjectStore,
+  ObjectStorageMirrorController,
+  seedWorkspaceRootToExternalRef
+} from "./object-storage.js";
 import { appendRuntimeLogEvent, buildRuntimeConsoleLogger } from "./runtime-console.js";
 import { createSandboxBackedWorkspaceInitializer } from "./bootstrap/sandbox-backed-workspace-initializer.js";
 import {
@@ -108,6 +113,36 @@ import {
 
 export { cleanupWorkspaceLocalArtifacts } from "./bootstrap/runtime-paths.js";
 export type { WorkspaceLocalArtifactCleanupStatus } from "./bootstrap/runtime-paths.js";
+
+async function clearWorkspaceRootContents(input: {
+  sandboxHost: SandboxHost;
+  workspace: WorkspaceRecord;
+}): Promise<void> {
+  const lease = await input.sandboxHost.workspaceFileAccessProvider.acquire({
+    workspace: input.workspace,
+    access: "write"
+  });
+
+  try {
+    const entries = await input.sandboxHost.workspaceFileSystem.readdir(lease.workspace.rootPath);
+    console.info(
+      `[oah-bootstrap] Clearing sandbox workspace root for ${input.workspace.id} at ${lease.workspace.rootPath} (${entries.length} top-level entr${
+        entries.length === 1 ? "y" : "ies"
+      })`
+    );
+    await Promise.all(
+      entries.map((entry) =>
+        input.sandboxHost.workspaceFileSystem.rm(path.posix.join(lease.workspace.rootPath, entry.name), {
+          recursive: true,
+          force: true
+        })
+      )
+    );
+    console.info(`[oah-bootstrap] Cleared sandbox workspace root contents for ${input.workspace.id} at ${lease.workspace.rootPath}`);
+  } finally {
+    await lease.release();
+  }
+}
 
 function selectPlacementPreferredWorkerId(placement: {
   state?: "unassigned" | "active" | "idle" | "draining" | "evicted" | undefined;
@@ -1035,20 +1070,37 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       ? {
           workspaceDeletionHandler: {
             async deleteWorkspace(workspace) {
-              if (remoteSandboxProvider && sandboxHost) {
-                const lease = await sandboxHost.workspaceFileAccessProvider.acquire({
-                  workspace,
-                  access: "write"
-                });
+              console.info(
+                `[oah-bootstrap] Deleting workspace ${workspace.id} (rootPath=${workspace.rootPath}, externalRef=${workspace.externalRef ?? "none"})`
+              );
 
-                try {
-                  await sandboxHost.workspaceFileSystem.rm(lease.workspace.rootPath, {
-                    recursive: true,
-                    force: true
-                  });
-                } finally {
-                  await lease.release();
-                }
+              if (remoteSandboxProvider && sandboxHost) {
+                await clearWorkspaceRootContents({
+                  sandboxHost,
+                  workspace
+                });
+              } else {
+                console.info(`[oah-bootstrap] No remote sandbox cleanup needed for workspace ${workspace.id}`);
+              }
+
+              const workspaceExternalRef =
+                workspace.externalRef ??
+                resolveManagedWorkspaceExternalRef(workspace.rootPath, workspace.kind, config) ??
+                objectStorageMirror?.managedWorkspaceExternalRef(workspace.rootPath, workspace.kind, config.paths);
+              if (config.object_storage && workspaceExternalRef) {
+                console.info(
+                  `[oah-object-storage] Deleting workspace backing store for ${workspace.id} using ${workspaceExternalRef}`
+                );
+                await deleteWorkspaceExternalRefFromObjectStore(config.object_storage, workspaceExternalRef, (message) => {
+                  console.info(`[oah-object-storage] ${message}`);
+                });
+                console.info(`[oah-object-storage] Deleted workspace backing store for ${workspace.id}`);
+              } else if (config.object_storage) {
+                console.warn(
+                  `[oah-object-storage] Skipping backing-store deletion for workspace ${workspace.id}; no externalRef could be resolved`
+                );
+              } else {
+                console.info(`[oah-object-storage] No object storage configured; skipping backing-store deletion for ${workspace.id}`);
               }
 
               const deletedCopies = await workspaceMaterializationManager?.deleteWorkspaceCopies(workspace.id);

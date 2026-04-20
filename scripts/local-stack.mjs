@@ -100,21 +100,21 @@ function resetLocalRedisCoordinationState() {
   run("docker", ["compose", "-f", composeFile, "exec", "-T", "redis", "redis-cli", "FLUSHALL"]);
 }
 
-function ensureTestRoot() {
-  if (!process.env.OAH_TEST_ROOT) {
-    console.error("OAH_TEST_ROOT is required. Example:");
-    console.error("  export OAH_TEST_ROOT=/absolute/path/to/test_oah_server");
+function ensureDeployRoot() {
+  if (!process.env.OAH_DEPLOY_ROOT) {
+    console.error("OAH_DEPLOY_ROOT is required. Example:");
+    console.error("  export OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server");
     process.exit(1);
   }
 }
 
 function prepareDockerServerConfigs() {
-  const testRoot = process.env.OAH_TEST_ROOT;
-  if (!testRoot) {
-    throw new Error("OAH_TEST_ROOT is required.");
+  const deployRoot = process.env.OAH_DEPLOY_ROOT;
+  if (!deployRoot) {
+    throw new Error("OAH_DEPLOY_ROOT is required.");
   }
 
-  const sourceConfigPath = path.join(testRoot, "server.docker.yaml");
+  const sourceConfigPath = path.join(deployRoot, "server.docker.yaml");
   if (!existsSync(sourceConfigPath)) {
     const exampleConfigPath = path.join(repoRoot, "server.example.yaml");
     if (!existsSync(exampleConfigPath)) {
@@ -122,12 +122,12 @@ function prepareDockerServerConfigs() {
       process.exit(1);
     }
 
-    mkdirSync(testRoot, { recursive: true });
+    mkdirSync(deployRoot, { recursive: true });
     copyFileSync(exampleConfigPath, sourceConfigPath);
     console.log(`Seeded ${sourceConfigPath} from server.example.yaml. Edit it to point at your Postgres/Redis/MinIO if the defaults do not fit.`);
   }
 
-  const generatedDir = path.join(testRoot, ".oah-local");
+  const generatedDir = path.join(deployRoot, ".oah-local");
   const generatedApiConfigPath = path.join(generatedDir, "api.generated.yaml");
   const generatedControllerConfigPath = path.join(generatedDir, "controller.generated.yaml");
   const generatedSandboxConfigPath = path.join(generatedDir, "sandbox.generated.yaml");
@@ -236,7 +236,7 @@ function prepareDockerServerConfigs() {
   process.env.OAH_LOCAL_SANDBOX_REPLICA_COUNT = String(sandboxReplicaCount);
   process.env.OAH_LOCAL_SANDBOX_INITIAL_REPLICA_COUNT = String(initialSandboxReplicaCount);
   process.env.OAH_LOCAL_REPO_ROOT = repoRoot;
-  process.env.OAH_LOCAL_TEST_ROOT = testRoot;
+  process.env.OAH_LOCAL_DEPLOY_ROOT = deployRoot;
   process.env.COMPOSE_PROJECT_NAME = composeProjectName;
 }
 
@@ -358,17 +358,16 @@ function hasLocalOahImage() {
 }
 
 async function up() {
-  ensureTestRoot();
+  ensureDeployRoot();
   prepareDockerServerConfigs();
   ensureRclonePlugin();
   ensureRcloneVolumeDriverResponsive();
 
   run("docker", ["compose", "-f", composeFile, "up", "-d", "postgres", "redis", "minio"]);
   await waitForMinioHealthy();
-  resetLocalRedisCoordinationState();
-
-  run("pnpm", ["storage:sync"]);
   recreateReadonlyObjectStorageVolumes();
+  resetLocalRedisCoordinationState();
+  run("pnpm", ["storage:sync"]);
 
   const initialSandboxReplicaCount = Math.max(
     0,
@@ -425,7 +424,7 @@ async function up() {
 }
 
 function down() {
-  ensureTestRoot();
+  ensureDeployRoot();
   prepareDockerServerConfigs();
   run("docker", ["compose", "-f", composeFile, "down"]);
 }

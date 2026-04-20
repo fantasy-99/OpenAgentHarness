@@ -130,6 +130,84 @@ interface CandidateScore {
   tieBreak: number;
 }
 
+async function mapPinnedOwnerCandidates(options: {
+  baseUrl: string;
+  placements: WorkspacePlacementEntry[];
+  candidateBaseUrls: string[];
+  resolveHostAddresses: (hostname: string) => Promise<string[]>;
+}): Promise<Map<string, string>> {
+  const candidateEndpoints = new Map<string, Set<string>>(
+    await Promise.all(
+      options.candidateBaseUrls.map(
+        async (candidateBaseUrl): Promise<readonly [string, Set<string>]> => [
+          candidateBaseUrl,
+          await resolveBaseUrlEndpoints(candidateBaseUrl, options.resolveHostAddresses)
+        ]
+      )
+    )
+  );
+  const pinnedOwners = new Map<string, string>();
+
+  for (const placement of [...options.placements].sort(placementPriority)) {
+    const ownerId = trimToUndefined(placement.userId);
+    const ownerBaseUrl = trimToUndefined(placement.ownerBaseUrl);
+    if (!ownerId || !ownerBaseUrl || pinnedOwners.has(ownerId)) {
+      continue;
+    }
+
+    const placementEndpoints = await resolveBaseUrlEndpoints(
+      mergeSandboxBaseUrl(options.baseUrl, ownerBaseUrl) ?? ownerBaseUrl,
+      options.resolveHostAddresses
+    );
+    const matchedCandidate = options.candidateBaseUrls.find((candidateBaseUrl) => {
+      const endpoints = candidateEndpoints.get(candidateBaseUrl);
+      return endpoints ? [...placementEndpoints].some((endpoint) => endpoints.has(endpoint)) : false;
+    });
+    if (matchedCandidate) {
+      pinnedOwners.set(ownerId, matchedCandidate);
+    }
+  }
+
+  return pinnedOwners;
+}
+
+function listTrackedOwnerIds(placements: WorkspacePlacementEntry[]): string[] {
+  return [...new Set(placements.map((placement) => trimToUndefined(placement.userId)).filter((ownerId): ownerId is string => Boolean(ownerId)))].sort(
+    (left, right) => left.localeCompare(right)
+  );
+}
+
+function assignPendingOwnerCandidate(input: {
+  ownerId: string;
+  trackedOwnerIds: string[];
+  pinnedOwners: Map<string, string>;
+  candidateBaseUrls: string[];
+}): { baseUrl: string | undefined; waitForReplica: boolean } {
+  const pendingOwnerIds = input.trackedOwnerIds.filter((trackedOwnerId) => !input.pinnedOwners.has(trackedOwnerId));
+  if (!pendingOwnerIds.includes(input.ownerId)) {
+    return {
+      baseUrl: input.pinnedOwners.get(input.ownerId),
+      waitForReplica: false
+    };
+  }
+
+  const pinnedCandidateBaseUrls = new Set(input.pinnedOwners.values());
+  const availableCandidates = [...input.candidateBaseUrls]
+    .filter((candidateBaseUrl) => !pinnedCandidateBaseUrls.has(candidateBaseUrl))
+    .sort((left, right) => left.localeCompare(right));
+  if (availableCandidates.length < pendingOwnerIds.length) {
+    return {
+      baseUrl: undefined,
+      waitForReplica: true
+    };
+  }
+
+  return {
+    baseUrl: availableCandidates[pendingOwnerIds.indexOf(input.ownerId)],
+    waitForReplica: false
+  };
+}
+
 async function scoreCandidateBaseUrls(options: {
   baseUrl: string;
   ownerId: string;
@@ -232,15 +310,6 @@ export async function resolveSelfHostedSandboxCreateBaseUrl(options: {
   }
 
   const resolveHostAddresses = options.resolveHostAddresses ?? defaultResolveHostAddresses;
-  const placements = (await options.workspacePlacementRegistry.listAll()).filter((placement) => placement.state !== "evicted");
-
-  const existingOwnerPlacement = placements
-    .filter((placement) => placement.userId === ownerId && trimToUndefined(placement.ownerBaseUrl))
-    .sort(placementPriority)[0];
-  if (existingOwnerPlacement?.ownerBaseUrl) {
-    return mergeSandboxBaseUrl(options.baseUrl, existingOwnerPlacement.ownerBaseUrl) ?? undefined;
-  }
-
   const workspaceId = trimToUndefined(options.workspace.id);
   if (workspaceId && typeof options.workspacePlacementRegistry.assignUser === "function") {
     await options.workspacePlacementRegistry.assignUser(workspaceId, ownerId, {
@@ -271,6 +340,14 @@ export async function resolveSelfHostedSandboxCreateBaseUrl(options: {
         ? workerRegistryCandidates
         : await expandCandidateBaseUrls(options.baseUrl, resolveHostAddresses);
     const source = workerRegistryCandidates.length > 0 ? "worker_registry" : "dns";
+    const placements = (await options.workspacePlacementRegistry.listAll()).filter((placement) => placement.state !== "evicted");
+    const existingOwnerPlacement = placements
+      .filter((placement) => placement.userId === ownerId && trimToUndefined(placement.ownerBaseUrl))
+      .sort(placementPriority)[0];
+    if (existingOwnerPlacement?.ownerBaseUrl) {
+      return mergeSandboxBaseUrl(options.baseUrl, existingOwnerPlacement.ownerBaseUrl) ?? undefined;
+    }
+
     const scoredCandidates = await scoreCandidateBaseUrls({
       baseUrl: options.baseUrl,
       ownerId,
@@ -278,6 +355,23 @@ export async function resolveSelfHostedSandboxCreateBaseUrl(options: {
       candidateBaseUrls,
       resolveHostAddresses
     });
+    const pinnedOwners = await mapPinnedOwnerCandidates({
+      baseUrl: options.baseUrl,
+      placements,
+      candidateBaseUrls,
+      resolveHostAddresses
+    });
+    const pendingOwnerSelection = assignPendingOwnerCandidate({
+      ownerId,
+      trackedOwnerIds: listTrackedOwnerIds(placements),
+      pinnedOwners,
+      candidateBaseUrls
+    });
+    const assignedPendingBaseUrl =
+      pendingOwnerSelection.baseUrl &&
+      (source === "worker_registry" || candidateBaseUrls.length > 1)
+        ? pendingOwnerSelection.baseUrl
+        : undefined;
     const selected = selectBestCandidate(scoredCandidates);
     const resolvedBaseUrl =
       selected && (source === "worker_registry" || candidateBaseUrls.length > 1) ? selected.baseUrl : undefined;
@@ -287,6 +381,19 @@ export async function resolveSelfHostedSandboxCreateBaseUrl(options: {
       candidateCount: candidateBaseUrls.length,
       source
     };
+
+    if (assignedPendingBaseUrl) {
+      return assignedPendingBaseUrl;
+    }
+
+    if (pendingOwnerSelection.waitForReplica) {
+      if (Date.now() >= waitUntil) {
+        return fallbackSelection.baseUrl;
+      }
+
+      await sleepFn(pollIntervalMs);
+      continue;
+    }
 
     if (!shouldWaitForDedicatedCandidate({ workerRegistry: options.workerRegistry, scoredCandidates })) {
       return resolvedBaseUrl;

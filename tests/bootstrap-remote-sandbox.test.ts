@@ -17,7 +17,7 @@ afterEach(async () => {
   );
 });
 
-function createFilesystemBackedSandboxHost(baseDir: string) {
+function createFilesystemBackedSandboxHost(baseDir: string, options?: { forbidRootDeletion?: boolean }) {
   const sandboxRoots = new Map<string, string>();
 
   async function ensureSandbox(workspaceId: string): Promise<{
@@ -118,6 +118,9 @@ function createFilesystemBackedSandboxHost(baseDir: string) {
           await writeFile(targetPath, input.data);
         },
         async rm(input) {
+          if (options?.forbidRootDeletion && input.path === "/workspace") {
+            throw new Error("workspace_root_mutation_not_allowed");
+          }
           await rm(resolveSandboxPath(input.sandboxId, input.path), {
             recursive: input.recursive ?? false,
             force: input.force ?? false
@@ -315,7 +318,9 @@ sandbox:
       )
     ]);
 
-    const sandboxHost = createFilesystemBackedSandboxHost(sandboxRootsDir);
+    const sandboxHost = createFilesystemBackedSandboxHost(sandboxRootsDir, {
+      forbidRootDeletion: true
+    });
     const runtime = await bootstrapRuntime({
       argv: ["--config", configPath],
       startWorker: false,
@@ -337,7 +342,7 @@ sandbox:
 
       await runtime.runtimeService.deleteWorkspace(workspace.id);
 
-      await expect(stat(path.join(sandboxRoot!, "workspace"))).rejects.toBeDefined();
+      await expect(readdir(path.join(sandboxRoot!, "workspace"))).resolves.toEqual([]);
       await expect(runtime.runtimeService.getWorkspace(workspace.id)).rejects.toMatchObject({
         code: "workspace_not_found"
       });

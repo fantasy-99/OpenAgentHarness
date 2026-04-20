@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { DirectoryObjectStore } from "../apps/server/src/object-storage.ts";
 import {
+  deleteRemotePrefixFromObjectStore,
   ObjectStorageMirrorController,
   syncLocalDirectoryToRemote,
   syncRemotePrefixToLocal,
@@ -120,6 +121,18 @@ describe("object storage sync", () => {
       "workspace/demo/.openharness/settings.yaml",
       "workspace/demo/README.md"
     ]);
+  });
+
+  it("deletes an object storage workspace prefix recursively", async () => {
+    const store = new FakeDirectoryObjectStore();
+    await store.putObject("workspace/demo/README.md", Buffer.from("# demo\n"));
+    await store.putObject("workspace/demo/src/index.ts", Buffer.from("export {};\n"));
+    await store.putObject("workspace/demo/empty-dir/", Buffer.alloc(0));
+    await store.putObject("workspace/other/README.md", Buffer.from("# other\n"));
+
+    await deleteRemotePrefixFromObjectStore(store, "workspace/demo");
+
+    expect([...store.objects.keys()].sort()).toEqual(["workspace/other/README.md"]);
   });
 
   it("only computes managed workspace external refs for configured managed paths", () => {

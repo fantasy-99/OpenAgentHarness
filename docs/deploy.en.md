@@ -19,7 +19,7 @@ Three terminals, simplest path:
 
 ```bash
 # Terminal 1 — Full local stack (PostgreSQL + Redis + MinIO + oah-api + oah-controller + oah-sandbox)
-export OAH_TEST_ROOT=/absolute/path/to/test_oah_server
+export OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server
 pnpm local:up
 
 # Terminal 3 — Frontend

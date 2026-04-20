@@ -89,8 +89,8 @@ Open Agent Harness 是一个**可部署的后端运行时**，负责承载 Agent
 # 安装依赖
 pnpm install
 
-# 指向你自己的测试环境目录
-export OAH_TEST_ROOT=/absolute/path/to/test_oah_server
+# 指向你自己的部署根目录
+export OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server
 
 # 启动本地整套服务（PostgreSQL + Redis + MinIO + oah-api + oah-controller + oah-sandbox）
 # 这里会先等待 MinIO 就绪，再自动执行一次 storage sync。
@@ -104,7 +104,7 @@ pnpm dev:web
 
 ```bash
 cd /Users/wumengsong/Code/OpenAgentHarness
-export OAH_TEST_ROOT=/absolute/path/to/test_oah_server
+export OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server
 
 pnpm local:up
 ```
@@ -144,9 +144,9 @@ pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts 
 ```bash
 pnpm build          # 构建所有包
 pnpm test           # 运行测试
-OAH_TEST_ROOT=/absolute/path/to/test_oah_server pnpm storage:sync   # 把只读 source 前缀发布到 MinIO
-OAH_TEST_ROOT=/absolute/path/to/test_oah_server pnpm storage:sync -- --include-workspaces  # 额外同步 source/workspaces
-OAH_TEST_ROOT=/absolute/path/to/test_oah_server pnpm local:up       # 启动 oah-api + oah-controller + oah-sandbox，并自动同步一次
+OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server pnpm storage:sync   # 把只读 source 前缀发布到 MinIO
+OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server pnpm storage:sync -- --include-workspaces  # 额外同步 source/workspaces
+OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server pnpm local:up       # 启动 oah-api + oah-controller + oah-sandbox，并自动同步一次
 pnpm local:down                                                     # 停止本地 Docker 整套服务
 pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/worker.ts -- --config ./server.example.yaml  # 进阶：单独启动 standalone worker（通常跑在 sandbox 里）
 ```
