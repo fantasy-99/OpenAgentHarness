@@ -137,6 +137,7 @@ export function buildWorkspaceRow(input: WorkspaceRecord) {
 
 export function toWorkspaceRecord(row: typeof workspaces.$inferSelect): WorkspaceRecord {
   const toolServers = row.toolServers ?? {};
+  const runtime = typeof row.settings?.runtime === "string" && row.settings.runtime.trim() ? row.settings.runtime : undefined;
 
   return {
     id: row.id,
@@ -144,6 +145,7 @@ export function toWorkspaceRecord(row: typeof workspaces.$inferSelect): Workspac
     ...(row.ownerId ? { ownerId: row.ownerId } : {}),
     ...(row.serviceName ? { serviceName: row.serviceName } : {}),
     name: row.name,
+    ...(runtime ? { runtime } : {}),
     rootPath: row.rootPath,
     executionPolicy: row.executionPolicy as WorkspaceRecord["executionPolicy"],
     status: row.status as WorkspaceRecord["status"],

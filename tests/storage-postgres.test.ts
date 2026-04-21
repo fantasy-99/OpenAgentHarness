@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createPostgresRuntimePersistence, ensurePostgresSchema } from "@oah/storage-postgres";
+import { toWorkspaceRecord } from "../packages/storage-postgres/src/row-mappers.ts";
 
 function sqlText(statement: unknown): string {
   if (typeof statement === "string") {
@@ -16,6 +17,50 @@ function sqlText(statement: unknown): string {
 }
 
 describe("storage postgres", () => {
+  it("restores workspace runtime from persisted settings", () => {
+    const workspace = toWorkspaceRecord({
+      id: "ws_test",
+      externalRef: "s3://bucket/workspace/ws_test",
+      ownerId: null,
+      serviceName: null,
+      name: "Runtime Workspace",
+      rootPath: "/data/workspaces/ws_test",
+      executionPolicy: "local",
+      status: "active",
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: true,
+      defaultAgent: "assistant",
+      projectAgentsMd: null,
+      settings: {
+        defaultAgent: "assistant",
+        runtime: "micro-learning",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {},
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "ws_test",
+        agents: [],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: [],
+        engineTools: []
+      },
+      createdAt: "2026-04-21T10:30:08.193Z",
+      updatedAt: "2026-04-21T10:30:08.193Z"
+    });
+
+    expect(workspace.runtime).toBe("micro-learning");
+  });
+
   it("creates all expected schema statements", async () => {
     const query = vi.fn(async () => ({ rows: [] }));
 

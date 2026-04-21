@@ -4,7 +4,7 @@ import {
   SANDBOX_ROOT_PATH,
   sandboxPathToWorkspaceRelativePath,
   workspaceRelativePathToSandboxPath,
-  createSandboxRequestSchema,
+  ensureSandboxForWorkspaceRequestSchema,
   createWorkspaceDirectoryRequestSchema,
   moveWorkspaceEntryRequestSchema,
   putWorkspaceFileRequestSchema,
@@ -558,7 +558,7 @@ function registerSandboxCoreRoutes(
   const workspaceMode = options?.workspaceMode ?? "multi";
 
   app.post(`${prefix}/sandboxes`, async (request, reply) => {
-    const input = createSandboxRequestSchema.parse(request.body);
+    const input = ensureSandboxForWorkspaceRequestSchema.parse(request.body);
     const ownerId = resolveOwnerId(input);
 
     if (input.workspaceId) {

@@ -1325,7 +1325,8 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
 
                   return {
                     ...discovered,
-                    id: workspaceId
+                    id: workspaceId,
+                    ...(inferredExternalRef ? { externalRef: inferredExternalRef } : {})
                   } as WorkspaceRecord;
                 }
           }

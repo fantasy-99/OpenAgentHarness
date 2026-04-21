@@ -253,14 +253,14 @@ paths:
   /sandboxes:
     post:
       tags: [Sandboxes]
-      summary: Create or resolve a sandbox
-      operationId: createSandbox
+      summary: Ensure a workspace-backed sandbox
+      operationId: ensureSandboxForWorkspace
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateSandboxRequest'
+              $ref: '#/components/schemas/EnsureSandboxForWorkspaceRequest'
       responses:
         '201':
           description: Sandbox created or resolved
@@ -2221,7 +2221,7 @@ components:
         - name
         - runtime
       additionalProperties: false
-    CreateSandboxRequest:
+    EnsureSandboxForWorkspaceRequest:
       type: object
       properties:
         workspaceId:

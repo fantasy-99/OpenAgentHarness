@@ -472,10 +472,6 @@ export class HookService {
     workspace: WorkspaceRecord,
     operation: (workspace: WorkspaceRecord) => Promise<T>
   ): Promise<T> {
-    if (await this.#workspaceRootExists(workspace.rootPath)) {
-      return operation(workspace);
-    }
-
     if (!this.#execution.acquireWorkspaceFileAccess) {
       return operation(workspace);
     }
@@ -485,15 +481,6 @@ export class HookService {
       return await operation(lease.workspace);
     } finally {
       await lease.release({ dirty: false });
-    }
-  }
-
-  async #workspaceRootExists(rootPath: string): Promise<boolean> {
-    try {
-      await this.#execution.fileSystem.stat(rootPath);
-      return true;
-    } catch {
-      return false;
     }
   }
 

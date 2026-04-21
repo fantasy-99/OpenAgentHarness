@@ -903,7 +903,7 @@ export function buildDeveloperDocsHtml(request: FastifyRequest): string {
               <code>/workspaces</code> API still remains for metadata, catalog, and lifecycle concerns.
             </p>
             <ul class="route-list">
-              <li><code>POST /api/v1/sandboxes</code> Create or resolve a sandbox</li>
+              <li><code>POST /api/v1/sandboxes</code> Ensure a workspace-backed sandbox</li>
               <li><code>GET /api/v1/sandboxes/{sandboxId}/files/entries</code> List files</li>
               <li><code>GET /api/v1/sandboxes/{sandboxId}/files/content</code> Read a file</li>
               <li><code>PUT /api/v1/sandboxes/{sandboxId}/files/content</code> Write a file</li>

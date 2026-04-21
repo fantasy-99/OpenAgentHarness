@@ -167,6 +167,7 @@ export interface WorkspaceRecord extends Workspace {
 export interface WorkspaceInitializationResult {
   id?: string | undefined;
   rootPath: string;
+  externalRef?: string | undefined;
   kind?: WorkspaceKind | undefined;
   readOnly?: boolean | undefined;
   defaultAgent?: string | undefined;

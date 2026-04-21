@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import yauzl from "yauzl";
 
@@ -239,12 +239,15 @@ export async function initializeWorkspaceFromRuntime(input: InitializeWorkspaceF
   }
 
   await mkdir(path.dirname(input.rootPath), { recursive: true });
-  await cp(runtimePath, input.rootPath, {
-    recursive: true,
-    force: false,
-    errorOnExist: true,
-    preserveTimestamps: true
-  });
+  await mkdir(input.rootPath, { recursive: true });
+  for (const entry of await readdir(runtimePath, { withFileTypes: true })) {
+    await cp(path.join(runtimePath, entry.name), path.join(input.rootPath, entry.name), {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+      preserveTimestamps: true
+    });
+  }
 
   const runtimeSettings = await loadWorkspaceSettings(input.rootPath);
   const importedToolNames = uniqueNames(runtimeSettings.imports?.tools);

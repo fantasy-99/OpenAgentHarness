@@ -11,6 +11,7 @@ import type {
   EngineWorkspaceCatalog,
   WorkspaceCommandExecutor,
   WorkspaceFileSystem,
+  WorkspaceInitializationResult,
   WorkspaceListResult,
   WorkspaceRecord
 } from "../types.js";
@@ -70,13 +71,26 @@ export class WorkspaceEngineService {
       );
     }
 
-    const initialized = await this.#workspaceInitializer.initialize(input);
-    const now = nowIso();
     const requestedWorkspaceId = (
       input as CreateWorkspaceParams["input"] & {
         workspaceId?: string | undefined;
       }
     ).workspaceId?.trim();
+    let initialized: WorkspaceInitializationResult;
+    try {
+      initialized = await this.#workspaceInitializer.initialize(input);
+    } catch (error) {
+      if (requestedWorkspaceId && this.#isConcurrentWorkspaceInitializationError(error)) {
+        const existing = await this.#waitForExistingWorkspaceRecord(requestedWorkspaceId);
+        if (existing) {
+          return toPublicWorkspace(existing);
+        }
+      }
+
+      throw error;
+    }
+
+    const now = nowIso();
     const initializedWorkspaceId = initialized.id?.trim();
     const workspaceId = requestedWorkspaceId || initializedWorkspaceId || createId("ws");
 
@@ -105,7 +119,9 @@ export class WorkspaceEngineService {
         ...initialized.catalog,
         workspaceId
       },
-      externalRef: input.externalRef,
+      ...(input.externalRef || initialized.externalRef
+        ? { externalRef: input.externalRef ?? initialized.externalRef }
+        : {}),
       ...(input.ownerId ? { ownerId: input.ownerId } : {}),
       ...(input.serviceName ? { serviceName: input.serviceName } : {}),
       ...(input.runtime ? { runtime: input.runtime } : initialized.settings.runtime ? { runtime: initialized.settings.runtime } : {}),
@@ -125,7 +141,7 @@ export class WorkspaceEngineService {
         throw error;
       }
 
-      const existing = await this.#workspaceRepository.getById(workspaceId);
+      const existing = await this.#waitForExistingWorkspaceRecord(workspaceId);
       if (existing) {
         return toPublicWorkspace(existing);
       }
@@ -415,6 +431,39 @@ export class WorkspaceEngineService {
           : undefined;
       return operation(workspace, cwd ?? path.resolve(workspace.rootPath));
     });
+  }
+
+  async #waitForExistingWorkspaceRecord(
+    workspaceId: string,
+    options?: { attempts?: number | undefined; delayMs?: number | undefined }
+  ): Promise<WorkspaceRecord | undefined> {
+    const attempts = Math.max(1, options?.attempts ?? 20);
+    const delayMs = Math.max(1, options?.delayMs ?? 25);
+
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const existing = await this.#workspaceRepository.getById(workspaceId);
+      if (existing) {
+        return normalizeWorkspaceRecord(existing);
+      }
+
+      if (attempt < attempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+
+    return undefined;
+  }
+
+  #isConcurrentWorkspaceInitializationError(error: unknown): boolean {
+    if (!(error instanceof Error)) {
+      return false;
+    }
+
+    if ((error as Error & { code?: string }).code === "EEXIST") {
+      return true;
+    }
+
+    return error.message.includes("Workspace root already exists:");
   }
 
   #publicWorkspaceCatalog(workspace: WorkspaceRecord): EngineWorkspaceCatalog {

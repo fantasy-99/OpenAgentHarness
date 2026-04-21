@@ -76,7 +76,7 @@ export const sandboxSchema = z.object({
   ownerBaseUrl: z.string().optional()
 });
 
-export const createSandboxRequestSchema = z
+export const ensureSandboxForWorkspaceRequestSchema = z
   .object({
     workspaceId: z.string().trim().min(1).optional(),
     externalRef: z.string().optional(),
@@ -159,7 +159,7 @@ export type SandboxExecutionModel = z.infer<typeof sandboxExecutionModelSchema>;
 export type SandboxWorkerPlacement = z.infer<typeof sandboxWorkerPlacementSchema>;
 export type SandboxTopology = z.infer<typeof sandboxTopologySchema>;
 export type Sandbox = z.infer<typeof sandboxSchema>;
-export type CreateSandboxRequest = z.infer<typeof createSandboxRequestSchema>;
+export type EnsureSandboxForWorkspaceRequest = z.infer<typeof ensureSandboxForWorkspaceRequestSchema>;
 export type SandboxCommandRequest = z.infer<typeof sandboxCommandRequestSchema>;
 export type SandboxProcessRequest = z.infer<typeof sandboxProcessRequestSchema>;
 export type SandboxBackgroundCommandRequest = z.infer<typeof sandboxBackgroundCommandRequestSchema>;
@@ -168,12 +168,36 @@ export type SandboxBackgroundCommandResult = z.infer<typeof sandboxBackgroundCom
 export type SandboxFileStat = z.infer<typeof sandboxFileStatSchema>;
 export type SandboxFileStatQuery = z.infer<typeof sandboxFileStatQuerySchema>;
 
-export function createSandboxHttpClient(transport: SandboxHttpTransport) {
+export interface SandboxHttpClient {
+  ensureSandboxForWorkspace(input: EnsureSandboxForWorkspaceRequest): Promise<Sandbox>;
+  getSandbox(sandboxId: string): Promise<Sandbox>;
+  listEntries(sandboxId: string, input: WorkspaceEntriesQuery): Promise<WorkspaceEntryPage>;
+  getFileStat(sandboxId: string, input: SandboxFileStatQuery): Promise<SandboxFileStat>;
+  getFileContent(sandboxId: string, input: WorkspaceFileContentQuery): Promise<WorkspaceFileContent>;
+  putFileContent(sandboxId: string, input: PutWorkspaceFileRequest): Promise<WorkspaceEntry>;
+  createDirectory(sandboxId: string, input: CreateWorkspaceDirectoryRequest): Promise<WorkspaceEntry>;
+  uploadFile(
+    sandboxId: string,
+    input: WorkspaceFileUploadQuery & { data: SandboxHttpBody; contentType?: string | undefined }
+  ): Promise<WorkspaceEntry>;
+  downloadFile(sandboxId: string, input: WorkspaceEntryPathQuery): Promise<Uint8Array>;
+  deleteEntry(sandboxId: string, input: WorkspaceDeleteEntryQuery): Promise<WorkspaceDeleteResult>;
+  moveEntry(sandboxId: string, input: MoveWorkspaceEntryRequest): Promise<WorkspaceEntry>;
+  runForegroundCommand(sandboxId: string, input: SandboxCommandRequest): Promise<SandboxCommandResult>;
+  runProcessCommand(sandboxId: string, input: SandboxProcessRequest): Promise<SandboxCommandResult>;
+  runBackgroundCommand(sandboxId: string, input: SandboxBackgroundCommandRequest): Promise<SandboxBackgroundCommandResult>;
+}
+
+export function createSandboxHttpClient(transport: SandboxHttpTransport): SandboxHttpClient {
+  async function ensureSandboxForWorkspace(input: EnsureSandboxForWorkspaceRequest): Promise<Sandbox> {
+    return sandboxSchema.parse(
+      await transport.requestJson<unknown>(buildSandboxCollectionApiPath(), jsonRequestInit("POST", input))
+    );
+  }
+
   return {
-    async createSandbox(input: CreateSandboxRequest): Promise<Sandbox> {
-      return sandboxSchema.parse(
-        await transport.requestJson<unknown>(buildSandboxCollectionApiPath(), jsonRequestInit("POST", input))
-      );
+    async ensureSandboxForWorkspace(input: EnsureSandboxForWorkspaceRequest): Promise<Sandbox> {
+      return ensureSandboxForWorkspace(input);
     },
     async getSandbox(sandboxId: string): Promise<Sandbox> {
       return sandboxSchema.parse(await transport.requestJson<unknown>(buildSandboxApiPath(sandboxId)));

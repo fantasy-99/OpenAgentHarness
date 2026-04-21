@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createSandboxHttpClient, type SandboxHttpTransport } from "@oah/api-contracts";
 
 describe("sandbox http client", () => {
-  it("serializes create and list requests through the shared transport", async () => {
+  it("serializes ensure and list requests through the shared transport", async () => {
     const requestJson = vi
       .fn<SandboxHttpTransport["requestJson"]>()
       .mockResolvedValueOnce({
@@ -31,7 +31,7 @@ describe("sandbox http client", () => {
       requestBytes
     });
 
-    const sandbox = await client.createSandbox({
+    const sandbox = await client.ensureSandboxForWorkspace({
       workspaceId: "ws_test",
       executionPolicy: "local"
     });

@@ -176,6 +176,7 @@ describe("runtime service", () => {
         async initialize(input) {
           return {
             rootPath: input.rootPath,
+            externalRef: "s3://bucket/workspace/runtime",
             defaultAgent: "builder",
             projectAgentsMd: "Template rule: always add tests.",
             settings: {
@@ -233,9 +234,11 @@ describe("runtime service", () => {
     expect(stored.catalog.workspaceId).toBe(workspace.id);
     expect(stored.settings.defaultAgent).toBe("builder");
     expect(stored.serviceName).toBe("svc-alpha");
+    expect(stored.externalRef).toBe("s3://bucket/workspace/runtime");
     expect(workspace.kind).toBe("project");
     expect(workspace.readOnly).toBe(false);
     expect(workspace.serviceName).toBe("svc-alpha");
+    expect(workspace.externalRef).toBe("s3://bucket/workspace/runtime");
   });
 
   it("treats explicit workspaceId creation as idempotent when the workspace already exists", async () => {
@@ -329,6 +332,76 @@ describe("runtime service", () => {
     expect(workspace.id).toBe("ws_existing_shared");
     expect(workspace.name).toBe("already-created");
     expect(workspace.rootPath).toBe("/data/workspaces/ws_existing_shared");
+  });
+
+  it("treats concurrent explicit workspaceId creation as idempotent when one initializer hits EEXIST", async () => {
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    let firstInitializerInFlight = false;
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence,
+      workspaceInitializer: {
+        async initialize(input) {
+          if (firstInitializerInFlight) {
+            const error = new Error(
+              `EEXIST: file already exists, mkdir '/data/workspaces/${(input as typeof input & { workspaceId?: string }).workspaceId}'`
+            ) as Error & { code?: string };
+            error.code = "EEXIST";
+            throw error;
+          }
+
+          firstInitializerInFlight = true;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          return {
+            id: (input as typeof input & { workspaceId?: string }).workspaceId,
+            rootPath: "/data/workspaces/ws_existing_shared",
+            settings: {
+              defaultAgent: "builder",
+              runtime: input.runtime,
+              skillDirs: []
+            },
+            defaultAgent: "builder",
+            workspaceModels: {},
+            agents: {},
+            actions: {},
+            skills: {},
+            toolServers: {},
+            hooks: {},
+            catalog: {
+              workspaceId: "runtime",
+              agents: [],
+              models: [],
+              actions: [],
+              skills: [],
+              tools: [],
+              hooks: [],
+              nativeTools: []
+            }
+          };
+        }
+      }
+    });
+
+    const input = {
+      name: "already-created",
+      runtime: "workspace",
+      executionPolicy: "local" as const,
+      workspaceId: "ws_existing_shared"
+    };
+
+    const [firstWorkspace, secondWorkspace] = await Promise.all([
+      runtimeService.createWorkspace({ input }),
+      runtimeService.createWorkspace({ input })
+    ]);
+
+    expect(firstWorkspace.id).toBe("ws_existing_shared");
+    expect(secondWorkspace.id).toBe("ws_existing_shared");
+    expect(await runtimeService.getWorkspaceRecord("ws_existing_shared")).toMatchObject({
+      id: "ws_existing_shared",
+      runtime: "workspace"
+    });
   });
 
   it("treats initializer-provided workspace ids as idempotent when the workspace already exists", async () => {

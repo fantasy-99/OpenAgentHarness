@@ -4,6 +4,8 @@ import { Readable } from "node:stream";
 import {
   SANDBOX_ROOT_PATH,
   createSandboxHttpClient,
+  type EnsureSandboxForWorkspaceRequest,
+  type Sandbox,
   type SandboxHttpTransport
 } from "@oah/api-contracts";
 import type {
@@ -98,6 +100,10 @@ export interface HttpE2BCompatibleSandboxServiceOptions {
   resolveCreateBaseUrl?: ((workspace: WorkspaceRecord) => Promise<string | undefined>) | undefined;
 }
 
+type WorkspaceSandboxHttpClient = ReturnType<typeof createSandboxHttpClient> & {
+  ensureSandboxForWorkspace(input: EnsureSandboxForWorkspaceRequest): Promise<Sandbox>;
+};
+
 async function resolveHttpHeaders(
   input: HttpE2BCompatibleSandboxServiceOptions["headers"]
 ): Promise<Record<string, string> | undefined> {
@@ -178,7 +184,7 @@ function normalizeHttpSandboxPath(rootPath: string, targetPath: string): string 
 export function createHttpE2BCompatibleSandboxService(
   options: HttpE2BCompatibleSandboxServiceOptions
 ): E2BCompatibleSandboxService {
-  const clientBySandboxId = new Map<string, ReturnType<typeof createSandboxHttpClient>>();
+  const clientBySandboxId = new Map<string, WorkspaceSandboxHttpClient>();
 
   const createClient = (inputBaseUrl: string) => {
     const { baseUrl, routePrefix } = parseSandboxHttpBaseUrl(inputBaseUrl);
@@ -218,7 +224,7 @@ export function createHttpE2BCompatibleSandboxService(
       }
     };
 
-    return createSandboxHttpClient(transport);
+    return createSandboxHttpClient(transport) as WorkspaceSandboxHttpClient;
   };
 
   const defaultClient = createClient(options.baseUrl);
@@ -228,10 +234,11 @@ export function createHttpE2BCompatibleSandboxService(
     const targetBaseUrl = (await options.resolveCreateBaseUrl?.(workspace)) ?? options.baseUrl;
     const createClientForWorkspace =
       targetBaseUrl.trim() === options.baseUrl.trim() ? defaultClient : createClient(targetBaseUrl);
-    const sandbox = await createClientForWorkspace.createSandbox({
+    const runtime = workspace.runtime ?? workspace.settings.runtime;
+    const sandbox = await createClientForWorkspace.ensureSandboxForWorkspace({
       workspaceId: workspace.id,
       ...(workspace.name ? { name: workspace.name } : {}),
-      ...(workspace.runtime ? { runtime: workspace.runtime } : {}),
+      ...(runtime ? { runtime } : {}),
       ...(workspace.externalRef ? { externalRef: workspace.externalRef } : {}),
       ...(workspace.ownerId ? { ownerId: workspace.ownerId } : {}),
       ...(workspace.serviceName ? { serviceName: workspace.serviceName } : {}),
