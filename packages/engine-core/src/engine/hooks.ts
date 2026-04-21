@@ -11,6 +11,7 @@ import type {
   ModelGateway,
   SessionEvent,
   WorkspaceCommandExecutor,
+  WorkspaceFileAccessLease,
   WorkspaceFileSystem,
   WorkspaceRecord
 } from "../types.js";
@@ -130,6 +131,10 @@ export interface HookServiceDependencies {
     modelGateway: ModelGateway;
     commandExecutor: WorkspaceCommandExecutor;
     fileSystem: WorkspaceFileSystem;
+    acquireWorkspaceFileAccess?: (
+      workspace: WorkspaceRecord,
+      access: "read" | "write"
+    ) => Promise<WorkspaceFileAccessLease>;
     resolveModelForRun: (workspace: WorkspaceRecord, modelRef: string | undefined) => ResolvedHookModel;
   };
   steps: {
@@ -263,30 +268,32 @@ export class HookService {
       return undefined;
     }
 
-    const cwd =
-      typeof handler.cwd === "string" ? path.resolve(workspace.rootPath, handler.cwd) : workspace.rootPath;
+    const command = handler.command;
     const timeoutMs = this.#timing.timeoutMsFromSeconds(handler.timeout_seconds);
-    let stdout = "";
-    let stderr = "";
-    let exitCode = 0;
-    try {
-      ({ stdout, stderr, exitCode } = await this.#execution.commandExecutor.runForeground({
-        workspace,
-        command: handler.command,
-        cwd,
-        env:
-          handler.environment && typeof handler.environment === "object"
-            ? (handler.environment as Record<string, string>)
-            : undefined,
-        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-        stdinText: JSON.stringify(envelope)
-      }));
-    } catch (error) {
-      if (error instanceof WorkspaceCommandTimeoutError) {
-        throw new Error(`Command hook timed out after ${timeoutMs}ms.`);
+    const { stdout, stderr, exitCode } = await this.#withAccessibleWorkspace(workspace, async (effectiveWorkspace) => {
+      const cwd =
+        typeof handler.cwd === "string"
+          ? path.resolve(effectiveWorkspace.rootPath, handler.cwd)
+          : effectiveWorkspace.rootPath;
+      try {
+        return await this.#execution.commandExecutor.runForeground({
+          workspace: effectiveWorkspace,
+          command,
+          cwd,
+          env:
+            handler.environment && typeof handler.environment === "object"
+              ? (handler.environment as Record<string, string>)
+              : undefined,
+          ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+          stdinText: JSON.stringify(envelope)
+        });
+      } catch (error) {
+        if (error instanceof WorkspaceCommandTimeoutError) {
+          throw new Error(`Command hook timed out after ${timeoutMs}ms.`);
+        }
+        throw error;
       }
-      throw error;
-    }
+    });
 
     if (exitCode === 2) {
       return {
@@ -450,12 +457,44 @@ export class HookService {
     }
 
     if (typeof promptSource.file === "string") {
-      return this.#execution.fileSystem
-        .readFile(path.resolve(workspace.rootPath, promptSource.file))
-        .then((buffer) => buffer.toString("utf8"));
+      const promptFile = promptSource.file;
+      return this.#withAccessibleWorkspace(workspace, async (effectiveWorkspace) =>
+        this.#execution.fileSystem
+          .readFile(path.resolve(effectiveWorkspace.rootPath, promptFile))
+          .then((buffer) => buffer.toString("utf8"))
+      );
     }
 
     return undefined;
+  }
+
+  async #withAccessibleWorkspace<T>(
+    workspace: WorkspaceRecord,
+    operation: (workspace: WorkspaceRecord) => Promise<T>
+  ): Promise<T> {
+    if (await this.#workspaceRootExists(workspace.rootPath)) {
+      return operation(workspace);
+    }
+
+    if (!this.#execution.acquireWorkspaceFileAccess) {
+      return operation(workspace);
+    }
+
+    const lease = await this.#execution.acquireWorkspaceFileAccess(workspace, "read");
+    try {
+      return await operation(lease.workspace);
+    } finally {
+      await lease.release({ dirty: false });
+    }
+  }
+
+  async #workspaceRootExists(rootPath: string): Promise<boolean> {
+    try {
+      await this.#execution.fileSystem.stat(rootPath);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async #executeGeneratedHookPrompt(

@@ -110,6 +110,9 @@ llm:
 > OAH keeps the external `/sandboxes` API stable. Switching `sandbox.provider` changes only the server-side sandbox backend wiring; the Web app, OpenAPI clients, and runtime callers do not need to change their request shape.
 
 > **tip**
+> The `/sandboxes` surface, the `/workspace` root, and sandbox-scoped file / command semantics are intentionally kept this way to stay compatible with [E2B](https://github.com/e2b-dev/E2B). Treat them as a deliberate contract, not as a temporary legacy shim that should default back to `/workspaces`. The `/workspaces` API itself still remains in place for workspace metadata, catalog, and lifecycle concerns.
+
+> **tip**
 > `self_hosted` and `e2b` share the same execution semantics: `oah-api` routes workspaces into a real sandbox, while the standalone worker inside that sandbox owns the live workspace copy, local file state, and command execution context.
 
 > **tip**

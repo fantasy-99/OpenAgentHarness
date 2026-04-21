@@ -589,7 +589,13 @@ curl ${escapeHtml(JSON.stringify(apiIndex))}</pre>
           </article>
           <article class="subcard">
             <h3>Work With Files</h3>
-            <p>Resolve a sandbox, then browse, read, write, upload, download, or move entries inside its root filesystem.</p>
+            <p>
+              Resolve a sandbox, then browse, read, write, upload, download, or move entries inside its root filesystem.
+              OAH intentionally keeps this surface aligned with
+              <a href="https://github.com/e2b-dev/E2B">E2B</a>, so <code>/sandboxes</code> and the <code>/workspace</code>
+              root are part of the compatibility contract rather than a temporary shim. The <code>/workspaces</code>
+              API still remains for workspace metadata, catalog, and lifecycle.
+            </p>
             <ul>
               <li><code>GET /api/v1/sandboxes/{sandboxId}</code></li>
               <li><code>GET /api/v1/sandboxes/{sandboxId}/files/entries</code></li>
@@ -890,6 +896,12 @@ export function buildDeveloperDocsHtml(request: FastifyRequest): string {
           </article>
           <article class="subcard">
             <h3>Sandbox Files</h3>
+            <p>
+              This surface intentionally follows
+              <a href="https://github.com/e2b-dev/E2B">E2B</a>-style sandbox semantics: file APIs stay under
+              <code>/sandboxes</code>, and sandbox roots are exposed as <code>/workspace</code>. The
+              <code>/workspaces</code> API still remains for metadata, catalog, and lifecycle concerns.
+            </p>
             <ul class="route-list">
               <li><code>POST /api/v1/sandboxes</code> Create or resolve a sandbox</li>
               <li><code>GET /api/v1/sandboxes/{sandboxId}/files/entries</code> List files</li>

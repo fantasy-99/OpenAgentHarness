@@ -40,7 +40,8 @@ function createWorkspaceRecord(): WorkspaceRecord {
 }
 
 function createFileSystem(input: {
-  entries: Array<{ name: string; kind: "file" | "directory"; updatedAt?: string; sizeBytes?: number }>;
+  entriesByPath?: Record<string, Array<{ name: string; kind: "file" | "directory"; updatedAt?: string; sizeBytes?: number }>>;
+  entries?: Array<{ name: string; kind: "file" | "directory"; updatedAt?: string; sizeBytes?: number }>;
   stats: Record<string, WorkspaceFileStat>;
 }): WorkspaceFileSystem {
   return {
@@ -61,8 +62,8 @@ function createFileSystem(input: {
     openReadStream() {
       return Readable.from([]);
     },
-    async readdir() {
-      return input.entries;
+    async readdir(targetPath) {
+      return input.entriesByPath?.[targetPath] ?? input.entries ?? [];
     },
     async mkdir() {
       return undefined;
@@ -216,5 +217,118 @@ describe("workspace file service", () => {
     });
 
     expect(entry.updatedAt).toBe("2026-04-18T11:39:05.000Z");
+  });
+
+  it("uses the most recent descendant file timestamp for directories", async () => {
+    const service = new WorkspaceFileService(
+      createFileSystem({
+        entriesByPath: {
+          "/workspace": [
+            {
+              name: "src",
+              kind: "directory"
+            }
+          ],
+          "/workspace/src": [
+            {
+              name: "components",
+              kind: "directory"
+            }
+          ],
+          "/workspace/src/components": [
+            {
+              name: "button.tsx",
+              kind: "file",
+              sizeBytes: 42
+            }
+          ]
+        },
+        stats: {
+          "/workspace": {
+            kind: "directory",
+            size: 0,
+            mtimeMs: 1_700_000_000_000,
+            birthtimeMs: 0
+          },
+          "/workspace/src": {
+            kind: "directory",
+            size: 0,
+            mtimeMs: 1_700_000_100_000,
+            birthtimeMs: 0
+          },
+          "/workspace/src/components": {
+            kind: "directory",
+            size: 0,
+            mtimeMs: 1_700_000_200_000,
+            birthtimeMs: 0
+          },
+          "/workspace/src/components/button.tsx": {
+            kind: "file",
+            size: 42,
+            mtimeMs: 1_776_512_345_000,
+            birthtimeMs: 0,
+            ino: 4
+          }
+        }
+      })
+    );
+
+    const page = await service.listEntries(createWorkspaceRecord(), {
+      path: ".",
+      pageSize: 50,
+      sortBy: "name",
+      sortOrder: "asc"
+    });
+
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0]).toMatchObject({
+      path: "src",
+      type: "directory",
+      updatedAt: "2026-04-18T11:39:05.000Z"
+    });
+  });
+
+  it("falls back to the directory stat timestamp when a directory has no files", async () => {
+    const service = new WorkspaceFileService(
+      createFileSystem({
+        entriesByPath: {
+          "/workspace": [
+            {
+              name: "empty-dir",
+              kind: "directory"
+            }
+          ],
+          "/workspace/empty-dir": []
+        },
+        stats: {
+          "/workspace": {
+            kind: "directory",
+            size: 0,
+            mtimeMs: 0,
+            birthtimeMs: 0
+          },
+          "/workspace/empty-dir": {
+            kind: "directory",
+            size: 0,
+            mtimeMs: 1_776_512_345_000,
+            birthtimeMs: 0
+          }
+        }
+      })
+    );
+
+    const page = await service.listEntries(createWorkspaceRecord(), {
+      path: ".",
+      pageSize: 50,
+      sortBy: "name",
+      sortOrder: "asc"
+    });
+
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0]).toMatchObject({
+      path: "empty-dir",
+      type: "directory",
+      updatedAt: "2026-04-18T11:39:05.000Z"
+    });
   });
 });

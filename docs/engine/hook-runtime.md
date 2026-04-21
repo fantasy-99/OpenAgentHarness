@@ -11,16 +11,43 @@ Handler 类型：`command`（shell 脚本）、`http`（HTTP 请求）、`prompt
 
 ## 事件点
 
-| 事件 | matcher 匹配 |
-| --- | --- |
-| `before_context_build` / `after_context_build` | 不支持 matcher |
-| `before_model_call` / `after_model_call` | `model_ref` |
-| `before_tool_dispatch` / `after_tool_dispatch` | `tool_name` |
-| `run_completed` / `run_failed` | `trigger_type` |
+### 当前已支持的 Hook 事件
+
+| 事件 | matcher 匹配 | 执行位置 |
+| --- | --- | --- |
+| `before_context_compact` | 不支持 matcher | compact 阈值判定通过后、compact summary 模型调用之前 |
+| `after_context_compact` | 不支持 matcher | compact boundary / summary 生成之后、写入消息存储之前 |
+| `before_context_build` | 不支持 matcher | 自动 compact 完成之后，静态 system prompt 拼装之前 |
+| `after_context_build` | 不支持 matcher | 静态 prompt 和 history 装配完成之后 |
+| `before_model_call` | `model_ref` | 最终模型请求发出之前 |
+| `after_model_call` | `model_ref` | 模型完整响应返回之后 |
+| `before_tool_dispatch` | `tool_name` | tool executor 分发之前 |
+| `after_tool_dispatch` | `tool_name` | tool 返回之后、结果回填模型之前 |
+| `run_completed` | `trigger_type` | run 成功完成之后 |
+| `run_failed` | `trigger_type` | run 失败或超时之后 |
+
+### 上下文阶段的完整顺序
+
+1. `before_context_compact`
+2. 生成 compact summary
+3. `after_context_compact`
+4. `before_context_build`
+5. 静态 prompt / history / reminder 装配
+6. `after_context_build`
+7. `before_model_call`
+
+如果无需 compact，则跳过前 3 步。
 
 ## 输入协议
 
-所有 handler 接收同一份 JSON envelope。公共字段：`workspace_id`、`session_id`、`run_id`、`cwd`、`hook_event_name`、`agent_name`、`effective_agent_name`。事件附加字段按类型补充（`model_ref`、`tool_name`、`tool_input`、`tool_output`、`trigger_type`）。
+所有 handler 接收同一份 JSON envelope。公共字段：`workspace_id`、`session_id`、`run_id`、`cwd`、`hook_event_name`、`agent_name`、`effective_agent_name`。事件附加字段按类型补充：
+
+- `before_context_compact`: `context.messages` 与 compact 元数据（`contextWindowTokens`、`compactThresholdTokens`、`estimatedInputTokens`、`estimatedPostCompactTokens`、`summarizedMessageCount`、`configuredRecentGroupCount`、`keepRecentGroupCount`、`compactThroughMessageId?`）
+- `after_context_compact`: `summaryText`、`boundaryMessage`、`summaryMessage` 与同一组 compact 元数据
+- `before_context_build` / `after_context_build`: `context.messages`
+- `before_model_call` / `after_model_call`: `model_ref`、`model_request`、`model_response`
+- `before_tool_dispatch` / `after_tool_dispatch`: `tool_name`、`tool_input`、`tool_output`
+- `run_completed` / `run_failed`: `trigger_type`
 
 ## 输出协议
 

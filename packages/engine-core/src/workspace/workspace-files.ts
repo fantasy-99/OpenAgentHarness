@@ -195,11 +195,67 @@ function toOptionalIsoTimestamp(epochMs: number | undefined): string | undefined
   return new Date(epochMs).toISOString();
 }
 
+function maxTimestamp(left: number | undefined, right: number | undefined): number | undefined {
+  if (left === undefined) {
+    return right;
+  }
+
+  if (right === undefined) {
+    return left;
+  }
+
+  return Math.max(left, right);
+}
+
 export class WorkspaceFileService {
   readonly #fileSystem: WorkspaceFileSystem;
 
   constructor(fileSystem: WorkspaceFileSystem = createLocalWorkspaceFileSystem()) {
     this.#fileSystem = fileSystem;
+  }
+
+  async getLatestDescendantFileMtimeMs(directoryPath: string): Promise<number | undefined> {
+    const entries = await this.#fileSystem.readdir(directoryPath);
+    let latest: number | undefined;
+
+    for (const entry of entries) {
+      const entryPath = path.join(directoryPath, entry.name);
+      if (entry.kind === "file") {
+        const fileStat = await this.#fileSystem.stat(entryPath);
+        if (fileStat.kind !== "file") {
+          continue;
+        }
+
+        latest = maxTimestamp(latest, fileStat.mtimeMs);
+        continue;
+      }
+
+      if (entry.kind !== "directory") {
+        continue;
+      }
+
+      const nestedLatest = await this.getLatestDescendantFileMtimeMs(entryPath);
+      latest = maxTimestamp(latest, nestedLatest);
+    }
+
+    return latest;
+  }
+
+  async resolveWorkspaceEntryUpdatedAt(
+    entry: WorkspaceFileStat,
+    resolved: ResolvedWorkspacePath,
+    listedEntry?: { updatedAt?: string | undefined }
+  ): Promise<string | undefined> {
+    if (typeof listedEntry?.updatedAt === "string" && listedEntry.updatedAt.trim().length > 0) {
+      return listedEntry.updatedAt;
+    }
+
+    if (entry.kind !== "directory") {
+      return toOptionalIsoTimestamp(entry.mtimeMs);
+    }
+
+    const latestDescendantFileMtimeMs = await this.getLatestDescendantFileMtimeMs(resolved.absolutePath);
+    return toOptionalIsoTimestamp(latestDescendantFileMtimeMs ?? entry.mtimeMs);
   }
 
   assertWorkspaceMutable(workspace: WorkspaceRecord): void {
@@ -218,7 +274,7 @@ export class WorkspaceFileService {
       throw new AppError(404, "workspace_entry_not_found", `Path ${resolved.relativePath} was not found.`);
     }
 
-    const updatedAt = listedEntry?.updatedAt ?? toOptionalIsoTimestamp(entry.mtimeMs);
+    const updatedAt = await this.resolveWorkspaceEntryUpdatedAt(entry, resolved, listedEntry);
     return {
       path: resolved.relativePath,
       name: resolved.relativePath === "." ? path.basename(workspace.rootPath) : path.basename(resolved.absolutePath),

@@ -7,6 +7,7 @@ import type {
   EngineServiceOptions,
   SessionEvent,
   WorkspaceCommandExecutor,
+  WorkspaceFileAccessProvider,
   WorkspaceFileSystem,
   WorkspaceRecord
 } from "../types.js";
@@ -49,6 +50,7 @@ export interface CreateEngineExecutionServicesDependencies {
   logger: EngineServiceOptions["logger"];
   workspaceCommandExecutor: WorkspaceCommandExecutor;
   workspaceFileSystem: WorkspaceFileSystem;
+  workspaceFileAccessProvider?: WorkspaceFileAccessProvider | undefined;
   hookRunAuditRepository: EngineServiceOptions["hookRunAuditRepository"];
   toolCallAuditRepository: EngineServiceOptions["toolCallAuditRepository"];
   sessionRepository: EngineServiceOptions["sessionRepository"];
@@ -75,12 +77,19 @@ export interface CreateEngineExecutionServicesDependencies {
 export function createEngineExecutionServices(
   dependencies: CreateEngineExecutionServicesDependencies
 ): EngineExecutionServices {
+  const workspaceFileAccessProvider = dependencies.workspaceFileAccessProvider;
   const hooks = new HookService({
     execution: {
       defaultModel: dependencies.defaultModel,
       modelGateway: dependencies.modelGateway,
       commandExecutor: dependencies.workspaceCommandExecutor,
       fileSystem: dependencies.workspaceFileSystem,
+      ...(workspaceFileAccessProvider
+        ? {
+            acquireWorkspaceFileAccess: (workspace, access) =>
+              workspaceFileAccessProvider.acquire({ workspace, access })
+          }
+        : {}),
       resolveModelForRun: (workspace, modelRef) => dependencies.resolveModelForRun(workspace, modelRef)
     },
     steps: {

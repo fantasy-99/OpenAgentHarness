@@ -224,6 +224,8 @@ export class EngineService {
           false,
           options
         ),
+      applyCompactionHooks: (workspace, session, run, eventName, context) =>
+        this.#applyCompactionHooks(workspace, session, run, eventName, context),
       buildEngineMessagesForSession: (sessionId, persistedMessages) =>
         this.#engineMessageSync.buildEngineMessagesForSession(sessionId, persistedMessages)
     });
@@ -381,6 +383,7 @@ export class EngineService {
       logger: this.#logger,
       workspaceCommandExecutor: this.#workspaceCommandExecutor,
       workspaceFileSystem: this.#workspaceFileSystem,
+      workspaceFileAccessProvider: this.#workspaceFileAccessProvider,
       hookRunAuditRepository: this.#hookRunAuditRepository,
       toolCallAuditRepository: this.#toolCallAuditRepository,
       sessionRepository: this.#sessionRepository,
@@ -767,6 +770,28 @@ export class EngineService {
     messages: ChatMessage[]
   ): Promise<ChatMessage[]> {
     return this.#ensureExecutionServices().hookApplications.applyContextHooks(workspace, session, run, eventName, messages);
+  }
+
+  async #applyCompactionHooks(
+    workspace: WorkspaceRecord,
+    session: Session,
+    run: Run,
+    eventName: "before_context_compact" | "after_context_compact",
+    context: Record<string, unknown> & {
+      messages?: ChatMessage[] | undefined;
+    }
+  ): Promise<
+    Record<string, unknown> & {
+      messages?: ChatMessage[] | undefined;
+    }
+  > {
+    return this.#ensureExecutionServices().hookApplications.applyCompactionHooks(
+      workspace,
+      session,
+      run,
+      eventName,
+      context
+    );
   }
 
   async #executeAction(

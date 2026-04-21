@@ -21,6 +21,8 @@
       "items": {
         "type": "string",
         "enum": [
+          "before_context_compact",
+          "after_context_compact",
           "before_context_build",
           "after_context_build",
           "before_model_call",

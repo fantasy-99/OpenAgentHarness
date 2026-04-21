@@ -1362,6 +1362,23 @@ capabilities:
       "utf8"
     );
 
+    await writeFile(
+      path.join(projectRoot, ".openharness", "hooks", "compact.yaml"),
+      `
+name: compact-review
+events:
+  - before_context_compact
+  - after_context_compact
+handler:
+  type: prompt
+  prompt:
+    inline: Review compaction context
+capabilities:
+  - rewrite_context
+`,
+      "utf8"
+    );
+
     const platformModels = await loadPlatformModels(modelsDir);
     const platformAgents = {
       assistant: {
@@ -1460,14 +1477,21 @@ capabilities:
         toolPrefix: "mcp.docs"
       }
     ]);
-    expect(project?.catalog.hooks).toEqual([
-      {
-        name: "redact-secrets",
-        matcher: "platform/openai-default|workspace/repo-model",
-        handlerType: "command",
-        events: ["before_model_call"]
-      }
-    ]);
+    expect(project?.catalog.hooks).toEqual(
+      expect.arrayContaining([
+        {
+          name: "redact-secrets",
+          matcher: "platform/openai-default|workspace/repo-model",
+          handlerType: "command",
+          events: ["before_model_call"]
+        },
+        {
+          name: "compact-review",
+          handlerType: "prompt",
+          events: ["before_context_compact", "after_context_compact"]
+        }
+      ])
+    );
     expect(project?.actions["debug.echo"]).toMatchObject({
       name: "debug.echo",
       retryPolicy: "safe",
@@ -1483,6 +1507,10 @@ capabilities:
     expect(project?.toolServers["shared-browser"]).toBeUndefined();
     expect(project?.hooks["redact-secrets"]).toMatchObject({
       handlerType: "command"
+    });
+    expect(project?.hooks["compact-review"]).toMatchObject({
+      handlerType: "prompt",
+      capabilities: ["rewrite_context"]
     });
 
   });

@@ -61,6 +61,8 @@
 - 当你需要“这个项目有哪些能力、属于谁、当前状态是什么”时，用 workspace API
 - 当你需要“当前执行副本里有哪些文件、执行一个命令、读取一个路径”时，用 sandbox API
 
+这里刻意保持和 [E2B](https://github.com/e2b-dev/E2B) 一致的分层语义: `/workspaces` 表示项目身份与目录，`/sandboxes` 表示执行副本，副本内根路径统一暴露为 `/workspace`。这不是过渡期命名。`/workspaces` API 仍然需要保留，但职责限定在 metadata、catalog 和 lifecycle；文件接口不建议重新并回 `/workspaces`。
+
 ## 设计说明
 
 - catalog 是发现结果，不是配置回显，只返回元数据

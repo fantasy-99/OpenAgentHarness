@@ -1356,6 +1356,361 @@ describe("runtime service", () => {
     expect(finalInvocationText).not.toContain(firstContent);
   });
 
+  it("applies before_context_compact hooks to rewrite the summary input used for auto compaction", async () => {
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    gateway.generateResponseFactory = (input) => {
+      const flattened = (input.messages ?? [])
+        .map((message) => (typeof message.content === "string" ? message.content : JSON.stringify(message.content)))
+        .join("\n\n");
+      if (!flattened.includes("Summarize the earlier conversation context")) {
+        return undefined;
+      }
+
+      return {
+        model: input.model ?? "openai-default",
+        text: flattened.includes("HOOK-SUMMARIZE") ? "Summary from compact hook" : "Summary from original context",
+        finishReason: "stop",
+        usage: {
+          inputTokens: 14,
+          outputTokens: 6,
+          totalTokens: 20
+        }
+      };
+    };
+
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      platformModels: {
+        "openai-default": {
+          provider: "openai",
+          name: "gpt-5",
+          metadata: {
+            contextWindowTokens: 80,
+            compactThresholdTokens: 20,
+            compactRecentGroupCount: 3
+          }
+        }
+      },
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_compact_before_hook",
+      name: "compact-before-hook",
+      rootPath: "/tmp",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "builder",
+      settings: {
+        defaultAgent: "builder",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        builder: {
+          name: "builder",
+          mode: "primary",
+          prompt: "Compact-hook-aware builder.",
+          tools: {
+            native: [],
+            actions: [],
+            skills: [],
+            external: []
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {
+        "rewrite-compact-input": {
+          name: "rewrite-compact-input",
+          events: ["before_context_compact"],
+          handlerType: "command",
+          capabilities: ["rewrite_context"],
+          definition: {
+            handler: {
+              type: "command",
+              command:
+                "cat >/dev/null; node -e 'process.stdout.write(JSON.stringify({hookSpecificOutput:{patch:{context:{messages:[{role:\"user\",content:\"HOOK-SUMMARIZE\"}]}}}}))'"
+            }
+          }
+        }
+      },
+      catalog: {
+        workspaceId: "project_compact_before_hook",
+        agents: [{ name: "builder", mode: "primary", source: "workspace" }],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [{ name: "rewrite-compact-input", handlerType: "command", events: ["before_context_compact"] }],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: "project_compact_before_hook",
+      caller,
+      input: {}
+    });
+    const firstContent = "FIRST-CONTENT ".repeat(12).trim();
+    const secondContent = "SECOND-CONTENT ".repeat(12).trim();
+    const thirdContent = "THIRD-CONTENT ".repeat(12).trim();
+
+    const firstAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: firstContent }
+    });
+    await waitFor(async () => (await runtimeService.getRun(firstAccepted.runId)).status === "completed");
+
+    const secondAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: secondContent }
+    });
+    await waitFor(async () => (await runtimeService.getRun(secondAccepted.runId)).status === "completed");
+
+    const thirdAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: thirdContent }
+    });
+    await waitFor(async () => (await runtimeService.getRun(thirdAccepted.runId)).status === "completed");
+    await waitFor(() => gateway.invocations.length >= 4);
+
+    const messages = await runtimeService.listSessionMessages(session.id, 20);
+    const summaryMessage = messages.items.find(
+      (message) =>
+        message.role === "system" &&
+        ((message.metadata as { runtimeKind?: string } | undefined)?.runtimeKind ?? "") === "compact_summary"
+    );
+    const compactInvocation = gateway.invocations.find((invocation) =>
+      invocation.input.messages?.some(
+        (message) =>
+          message.role === "system" &&
+          typeof message.content === "string" &&
+          message.content.includes("Summarize the earlier conversation context")
+      )
+    );
+    const compactInvocationText = (compactInvocation?.input.messages ?? [])
+      .map((message) => (typeof message.content === "string" ? message.content : JSON.stringify(message.content)))
+      .join("\n\n");
+    const runSteps = await runtimeService.listRunSteps(thirdAccepted.runId);
+
+    expect(messageText(summaryMessage)).toBe("Summary from compact hook");
+    expect(compactInvocationText).toContain("HOOK-SUMMARIZE");
+    expect(compactInvocationText).not.toContain(firstContent);
+    expect(runSteps.items.some((step) => step.stepType === "hook" && step.name === "rewrite-compact-input")).toBe(true);
+  });
+
+  it("applies after_context_compact hooks before context-build hooks and can rewrite compact artifacts", async () => {
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    gateway.generateResponseFactory = (input) => {
+      const flattened = (input.messages ?? [])
+        .map((message) => (typeof message.content === "string" ? message.content : JSON.stringify(message.content)))
+        .join("\n\n");
+      if (!flattened.includes("Summarize the earlier conversation context")) {
+        return undefined;
+      }
+
+      return {
+        model: input.model ?? "openai-default",
+        text: "Original compact summary",
+        finishReason: "stop",
+        usage: {
+          inputTokens: 12,
+          outputTokens: 6,
+          totalTokens: 18
+        }
+      };
+    };
+
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      platformModels: {
+        "openai-default": {
+          provider: "openai",
+          name: "gpt-5",
+          metadata: {
+            contextWindowTokens: 80,
+            compactThresholdTokens: 20,
+            compactRecentGroupCount: 3
+          }
+        }
+      },
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_compact_after_hook",
+      name: "compact-after-hook",
+      rootPath: "/tmp",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "builder",
+      settings: {
+        defaultAgent: "builder",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        builder: {
+          name: "builder",
+          mode: "primary",
+          prompt: "Compact-hook-aware builder.",
+          tools: {
+            native: [],
+            actions: [],
+            skills: [],
+            external: []
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {
+        "rewrite-compact-output": {
+          name: "rewrite-compact-output",
+          events: ["after_context_compact"],
+          handlerType: "command",
+          capabilities: ["rewrite_context"],
+          definition: {
+            handler: {
+              type: "command",
+              command:
+                "cat >/dev/null; node -e 'process.stdout.write(JSON.stringify({hookSpecificOutput:{patch:{context:{summaryText:\"Hooked compact summary\"}}}}))'"
+            }
+          }
+        },
+        "annotate-after-compact": {
+          name: "annotate-after-compact",
+          events: ["before_context_build"],
+          handlerType: "command",
+          capabilities: [],
+          definition: {
+            handler: {
+              type: "command",
+              command:
+                "cat >/dev/null; node -e 'process.stdout.write(JSON.stringify({systemMessage:\"Context build after compact.\"}))'"
+            }
+          }
+        }
+      },
+      catalog: {
+        workspaceId: "project_compact_after_hook",
+        agents: [{ name: "builder", mode: "primary", source: "workspace" }],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [
+          { name: "rewrite-compact-output", handlerType: "command", events: ["after_context_compact"] },
+          { name: "annotate-after-compact", handlerType: "command", events: ["before_context_build"] }
+        ],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: "project_compact_after_hook",
+      caller,
+      input: {}
+    });
+    const firstContent = "FIRST-CONTENT ".repeat(12).trim();
+    const secondContent = "SECOND-CONTENT ".repeat(12).trim();
+    const thirdContent = "THIRD-CONTENT ".repeat(12).trim();
+
+    const firstAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: firstContent }
+    });
+    await waitFor(async () => (await runtimeService.getRun(firstAccepted.runId)).status === "completed");
+
+    const secondAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: secondContent }
+    });
+    await waitFor(async () => (await runtimeService.getRun(secondAccepted.runId)).status === "completed");
+
+    const thirdAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: thirdContent }
+    });
+    await waitFor(async () => (await runtimeService.getRun(thirdAccepted.runId)).status === "completed");
+    await waitFor(() => gateway.invocations.length >= 4);
+
+    const messages = await runtimeService.listSessionMessages(session.id, 20);
+    const summaryMessage = messages.items.find(
+      (message) =>
+        message.role === "system" &&
+        ((message.metadata as { runtimeKind?: string } | undefined)?.runtimeKind ?? "") === "compact_summary"
+    );
+    const finalInvocation = gateway.invocations
+      .filter(
+        (invocation) =>
+          !invocation.input.messages?.some(
+            (message) =>
+              message.role === "system" &&
+              typeof message.content === "string" &&
+              message.content.includes("Summarize the earlier conversation context")
+          )
+      )
+      .at(-1);
+    const finalInvocationText = (finalInvocation?.input.messages ?? [])
+      .map((message) => (typeof message.content === "string" ? message.content : JSON.stringify(message.content)))
+      .join("\n\n");
+    const runSteps = await runtimeService.listRunSteps(thirdAccepted.runId);
+    const hookStepNames = runSteps.items.filter((step) => step.stepType === "hook").map((step) => step.name);
+
+    expect(messageText(summaryMessage)).toBe("Hooked compact summary");
+    expect(finalInvocationText).toContain("Hooked compact summary");
+    expect(finalInvocationText).toContain("Context build after compact.");
+    expect(finalInvocationText).not.toContain("Original compact summary");
+    expect(hookStepNames.indexOf("rewrite-compact-output")).toBeGreaterThanOrEqual(0);
+    expect(hookStepNames.indexOf("annotate-after-compact")).toBeGreaterThanOrEqual(0);
+    expect(hookStepNames.indexOf("rewrite-compact-output")).toBeLessThan(
+      hookStepNames.indexOf("annotate-after-compact")
+    );
+  });
+
   it("prefers metadata.max_model_len over contextWindowTokens when deciding whether to compact", async () => {
     const { gateway, runtimeService, workspace } = await createRuntime(0, {
       platformModels: {
@@ -8920,6 +9275,127 @@ describe("runtime service", () => {
     expect(
       gateway.invocations.at(0)?.input.messages?.some((message) => message.content.includes("Check secrets before answering."))
     ).toBe(true);
+  });
+
+  it("falls back to the workspace file access lease when command hooks receive an unreadable workspace root", async () => {
+    const materializedRoot = await mkdtemp(path.join(tmpdir(), "oah-hook-materialized-"));
+    const releases: Array<{ dirty?: boolean | undefined }> = [];
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence,
+      workspaceFileAccessProvider: {
+        async acquire({ workspace }) {
+          return {
+            workspace: {
+              ...workspace,
+              rootPath: materializedRoot
+            },
+            async release(options) {
+              releases.push(options ?? {});
+            }
+          };
+        }
+      }
+    });
+
+    try {
+      await persistence.workspaceRepository.upsert({
+        id: "project_before_hook_materialized",
+        name: "before-hook-materialized",
+        rootPath: "/workspace",
+        executionPolicy: "local",
+        status: "active",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        kind: "project",
+        readOnly: false,
+        historyMirrorEnabled: false,
+        defaultAgent: "builder",
+        settings: {
+          defaultAgent: "builder",
+          skillDirs: []
+        },
+        workspaceModels: {},
+        agents: {
+          builder: {
+            name: "builder",
+            mode: "primary",
+            prompt: "Materialized-hook-aware builder.",
+            tools: {
+              native: [],
+              actions: [],
+              skills: [],
+              external: []
+            },
+            switch: [],
+            subagents: []
+          }
+        },
+        actions: {},
+        skills: {},
+        toolServers: {},
+        hooks: {
+          "rewrite-request": {
+            name: "rewrite-request",
+            events: ["before_model_call"],
+            handlerType: "command",
+            capabilities: ["rewrite_model_request"],
+            definition: {
+              handler: {
+                type: "command",
+                command:
+                  "cat >/dev/null; node -e 'process.stdout.write(JSON.stringify({hookSpecificOutput:{patch:{model_request:{temperature:0.2}}}}))'"
+              }
+            }
+          }
+        },
+        catalog: {
+          workspaceId: "project_before_hook_materialized",
+          agents: [{ name: "builder", mode: "primary", source: "workspace" }],
+          models: [],
+          actions: [],
+          skills: [],
+          tools: [],
+          hooks: [{ name: "rewrite-request", handlerType: "command", events: ["before_model_call"] }],
+          nativeTools: []
+        }
+      });
+
+      const caller = {
+        subjectRef: "dev:test",
+        authSource: "standalone_server",
+        scopes: [],
+        workspaceAccess: []
+      };
+      const session = await runtimeService.createSession({
+        workspaceId: "project_before_hook_materialized",
+        caller,
+        input: {}
+      });
+
+      const accepted = await runtimeService.createSessionMessage({
+        sessionId: session.id,
+        caller,
+        input: { content: "hello" }
+      });
+
+      await waitFor(async () => {
+        const run = await runtimeService.getRun(accepted.runId);
+        return run.status === "completed";
+      }, 5_000);
+
+      const runSteps = await runtimeService.listRunSteps(accepted.runId);
+      expect(runSteps.items.find((step) => step.stepType === "hook" && step.name === "rewrite-request")?.status).toBe(
+        "completed"
+      );
+      expect(gateway.invocations.at(0)?.input.temperature).toBe(0.2);
+      expect(releases).toContainEqual({ dirty: false });
+    } finally {
+      await rm(materializedRoot, { recursive: true, force: true });
+    }
   });
 
   it("treats command hook timeout_seconds as a non-blocking timeout and emits a notice", async () => {

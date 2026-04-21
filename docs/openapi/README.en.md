@@ -13,6 +13,8 @@ The HTTP API is built on REST resource endpoints + SSE event streams. The [opena
 
 Key boundaries: `session` = context boundary, `run` = execution boundary, runs within a session are serial.
 
+File and command endpoints intentionally keep [E2B](https://github.com/e2b-dev/E2B)-style sandbox semantics: routes live under `/sandboxes`, and sandbox roots are exposed as `/workspace`. This is a stable interface contract, not a temporary compatibility layer. The `/workspaces` API still remains for workspace metadata, catalog, and lifecycle concerns.
+
 ## Start Here
 
 - Overall API shape: endpoint tables below
@@ -29,7 +31,7 @@ Key boundaries: `session` = context boundary, `run` = execution boundary, runs w
 | [sessions.md](./sessions.md) | Sessions and messages |
 | [runs.md](./runs.md) | Run lookup and cancellation |
 | [actions.md](./actions.md) | Manual action triggering |
-| [files.md](./files.md) | Workspace file management |
+| [files.md](./files.md) | Sandbox file management and commands |
 | [models.md](./models.md) | Model gateway |
 | [streaming.md](./streaming.md) | SSE event streaming |
 | [components.md](./components.md) | Shared schemas and error models |

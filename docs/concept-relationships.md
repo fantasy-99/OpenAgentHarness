@@ -122,6 +122,8 @@ flowchart TD
 
 三种 provider 下，上层 API 语义保持一致。
 
+这里的 `/sandboxes` 路由、`/workspace` 根路径，以及“文件与命令总是挂在 sandbox 视角下”这套设计，是为了和 [E2B](https://github.com/e2b-dev/E2B) 的接口语义保持兼容而刻意固定下来的，不是可以随意切回 `/workspaces` 文件 API 的内部实现细节。`/workspaces` 本身仍然保留，用于 workspace 的身份、元数据、catalog 与生命周期管理。
+
 ## 活跃 Workspace 是怎么流动的
 
 典型过程：

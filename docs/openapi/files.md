@@ -4,6 +4,8 @@ Sandbox 文件管理 API，支撑 web 文件管理以及 `embedded` / `self_host
 
 这里故意不用 `workspace` 作为文件接口主语，因为文件与命令操作面对的是“活跃执行副本”，而不是抽象的 workspace 元数据。
 
+这也是为了和 [E2B](https://github.com/e2b-dev/E2B) 的接口语义保持兼容而刻意固定下来的设计: `/sandboxes`、`/workspace` 根路径，以及 sandbox-scoped 文件/命令操作都属于对外契约，不是临时兼容层，也不应默认改回 `/workspaces` 文件 API。`/workspaces` API 仍然保留，但只负责 workspace 身份、元数据、catalog 与生命周期，不承载文件读写。
+
 暂不包括：全 workspace 递归树、批量操作、全文搜索、分片上传、文件变更推送。
 
 ## 接口

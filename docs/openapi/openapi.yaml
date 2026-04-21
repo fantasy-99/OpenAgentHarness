@@ -14,9 +14,25 @@ servers:
     description: Local development
 tags:
   - name: Workspaces
+    description: >
+      Workspace identity, catalog, lifecycle, and metadata APIs. This surface
+      remains part of the public contract even though file and command flows
+      are sandbox-scoped.
   - name: Sandboxes
+    description: >
+      Active execution-copy APIs. Sandbox semantics intentionally align with
+      E2B, so file and command flows stay rooted under /sandboxes and expose
+      /workspace as the in-sandbox root.
   - name: Files
+    description: >
+      File APIs operate on sandbox-scoped execution copies rather than
+      workspace metadata. The /sandboxes + /workspace shape is a deliberate
+      compatibility contract with E2B, not a temporary shim. The /workspaces
+      API still remains for metadata, catalog, and lifecycle concerns.
   - name: Commands
+    description: >
+      Command execution APIs run inside the active sandbox context and follow
+      the same sandbox-scoped contract as the file APIs.
   - name: Catalog
   - name: Models
   - name: Sessions

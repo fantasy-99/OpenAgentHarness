@@ -13,6 +13,8 @@ HTTP API 基于 REST 资源接口 + SSE 事件流。接口定义以 [openapi.yam
 
 关键边界：`session` = 上下文边界，`run` = 执行边界，同 session 内 run 串行。
 
+文件与命令接口刻意保持 [E2B](https://github.com/e2b-dev/E2B) 风格的 sandbox 语义: 路由位于 `/sandboxes`，sandbox 内根目录暴露为 `/workspace`。这是稳定接口约定，不是临时兼容层。`/workspaces` API 仍然保留，用于 workspace metadata、catalog 与 lifecycle。
+
 ## 端点速查
 
 ### Workspaces

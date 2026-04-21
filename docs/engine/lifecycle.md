@@ -49,36 +49,50 @@ Run 投递到 Redis session 队列。同 session 内 run 严格串行。
 
 Worker 取出 run，获取 Redis 分布式锁，状态变为 `running`，发布 `run.started`。
 
-### 6. 构建上下文
+### 6. 准备模型输入
 
-Context Engine 装配完整上下文：workspace 配置、agent prompt、prompt 段拼装（base → llm_optimized → agent → actions → project_agents_md → skills）、session 历史、tool catalog。可选执行 `before_context_build` / `after_context_build` hook。
+先基于 session 历史构建 Engine Messages，并在需要时执行自动 compact。
 
-### 7. LLM loop
+### 7. 构建上下文
 
-上下文发送给模型，流式增量推送输出。
+Context Engine 装配完整上下文：workspace 配置、agent prompt、prompt 段拼装（base → llm_optimized → agent → actions → project_agents_md → skills）、session 历史、tool catalog。
 
-### 8. 分发 tool call
+顺序上：
+
+1. `before_context_compact`（仅在触发自动 compact 时执行）
+2. 生成 compact summary
+3. `after_context_compact`（仅在触发自动 compact 时执行）
+4. `before_context_build`
+5. 静态 system prompt + history + reminder 装配
+6. `after_context_build`
+7. `before_model_call`
+
+### 8. LLM loop
+
+上下文发送给模型，流式增量推送输出。模型完整响应返回后执行 `after_model_call` hook。
+
+### 9. 分发 tool call
 
 LLM 输出 tool call 时：状态进入 `waiting_tool` → 执行 `before_tool_dispatch` hook → Dispatcher 路由到对应 executor（native / action / skill / MCP）→ 执行 `after_tool_dispatch` hook → 记录审计 → 结果回填模型，状态回到 `running`。
 
 若 `policy.parallel_tool_calls` 为 true，多个 tool call 并行执行。
 
-### 9. Agent 控制动作
+### 10. Agent 控制动作
 
 - **`agent.switch`** — 同 run 内切换 `effective_agent_name`，校验 allowlist 后更新配置并注入 `system_reminder`
 - **`agent.delegate`** — 创建子 session / 子 run 调用 subagent，默认异步后台执行
 
 约束：两者都须经 orchestrator 校验 allowlist 和 policy；subagent 默认不得继续 delegate。
 
-### 10. 输出结果
+### 11. 输出结果
 
-LLM loop 结束后：写入 assistant 消息 → 记录 run steps → 状态变为 `completed`。
+LLM loop 结束后：写入 assistant 消息 → 记录 run steps → 状态变为 `completed`。随后执行 `run_completed` hook；若 run 失败或超时，则执行 `run_failed` hook。
 
-### 11. SSE 事件
+### 12. SSE 事件
 
 全生命周期持续发布：`run.started`、`message.delta`、`tool.started/completed/failed`、`agent.switch*`、`agent.delegate.*`、`run.completed/failed/cancelled`。
 
-### 12. 释放资源
+### 13. 释放资源
 
 释放 session 锁，队列中下一个 run 可执行。本地 SQLite 状态若有更新，由当前执行进程自行落盘。
 

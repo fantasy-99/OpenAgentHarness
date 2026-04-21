@@ -22,6 +22,14 @@ export interface HookApplicationServiceDependencies<TModelInput extends ModelExe
   applyModelResponsePatch: (response: ModelGenerateResponse, patch: Record<string, unknown>) => ModelGenerateResponse;
 }
 
+type HookContextPayload = Record<string, unknown> & {
+  messages?: ChatMessage[] | undefined;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export class HookApplicationService<TModelInput extends ModelExecutionInputSnapshot> {
   readonly #executeHook: HookApplicationServiceDependencies<TModelInput>["executeHook"];
   readonly #serializeModelRequest: HookApplicationServiceDependencies<TModelInput>["serializeModelRequest"];
@@ -137,10 +145,42 @@ export class HookApplicationService<TModelInput extends ModelExecutionInputSnaps
     workspace: WorkspaceRecord,
     session: Session,
     run: Run,
-    eventName: "before_context_build" | "after_context_build",
+    eventName:
+      | "before_context_build"
+      | "after_context_build"
+      | "before_context_compact"
+      | "after_context_compact",
     messages: ChatMessage[]
   ): Promise<ChatMessage[]> {
-    let currentMessages = messages;
+    const payload = await this.#applyContextPayloadHooks(workspace, session, run, eventName, {
+      messages
+    });
+
+    return Array.isArray(payload.messages) ? normalizePromptMessages(payload.messages) : messages;
+  }
+
+  async applyCompactionHooks(
+    workspace: WorkspaceRecord,
+    session: Session,
+    run: Run,
+    eventName: "before_context_compact" | "after_context_compact",
+    context: HookContextPayload
+  ): Promise<HookContextPayload> {
+    return this.#applyContextPayloadHooks(workspace, session, run, eventName, context);
+  }
+
+  async #applyContextPayloadHooks(
+    workspace: WorkspaceRecord,
+    session: Session,
+    run: Run,
+    eventName:
+      | "before_context_build"
+      | "after_context_build"
+      | "before_context_compact"
+      | "after_context_compact",
+    context: HookContextPayload
+  ): Promise<HookContextPayload> {
+    let currentContext = context;
 
     for (const hook of selectHooks(workspace, eventName)) {
       const result = await this.#executeHook(workspace, session, run, hook, {
@@ -153,32 +193,38 @@ export class HookApplicationService<TModelInput extends ModelExecutionInputSnaps
         effective_agent_name: run.effectiveAgentName,
         trigger_type: run.triggerType,
         run_status: run.status,
-        context: {
-          messages: currentMessages
-        }
+        context: currentContext
       });
 
       ensureHookCanContinue(result, hook.name);
       const patch = result?.hookSpecificOutput?.patch?.context;
       if (patch && hook.capabilities.includes("rewrite_context") && typeof patch === "object") {
-        currentMessages = this.#applyContextPatch(currentMessages, patch as Record<string, unknown>);
+        currentContext = this.#applyContextPatch(currentContext, patch as Record<string, unknown>);
       }
 
       const notes = [result?.systemMessage, result?.hookSpecificOutput?.additionalContext].filter(
         (value): value is string => typeof value === "string" && value.length > 0
       );
-      if (notes.length > 0) {
-        currentMessages = this.#insertSystemMessages(
-          currentMessages,
-          notes.map((content) => ({
-            role: "system",
-            content
-          }))
-        );
+      if (notes.length > 0 && Array.isArray(currentContext.messages)) {
+        currentContext = {
+          ...currentContext,
+          messages: this.#insertSystemMessages(
+            currentContext.messages,
+            notes.map((content) => ({
+              role: "system",
+              content
+            }))
+          )
+        };
+      } else if (notes.length > 0 && typeof currentContext.summaryText === "string") {
+        currentContext = {
+          ...currentContext,
+          summaryText: [currentContext.summaryText, ...notes].join("\n\n")
+        };
       }
     }
 
-    return currentMessages;
+    return currentContext;
   }
 
   async applyBeforeToolDispatchHooks(
@@ -293,12 +339,42 @@ export class HookApplicationService<TModelInput extends ModelExecutionInputSnaps
     }
   }
 
-  #applyContextPatch(currentMessages: ChatMessage[], patch: Record<string, unknown>): ChatMessage[] {
-    if (Array.isArray(patch.messages)) {
-      return normalizePromptMessages(patch.messages);
+  #applyContextPatch(currentContext: HookContextPayload, patch: Record<string, unknown>): HookContextPayload {
+    const nextContext: HookContextPayload = {
+      ...currentContext
+    };
+
+    for (const [key, value] of Object.entries(patch)) {
+      if (key === "messages" && Array.isArray(value)) {
+        nextContext.messages = normalizePromptMessages(value);
+        continue;
+      }
+
+      if (isRecord(nextContext[key]) && isRecord(value)) {
+        nextContext[key] = this.#mergeRecord(nextContext[key] as Record<string, unknown>, value);
+        continue;
+      }
+
+      nextContext[key] = value;
     }
 
-    return currentMessages;
+    return nextContext;
+  }
+
+  #mergeRecord(current: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
+    const merged: Record<string, unknown> = {
+      ...current
+    };
+
+    for (const [key, value] of Object.entries(patch)) {
+      if (isRecord(merged[key]) && isRecord(value)) {
+        merged[key] = this.#mergeRecord(merged[key] as Record<string, unknown>, value);
+      } else {
+        merged[key] = value;
+      }
+    }
+
+    return merged;
   }
 
   #applyToolPatch(currentValue: unknown, patch: unknown): unknown {

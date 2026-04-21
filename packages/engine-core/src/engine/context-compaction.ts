@@ -126,6 +126,31 @@ function renderChatMessages(messages: ChatMessage[]): string {
     .join("\n\n");
 }
 
+function compactMessageToChatMessage(message: Pick<CompactMessage, "role" | "content">): ChatMessage {
+  switch (message.role) {
+    case "system":
+      return {
+        role: "system",
+        content: typeof message.content === "string" ? message.content : stringifyContent(message.content)
+      };
+    case "user":
+      return {
+        role: "user",
+        content: message.content as Extract<ChatMessage, { role: "user" }>["content"]
+      };
+    case "assistant":
+      return {
+        role: "assistant",
+        content: message.content as Extract<ChatMessage, { role: "assistant" }>["content"]
+      };
+    case "tool":
+      return {
+        role: "tool",
+        content: message.content as Extract<ChatMessage, { role: "tool" }>["content"]
+      };
+  }
+}
+
 function renderCompactMessages(messages: CompactMessage[]): string {
   return messages
     .map((message, index) => {
@@ -222,6 +247,19 @@ export interface ContextCompactionServiceDependencies {
       applyHooks?: boolean | undefined;
     }
   ) => Promise<ChatMessage[]>;
+  applyCompactionHooks: (
+    workspace: WorkspaceRecord,
+    session: Session,
+    run: Run,
+    eventName: "before_context_compact" | "after_context_compact",
+    context: Record<string, unknown> & {
+      messages?: ChatMessage[] | undefined;
+    }
+  ) => Promise<
+    Record<string, unknown> & {
+      messages?: ChatMessage[] | undefined;
+    }
+  >;
   buildEngineMessagesForSession: (sessionId: string, persistedMessages?: Message[]) => Promise<EngineMessage[]>;
 }
 
@@ -236,6 +274,7 @@ export class ContextCompactionService {
   readonly #nowIso: ContextCompactionServiceDependencies["nowIso"];
   readonly #resolveRunModel: ContextCompactionServiceDependencies["resolveRunModel"];
   readonly #buildModelContextMessages: ContextCompactionServiceDependencies["buildModelContextMessages"];
+  readonly #applyCompactionHooks: ContextCompactionServiceDependencies["applyCompactionHooks"];
   readonly #buildEngineMessagesForSession: ContextCompactionServiceDependencies["buildEngineMessagesForSession"];
   readonly #projector = new EngineMessageProjector();
 
@@ -250,6 +289,7 @@ export class ContextCompactionService {
     this.#nowIso = dependencies.nowIso;
     this.#resolveRunModel = dependencies.resolveRunModel;
     this.#buildModelContextMessages = dependencies.buildModelContextMessages;
+    this.#applyCompactionHooks = dependencies.applyCompactionHooks;
     this.#buildEngineMessagesForSession = dependencies.buildEngineMessagesForSession;
   }
 
@@ -328,6 +368,29 @@ export class ContextCompactionService {
       return engineMessages;
     }
 
+    const summarySourceMessages = messagesToSummarize.map(compactMessageToChatMessage);
+    const compactThroughMessageId = messagesToSummarize.at(-1)?.sourceMessageIds[0];
+    const beforeHookContext = await this.#applyCompactionHooks(
+      input.workspace,
+      input.session,
+      input.run,
+      "before_context_compact",
+      {
+        messages: summarySourceMessages,
+        contextWindowTokens,
+        compactThresholdTokens,
+        estimatedInputTokens,
+        estimatedPostCompactTokens,
+        summarizedMessageCount: messagesToSummarize.length,
+        configuredRecentGroupCount,
+        keepRecentGroupCount,
+        ...(compactThroughMessageId ? { compactThroughMessageId } : {})
+      }
+    );
+    const summaryInputMessages = Array.isArray(beforeHookContext.messages)
+      ? beforeHookContext.messages
+      : summarySourceMessages;
+
     try {
       const summaryResponse = await this.#modelGateway.generate({
         model: resolvedModel.model,
@@ -341,7 +404,7 @@ export class ContextCompactionService {
           },
           {
             role: "user",
-            content: renderCompactMessages(messagesToSummarize)
+            content: renderChatMessages(summaryInputMessages)
           }
         ]
       });
@@ -349,9 +412,7 @@ export class ContextCompactionService {
       if (!summaryText) {
         return engineMessages;
       }
-      const compactThroughMessageId = messagesToSummarize.at(-1)?.sourceMessageIds[0];
-
-      const boundaryMessage: Message = {
+      let boundaryMessage: Message = {
         id: this.#createId("msg"),
         sessionId: input.session.id,
         runId: input.run.id,
@@ -375,7 +436,7 @@ export class ContextCompactionService {
         },
         createdAt: this.#nowIso()
       };
-      const summaryMessage: Message = {
+      let summaryMessage: Message = {
         id: this.#createId("msg"),
         sessionId: input.session.id,
         runId: input.run.id,
@@ -401,6 +462,70 @@ export class ContextCompactionService {
         },
         createdAt: this.#nowIso()
       };
+      const afterHookContext = await this.#applyCompactionHooks(
+        input.workspace,
+        input.session,
+        input.run,
+        "after_context_compact",
+        {
+          summaryText,
+          boundaryMessage: {
+            content: boundaryMessage.content,
+            metadata: boundaryMessage.metadata
+          },
+          summaryMessage: {
+            content: summaryMessage.content,
+            metadata: summaryMessage.metadata
+          },
+          contextWindowTokens,
+          compactThresholdTokens,
+          estimatedInputTokens,
+          estimatedPostCompactTokens,
+          summarizedMessageCount: messagesToSummarize.length,
+          configuredRecentGroupCount,
+          keepRecentGroupCount,
+          ...(compactThroughMessageId ? { compactThroughMessageId } : {})
+        }
+      );
+
+      const boundaryPatch = isRecord(afterHookContext.boundaryMessage) ? afterHookContext.boundaryMessage : undefined;
+      if (boundaryPatch) {
+        boundaryMessage = {
+          ...boundaryMessage,
+          ...(typeof boundaryPatch.content === "string" ? { content: boundaryPatch.content } : {}),
+          ...(isRecord(boundaryPatch.metadata)
+            ? {
+                metadata: {
+                  ...(boundaryMessage.metadata ?? {}),
+                  ...boundaryPatch.metadata
+                }
+              }
+            : {})
+        };
+      }
+
+      const summaryPatch = isRecord(afterHookContext.summaryMessage) ? afterHookContext.summaryMessage : undefined;
+      if (summaryPatch) {
+        summaryMessage = {
+          ...summaryMessage,
+          ...(typeof summaryPatch.content === "string" ? { content: summaryPatch.content } : {}),
+          ...(isRecord(summaryPatch.metadata)
+            ? {
+                metadata: {
+                  ...(summaryMessage.metadata ?? {}),
+                  ...summaryPatch.metadata
+                }
+              }
+            : {})
+        };
+      }
+
+      if (typeof afterHookContext.summaryText === "string") {
+        summaryMessage = {
+          ...summaryMessage,
+          content: afterHookContext.summaryText
+        };
+      }
 
       await this.#messageRepository.create(boundaryMessage);
       await this.#appendEvent({

@@ -41,22 +41,38 @@ capabilities:
 | `events` | 是 | 触发事件列表 |
 | `matcher` | 否 | 正则过滤，匹配事件查询值 |
 | `handler` | 是 | Handler 定义 |
-| `capabilities` | 否 | 可操作对象（如 `rewrite_model_request`、`patch_tool_input`） |
+| `capabilities` | 否 | 可操作对象（如 `rewrite_model_request`、`rewrite_tool_request`） |
 
 ## 事件与 Matcher
 
-### 支持的事件
+### 当前已支持的 Hook 事件
 
-| 事件 | 触发时机 |
-| --- | --- |
-| `before_context_build` | System prompt 装配前 |
-| `after_context_build` | System prompt 装配后 |
-| `before_model_call` | LLM 调用前 |
-| `after_model_call` | LLM 响应后 |
-| `before_tool_dispatch` | Tool 执行前 |
-| `after_tool_dispatch` | Tool 执行后 |
-| `run_completed` | Run 成功完成 |
-| `run_failed` | Run 执行失败 |
+| 事件 | 触发时机 | 在执行链中的位置 |
+| --- | --- | --- |
+| `before_context_compact` | 自动 compact 摘要生成前 | compact 阈值判定通过、摘要输入消息确定之后，compact summary 模型调用之前 |
+| `after_context_compact` | 自动 compact 摘要生成后 | compact boundary / summary 生成之后、写入消息存储之前 |
+| `before_context_build` | Model context messages 组装前 | 自动 compact 完成之后，静态 system prompt 拼装之前 |
+| `after_context_build` | Model context messages 组装后 | 静态 prompt、history、system reminder 拼装完成之后 |
+| `before_model_call` | LLM 调用前 | 最终模型请求发出之前 |
+| `after_model_call` | LLM 响应后 | 模型完整响应返回之后 |
+| `before_tool_dispatch` | Tool 执行前 | executor 分发到 native / action / skill / MCP 之前 |
+| `after_tool_dispatch` | Tool 执行后 | tool 返回结果之后、结果回填模型之前 |
+| `run_completed` | Run 成功完成 | assistant 消息持久化、run 标记完成之后 |
+| `run_failed` | Run 执行失败 | run 标记失败或超时之后 |
+
+### 完整执行顺序
+
+当一次模型输入准备过程中发生自动 compact 时，hook 时间点顺序为：
+
+1. `before_context_compact`
+2. 生成 compact summary
+3. `after_context_compact`
+4. `before_context_build`
+5. 静态 system prompt + history + reminder 装配
+6. `after_context_build`
+7. `before_model_call`
+
+若本轮无需 compact，则直接从 `before_context_build` 开始。
 
 ### Matcher 匹配目标
 
@@ -67,6 +83,7 @@ capabilities:
 | `before/after_tool_dispatch` | `tool_name` |
 | `before/after_model_call` | `model_ref` |
 | `run_completed` / `run_failed` | `trigger_type` |
+| `before_context_compact` / `after_context_compact` | 忽略 matcher |
 | `before/after_context_build` | 忽略 matcher |
 
 未声明 `matcher` 时匹配该事件下的所有触发。
@@ -101,7 +118,7 @@ handler:
   method: POST
   timeout_seconds: 10
   headers:
-    Authorization: Bearer ${secrets.HOOK_TOKEN}
+    Authorization: Bearer ${env.HOOK_TOKEN}
 ```
 
 | 字段 | 必填 | 说明 |
@@ -170,6 +187,9 @@ handler:
 | --- | --- |
 | `before_model_call` | `model_ref`, `model_request` |
 | `after_model_call` | `model_ref`, `model_request`, `model_response` |
+| `before_context_compact` | `context.messages`、`contextWindowTokens`、`compactThresholdTokens`、`estimatedInputTokens`、`estimatedPostCompactTokens`、`summarizedMessageCount`、`configuredRecentGroupCount`、`keepRecentGroupCount`、`compactThroughMessageId?` |
+| `after_context_compact` | `summaryText`、`boundaryMessage`、`summaryMessage`、`contextWindowTokens`、`compactThresholdTokens`、`estimatedInputTokens`、`estimatedPostCompactTokens`、`summarizedMessageCount`、`configuredRecentGroupCount`、`keepRecentGroupCount`、`compactThroughMessageId?` |
+| `before_context_build` / `after_context_build` | `context.messages` |
 | `before_tool_dispatch` | `tool_name`, `tool_input`, `tool_call_id` |
 | `after_tool_dispatch` | `tool_name`, `tool_input`, `tool_output`, `tool_call_id` |
 | `run_completed` / `run_failed` | `trigger_type`, `run_status` |
@@ -232,7 +252,7 @@ handler:
   timeout_seconds: 5
 
 capabilities:
-  - patch_tool_input
+  - rewrite_tool_request
 ```
 
 ### `.openharness/hooks/scripts/check-command.js`

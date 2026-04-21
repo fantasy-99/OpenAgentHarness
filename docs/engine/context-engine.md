@@ -25,14 +25,23 @@
 
 ## 上下文装配顺序
 
-1. 按 `.openharness/prompts.yaml` 中的 `compose.order` 组装静态 system prompt 段
-2. session 历史消息
-3. 若发生 agent 切换，在最新 user message 附加 `<system_reminder>`
-4. 当前消息输入
+1. 基于 session 历史构建 Engine Messages
+2. 若触发自动 compact，执行 `before_context_compact` hook
+3. 若触发自动 compact，生成 compact summary
+4. 若触发自动 compact，执行 `after_context_compact` hook
+5. 执行 `before_context_build` hook
+6. 按 `.openharness/prompts.yaml` 中的 `compose.order` 组装静态 system prompt 段
+7. session 历史消息
+8. 若发生 agent 切换，在最新 user message 附加 `<system_reminder>`
+9. 执行 `after_context_build` hook
+10. 执行 `before_model_call` hook
+11. 当前消息输入对应的最终模型请求
 
 静态 system prompt 默认顺序：base → llm_optimized → agent prompt → actions catalog → `AGENTS.md` 原文 → skills catalog。若 `include_environment=true`，追加 environment 摘要。
 
 `AGENTS.md` 始终注入全文，不摘要、不裁剪。
+
+说明：`before_context_compact` / `after_context_compact` 早于 `before_context_build` / `after_context_build`。因此 compact hooks 可以看到压缩输入与压缩产物；context build hooks 看到的是 compact 完成后的上下文视图。
 
 ## Agent 选择规则
 

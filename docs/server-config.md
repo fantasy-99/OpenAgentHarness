@@ -121,6 +121,9 @@ llm:
 > OAH 对外仍保持统一的 `/sandboxes` API。切换 `sandbox.provider` 时，Web、OpenAPI 与上层 runtime 调用方式不变，差异只存在于服务端的 sandbox backend 配置。
 
 > **tip**
+> 这里保留 `/sandboxes` API、`/workspace` 根路径，以及 sandbox-scoped 文件/命令语义，是为了和 [E2B](https://github.com/e2b-dev/E2B) 的接口约定保持兼容而特意设计的。不要把它理解成暂时性的历史兼容层，也不要默认把文件接口改回 `/workspaces`。`/workspaces` API 本身仍然需要保留，继续负责 workspace metadata、catalog 和 lifecycle。
+
+> **tip**
 > `self_hosted` 和 `e2b` 的共同语义是：`oah-api` 不直接执行业务 run，而是把 workspace 路由到真实 sandbox；standalone worker 在 sandbox 内部持有活跃 workspace、本地文件状态和命令执行上下文。
 
 > **tip**
