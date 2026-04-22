@@ -9,7 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useStreamStore } from "../stores/stream-store";
 import { useUiStore } from "../stores/ui-store";
 import { formatTimestamp, statusTone, toneBadgeClass } from "../support";
-import type { Message } from "@oah/api-contracts";
+import type { Message, MessagePart } from "@oah/api-contracts";
 import type { useAppController } from "../use-app-controller";
 import { Badge } from "@/components/ui/badge";
 import { WorkspaceFileManagerPanel } from "./WorkspaceFileManagerPanel";
@@ -682,11 +682,13 @@ const ConversationComposer = memo(function ConversationComposer(props: Conversat
 function MessageContent({
   content,
   isUser,
-  messageMetadata
+  messageMetadata,
+  isStreaming = false
 }: {
   content: Message["content"];
   isUser?: boolean;
   messageMetadata?: Message["metadata"];
+  isStreaming?: boolean;
 }) {
   if (typeof content === "string") {
     return <ExpandableMarkdownText text={content} {...(isUser !== undefined ? { isUser } : {})} />;
@@ -700,32 +702,7 @@ function MessageContent({
   return (
     <div className="space-y-2">
       {reasoningParts.length > 0 && (
-        <details className="group/reasoning">
-          <summary className="list-none cursor-pointer select-none">
-            <span className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium transition ${toneBadgeClass("plum")}`}>
-              <Sparkles className="h-3 w-3 opacity-70" /> reasoning
-              <span className="opacity-50 text-[10px] group-open/reasoning:hidden">▸</span>
-              <span className="opacity-50 text-[10px] hidden group-open/reasoning:inline">▾</span>
-            </span>
-          </summary>
-          <div className={`mt-1.5 rounded-lg border px-3 py-2 ${toneBadgeClass("plum")}`}>
-            <div className="space-y-2">
-              {reasoningParts.map((part, i) =>
-                "text" in part && part.text ? (
-                  <div key={i}>
-                    <ExpandableMarkdownText
-                      text={part.text}
-                      collapseThreshold={1600}
-                      previewChars={700}
-                      expandLabel="Show full reasoning"
-                      collapseLabel="Collapse reasoning"
-                    />
-                  </div>
-                ) : null
-              )}
-            </div>
-          </div>
-        </details>
+        <ReasoningBlock parts={reasoningParts} isStreaming={isStreaming} />
       )}
       {textParts.map((part, i) => (
         <div key={i}>
@@ -772,6 +749,62 @@ function MessageContent({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function ReasoningBlock({
+  parts,
+  isStreaming
+}: {
+  parts: Extract<MessagePart, { type: "reasoning" }>[];
+  isStreaming: boolean;
+}) {
+  const [expanded, setExpanded] = useState(isStreaming);
+  const hasAutoExpandedRef = useRef(isStreaming);
+  const previousStreamingRef = useRef(isStreaming);
+
+  useEffect(() => {
+    if (isStreaming && parts.length > 0 && !hasAutoExpandedRef.current) {
+      hasAutoExpandedRef.current = true;
+      setExpanded(true);
+    }
+  }, [isStreaming, parts.length]);
+
+  useEffect(() => {
+    if (previousStreamingRef.current && !isStreaming) {
+      setExpanded(false);
+    }
+    previousStreamingRef.current = isStreaming;
+  }, [isStreaming]);
+
+  return (
+    <div className="group/reasoning">
+      <button type="button" className="cursor-pointer select-none" onClick={() => setExpanded((current) => !current)} aria-expanded={expanded}>
+        <span className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium transition ${toneBadgeClass("plum")}`}>
+          <Sparkles className="h-3 w-3 opacity-70" /> reasoning
+          <span className="opacity-50 text-[10px]">{expanded ? "▾" : "▸"}</span>
+        </span>
+      </button>
+      {expanded ? (
+        <div className={`mt-1.5 rounded-lg border px-3 py-2 ${toneBadgeClass("plum")}`}>
+          <div className="space-y-2">
+            {parts.map((part, i) =>
+              "text" in part && part.text ? (
+                <div key={i}>
+                  <ExpandableMarkdownText
+                    text={part.text}
+                    collapseThreshold={1600}
+                    previewChars={700}
+                    expandLabel="Show full reasoning"
+                    collapseLabel="Collapse reasoning"
+                  />
+                </div>
+              ) : null
+            )}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -826,7 +859,7 @@ const ConversationMessageRow = memo(function ConversationMessageRow(props: Conve
               : "selection-surface select-text rounded-2xl px-4 py-3 shadow-elegant border-elegant hover-lift bg-card"
           }
         >
-          <MessageContent content={message.content} isUser={isUser} messageMetadata={message.metadata} />
+          <MessageContent content={message.content} isUser={isUser} messageMetadata={message.metadata} isStreaming={isStreaming} />
           {isStreaming ? (
             <span className="mt-1 inline-block h-4 w-0.5 animate-pulse bg-current opacity-60" />
           ) : null}

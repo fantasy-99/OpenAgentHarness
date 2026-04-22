@@ -37,7 +37,7 @@ imports:
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
-| `default_agent` | 否 | 默认主 agent。目标必须存在且不能是纯 `subagent` |
+| `default_agent` | 否 | 默认主 agent。运行时必须能解析到当前可见 agent，且不能只是一种纯 `subagent` 形态 |
 | `models` | 否 | agent 可引用的模型别名表 |
 | `skill_dirs` | 否 | 额外 skill 搜索目录列表 |
 | `runtime` | 否 | 记录当前 workspace 来源的 runtime 名称 |
@@ -51,20 +51,19 @@ imports:
 
 ```yaml
 models:
-  default:
+  default: platform/openai-default
+  cheap: workspace/repo-model
+  tuned:
     ref: platform/openai-default
     temperature: 0.2
     top_p: 0.9
     max_tokens: 2048
-  fast:
-    ref: platform/kimi-k25
-  repo:
-    ref: workspace/repo-model
 ```
 
 | 规则 | 说明 |
 | --- | --- |
 | key | 别名，由 agent frontmatter 使用，例如 `model: default` |
+| 值类型 | 可以直接写成字符串 `platform/<name>` / `workspace/<name>`，也可以写成带 `ref` 的对象 |
 | `ref` | 具体模型引用，格式必须是 `platform/<name>` 或 `workspace/<name>` |
 | `temperature` / `top_p` / `max_tokens` | 该模型别名对应的默认推理参数 |
 | 解析时机 | workspace 加载阶段解析；运行时内部仍使用具体 `model_ref` |
@@ -86,8 +85,8 @@ skill_dirs:
 | 追加语义 | `skill_dirs` 追加额外目录，不替代默认目录 |
 | 路径解析 | 相对 workspace 根目录 |
 | 优先级 | `.openharness/skills/*` > `skill_dirs` 声明顺序 |
-| 跨层同名 | 记录 warning，高优先级覆盖 |
-| 同层同名 | 配置错误，加载失败 |
+| 同名处理 | 按扫描顺序“先到先得”；后面目录里的同名 skill 会被忽略 |
+| 同目录重复 | 同一个 skill 根目录下若解析出重名 skill，会直接报错 |
 
 ## `imports`
 
@@ -104,4 +103,4 @@ imports:
 | `tools` | 从 `paths.tool_dir` 导入到 workspace 的公共 tool 名称 |
 | `skills` | 从 `paths.skill_dir` 导入到 workspace 的公共 skill 名称 |
 
-仅用于 runtime 初始化。导入后 workspace 以它的 `Active Workspace Copy` 为准，不再依赖平台目录。引用不存在的 tool 或 skill 时，初始化失败。
+仅用于 runtime 初始化。导入后这些内容会被复制进 workspace 自己的 `.openharness/` 目录，之后以该 workspace 的 `Active Workspace Copy` 为准，不再依赖平台目录。引用不存在的 tool 或 skill 时，初始化失败。

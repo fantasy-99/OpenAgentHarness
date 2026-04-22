@@ -83,7 +83,7 @@ workspace/
 
 ## 自动发现规则
 
-运行时在 run 启动时扫描以下路径：
+workspace 在加载、创建和刷新时会解析以下路径；run 执行时使用的是已经解析好的 workspace 定义与活跃副本：
 
 | 路径 | 用途 |
 | --- | --- |
@@ -110,6 +110,7 @@ workspace/
 
 - 平台内建 agent 与 workspace agent 合并成可见 catalog；同名时 workspace 覆盖平台
 - 平台级与 workspace 级模型入口合并，不互相覆盖
+- skills、tools、actions、hooks 以当前 workspace 副本中的 `.openharness/` 声明为准；服务端 `paths.skill_dir` / `paths.tool_dir` 主要作为 runtime 初始化导入源，不会直接绕过 workspace 本地声明进入可见能力集
 - Agent 推荐通过 `settings.models` 中的别名引用模型
 - 显式参数只能选择当前 catalog 中的已有能力，不能扩展
 - 若未声明 `default_agent` 且调用方也未指定 agent，返回配置错误

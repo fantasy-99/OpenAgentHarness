@@ -83,7 +83,7 @@ workspace/
 
 ## Auto-Discovery
 
-The runtime scans these paths at run startup:
+The workspace parser resolves these paths when a workspace is loaded, created, or refreshed; individual runs then execute against that resolved workspace definition and active copy:
 
 | Path | Purpose |
 | --- | --- |
@@ -110,6 +110,7 @@ The runtime scans these paths at run startup:
 
 - Platform built-in agents and workspace agents merge into a visible catalog; workspace wins on name conflict
 - Platform and workspace model entries merge (no override)
+- Skills, tools, actions, and hooks come from the workspace copy's own `.openharness/` declarations. Server-level `paths.skill_dir` and `paths.tool_dir` are primarily runtime-initialization import sources rather than a second live capability layer
 - Agents should preferably reference model aliases declared in `settings.models`
 - Explicit parameters can only select from the current catalog, not extend it
 - If no `default_agent` is declared and the caller does not specify one, a config error is returned

@@ -16,24 +16,16 @@
 pnpm install
 ```
 
-### 第 2 步：启动基础设施
-
-启动 PostgreSQL 和 Redis（开发用 Docker Compose）：
+### 第 2 步：启动本地整套服务
 
 ```bash
 export OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server
 pnpm local:up
 ```
 
-### 第 3 步：启动后端
+这条命令会一次性启动本地整套 stack：`PostgreSQL`、`Redis`、`MinIO`、`oah-api`、`oah-controller`、`oah-sandbox`。其中 `oah-api` 对外监听 `http://127.0.0.1:8787`，`oah-sandbox` 在本地栈中承载 standalone worker，并会在启动阶段自动执行一次 storage sync。
 
-```bash
-pnpm local:up
-```
-
-本地整套服务会启动 `oah-api`、`oah-controller` 和 `oah-sandbox`。其中 `oah-api` 对外监听 `http://127.0.0.1:8787`，`oah-sandbox` 在本地栈中承载 standalone worker。
-
-### 第 4 步：启动调试控制台
+### 第 3 步：启动调试控制台
 
 ```bash
 pnpm dev:web

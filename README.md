@@ -65,10 +65,11 @@ The **workspace** is the core customization boundary. A single engine can host m
 
 Two workspaces on the same engine can behave completely differently for different teams, repos, or product scenarios.
 
-| Workspace Type | Description |
+Current public workspace shape:
+
+| Workspace Kind | Description |
 | --- | --- |
-| **`project`** | Writable, executable — enables shell, actions, skills, tools, and hooks |
-| **`chat`** | Read-only conversation mode — no file modifications |
+| **`project`** | The standard workspace kind. Writable execution, local file access, actions, skills, tools, and hooks all hang off the same workspace model. |
 
 ## Capability Model
 

@@ -11,9 +11,9 @@ server:
   host: 0.0.0.0          # 监听地址
   port: 8787              # 监听端口
 
-storage:
-  postgres_url: ${env.DATABASE_URL}   # PostgreSQL 连接串
-  redis_url: ${env.REDIS_URL}         # Redis 连接串（可选）
+storage: {}
+  # postgres_url: ${env.DATABASE_URL}   # 可选；省略时回退到本地 SQLite shadow 存储
+  # redis_url: ${env.REDIS_URL}         # 可选；省略时 run 在 API 进程内直接执行
 
 sandbox:
   provider: embedded                  # embedded | self_hosted | e2b
@@ -54,6 +54,9 @@ llm:
 > **info**
 > 支持 `${env.VAR_NAME}` 语法引用环境变量。
 
+> **tip**
+> `storage.postgres_url` 和 `storage.redis_url` 都不是强制项。省略 PostgreSQL 时会使用本地 SQLite shadow 存储；省略 Redis 时，run 会在当前 API 进程内串行执行。
+
 ---
 
 ## 配置字段
@@ -69,8 +72,11 @@ llm:
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `postgres_url` | string | 是 | PostgreSQL 连接串；未指定 `serviceName` 的 workspace 会直接使用该库，指定 `serviceName` 后默认库只保留 workspace/session/run 索引，业务真值会路由到同前缀的派生库（如 `OAH-acme`） |
+| `postgres_url` | string | 否 | PostgreSQL 连接串；未指定 `serviceName` 的 workspace 会直接使用该库，指定 `serviceName` 后默认库只保留 workspace/session/run 索引，业务真值会路由到同前缀的派生库（如 `OAH-acme`）。省略时回退到本地 SQLite shadow 存储 |
 | `redis_url` | string | 否 | Redis 连接串，用于队列、锁、限流、SSE 事件分发 |
+
+> **tip**
+> 不配置 PostgreSQL 时，workspace/session/run 的持久化会回退到本地 SQLite shadow；适合单机开发，不适合作为多实例共享事实源。
 
 > **tip**
 > 不配置 Redis 时，Run 会在 API 进程内直接执行（适合本地开发）。配置 Redis 后支持多实例 Worker 消费队列。
@@ -115,6 +121,10 @@ llm:
 | `self_hosted.headers` | object | 可选。附加到远端 self-hosted sandbox 请求的固定请求头 |
 | `e2b.base_url` | string | `provider=e2b` 时可选。用于覆盖原生 E2B API 地址；若填写旧的 `/internal/v1` 兼容地址，OAH 也会自动归一化 |
 | `e2b.api_key` | string | 可选。配置后会以 `Authorization: Bearer <key>` 形式附加到 e2b 请求 |
+| `e2b.domain` | string | 可选。覆盖 E2B sandbox domain |
+| `e2b.template` | string | 可选。指定创建 sandbox 时使用的 E2B template |
+| `e2b.timeout_ms` | number | 可选。创建 / 解析 sandbox 的超时时间 |
+| `e2b.request_timeout_ms` | number | 可选。单次 E2B HTTP 请求超时时间 |
 | `e2b.headers` | object | 可选。附加到 e2b 请求的固定请求头 |
 
 > **tip**
@@ -143,8 +153,18 @@ llm:
 | `runtime_state_dir` | string | 运行时私有状态目录；用于 SQLite shadow 数据、归档导出和遗留 materialization 状态。默认是 `dirname(workspace_dir)/.openharness` |
 | `runtime_dir` | string | workspace runtime 目录 |
 | `model_dir` | string | 平台模型定义目录 |
-| `tool_dir` | string | 公共 MCP tool server 定义目录 |
-| `skill_dir` | string | 公共 skill 目录 |
+| `tool_dir` | string | 平台级 tool 源目录，主要用于 runtime 初始化导入与单 workspace 模式下的共享来源 |
+| `skill_dir` | string | 平台级 skill 源目录，主要用于 runtime 初始化导入与单 workspace 模式下的共享来源 |
+
+### `workspace`
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `materialization.idle_ttl_ms` | number | Active Workspace Copy 空闲多久后触发 flush / 回收。默认 `1800000` |
+| `materialization.maintenance_interval_ms` | number | workspace materialization 后台维护周期。默认 `5000` |
+
+> **tip**
+> `workspace.materialization` 主要影响对象存储 backing store、远端 sandbox 和 active workspace copy 的空闲维护节奏；不改变 workspace 的声明式能力模型。
 
 ### `llm`
 
@@ -169,6 +189,18 @@ llm:
 | `standalone.ready_sessions_per_capacity_unit` | number | controller 按执行容量单元估算 ready queue 压力时使用的目标密度；默认 `1` |
 | `standalone.reserved_capacity_for_subagent` | number | 预留给 subagent backlog 的最小执行容量；默认 `1` |
 | `standalone.slots_per_pod` | number | legacy 兼容字段。当前 controller 不再按这个静态值计算 sandbox 副本数，而是使用 worker 实时上报的容量聚合结果 |
+| `controller.scale_interval_ms` | number | controller 观测 backlog / worker registry 并重新计算目标副本数的周期 |
+| `controller.scale_up_window` | number | 连续多少个高压采样周期后才扩容 |
+| `controller.scale_down_window` | number | 连续多少个低压采样周期后才缩容 |
+| `controller.cooldown_ms` | number | 两次 controller 扩缩容动作之间的冷却时间 |
+| `controller.scale_up_busy_ratio_threshold` | number | 允许用 busy ratio 触发扩容的阈值，范围 `0..1` |
+| `controller.scale_up_max_ready_age_ms` | number | 最老可调度 session 等待时长超过该阈值时，可触发老化扩容 |
+| `controller.leader_election.type` | string | controller leader election 类型，支持 `noop`、`kubernetes` |
+| `controller.leader_election.kubernetes.*` | object | Kubernetes lease 配置，包括 namespace、lease_name、api_url、token_file、ca_file、skip_tls_verify、identity 等 |
+| `controller.scale_target.type` | string | scale target 类型，支持 `noop`、`kubernetes`、`docker_compose` |
+| `controller.scale_target.allow_scale_down` | boolean | 是否允许 controller 主动缩容 |
+| `controller.scale_target.kubernetes.*` | object | Kubernetes Deployment `/scale` 配置，包括 namespace、deployment、label_selector、api_url、token_file、ca_file、skip_tls_verify |
+| `controller.scale_target.docker_compose.*` | object | 本地 Docker Compose 缩放配置，包括 compose_file、project_name、service、command |
 
 > **tip**
 > 当前 controller 的职责边界已经固定为“只管理 sandbox fleet”。sandbox 内 worker 要开几个线程、几个 slot、是否多进程，都由 worker 自己决定并通过 registry 上报容量；controller 只消费这些观测值来决定 sandbox 副本数与放置策略。
@@ -230,17 +262,17 @@ openai-default:
 
 ### `tool_dir`
 
-公共 MCP tool server 定义。目录结构建议与 workspace `.openharness/tools` 保持一致（`settings.yaml` + `servers/*`）。由服务端统一加载，作为平台级能力参与 catalog 组装。
+公共 MCP tool 源目录。目录结构建议与 workspace `.openharness/tools` 保持一致（`settings.yaml` + `servers/*`）。当前主要用途是给 runtime 初始化时的 `imports.tools` 提供导入源，以及在单 workspace 模式下提供共享 tool 来源。
 
 > **tip**
 > 当 OAH 运行在 Docker 容器内时，HTTP MCP server 若配置为 `http://127.0.0.1:...` 或 `http://localhost:...`，运行时会自动改写为宿主机别名，默认使用 `host.docker.internal`。如需覆盖，可设置 `OAH_DOCKER_HOST_ALIAS`。
 
 ### `skill_dir`
 
-公共 skill 定义。与 workspace `.openharness/skills` 合并组成可见 skill 集合。同名 skill 中 workspace 级优先。
+公共 skill 源目录。当前主要用途是给 runtime 初始化时的 `imports.skills` 提供导入源，以及在单 workspace 模式下提供共享 skill 来源。
 
 > **warning**
-> `tool_dir` 和 `skill_dir` 的内容主要在 runtime 初始化时导入。workspace 运行时默认只使用自身 `.openharness` 目录中声明的能力。
+> `tool_dir` 和 `skill_dir` 的内容主要在 runtime 初始化时导入。workspace 运行时默认只使用自身 `.openharness` 目录中声明的能力，以及已经被导入到该 workspace 副本里的内容。
 
 ---
 

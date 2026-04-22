@@ -37,7 +37,7 @@ imports:
 
 | Field | Required | Description |
 | --- | --- | --- |
-| `default_agent` | No | Default primary agent. Must exist and not be a pure `subagent` |
+| `default_agent` | No | Default primary agent. At runtime it must resolve to a visible agent and cannot point to a pure `subagent`-only definition |
 | `models` | No | Model alias map that agents can reference |
 | `skill_dirs` | No | Additional skill search directories |
 | `runtime` | No | Records which runtime the workspace was initialized from |
@@ -51,20 +51,19 @@ imports:
 
 ```yaml
 models:
-  default:
+  default: platform/openai-default
+  cheap: workspace/repo-model
+  tuned:
     ref: platform/openai-default
     temperature: 0.2
     top_p: 0.9
     max_tokens: 2048
-  fast:
-    ref: platform/kimi-k25
-  repo:
-    ref: workspace/repo-model
 ```
 
 | Rule | Details |
 | --- | --- |
 | key | Alias used by agent frontmatter, for example `model: default` |
+| value shape | Either a shorthand string such as `platform/<name>` / `workspace/<name>` or an object with `ref` plus optional inference defaults |
 | `ref` | Concrete model ref, must be `platform/<name>` or `workspace/<name>` |
 | `temperature` / `top_p` / `max_tokens` | Default inference parameters for that model alias |
 | resolution time | Resolved when the workspace loads; the runtime still operates on concrete `model_ref`s internally |
@@ -86,8 +85,8 @@ skill_dirs:
 | Additive | `skill_dirs` adds directories; it does not replace the default |
 | Path resolution | Relative to the workspace root |
 | Priority | `.openharness/skills/*` > `skill_dirs` declaration order |
-| Cross-tier conflict | Warning logged; higher priority wins |
-| Same-tier conflict | Config error; loading fails |
+| Name conflict | First match wins by scan order; later directories with the same skill name are ignored |
+| Duplicate inside one root | If one skill root resolves to duplicate names, loading fails |
 
 ## `imports`
 
@@ -104,4 +103,4 @@ imports:
 | `tools` | Platform tools to copy into the workspace from `paths.tool_dir` |
 | `skills` | Platform skills to copy into the workspace from `paths.skill_dir` |
 
-These are only used during runtime initialization. After import, the workspace uses its `Active Workspace Copy` and no longer depends on the platform directory. Referencing a nonexistent tool or skill causes initialization to fail.
+These are only used during runtime initialization. Imported tools and skills are copied into the workspace's own `.openharness/` tree, and the runtime then works from that `Active Workspace Copy` instead of reading the platform directory live. Referencing a nonexistent tool or skill causes initialization to fail.

@@ -424,7 +424,7 @@ function RuntimeSidebar(props: SidebarProps) {
             </div>
           ) : (
             workspaceSessionGroups.map(({ entry, workspaceSessions, childSessionsByParentId, topLevelSessions, lastEditedAt }) => {
-              const isExpanded = expandedWorkspaceIdSet.has(entry.id) || entry.id === props.activeWorkspaceId;
+              const isExpanded = expandedWorkspaceIdSet.has(entry.id);
               return (
                 <div key={entry.id} className="runtime-workspace-group space-y-1.5">
                   <WorkspaceNavItem

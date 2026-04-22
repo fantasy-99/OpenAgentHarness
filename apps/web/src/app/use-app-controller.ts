@@ -1566,6 +1566,7 @@ export function useAppController() {
 
     const eventMessageId = typeof event.data.messageId === "string" ? event.data.messageId : undefined;
     const eventMetadata = isRecord(event.data.metadata) ? event.data.metadata : undefined;
+    const eventStructuredContent = normalizeMessageContent(event.data.content);
     const eventToolCallId = typeof event.data.toolCallId === "string" ? event.data.toolCallId : undefined;
     const eventToolName = typeof event.data.toolName === "string" ? event.data.toolName : undefined;
     const eventToolStatus =
@@ -1657,7 +1658,7 @@ export function useAppController() {
       event.event === "message.delta" &&
       typeof event.runId === "string" &&
       typeof eventMessageId === "string" &&
-      typeof event.data.delta === "string"
+      (typeof event.data.delta === "string" || eventStructuredContent !== null)
     ) {
       const runId = event.runId;
       const liveMessageKey = `message:${eventMessageId}`;
@@ -1671,7 +1672,11 @@ export function useAppController() {
           runId,
           sessionId,
           role: "assistant",
-          content: `${typeof current[liveMessageKey]?.content === "string" ? current[liveMessageKey].content : ""}${event.data.delta}`,
+          content:
+            eventStructuredContent ??
+            `${typeof current[liveMessageKey]?.content === "string" ? current[liveMessageKey].content : ""}${
+              typeof event.data.delta === "string" ? event.data.delta : ""
+            }`,
           ...(() => {
             const metadata = current[liveMessageKey]?.metadata ?? eventMetadata;
             return metadata ? { metadata } : {};

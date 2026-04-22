@@ -16,24 +16,16 @@
 pnpm install
 ```
 
-### Step 2: Start infrastructure
-
-Start PostgreSQL and Redis (Docker Compose for development):
+### Step 2: Start the full local stack
 
 ```bash
 export OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server
 pnpm local:up
 ```
 
-### Step 3: Start the backend
+This single command starts the full local stack: `PostgreSQL`, `Redis`, `MinIO`, `oah-api`, `oah-controller`, and `oah-sandbox`. `oah-api` listens on `http://127.0.0.1:8787`, `oah-sandbox` hosts the standalone worker in the local topology, and the startup flow also runs one storage sync automatically.
 
-```bash
-pnpm local:up
-```
-
-The local stack starts `oah-api`, `oah-controller`, and `oah-sandbox`. `oah-api` listens on `http://127.0.0.1:8787`, and `oah-sandbox` carries the standalone worker in the local topology.
-
-### Step 4: Start the debug console
+### Step 3: Start the debug console
 
 ```bash
 pnpm dev:web
@@ -80,6 +72,7 @@ Optional flags: `--tool-dir`, `--skill-dir`, `--host`, `--port`
 | `OAH_DEPLOY_ROOT=/absolute/path pnpm storage:sync` | Sync readonly data from the deploy root to MinIO (does not include `source/workspaces` by default) |
 | `OAH_DEPLOY_ROOT=/absolute/path pnpm storage:sync -- --include-workspaces` | Also sync `source/workspaces` to MinIO |
 | `OAH_DEPLOY_ROOT=/absolute/path pnpm local:up` | Start the full local stack (`oah-api` / `oah-controller` / `oah-sandbox`) |
+| `OAH_DEPLOY_ROOT=/absolute/path OAH_SKIP_BUILD=1 pnpm local:up` | Reuse an already-built local OAH image and skip Docker build |
 | `pnpm local:down` | Stop the full local stack |
 | `pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts -- --api-only --config ./server.example.yaml` | Start `oah-api` only |
 | `pnpm exec tsx --tsconfig ./apps/controller/tsconfig.json ./apps/controller/src/index.ts -- --config ./server.example.yaml` | Start `oah-controller` only |

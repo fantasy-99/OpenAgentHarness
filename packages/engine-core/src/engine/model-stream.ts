@@ -8,6 +8,7 @@ import type {
   EngineToolSet,
   WorkspaceRecord
 } from "../types.js";
+import { assistantContentFromModelOutput } from "../execution-message-content.js";
 import type { ModelExecutionInputSnapshot, ToolErrorContentPart } from "./model-call-serialization.js";
 
 interface RunExecutionContextLike {
@@ -512,6 +513,40 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
           (typeof step.text === "string" || Array.isArray(step.content) || Array.isArray(step.reasoning))
         ) {
           this.#finalAssistantStep = step;
+          if (Array.isArray(step.content) || Array.isArray(step.reasoning)) {
+            const liveStructuredContent = assistantContentFromModelOutput({
+              text: step.text,
+              content: step.content,
+              reasoning: step.reasoning
+            });
+            if (Array.isArray(liveStructuredContent)) {
+              const assistantMessage = await this.#messages.ensureAssistantMessage(
+                this.#session,
+                this.#run,
+                this.#assistantMessage,
+                this.#allMessages,
+                this.#accumulatedText,
+                messageMetadata
+              );
+              this.#assistantMessage = assistantMessage;
+              const deltaEventMetadata = buildDeltaEventMetadata(
+                assistantMessage.metadata,
+                this.#latestDeltaSystemMessageSignature
+              );
+              this.#latestDeltaSystemMessageSignature = deltaEventMetadata.systemMessageSignature;
+              await this.#messages.appendEvent({
+                sessionId: this.#session.id,
+                runId: this.#run.id,
+                event: "message.delta",
+                data: {
+                  runId: this.#run.id,
+                  messageId: assistantMessage.id,
+                  content: liveStructuredContent,
+                  ...(deltaEventMetadata.metadata ? { metadata: deltaEventMetadata.metadata } : {})
+                }
+              });
+            }
+          }
         }
         if (step.toolCalls.length > 0) {
           await this.#messages.persistAssistantStepText(

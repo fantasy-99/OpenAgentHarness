@@ -275,6 +275,55 @@ describe("buildRuntimeViewModel", () => {
     });
   });
 
+  it("preserves structured live assistant reasoning content in the conversation view", () => {
+    const viewModel = buildRuntimeViewModel({
+      messages: [],
+      queuedMessageIds: new Set(),
+      runSteps: [createModelCallStep()],
+      deferredEvents: [],
+      liveMessagesByKey: {
+        "message:msg_streaming": {
+          persistedMessageId: "msg_streaming",
+          runId: "run_1",
+          sessionId: "ses_1",
+          role: "assistant",
+          content: [
+            {
+              type: "reasoning",
+              text: "thinking step"
+            },
+            {
+              type: "text",
+              text: "final answer"
+            }
+          ],
+          createdAt: "2026-04-07T00:00:05.000Z"
+        }
+      },
+      selectedTraceId: "",
+      selectedMessageId: "",
+      selectedStepId: "",
+      selectedEventId: "",
+      sessionId: "ses_1"
+    });
+
+    expect(viewModel.messageFeed).toHaveLength(1);
+    expect(viewModel.messageFeed[0]).toMatchObject({
+      id: "live:msg_streaming",
+      role: "assistant",
+      content: [
+        {
+          type: "reasoning",
+          text: "thinking step"
+        },
+        {
+          type: "text",
+          text: "final answer"
+        }
+      ]
+    });
+  });
+
   it("renders live tool-call and tool-result messages before persistence catches up", () => {
     const viewModel = buildRuntimeViewModel({
       messages: [],

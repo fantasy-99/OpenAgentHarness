@@ -11,9 +11,9 @@ server:
   host: 0.0.0.0          # Listen address
   port: 8787              # Listen port
 
-storage:
-  postgres_url: ${env.DATABASE_URL}   # PostgreSQL connection string
-  redis_url: ${env.REDIS_URL}         # Redis connection string (optional)
+storage: {}
+  # postgres_url: ${env.DATABASE_URL}   # Optional; falls back to local SQLite shadow storage when omitted
+  # redis_url: ${env.REDIS_URL}         # Optional; runs execute inline in the API process when omitted
 
 sandbox:
   provider: embedded                  # embedded | self_hosted | e2b
@@ -36,12 +36,26 @@ paths:
   tool_dir: /srv/openharness/tools                 # Platform tool directory
   skill_dir: /srv/openharness/skills               # Platform skill directory
 
+workers:
+  embedded:
+    min_count: 2                # Minimum worker count in API + embedded worker mode
+    max_count: 4                # Upper bound for light local autoscaling
+    scale_interval_ms: 1000     # Scaling check interval
+    idle_ttl_ms: 30000          # How long surplus workers may stay idle before cleanup
+    scale_up_window: 2          # Consecutive high-pressure samples required before scale-up
+    scale_down_window: 2        # Consecutive low-pressure samples required before scale-down
+    cooldown_ms: 1000           # Minimum cooldown between scaling actions
+    reserved_capacity_for_subagent: 1  # Spare capacity reserved for subagent backlog
+
 llm:
   default_model: openai-default   # Default model name (must exist in model_dir)
 ```
 
 > **info**
 > Use `${env.VAR_NAME}` syntax to reference environment variables.
+
+> **tip**
+> Neither `storage.postgres_url` nor `storage.redis_url` is mandatory. Omitting PostgreSQL falls back to local SQLite shadow persistence; omitting Redis keeps run execution inline in the current API process.
 
 ---
 
@@ -58,8 +72,11 @@ llm:
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `postgres_url` | string | Yes | PostgreSQL connection string. Workspaces without `serviceName` use this database directly; once `serviceName` is set, the default database keeps only the workspace/session/run routing index while runtime truth is routed to a sibling derived database name (for example `OAH-acme`). |
+| `postgres_url` | string | No | PostgreSQL connection string. Workspaces without `serviceName` use this database directly; once `serviceName` is set, the default database keeps only the workspace/session/run routing index while runtime truth is routed to a sibling derived database name (for example `OAH-acme`). When omitted, OAH falls back to local SQLite shadow persistence. |
 | `redis_url` | string | No | Redis connection string. Used for queues, locks, rate limiting, and SSE event fanout. |
+
+> **tip**
+> Without PostgreSQL, workspace/session/run persistence falls back to local SQLite shadow state. That is fine for single-node development, but it is not a shared source of truth for multi-instance deployments.
 
 > **tip**
 > Without Redis, runs execute in-process on the API server (suitable for local dev). With Redis, multiple worker instances can consume the queue.
@@ -104,6 +121,10 @@ llm:
 | `self_hosted.headers` | object | Optional static headers attached to remote self-hosted sandbox requests. |
 | `e2b.base_url` | string | Optional when `provider=e2b`. Overrides the native E2B API base URL; legacy `/internal/v1`-style URLs are normalized automatically. |
 | `e2b.api_key` | string | Optional. When set, OAH sends it as `Authorization: Bearer <key>` on e2b requests. |
+| `e2b.domain` | string | Optional. Overrides the E2B sandbox domain. |
+| `e2b.template` | string | Optional. Selects the E2B template used when creating sandboxes. |
+| `e2b.timeout_ms` | number | Optional. Timeout for sandbox create / resolve operations. |
+| `e2b.request_timeout_ms` | number | Optional. Timeout for individual E2B HTTP requests. |
 | `e2b.headers` | object | Optional static headers attached to e2b requests. |
 
 > **tip**
@@ -132,8 +153,18 @@ llm:
 | `runtime_state_dir` | string | Runtime-private state root for SQLite shadow data, archive exports, and legacy materialization state. Defaults to `dirname(workspace_dir)/.openharness` |
 | `runtime_dir` | string | Workspace runtime directory |
 | `model_dir` | string | Platform model definition directory |
-| `tool_dir` | string | Platform MCP tool server definition directory |
-| `skill_dir` | string | Platform skill directory |
+| `tool_dir` | string | Platform tool source directory, primarily used for runtime imports and shared single-workspace sources |
+| `skill_dir` | string | Platform skill source directory, primarily used for runtime imports and shared single-workspace sources |
+
+### `workspace`
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `materialization.idle_ttl_ms` | number | How long an active workspace copy may stay idle before flush / cleanup is considered. Default `1800000`. |
+| `materialization.maintenance_interval_ms` | number | Background maintenance interval for workspace materialization. Default `5000`. |
+
+> **tip**
+> `workspace.materialization` primarily affects object-storage backing stores, remote sandboxes, and active workspace-copy lifecycle timing. It does not change the declarative workspace capability model.
 
 ### `llm`
 
@@ -158,6 +189,18 @@ llm:
 | `standalone.ready_sessions_per_capacity_unit` | number | Queue-density target used by the controller when translating observed worker capacity into sandbox replica demand. |
 | `standalone.reserved_capacity_for_subagent` | number | Minimum observed execution capacity reserved for subagent backlog. |
 | `standalone.slots_per_pod` | number | Legacy compatibility field. The controller no longer uses this static value to size sandbox replicas and instead relies on worker-reported observed capacity. |
+| `controller.scale_interval_ms` | number | How often the controller samples backlog / worker-registry state and recomputes desired replicas. |
+| `controller.scale_up_window` | number | Consecutive high-pressure samples required before scaling up. |
+| `controller.scale_down_window` | number | Consecutive low-pressure samples required before scaling down. |
+| `controller.cooldown_ms` | number | Cooldown between controller scaling actions. |
+| `controller.scale_up_busy_ratio_threshold` | number | Busy-ratio threshold in the range `0..1` that may trigger extra scale-up. |
+| `controller.scale_up_max_ready_age_ms` | number | Allows scale-up when the oldest schedulable ready session exceeds this age. |
+| `controller.leader_election.type` | string | Leader-election type for the controller. Supports `noop` and `kubernetes`. |
+| `controller.leader_election.kubernetes.*` | object | Kubernetes lease settings such as namespace, lease name, API URL, token file, CA file, skip TLS verify, and identity. |
+| `controller.scale_target.type` | string | Scale-target backend. Supports `noop`, `kubernetes`, and `docker_compose`. |
+| `controller.scale_target.allow_scale_down` | boolean | Whether the controller may actively scale down replicas. |
+| `controller.scale_target.kubernetes.*` | object | Kubernetes Deployment `/scale` target settings such as namespace, deployment, label selector, API URL, token file, CA file, and skip TLS verify. |
+| `controller.scale_target.docker_compose.*` | object | Local Docker Compose scaling settings such as compose file, project name, service, and command. |
 
 > **tip**
 > The controller boundary is now explicitly sandbox-only. How many threads, slots, or processes run inside a sandbox is owned by the worker runtime itself; the controller only consumes the observed capacity those workers publish and turns it into sandbox replica and placement decisions.
@@ -219,17 +262,17 @@ openai-default:
 
 ### `tool_dir`
 
-Platform-level MCP tool server definitions. Directory structure should match workspace `.openharness/tools` (`settings.yaml` + `servers/*`). Loaded by the server and assembled into the platform capability catalog.
+Platform-level tool source directory. Its structure should match workspace `.openharness/tools` (`settings.yaml` + `servers/*`). In the current implementation it is primarily used as the import source for runtime `imports.tools`, and as a shared source in single-workspace mode.
 
 > **tip**
 > When OAH runs inside Docker, HTTP MCP servers configured with `http://127.0.0.1:...` or `http://localhost:...` are rewritten at runtime to a host-reachable alias. The default alias is `host.docker.internal`. Override it with `OAH_DOCKER_HOST_ALIAS` if needed.
 
 ### `skill_dir`
 
-Platform-level skill definitions. Merged with workspace `.openharness/skills` to form the visible skill set. Workspace-level skills take precedence over platform skills with the same name.
+Platform-level skill source directory. In the current implementation it is primarily used as the import source for runtime `imports.skills`, and as a shared source in single-workspace mode.
 
 > **warning**
-> Contents of `tool_dir` and `skill_dir` are primarily imported during runtime initialization. At runtime, workspaces use only capabilities declared in their own `.openharness` directory.
+> Contents of `tool_dir` and `skill_dir` are primarily imported during runtime initialization. At runtime, workspaces use only capabilities declared in their own `.openharness` directory, plus any content already copied into that workspace during initialization.
 
 ---
 
@@ -245,11 +288,41 @@ Platform-level skill definitions. Merged with workspace `.openharness/skills` to
 
 ## Environment Variable Overrides
 
-In addition to YAML config, the server also reads a few runtime environment variables.
+In addition to YAML config, the server also reads a set of runtime environment variables for recovery, worker-pool behavior, and diagnostics.
+
+### Stale Run Recovery
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `OAH_DOCKER_HOST_ALIAS` | `host.docker.internal` | Host alias used when OAH runs inside Docker and an HTTP MCP server is configured with a loopback URL such as `127.0.0.1` or `localhost` |
+| `OAH_STALE_RUN_RECOVERY_STRATEGY` | `requeue_running` with Redis, otherwise `fail` | Stale-run recovery strategy. Supports `fail`, `requeue_running`, and `requeue_all`. |
+| `OAH_STALE_RUN_RECOVERY_MAX_ATTEMPTS` | `1` | Maximum number of automatic requeue attempts per run. |
+
+### Embedded Worker Pool
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `OAH_EMBEDDED_WORKER_MIN` | `2` with Redis, otherwise `1` | Minimum embedded worker instances; standalone worker processes always keep at least `1`. |
+| `OAH_EMBEDDED_WORKER_MAX` | Same as `OAH_EMBEDDED_WORKER_MIN` | Maximum embedded worker instances. |
+| `OAH_EMBEDDED_WORKER_SCALE_INTERVAL_MS` | `5000` | Embedded worker pool rebalance interval. |
+| `OAH_EMBEDDED_WORKER_READY_SESSIONS_PER_CAPACITY_UNIT` | `1` | Target ready-session density per observed execution-capacity unit. |
+| `OAH_EMBEDDED_WORKER_SCALE_UP_COOLDOWN_MS` | `1000` | Scale-up cooldown. |
+| `OAH_EMBEDDED_WORKER_SCALE_DOWN_COOLDOWN_MS` | `15000` | Scale-down cooldown. |
+| `OAH_EMBEDDED_WORKER_SCALE_UP_SAMPLE_SIZE` | `2` | Consecutive high-pressure samples required before scaling up. |
+| `OAH_EMBEDDED_WORKER_SCALE_DOWN_SAMPLE_SIZE` | `3` | Consecutive low-pressure samples required before scaling down. |
+| `OAH_EMBEDDED_WORKER_SCALE_UP_BUSY_RATIO_PERCENT` | `75` | Busy-ratio threshold that may unlock extra scale-up when combined with queue age. |
+| `OAH_EMBEDDED_WORKER_SCALE_UP_MAX_READY_AGE_MS` | `2000` | Allows age-driven scale-up once the oldest schedulable session waits longer than this. |
+| `OAH_EMBEDDED_WORKER_RESERVED_CAPACITY_FOR_SUBAGENT` | `1` | Extra spare capacity reserved when subagent backlog appears; may be set to `0`. |
+
+### Other Runtime Parameters
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `OAH_HISTORY_EVENT_RETENTION_DAYS` | `7` | Retention window for historical events in PostgreSQL mode. |
+| `OAH_RUNTIME_DEBUG` | unset | Mirrors runtime debug logs to stdout when set. |
+| `OAH_DOCKER_HOST_ALIAS` | `host.docker.internal` | Host alias used when OAH runs inside Docker and an HTTP MCP server is configured with a loopback URL such as `127.0.0.1` or `localhost`. |
+
+> **tip**
+> With Redis plus `API + embedded worker`, OAH defaults to at least `2` embedded workers and performs lightweight scaling based on the gap between ready queue pressure and available worker capacity. `scale_up_window`, `scale_down_window`, and `cooldown_ms` still gate each action. If subagent backlog appears, the pool first tries to restore `reserved_capacity_for_subagent` so parent runs are less likely to be starved by normal backlog.
 
 > **tip**
 > `OAH_DOCKER_HOST_ALIAS` is mainly for the case where containerized OAH needs to reach an HTTP MCP server running on the host machine. The local `docker-compose.local.yml` already injects `host.docker.internal:host-gateway`, so the default works in most setups.

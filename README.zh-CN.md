@@ -65,10 +65,11 @@ Engine 分为清晰的层次：
 
 两个 workspace 即使跑在同一个 Engine 上，也可以为不同团队、仓库或产品场景表现出完全不同的行为。
 
+当前公开的 workspace 形态：
+
 | Workspace 类型 | 说明 |
 | --- | --- |
-| **`project`** | 可写、可执行——启用 shell、action、skill、tool、hook |
-| **`chat`** | 只读对话模式——不修改文件 |
+| **`project`** | 当前标准 workspace 类型。可写、可执行；shell、action、skill、tool、hook 等能力都挂在同一套 workspace 模型上。 |
 
 ## 能力模型
 
