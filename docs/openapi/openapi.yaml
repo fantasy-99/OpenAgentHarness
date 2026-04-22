@@ -699,6 +699,12 @@ paths:
       tags: [Messages]
       summary: Create session message and enqueue run
       operationId: createSessionMessage
+      description: |
+        Creates a user message and enqueues a new run.
+
+        Default behavior is non-interrupting: if the session already has an active run,
+        the new message still creates a queued run and waits for serial execution.
+        Pass `runningRunBehavior: interrupt` to request cancellation of the active run first.
       parameters:
         - $ref: '#/components/parameters/SessionId'
       requestBody:
@@ -2475,6 +2481,13 @@ components:
           minLength: 1
         metadata:
           $ref: '#/components/schemas/JsonObject'
+        runningRunBehavior:
+          type: string
+          enum: [queue, interrupt]
+          description: |
+            Optional behavior when the session already has an active run.
+            Defaults to `queue`. Use `interrupt` to request cancellation of the active run
+            before enqueuing the new message.
       additionalProperties: false
     MessageAccepted:
       type: object

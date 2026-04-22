@@ -580,7 +580,7 @@ curl ${escapeHtml(JSON.stringify(apiIndex))}</pre>
           </article>
           <article class="subcard">
             <h3>Send Work Into A Session</h3>
-            <p>Create a session, post a message, then follow run state and event streaming.</p>
+            <p>Create a session, post a message, then follow run state and event streaming. Message submission is non-interrupting by default; pass <code>runningRunBehavior: "interrupt"</code> only when you explicitly want to cancel the active run first.</p>
             <ul>
               <li><code>POST /api/v1/workspaces/{workspaceId}/sessions</code></li>
               <li><code>POST /api/v1/sessions/{sessionId}/messages</code></li>
@@ -857,7 +857,7 @@ export function buildDeveloperDocsHtml(request: FastifyRequest): string {
           <li>Probe <code>/healthz</code> and <code>/readyz</code> to confirm the process and backing services are up.</li>
           <li>Read <code>/api/v1</code> to see the route families exposed by this concrete server.</li>
           <li>List workspaces with <code>GET /api/v1/workspaces</code>.</li>
-          <li>Create or pick a session, then send a message with <code>POST /api/v1/sessions/{sessionId}/messages</code>.</li>
+          <li>Create or pick a session, then send a message with <code>POST /api/v1/sessions/{sessionId}/messages</code>. By default, the new run queues behind any active run in that session.</li>
           <li>Follow live state over <code>GET /api/v1/sessions/{sessionId}/events</code>.</li>
         </ol>
       </section>
@@ -879,7 +879,7 @@ export function buildDeveloperDocsHtml(request: FastifyRequest): string {
             <h3>Conversation Runtime</h3>
             <ul class="route-list">
               <li><code>POST /api/v1/workspaces/{workspaceId}/sessions</code> Create a session</li>
-              <li><code>POST /api/v1/sessions/{sessionId}/messages</code> Queue a new user message</li>
+              <li><code>POST /api/v1/sessions/{sessionId}/messages</code> Queue a new user message by default; pass <code>runningRunBehavior: "interrupt"</code> to cancel the active run first</li>
               <li><code>GET /api/v1/sessions/{sessionId}/runs</code> Inspect runs</li>
               <li><code>GET /api/v1/runs/{runId}/steps</code> Inspect run steps</li>
               <li><code>POST /api/v1/runs/{runId}/requeue</code> Manually requeue a quarantined recovery run</li>

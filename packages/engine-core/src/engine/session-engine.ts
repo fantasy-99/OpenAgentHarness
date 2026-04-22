@@ -318,7 +318,9 @@ export class SessionEngineService {
     status: "queued";
   }> {
     const session = await this.getSession(sessionId);
-    await this.#interruptActiveSessionRuns(sessionId);
+    if ((input.runningRunBehavior ?? "queue") === "interrupt") {
+      await this.#interruptActiveSessionRuns(sessionId);
+    }
     const now = nowIso();
 
     const message: Message = {

@@ -10,6 +10,7 @@ The HTTP API is built on REST resource endpoints + SSE event streams. The [opena
 - Async entry points (send message, trigger action) return `202`
 - Streaming uses SSE
 - Final execution status determined by the run resource
+- Sending a session message is non-interrupting by default; pass `runningRunBehavior: "interrupt"` if you want the new message to cancel the current active run first
 
 Key boundaries: `session` = context boundary, `run` = execution boundary, runs within a session are serial.
 

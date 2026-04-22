@@ -31,10 +31,24 @@
 
 写入用户消息，创建 run 并入队。返回 `messageId`、`runId`、`status=queued`。
 
+请求体：
+
+- `content`：用户输入文本
+- `metadata`：可选消息元数据
+- `runningRunBehavior`：可选，`queue` 或 `interrupt`
+
+行为语义：
+
+- 默认行为等价于 `runningRunBehavior = "queue"`
+- 如果当前 session 已有活跃 run，新消息不会打断当前 run，而是继续创建新的 queued run，等待前一个 run 结束后串行执行
+- 仅当显式传入 `runningRunBehavior = "interrupt"` 时，runtime 才会先请求取消当前活跃 run，再把新消息作为下一轮执行
+- Web 控制台里的普通发送对应默认排队；“引导”按钮对应显式 `interrupt`
+
 ## 设计说明
 
 - 消息创建是异步语义，需结合 `GET /runs/{runId}` 和 SSE 获取进度
 - 同 session 可连续写入多条消息，形成串行 run 队列
+- API 默认是“排队而不是打断”；只有显式 `runningRunBehavior = "interrupt"` 才会中断当前活跃 run
 - runtime 按 AI SDK 兼容结构持久化消息（含 tool-call / tool-result）
 - session 维护 `activeAgentName`，run 内 `agent.switch` 后可同步更新
 - session/message/run 统一保存到中心库，本地 `history.db` 仅作为运行时数据文件

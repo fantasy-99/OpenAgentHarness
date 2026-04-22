@@ -36,6 +36,7 @@ The project ships with a debug web console for development and inspection:
 
 The console provides:
 - **Conversation view** with streaming, tool call chips, and run tracking
+- **Queued follow-ups** so additional user messages wait above the composer while the current run is active, with an explicit `Guide` action to interrupt when desired
 - **Inspector** showing model-facing messages, tools, run steps, and engine traces
 - **Storage workbench** for PostgreSQL and Redis, including structured `messages.content` inspection
 

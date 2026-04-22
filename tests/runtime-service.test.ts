@@ -1235,7 +1235,7 @@ describe("runtime service", () => {
     await expect(runtimeService.getSession("ses-sibling")).resolves.toMatchObject({ id: "ses-sibling" });
   });
 
-  it("interrupts an active session run when a new message is submitted", async () => {
+  it("queues a follow-up by default when an active session run is still running", async () => {
     const { runtimeService, workspace } = await createRuntime(30);
     const caller = {
       subjectRef: "dev:test",
@@ -1279,7 +1279,7 @@ describe("runtime service", () => {
         runtimeService.getRun(first.runId),
         runtimeService.getRun(second.runId)
       ]);
-      return firstRun.status === "cancelled" && secondRun.status === "completed";
+      return firstRun.status === "completed" && secondRun.status === "completed";
     });
 
     const messages = await runtimeService.listSessionMessages(session.id);
@@ -1292,11 +1292,59 @@ describe("runtime service", () => {
     const runCompleted = events.filter((event) => event.event === "run.completed").map((event) => event.runId);
 
     expect(runStarted).toEqual([first.runId, second.runId]);
-    expect(runCancelled).toEqual([first.runId]);
-    expect(runCompleted).toEqual([second.runId]);
+    expect(runCancelled).toEqual([]);
+    expect(runCompleted).toEqual([first.runId, second.runId]);
     expect(userMessages.map((message) => messageText(message))).toEqual(["first", "second"]);
     expect(messageText(firstAssistant)).toBeTruthy();
     expect(messageText(secondAssistant)).toBe("reply:second");
+  });
+
+  it("interrupts an active session run only when requested explicitly", async () => {
+    const { runtimeService, workspace } = await createRuntime(30);
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: workspace.id,
+      caller,
+      input: {}
+    });
+
+    const first = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "first" }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(first.runId);
+      return run.status === "running";
+    });
+
+    const second = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "second", runningRunBehavior: "interrupt" }
+    });
+
+    await waitFor(async () => {
+      const [firstRun, secondRun] = await Promise.all([
+        runtimeService.getRun(first.runId),
+        runtimeService.getRun(second.runId)
+      ]);
+      return firstRun.status === "cancelled" && secondRun.status === "completed";
+    });
+
+    const events = await runtimeService.listSessionEvents(session.id);
+    const runCancelled = events.filter((event) => event.event === "run.cancelled").map((event) => event.runId);
+    const runCompleted = events.filter((event) => event.event === "run.completed").map((event) => event.runId);
+
+    expect(runCancelled).toEqual([first.runId]);
+    expect(runCompleted).toEqual([second.runId]);
   });
 
   it("auto compacts older context into boundary and summary artifacts before the next model call", async () => {

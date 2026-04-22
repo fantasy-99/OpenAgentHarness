@@ -222,7 +222,8 @@ export const chatMessageSchema = z.union([
 
 export const createMessageRequestSchema = z.object({
   content: z.string().min(1),
-  metadata: jsonObjectSchema.optional()
+  metadata: jsonObjectSchema.optional(),
+  runningRunBehavior: z.enum(["queue", "interrupt"]).optional()
 });
 
 export const messageAcceptedSchema = z.object({

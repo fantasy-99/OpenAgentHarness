@@ -10,6 +10,7 @@ HTTP API 基于 REST 资源接口 + SSE 事件流。接口定义以 [openapi.yam
 - 异步入口（发消息、触发 action）返回 `202`
 - 流式输出走 SSE
 - 最终执行状态以 run 资源为准
+- session 发消息默认不会打断当前活跃 run；只有显式传 `runningRunBehavior: "interrupt"` 才会先取消当前 run
 
 关键边界：`session` = 上下文边界，`run` = 执行边界，同 session 内 run 串行。
 

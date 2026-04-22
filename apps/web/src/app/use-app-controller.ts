@@ -61,7 +61,7 @@ import { useHealthStore } from "./stores/health-store";
 import { useModelsStore } from "./stores/models-store";
 import { useSessionAgentStore } from "./stores/session-agent-store";
 import { useSettingsStore } from "./stores/settings-store";
-import { useStreamStore } from "./stores/stream-store";
+import { useStreamStore, type QueuedSessionInput } from "./stores/stream-store";
 import { useUiStore } from "./stores/ui-store";
 
 const COMPLETED_RUN_RESULT_POLL_LIMIT = 5;
@@ -134,6 +134,7 @@ export function useAppController() {
     run,
     runSteps,
     draftMessage,
+    queuedSessionInputsBySessionId,
     liveMessagesByKey,
     streamState,
     generateOutput,
@@ -145,6 +146,7 @@ export function useAppController() {
     setRun,
     setRunSteps,
     setDraftMessage,
+    setQueuedSessionInputsBySessionId,
     setLiveMessagesByKey,
     setStreamState,
     setGenerateOutput,
@@ -254,10 +256,13 @@ export function useAppController() {
   const sessionAgentSwitchSeqRef = useRef(0);
   const sessionModelUpdateRef = useRef<{ sessionId: string; promise: Promise<boolean> } | null>(null);
   const sessionModelUpdateSeqRef = useRef(0);
+  const queuedMessageDispatchRef = useRef<{ sessionId: string; queueItemId: string } | null>(null);
   const conversationThreadRef = useRef<HTMLDivElement | null>(null);
   const conversationTailRef = useRef<HTMLDivElement | null>(null);
   const shouldAutoFollowConversationRef = useRef(true);
   const selectedRunIdValue = selectedRunId.trim();
+  const currentQueuedSessionInputs = sessionId.trim() ? (queuedSessionInputsBySessionId[sessionId] ?? []) : [];
+  const hasActiveSessionRun = sessionRuns.some((item) => !isTerminalRunStatus(item.status));
   const normalizedServiceScope = normalizeServiceScope(serviceScope);
   const serviceFilteredWorkspaces = orderedSavedWorkspaces.filter((entry) =>
     serviceScopeMatches(normalizedServiceScope, entry.serviceName)
@@ -917,6 +922,7 @@ export function useAppController() {
     setPendingSessionModelRef(null);
     setSwitchingSessionModelId(null);
     sessionModelUpdateRef.current = null;
+    queuedMessageDispatchRef.current = null;
   }, [session?.id]);
 
   async function switchSessionAgent(targetId: string, activeAgentName: string) {
@@ -1017,18 +1023,63 @@ export function useAppController() {
     }
   }
 
-  async function sendMessage() {
-    if (!sessionId.trim()) {
-      reportError("请先创建或加载 session。");
-      return;
-    }
+  const enqueueSessionInput = useEffectEvent((targetSessionId: string, content: string) => {
+    const queuedInput: QueuedSessionInput = {
+      id: `queued-input:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`,
+      sessionId: targetSessionId,
+      content,
+      createdAt: new Date().toISOString()
+    };
 
-    const content = draftMessage.trim();
-    if (!content) {
-      return;
-    }
+    startTransition(() => {
+      setQueuedSessionInputsBySessionId((current) => ({
+        ...current,
+        [targetSessionId]: [...(current[targetSessionId] ?? []), queuedInput]
+      }));
+      setDraftMessage("");
+    });
 
-    try {
+    setActivity(`消息已加入队列（${(queuedSessionInputsBySessionId[targetSessionId]?.length ?? 0) + 1}）`);
+    clearActiveError();
+  });
+
+  const removeQueuedSessionInput = useEffectEvent((targetSessionId: string, queueItemId: string) => {
+    startTransition(() => {
+      setQueuedSessionInputsBySessionId((current) => {
+        const nextItems = (current[targetSessionId] ?? []).filter((item) => item.id !== queueItemId);
+        if (nextItems.length === 0) {
+          const next = { ...current };
+          delete next[targetSessionId];
+          return next;
+        }
+
+        return {
+          ...current,
+          [targetSessionId]: nextItems
+        };
+      });
+    });
+  });
+
+  const submitSessionMessage = useEffectEvent(
+    async (
+      content: string,
+      options?: {
+        clearDraft?: boolean;
+        runningRunBehavior?: "queue" | "interrupt";
+        activityLabel?: string;
+      }
+    ) => {
+      if (!sessionId.trim()) {
+        reportError("请先创建或加载 session。");
+        return;
+      }
+
+      const trimmedContent = content.trim();
+      if (!trimmedContent) {
+        return;
+      }
+
       const pendingAgentSwitch = sessionAgentSwitchRef.current;
       if (pendingAgentSwitch?.sessionId === sessionId) {
         const switched = await pendingAgentSwitch.promise;
@@ -1052,12 +1103,15 @@ export function useAppController() {
           "content-type": "application/json"
         },
         body: JSON.stringify({
-          content
+          content: trimmedContent,
+          runningRunBehavior: options?.runningRunBehavior ?? "queue"
         })
       });
 
       startTransition(() => {
-        setDraftMessage("");
+        if (options?.clearDraft !== false) {
+          setDraftMessage("");
+        }
         setSelectedRunId(accepted.runId);
         setLiveMessagesByKey((current) => ({
           ...current,
@@ -1066,7 +1120,7 @@ export function useAppController() {
             runId: "",
             sessionId,
             role: "user",
-            content,
+            content: trimmedContent,
             createdAt: new Date().toISOString()
           }
         }));
@@ -1078,8 +1132,79 @@ export function useAppController() {
         refreshRun(accepted.runId, true),
         refreshRunSteps(accepted.runId, true)
       ]);
-      setActivity(`消息已入队，run=${accepted.runId}`);
+      setActivity(options?.activityLabel ?? `消息已入队，run=${accepted.runId}`);
       clearActiveError();
+    }
+  );
+
+  async function sendMessage() {
+    if (!sessionId.trim()) {
+      reportError("请先创建或加载 session。");
+      return;
+    }
+
+    const content = draftMessage.trim();
+    if (!content) {
+      return;
+    }
+
+    try {
+      if (hasActiveSessionRun) {
+        enqueueSessionInput(sessionId, content);
+        return;
+      }
+
+      await submitSessionMessage(content, {
+        clearDraft: true
+      });
+    } catch (error) {
+      reportError(error);
+      openConsoleForErrors();
+    }
+  }
+
+  async function guideMessage() {
+    if (!sessionId.trim()) {
+      reportError("请先创建或加载 session。");
+      return;
+    }
+
+    const content = draftMessage.trim();
+    if (!content) {
+      return;
+    }
+
+    try {
+      await submitSessionMessage(content, {
+        clearDraft: true,
+        runningRunBehavior: "interrupt",
+        activityLabel: "已引导当前 run，正在切换到新的处理轮次"
+      });
+    } catch (error) {
+      reportError(error);
+      openConsoleForErrors();
+    }
+  }
+
+  async function guideQueuedSessionInput(queueItemId: string) {
+    if (!sessionId.trim() || !queueItemId.trim()) {
+      reportError("请先创建或加载 session。");
+      return;
+    }
+
+    const targetQueuedInput = currentQueuedSessionInputs.find((item) => item.id === queueItemId);
+    if (!targetQueuedInput) {
+      reportError("未找到要引导的排队消息。");
+      return;
+    }
+
+    try {
+      await submitSessionMessage(targetQueuedInput.content, {
+        clearDraft: false,
+        runningRunBehavior: "interrupt",
+        activityLabel: "已引导排队消息，正在切换到新的处理轮次"
+      });
+      removeQueuedSessionInput(sessionId, targetQueuedInput.id);
     } catch (error) {
       reportError(error);
       openConsoleForErrors();
@@ -1103,6 +1228,59 @@ export function useAppController() {
       openConsoleForErrors();
     }
   }
+
+  useEffect(() => {
+    if (!sessionId.trim() || currentQueuedSessionInputs.length === 0) {
+      return;
+    }
+
+    if (hasActiveSessionRun) {
+      return;
+    }
+
+    const activeDispatch = queuedMessageDispatchRef.current;
+    if (activeDispatch?.sessionId === sessionId) {
+      return;
+    }
+
+    const nextQueuedInput = currentQueuedSessionInputs[0];
+    if (!nextQueuedInput) {
+      return;
+    }
+
+    queuedMessageDispatchRef.current = {
+      sessionId,
+      queueItemId: nextQueuedInput.id
+    };
+
+    void (async () => {
+      try {
+        await submitSessionMessage(nextQueuedInput.content, {
+          clearDraft: false,
+          activityLabel: "已从消息队列发起下一轮 run"
+        });
+        removeQueuedSessionInput(sessionId, nextQueuedInput.id);
+      } catch (error) {
+        reportError(error);
+        openConsoleForErrors();
+      } finally {
+        if (
+          queuedMessageDispatchRef.current?.sessionId === sessionId &&
+          queuedMessageDispatchRef.current?.queueItemId === nextQueuedInput.id
+        ) {
+          queuedMessageDispatchRef.current = null;
+        }
+      }
+    })();
+  }, [
+    currentQueuedSessionInputs,
+    openConsoleForErrors,
+    removeQueuedSessionInput,
+    reportError,
+    hasActiveSessionRun,
+    sessionId,
+    submitSessionMessage
+  ]);
 
   async function triggerWorkspaceAction(input: {
     workspaceId: string;
@@ -1997,9 +2175,13 @@ export function useAppController() {
       hasMoreMessages: Boolean(messagesNextCursor),
       messagesLoading,
       loadingOlderMessages,
+      queuedSessionInputs: currentQueuedSessionInputs,
       loadOlderMessages: () => void loadOlderMessages(),
       refreshMessages: () => void refreshMessages(),
       sendMessage: () => void sendMessage(),
+      guideMessage: () => void guideMessage(),
+      guideQueuedSessionInput: (queueItemId: string) => void guideQueuedSessionInput(queueItemId),
+      guideMessageSupported: true,
       refreshRun: () => void refreshRun(),
       refreshRunSteps: () => void refreshRunSteps(),
       cancelCurrentRun: () => void cancelCurrentRun(),
@@ -2028,7 +2210,7 @@ export function useAppController() {
       updateSessionModel: (targetId: string, modelRef: string | null) => void updateSessionModel(targetId, modelRef),
       triggerWorkspaceAction,
       refreshWorkspace: (targetId: string) => void navigationActions.refreshWorkspace(targetId, true),
-      isRunning: !isTerminalRunStatus(run?.status) && run?.status != null,
+      isRunning: hasActiveSessionRun,
       fileManager: workspaceFileManager.fileManagerSurfaceProps
     },
     consolePanelProps: {
