@@ -1,10 +1,7 @@
 ---
 mode: primary
 description: Implement requested changes in the current workspace
-model:
-  model_ref: workspace/openai-default
-  temperature: 0.2
-  top_p: 0.9
+model: default
 background: false
 hidden: false
 color: amber

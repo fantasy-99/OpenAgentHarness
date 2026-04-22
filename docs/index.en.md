@@ -27,7 +27,9 @@ Open Agent Harness is a deployable Agent Engine. It runs Agent Runtime units and
 
 ```bash
 pnpm install                                        # Install dependencies
-export OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server
+mkdir -p /absolute/path/to/oah-deploy-root
+cp -R ./template/deploy-root/. /absolute/path/to/oah-deploy-root
+export OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root
 pnpm local:up                                       # Start PostgreSQL + Redis + MinIO + oah-api + oah-controller + oah-sandbox, then auto-sync once
 pnpm dev:web                                        # Start debug console
 ```

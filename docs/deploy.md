@@ -29,7 +29,9 @@
 
 ```bash
 # 终端 1 — 本地整套服务（PostgreSQL + Redis + MinIO + oah-api + oah-controller + oah-sandbox）
-export OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server
+mkdir -p /absolute/path/to/oah-deploy-root
+cp -R ./template/deploy-root/. /absolute/path/to/oah-deploy-root
+export OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root
 pnpm local:up
 
 # 终端 3 — 前端

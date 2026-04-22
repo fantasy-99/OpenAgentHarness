@@ -73,6 +73,9 @@ export interface CreateEngineExecutionServicesDependencies {
     options?: { priority?: RunQueuePriority | undefined }
   ) => Promise<void>;
   dispatchNextQueuedRun: (sessionId: string) => Promise<string | undefined>;
+  afterSuccessfulRun?:
+    | ((input: { workspace: WorkspaceRecord; session: Session; run: Run }) => Promise<void> | void)
+    | undefined;
 }
 
 export function createEngineExecutionServices(
@@ -226,6 +229,7 @@ export function createEngineExecutionServices(
     buildGeneratedMessageMetadata: (workspace, agentName, modelInput) =>
       buildGeneratedMessageMetadata(workspace, agentName, modelInput),
     dispatchNextQueuedRun: (sessionId) => dependencies.dispatchNextQueuedRun(sessionId),
+    afterSuccessfulRun: dependencies.afterSuccessfulRun,
     nowIso
   });
 

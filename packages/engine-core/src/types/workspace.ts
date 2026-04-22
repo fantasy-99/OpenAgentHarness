@@ -139,6 +139,7 @@ export interface WorkspaceSettingsDefinition {
       >
     | undefined;
   skillDirs?: string[] | undefined;
+  engine?: WorkspaceEngineSettings | undefined;
   imports?:
     | {
         tools?: string[] | undefined;
@@ -146,6 +147,16 @@ export interface WorkspaceSettingsDefinition {
       }
     | undefined;
   systemPrompt?: WorkspaceSystemPromptSettings | undefined;
+}
+
+export interface WorkspaceEngineSettings {
+  compact?: WorkspaceEngineToggleSettings | undefined;
+  sessionMemory?: WorkspaceEngineToggleSettings | undefined;
+  workspaceMemory?: WorkspaceEngineToggleSettings | undefined;
+}
+
+export interface WorkspaceEngineToggleSettings {
+  enabled?: boolean | undefined;
 }
 
 export interface WorkspaceRecord extends Workspace {

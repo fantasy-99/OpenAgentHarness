@@ -19,7 +19,10 @@ pnpm install
 ### 第 2 步：启动本地整套服务
 
 ```bash
-export OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server
+mkdir -p /absolute/path/to/oah-deploy-root
+cp -R ./template/deploy-root/. /absolute/path/to/oah-deploy-root
+export OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root
+# 在 $OAH_DEPLOY_ROOT/source/models/ 下添加至少一个模型 YAML
 pnpm local:up
 ```
 
@@ -69,10 +72,10 @@ pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts 
 | 命令 | 作用 |
 | --- | --- |
 | `pnpm install` | 安装依赖 |
-| `OAH_DEPLOY_ROOT=/absolute/path pnpm storage:sync` | 把部署根目录里的只读数据同步到 MinIO（默认不含 `source/workspaces`） |
-| `OAH_DEPLOY_ROOT=/absolute/path pnpm storage:sync -- --include-workspaces` | 连同 `source/workspaces` 一起同步到 MinIO |
-| `OAH_DEPLOY_ROOT=/absolute/path pnpm local:up` | 启动本地整套服务（`oah-api` / `oah-controller` / `oah-sandbox`） |
-| `OAH_DEPLOY_ROOT=/absolute/path OAH_SKIP_BUILD=1 pnpm local:up` | 复用本地已有 OAH 镜像，跳过 Docker 构建 |
+| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync` | 把部署根目录里的只读数据同步到 MinIO（默认不含 `source/workspaces`） |
+| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync -- --include-workspaces` | 连同 `source/workspaces` 一起同步到 MinIO |
+| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm local:up` | 启动本地整套服务（`oah-api` / `oah-controller` / `oah-sandbox`） |
+| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root OAH_SKIP_BUILD=1 pnpm local:up` | 复用本地已有 OAH 镜像，跳过 Docker 构建 |
 | `pnpm local:down` | 停止本地整套服务 |
 | `pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts -- --api-only --config ./server.example.yaml` | 仅启动 `oah-api` |
 | `pnpm exec tsx --tsconfig ./apps/controller/tsconfig.json ./apps/controller/src/index.ts -- --config ./server.example.yaml` | 单独启动 `oah-controller` |

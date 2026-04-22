@@ -91,8 +91,12 @@ Engine 分为清晰的层次：
 # 安装依赖
 pnpm install
 
-# 指向你自己的部署根目录
-export OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server
+# 复制仓库内置的 deploy-root 模板
+mkdir -p /absolute/path/to/oah-deploy-root
+cp -R ./template/deploy-root/. /absolute/path/to/oah-deploy-root
+
+# 在 /absolute/path/to/oah-deploy-root/source/models/ 下补充模型 YAML
+export OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root
 
 # 启动本地整套服务（PostgreSQL + Redis + MinIO + oah-api + oah-controller + oah-sandbox）
 # 这里会先等待 MinIO 就绪，再自动执行一次 storage sync。
@@ -106,7 +110,7 @@ pnpm dev:web
 
 ```bash
 cd /Users/wumengsong/Code/OpenAgentHarness
-export OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server
+export OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root
 
 pnpm local:up
 ```
@@ -146,9 +150,9 @@ pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts 
 ```bash
 pnpm build          # 构建所有包
 pnpm test           # 运行测试
-OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server pnpm storage:sync   # 把只读 source 前缀发布到 MinIO
-OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server pnpm storage:sync -- --include-workspaces  # 额外同步 source/workspaces
-OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server pnpm local:up       # 启动 oah-api + oah-controller + oah-sandbox，并自动同步一次
+OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync   # 把只读 source 前缀发布到 MinIO
+OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync -- --include-workspaces  # 额外同步 source/workspaces
+OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm local:up       # 启动 oah-api + oah-controller + oah-sandbox，并自动同步一次
 pnpm local:down                                                     # 停止本地 Docker 整套服务
 pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/worker.ts -- --config ./server.example.yaml  # 进阶：单独启动 standalone worker（通常跑在 sandbox 里）
 ```
@@ -187,4 +191,4 @@ pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/worker.ts
 | [Workspace 指南](./docs/workspace/README.md) | Workspace 配置和能力定义 |
 | [Engine 内部](./docs/engine/README.md) | Engine 生命周期和 Context Engine |
 | [API 参考](./docs/openapi/README.md) | OpenAPI 规范和接口说明 |
-| [Runtimes](./runtimes/README.md) | Workspace Runtime 使用方法 |
+| [Deploy Root Template](./template/deploy-root/README.md) | deploy-root 模板目录、runtime 样板与模型配置说明 |

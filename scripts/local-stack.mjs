@@ -8,6 +8,7 @@ import YAML from "../packages/config/node_modules/yaml/dist/index.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const composeFile = path.join(repoRoot, "docker-compose.local.yml");
+const deployTemplateRoot = path.join(repoRoot, "template", "deploy-root");
 const mode = process.argv[2];
 const composeProjectName =
   process.env.COMPOSE_PROJECT_NAME || path.basename(repoRoot).toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -103,7 +104,7 @@ function resetLocalRedisCoordinationState() {
 function ensureDeployRoot() {
   if (!process.env.OAH_DEPLOY_ROOT) {
     console.error("OAH_DEPLOY_ROOT is required. Example:");
-    console.error("  export OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server");
+    console.error("  export OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root");
     process.exit(1);
   }
 }
@@ -127,6 +128,17 @@ function copyDirectoryChildren(sourceRoot, targetRoot) {
   }
 }
 
+function seedDeployRootFromTemplate(deployRoot) {
+  if (!existsSync(deployTemplateRoot)) {
+    return false;
+  }
+
+  mkdirSync(deployRoot, { recursive: true });
+  copyDirectoryChildren(deployTemplateRoot, deployRoot);
+  console.log(`Seeded ${deployRoot} from ${deployTemplateRoot}.`);
+  return true;
+}
+
 function ensureLocalRuntimeSources(deployRoot) {
   const sourceRoot = path.join(deployRoot, "source");
   const runtimeSourceRoot = path.join(sourceRoot, "runtimes");
@@ -145,10 +157,10 @@ function ensureLocalRuntimeSources(deployRoot) {
     return;
   }
 
-  const bundledRuntimeRoot = path.join(repoRoot, "runtimes");
+  const bundledRuntimeRoot = path.join(deployTemplateRoot, "source", "runtimes");
   if (directoryHasSubdirectories(bundledRuntimeRoot)) {
     copyDirectoryChildren(bundledRuntimeRoot, runtimeSourceRoot);
-    console.log(`Seeded ${runtimeSourceRoot} from bundled repo runtimes.`);
+    console.log(`Seeded ${runtimeSourceRoot} from bundled deploy template runtimes.`);
     return;
   }
 
@@ -163,15 +175,27 @@ function prepareDockerServerConfigs() {
 
   const sourceConfigPath = path.join(deployRoot, "server.docker.yaml");
   if (!existsSync(sourceConfigPath)) {
-    const exampleConfigPath = path.join(repoRoot, "server.example.yaml");
-    if (!existsSync(exampleConfigPath)) {
-      console.error(`Missing ${sourceConfigPath} and no server.example.yaml at repo root to seed it from.`);
-      process.exit(1);
-    }
+    const seededFromTemplate = seedDeployRootFromTemplate(deployRoot);
 
-    mkdirSync(deployRoot, { recursive: true });
-    copyFileSync(exampleConfigPath, sourceConfigPath);
-    console.log(`Seeded ${sourceConfigPath} from server.example.yaml. Edit it to point at your Postgres/Redis/MinIO if the defaults do not fit.`);
+    if (!existsSync(sourceConfigPath)) {
+      const exampleConfigPath = path.join(repoRoot, "server.example.yaml");
+      if (!existsSync(exampleConfigPath)) {
+        console.error(
+          `Missing ${sourceConfigPath} and no deploy template or server.example.yaml available to seed it from.`
+        );
+        process.exit(1);
+      }
+
+      mkdirSync(deployRoot, { recursive: true });
+      copyFileSync(exampleConfigPath, sourceConfigPath);
+      console.log(
+        `Seeded ${sourceConfigPath} from server.example.yaml. Edit it to point at your Postgres/Redis/MinIO if the defaults do not fit.`
+      );
+    } else if (seededFromTemplate) {
+      console.log(
+        `Using bundled deploy template at ${sourceConfigPath}. Add your model YAML files under ${path.join(deployRoot, "source", "models")} before deploying.`
+      );
+    }
   }
   ensureLocalRuntimeSources(deployRoot);
 

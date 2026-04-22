@@ -1,6 +1,6 @@
 # Settings
 
-`.openharness/settings.yaml` now holds only core workspace configuration: the default agent, model aliases, imports, and extra skill directories.
+`.openharness/settings.yaml` now holds only core workspace configuration: the default agent, model aliases, engine behavior toggles, imports, and extra skill directories.
 
 Prompt configuration has moved to the dedicated [`prompts.yaml`](./prompts.en.md) file.
 
@@ -31,6 +31,12 @@ imports:
     - docs-server
   skills:
     - repo-explorer
+
+engine:
+  session_memory:
+    enabled: false
+  workspace_memory:
+    enabled: false
 ```
 
 ## Top-Level Fields
@@ -40,6 +46,7 @@ imports:
 | `default_agent` | No | Default primary agent. At runtime it must resolve to a visible agent and cannot point to a pure `subagent`-only definition |
 | `models` | No | Model alias map that agents can reference |
 | `skill_dirs` | No | Additional skill search directories |
+| `engine` | No | Optional runtime engine behavior toggles. `compact` is built in; `session_memory` and `workspace_memory` represent two different memory layers |
 | `runtime` | No | Records which runtime the workspace was initialized from |
 | `imports` | No | Tools and skills to import during runtime initialization |
 
@@ -70,6 +77,22 @@ models:
 | scope | Only affects agents that declare `model`; agents without an explicit model still use normal default-model resolution |
 
 Use this file to decide both which concrete model each alias points to and which inference defaults it carries; use agent frontmatter only to choose the alias.
+
+## `engine`
+
+```yaml
+engine:
+  session_memory:
+    enabled: true
+  workspace_memory:
+    enabled: true
+```
+
+| Field | Description |
+| --- | --- |
+| `compact.enabled` | Enables the automatic compaction behavior. It defaults to on and does not need to be configured explicitly. Only set `compact: { enabled: false }` when you want to disable it |
+| `session_memory.enabled` | Enables session-scoped memory used for continuity within the current conversation. It is distinct from workspace-persistent memory |
+| `workspace_memory.enabled` | Enables workspace-scoped persistent memory. This maps to the `.openharness/memory/` directory |
 
 ## `skill_dirs`
 

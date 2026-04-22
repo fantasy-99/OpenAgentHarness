@@ -12,6 +12,7 @@ import {
   ModelInputService,
   type ModelExecutionInput
 } from "./engine/model-input.js";
+import { ContextPreparationPipeline } from "./engine/context-modules.js";
 import {
   collapseLeadingSystemMessages,
   extractFailedToolResults,
@@ -32,6 +33,8 @@ import { createEngineExecutionServices, type EngineExecutionServices } from "./e
 import { buildGeneratedMessageMetadata, normalizeJsonObject } from "./engine/execution-support.js";
 import { ContextCompactionService } from "./engine/context-compaction.js";
 import { ModelRunExecutor } from "./engine/model-run-executor.js";
+import { SessionMemoryService } from "./engine/session-memory.js";
+import { WorkspaceMemoryService } from "./engine/workspace-memory.js";
 import { WorkspaceEngineService } from "./engine/workspace-engine.js";
 import {
   EngineMessageProjector
@@ -120,7 +123,9 @@ export class EngineService {
   readonly #engineMessageSync: EngineMessageSyncService;
   readonly #engineLifecycle: EngineLifecycleService;
   readonly #modelInputs: ModelInputService;
-  readonly #contextCompaction: ContextCompactionService;
+  readonly #contextPreparation: ContextPreparationPipeline;
+  readonly #sessionMemory: SessionMemoryService;
+  readonly #workspaceMemory: WorkspaceMemoryService;
   readonly #engineMessageProjector: EngineMessageProjector;
   #executionServices: EngineExecutionServices | undefined;
   readonly #runAbortControllers = new Map<string, AbortController>();
@@ -206,7 +211,7 @@ export class EngineService {
         this.#applyContextHooks(workspace, session, run, eventName, messages),
       collapseLeadingSystemMessages: (messages) => collapseLeadingSystemMessages(messages)
     });
-    this.#contextCompaction = new ContextCompactionService({
+    const contextCompaction = new ContextCompactionService({
       logger: this.#logger,
       messageRepository: this.#messageRepository,
       modelGateway: this.#modelGateway,
@@ -232,6 +237,37 @@ export class EngineService {
       buildEngineMessagesForSession: (sessionId, persistedMessages) =>
         this.#engineMessageSync.buildEngineMessagesForSession(sessionId, persistedMessages)
     });
+    this.#sessionMemory = new SessionMemoryService({
+      logger: this.#logger,
+      messageRepository: this.#messageRepository,
+      modelGateway: this.#modelGateway,
+      scheduleEngineMessageSync: (sessionId) => this.#engineMessageSync.scheduleEngineMessageSync(sessionId),
+      resolveRunModel: (workspace, session, run, activeAgentName) =>
+        this.#modelInputs.resolveRunModel(workspace, session, run, activeAgentName),
+      recordSystemStep: (run, name, output) => this.#runSteps.recordSystemStep(run, name, output),
+      createId,
+      nowIso
+    });
+    this.#workspaceMemory = new WorkspaceMemoryService({
+      logger: this.#logger,
+      modelGateway: this.#modelGateway,
+      messageRepository: this.#messageRepository,
+      sessionRepository: this.#sessionRepository,
+      runRepository: this.#runRepository,
+      runStepRepository: this.#runStepRepository,
+      enqueueRun: (sessionId, runId, options) => this.#engineLifecycle.enqueueRun(sessionId, runId, options),
+      workspaceFileSystem: this.#workspaceFileSystem,
+      workspaceFileAccessProvider: this.#workspaceFileAccessProvider,
+      resolveModelForRun: (workspace, modelRef) => this.#modelInputs.resolveModelForRun(workspace, modelRef),
+      recordSystemStep: (run, name, output) => this.#runSteps.recordSystemStep(run, name, output),
+      createId,
+      nowIso
+    });
+    this.#contextPreparation = new ContextPreparationPipeline({
+      buildEngineMessagesForSession: (sessionId, persistedMessages) =>
+        this.#engineMessageSync.buildEngineMessagesForSession(sessionId, persistedMessages),
+      modules: [this.#sessionMemory, this.#workspaceMemory, contextCompaction]
+    });
     this.#modelRunExecutor = new ModelRunExecutor({
       logger: this.#logger,
       modelGateway: this.#modelGateway,
@@ -241,7 +277,7 @@ export class EngineService {
       getRun: (runId) => this.getRun(runId),
       repairSessionHistoryIfNeeded: (sessionId, messages) => this.#sessionHistory.repairSessionHistoryIfNeeded(sessionId, messages),
       prepareMessagesForModelInput: (workspace, session, run, activeAgentName, allMessages) =>
-        this.#contextCompaction.prepareMessagesForModelInput({
+        this.#contextPreparation.prepareMessagesForModelInput({
           workspace,
           session,
           run,
@@ -405,7 +441,12 @@ export class EngineService {
       appendEvent: (input) => this.#engineLifecycle.appendEvent(input),
       getRun: (runId) => this.getRun(runId),
       enqueueRun: (sessionId, runId, options) => this.#engineLifecycle.enqueueRun(sessionId, runId, options),
-      dispatchNextQueuedRun: (sessionId) => this.#sessionRuntime.dispatchNextQueuedRun(sessionId)
+      dispatchNextQueuedRun: (sessionId) => this.#sessionRuntime.dispatchNextQueuedRun(sessionId),
+      afterSuccessfulRun: async ({ workspace, session, run }) => {
+        await this.#workspaceMemory.recordRecallForCompletedRun(run);
+        this.#sessionMemory.scheduleBackgroundUpdate({ workspace, session, run });
+        this.#workspaceMemory.scheduleBackgroundUpdate({ workspace, session, run });
+      }
     });
   }
 

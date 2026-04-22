@@ -12,6 +12,7 @@ import { nowIso } from "../utils.js";
 import { timeoutMsFromSeconds } from "./internal-helpers.js";
 import { ModelRunExecutor } from "./model-run-executor.js";
 import type { RunFinalizationService } from "./run-finalization.js";
+import { isWorkspaceMemoryExtractionRun, withWorkspaceMemoryExtractorAgent } from "./workspace-memory-agent.js";
 
 interface RunProcessorExecutionServices {
   runFinalization: Pick<RunFinalizationService, "finalizeTimedOutRun" | "finalizeCancelledRun" | "finalizeFailedRun">;
@@ -141,6 +142,10 @@ export class RunProcessorService {
           ...(session ? { session } : {})
         });
         executionWorkspace = executionLease.workspace;
+      }
+
+      if (isWorkspaceMemoryExtractionRun(run)) {
+        executionWorkspace = withWorkspaceMemoryExtractorAgent(executionWorkspace);
       }
 
       if (run.triggerType === "api_action" || run.triggerType === "manual_action") {

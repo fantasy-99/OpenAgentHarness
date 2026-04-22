@@ -91,8 +91,12 @@ Each capability layer stays separate so you can compose them differently per wor
 # Install dependencies
 pnpm install
 
-# Point to your external deploy root directory
-export OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server
+# Copy the bundled deploy-root template
+mkdir -p /absolute/path/to/oah-deploy-root
+cp -R ./template/deploy-root/. /absolute/path/to/oah-deploy-root
+
+# Add your model YAML files under /absolute/path/to/oah-deploy-root/source/models/
+export OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root
 
 # Start the local stack (PostgreSQL + Redis + MinIO + oah-api + oah-controller + oah-sandbox)
 # This also waits for MinIO and auto-runs one storage sync.
@@ -106,7 +110,7 @@ pnpm dev:web
 
 ```bash
 cd /Users/wumengsong/Code/OpenAgentHarness
-export OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server
+export OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root
 
 pnpm local:up
 ```
@@ -146,9 +150,9 @@ pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts 
 ```bash
 pnpm build          # Build all packages
 pnpm test           # Run tests
-OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server pnpm storage:sync  # Push readonly source prefixes to MinIO
-OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server pnpm storage:sync -- --include-workspaces  # Also sync source/workspaces
-OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server pnpm local:up      # Start oah-api + oah-controller + oah-sandbox and auto-sync once
+OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync  # Push readonly source prefixes to MinIO
+OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync -- --include-workspaces  # Also sync source/workspaces
+OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm local:up      # Start oah-api + oah-controller + oah-sandbox and auto-sync once
 pnpm local:down                                                    # Stop local Docker stack
 pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/worker.ts -- --config ./server.example.yaml  # Advanced: start a standalone worker (typically sandbox-hosted)
 ```
@@ -187,4 +191,4 @@ If `workers.standalone.min_replicas` and `sandbox.fleet.min_count` are both omit
 | [Workspace Guide](./docs/workspace/README.en.md) | Workspace configuration and capabilities |
 | [Engine Internals](./docs/engine/README.en.md) | Engine lifecycle and context engine |
 | [API Reference](./docs/openapi/README.en.md) | OpenAPI specification and endpoints |
-| [Runtimes](./runtimes/README.md) | Workspace runtime usage |
+| [Deploy Root Template](./template/deploy-root/README.md) | Starter deploy-root layout, runtimes, and model setup |

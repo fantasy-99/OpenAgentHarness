@@ -1,6 +1,6 @@
 # Settings
 
-`.openharness/settings.yaml` 现在只负责 workspace 的核心配置：默认 agent、模型别名、导入项和额外 skill 目录。
+`.openharness/settings.yaml` 现在只负责 workspace 的核心配置：默认 agent、模型别名、engine 行为开关、导入项和额外 skill 目录。
 
 Prompt 相关配置已拆到独立文件 [`prompts.yaml`](./prompts.md)。
 
@@ -31,6 +31,12 @@ imports:
     - docs-server
   skills:
     - repo-explorer
+
+engine:
+  session_memory:
+    enabled: false
+  workspace_memory:
+    enabled: false
 ```
 
 ## 顶层字段
@@ -40,6 +46,7 @@ imports:
 | `default_agent` | 否 | 默认主 agent。运行时必须能解析到当前可见 agent，且不能只是一种纯 `subagent` 形态 |
 | `models` | 否 | agent 可引用的模型别名表 |
 | `skill_dirs` | 否 | 额外 skill 搜索目录列表 |
+| `engine` | 否 | 可选 runtime engine 行为开关。当前内置 `compact`；`session_memory` 与 `workspace_memory` 分别对应两类记忆能力 |
 | `runtime` | 否 | 记录当前 workspace 来源的 runtime 名称 |
 | `imports` | 否 | runtime 初始化时导入的公共 tools/skills |
 
@@ -70,6 +77,22 @@ models:
 | 适用范围 | 仅影响显式声明 `model` 的 agent；未声明模型的 agent 仍走默认模型选择逻辑 |
 
 推荐把“要不要换模型”和“这个模型档位的推理参数”都放在这里，把“这个 agent 用哪个模型档位”放在 agent frontmatter。
+
+## `engine`
+
+```yaml
+engine:
+  session_memory:
+    enabled: true
+  workspace_memory:
+    enabled: true
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `compact.enabled` | 是否启用自动 compact 能力。默认开启；不需要显式配置。只有想关闭时才写 `compact: { enabled: false }` |
+| `session_memory.enabled` | Session 级记忆能力开关。用于当前会话连续性，不等同于 workspace 持久记忆 |
+| `workspace_memory.enabled` | Workspace 级持久记忆能力开关。对应 `.openharness/memory/` 目录 |
 
 ## `skill_dirs`
 

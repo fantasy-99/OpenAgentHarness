@@ -19,7 +19,10 @@ pnpm install
 ### Step 2: Start the full local stack
 
 ```bash
-export OAH_DEPLOY_ROOT=/absolute/path/to/test_oah_server
+mkdir -p /absolute/path/to/oah-deploy-root
+cp -R ./template/deploy-root/. /absolute/path/to/oah-deploy-root
+export OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root
+# Add at least one model YAML under $OAH_DEPLOY_ROOT/source/models/
 pnpm local:up
 ```
 
@@ -69,10 +72,10 @@ Optional flags: `--tool-dir`, `--skill-dir`, `--host`, `--port`
 | Command | Purpose |
 | --- | --- |
 | `pnpm install` | Install dependencies |
-| `OAH_DEPLOY_ROOT=/absolute/path pnpm storage:sync` | Sync readonly data from the deploy root to MinIO (does not include `source/workspaces` by default) |
-| `OAH_DEPLOY_ROOT=/absolute/path pnpm storage:sync -- --include-workspaces` | Also sync `source/workspaces` to MinIO |
-| `OAH_DEPLOY_ROOT=/absolute/path pnpm local:up` | Start the full local stack (`oah-api` / `oah-controller` / `oah-sandbox`) |
-| `OAH_DEPLOY_ROOT=/absolute/path OAH_SKIP_BUILD=1 pnpm local:up` | Reuse an already-built local OAH image and skip Docker build |
+| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync` | Sync readonly data from the deploy root to MinIO (does not include `source/workspaces` by default) |
+| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync -- --include-workspaces` | Also sync `source/workspaces` to MinIO |
+| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm local:up` | Start the full local stack (`oah-api` / `oah-controller` / `oah-sandbox`) |
+| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root OAH_SKIP_BUILD=1 pnpm local:up` | Reuse an already-built local OAH image and skip Docker build |
 | `pnpm local:down` | Stop the full local stack |
 | `pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts -- --api-only --config ./server.example.yaml` | Start `oah-api` only |
 | `pnpm exec tsx --tsconfig ./apps/controller/tsconfig.json ./apps/controller/src/index.ts -- --config ./server.example.yaml` | Start `oah-controller` only |

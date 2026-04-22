@@ -55,6 +55,8 @@ export type {
   WorkspaceRuntimeDescriptor,
   WorkspaceRuntimeSkill,
   WorkspaceModelPreset,
+  WorkspaceEngineToggleSettings,
+  WorkspaceEngineSettings,
   WorkspaceSettings,
   WorkspaceSystemPromptComposeSettings,
   WorkspaceSystemPromptSettings

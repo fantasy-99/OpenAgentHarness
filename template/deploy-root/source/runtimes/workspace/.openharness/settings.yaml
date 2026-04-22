@@ -1,5 +1,11 @@
 default_agent: builder
 
+models:
+  default:
+    ref: platform/openai-default
+    temperature: 0.2
+    top_p: 0.9
+
 system_prompt:
   base:
     inline: |-

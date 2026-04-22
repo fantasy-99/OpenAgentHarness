@@ -112,6 +112,24 @@ async function createRuntime(
   options?: {
     workspaceActivityTracker?: WorkspaceActivityTracker | undefined;
     platformModels?: Record<string, { provider: string; name: string; metadata?: Record<string, unknown> }> | undefined;
+    rootPath?: string | undefined;
+    workspaceSettings?:
+      | {
+          defaultAgent?: string | undefined;
+          skillDirs?: string[] | undefined;
+          engine?: {
+            compact?: {
+              enabled?: boolean | undefined;
+            } | undefined;
+            sessionMemory?: {
+              enabled?: boolean | undefined;
+            } | undefined;
+            workspaceMemory?: {
+              enabled?: boolean | undefined;
+            } | undefined;
+          } | undefined;
+        }
+      | undefined;
   }
 ) {
   const gateway = new FakeModelGateway(delayMs);
@@ -128,7 +146,8 @@ async function createRuntime(
           rootPath: input.rootPath,
           settings: {
             defaultAgent: "default",
-            skillDirs: []
+            skillDirs: [],
+            ...(options?.workspaceSettings ?? {})
           },
           defaultAgent: "default",
           workspaceModels: {},
@@ -156,7 +175,7 @@ async function createRuntime(
     input: {
       name: "demo",
       runtime: "workspace",
-      rootPath: "/tmp/demo",
+      rootPath: options?.rootPath ?? "/tmp/demo",
       executionPolicy: "local"
     }
   });
@@ -2026,6 +2045,84 @@ describe("runtime service", () => {
     expect(finalInvocationText).not.toContain(firstContent);
   });
 
+  it("skips auto compaction when compact is disabled in workspace engine settings", async () => {
+    const { gateway, runtimeService, workspace } = await createRuntime(0, {
+      platformModels: {
+        "openai-default": {
+          provider: "openai",
+          name: "gpt-5",
+          metadata: {
+            contextWindowTokens: 80,
+            compactThresholdTokens: 20,
+            compactRecentGroupCount: 3
+          }
+        }
+      },
+      workspaceSettings: {
+        engine: {
+          compact: {
+            enabled: false
+          }
+        }
+      }
+    });
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: workspace.id,
+      caller,
+      input: {}
+    });
+    const firstContent = "FIRST-CONTENT ".repeat(12).trim();
+    const secondContent = "SECOND-CONTENT ".repeat(12).trim();
+    const thirdContent = "THIRD-CONTENT ".repeat(12).trim();
+
+    const firstAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: firstContent }
+    });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(firstAccepted.runId);
+      return run.status === "completed";
+    });
+
+    const secondAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: secondContent }
+    });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(secondAccepted.runId);
+      return run.status === "completed";
+    });
+
+    const thirdAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: thirdContent }
+    });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(thirdAccepted.runId);
+      return run.status === "completed";
+    });
+
+    expect(gateway.invocations).toHaveLength(3);
+
+    const messages = await runtimeService.listSessionMessages(session.id, 20);
+    const compactKinds = messages.items
+      .map((message) => (message.metadata as { runtimeKind?: string } | undefined)?.runtimeKind)
+      .filter((kind): kind is string => typeof kind === "string");
+
+    expect(compactKinds).not.toContain("compact_boundary");
+    expect(compactKinds).not.toContain("compact_summary");
+  });
+
   it("applies before_context_compact hooks to rewrite the summary input used for auto compaction", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
@@ -2687,6 +2784,800 @@ describe("runtime service", () => {
     expect(compactKinds).toContain("compact_boundary");
     expect(compactKinds).toContain("compact_summary");
   });
+
+  it("stores session memory in a hidden session message and injects it into later model input", async () => {
+    const { gateway, runtimeService, workspace } = await createRuntime(0, {
+      workspaceSettings: {
+        engine: {
+          sessionMemory: {
+            enabled: true
+          }
+        }
+      }
+    });
+    gateway.generateResponseFactory = (input) => {
+      const systemPrompt = input.messages?.find((message) => message.role === "system");
+      if (
+        typeof systemPrompt?.content === "string" &&
+        systemPrompt.content.includes("session-scoped memory for an active coding conversation")
+      ) {
+        return {
+          model: input.model ?? "openai-default",
+          text: "Current task: investigate parser issue.\nImportant context: user wants concise progress updates.",
+          finishReason: "stop",
+          usage: {
+            inputTokens: 18,
+            outputTokens: 8,
+            totalTokens: 26
+          }
+        };
+      }
+
+      return undefined;
+    };
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: workspace.id,
+      caller,
+      input: {}
+    });
+
+    const firstAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Investigate the parser issue and keep updates concise." }
+    });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(firstAccepted.runId);
+      return run.status === "completed";
+    });
+
+    let sessionMemoryMessage: Message | undefined;
+    await waitFor(async () => {
+      const messages = await runtimeService.listSessionMessages(session.id, 20);
+      sessionMemoryMessage = messages.items.find(
+        (message) =>
+          message.role === "system" &&
+          Array.isArray((message.metadata as { tags?: unknown } | undefined)?.tags) &&
+          ((message.metadata as { tags?: unknown[] } | undefined)?.tags ?? []).includes("session-memory")
+      );
+      return Boolean(sessionMemoryMessage);
+    });
+
+    expect(messageText(sessionMemoryMessage)).toContain("Current task: investigate parser issue.");
+
+    const secondAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Continue with the next debugging step." }
+    });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(secondAccepted.runId);
+      return run.status === "completed";
+    });
+
+    let sessionMemoryInvocationText = "";
+    await waitFor(() => {
+      const invocation = gateway.invocations.find((candidate) =>
+        candidate.input.messages?.some(
+          (message) => typeof message.content === "string" && message.content.includes("<session_memory>")
+        )
+      );
+      sessionMemoryInvocationText = (invocation?.input.messages ?? [])
+        .map((message) => (typeof message.content === "string" ? message.content : JSON.stringify(message.content)))
+        .join("\n\n");
+      return sessionMemoryInvocationText.length > 0;
+    });
+
+    expect(sessionMemoryInvocationText).toContain("<session_memory>");
+    expect(sessionMemoryInvocationText).toContain("Current task: investigate parser issue.");
+    expect(sessionMemoryInvocationText).toContain("user wants concise progress updates");
+  });
+
+  it("injects workspace memory from .openharness/memory/MEMORY.md into model input", async () => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), "oah-workspace-memory-inject-"));
+    await mkdir(path.join(workspaceRoot, ".openharness", "memory"), { recursive: true });
+    await writeFile(
+      path.join(workspaceRoot, ".openharness", "memory", "MEMORY.md"),
+      "Repository convention: run pnpm test before finishing.\n",
+      "utf8"
+    );
+
+    const { gateway, runtimeService, workspace } = await createRuntime(0, {
+      rootPath: workspaceRoot,
+      workspaceSettings: {
+        engine: {
+          workspaceMemory: {
+            enabled: true
+          }
+        }
+      }
+    });
+    gateway.generateResponseFactory = (input) => {
+      const systemPrompt = input.messages?.find((message) => message.role === "system");
+      if (
+        typeof systemPrompt?.content === "string" &&
+        systemPrompt.content.includes("workspace memory recall selector")
+      ) {
+        return {
+          model: input.model ?? "openai-default",
+          text: JSON.stringify({
+            paths: [".openharness/memory/testing.md"]
+          }),
+          finishReason: "stop",
+          usage: {
+            inputTokens: 12,
+            outputTokens: 6,
+            totalTokens: 18
+          }
+        };
+      }
+
+      return undefined;
+    };
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: workspace.id,
+      caller,
+      input: {}
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "What should I validate next?" }
+    });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const invocation = gateway.invocations.find((candidate) =>
+      candidate.input.messages?.some(
+        (message) => typeof message.content === "string" && message.content.includes("<workspace_memory")
+      )
+    );
+    const invocationText = (invocation?.input.messages ?? [])
+      .map((message) => (typeof message.content === "string" ? message.content : JSON.stringify(message.content)))
+      .join("\n\n");
+
+    expect(invocationText).toContain("<workspace_memory");
+    expect(invocationText).toContain("Repository convention: run pnpm test before finishing.");
+  });
+
+  it("recalls relevant workspace memory topic files for the current query without flooding unrelated notes", async () => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), "oah-workspace-memory-recall-"));
+    await mkdir(path.join(workspaceRoot, ".openharness", "memory"), { recursive: true });
+    await writeFile(
+      path.join(workspaceRoot, ".openharness", "memory", "MEMORY.md"),
+      [
+        "- [testing](.openharness/memory/testing.md) - finish checklist and validation commands",
+        "- [style](.openharness/memory/style.md) - answer formatting preferences"
+      ].join("\n"),
+      "utf8"
+    );
+    await writeFile(
+      path.join(workspaceRoot, ".openharness", "memory", "testing.md"),
+      [
+        "---",
+        "name: Testing",
+        "description: Finish checklist and validation commands.",
+        "---",
+        "",
+        "# Testing",
+        "",
+        "- Always run `pnpm test` before finishing repo work."
+      ].join("\n"),
+      "utf8"
+    );
+    await writeFile(
+      path.join(workspaceRoot, ".openharness", "memory", "style.md"),
+      [
+        "---",
+        "name: Style",
+        "description: Response formatting preferences.",
+        "---",
+        "",
+        "# Style",
+        "",
+        "- Prefer terse section headings when writing docs."
+      ].join("\n"),
+      "utf8"
+    );
+
+    const { gateway, runtimeService, workspace } = await createRuntime(0, {
+      rootPath: workspaceRoot,
+      workspaceSettings: {
+        engine: {
+          workspaceMemory: {
+            enabled: true
+          }
+        }
+      }
+    });
+    gateway.generateResponseFactory = (input) => {
+      const systemPrompt = input.messages?.find((message) => message.role === "system");
+      if (
+        typeof systemPrompt?.content === "string" &&
+        systemPrompt.content.includes("workspace memory recall selector")
+      ) {
+        return {
+          model: input.model ?? "openai-default",
+          text: JSON.stringify({
+            paths: [".openharness/memory/testing.md"]
+          }),
+          finishReason: "stop",
+          usage: {
+            inputTokens: 12,
+            outputTokens: 6,
+            totalTokens: 18
+          }
+        };
+      }
+
+      return undefined;
+    };
+    gateway.streamScenarioFactory = (input) => {
+      const lastUserMessage = [...(input.messages ?? [])].reverse().find((message) => message.role === "user");
+      if (lastUserMessage?.content === "Please inspect the memory directory first.") {
+        return {
+          text: "I checked the memory files.",
+          toolSteps: [
+            {
+              toolName: "Glob",
+              input: {
+                pattern: ".openharness/memory/*.md"
+              },
+              toolCallId: "call_workspace_memory_glob"
+            }
+          ]
+        };
+      }
+
+      return undefined;
+    };
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: workspace.id,
+      caller,
+      input: {}
+    });
+
+    const firstAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Please inspect the memory directory first." }
+    });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(firstAccepted.runId);
+      return run.status === "completed";
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Should I run tests before finishing this repo task?" }
+    });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const invocation = gateway.invocations.find((candidate) =>
+      candidate.input.messages?.some(
+        (message) => typeof message.content === "string" && message.content.includes("<workspace_memory_file")
+      )
+    );
+    const invocationText = (invocation?.input.messages ?? [])
+      .map((message) => (typeof message.content === "string" ? message.content : JSON.stringify(message.content)))
+      .join("\n\n");
+    const selectorInvocation = [...gateway.invocations].reverse().find((candidate) =>
+      candidate.input.messages?.some(
+        (message) =>
+          typeof message.content === "string" && message.content.includes("workspace memory recall selector")
+      )
+    );
+    const selectorInvocationText = (selectorInvocation?.input.messages ?? [])
+      .map((message) => (typeof message.content === "string" ? message.content : JSON.stringify(message.content)))
+      .join("\n\n");
+
+    expect(selectorInvocation).toBeTruthy();
+    expect(selectorInvocationText).toContain("Recently used tools: Glob");
+    expect(invocationText).toContain('<workspace_memory_file path=".openharness/memory/testing.md">');
+    expect(invocationText).toContain("Always run `pnpm test` before finishing repo work.");
+    expect(invocationText).not.toContain("Prefer terse section headings when writing docs.");
+  });
+
+  it("deduplicates recently surfaced workspace memory topics across adjacent runs when fresh alternatives exist", async () => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), "oah-workspace-memory-recall-dedupe-"));
+    await mkdir(path.join(workspaceRoot, ".openharness", "memory"), { recursive: true });
+    await writeFile(
+      path.join(workspaceRoot, ".openharness", "memory", "MEMORY.md"),
+      [
+        "- [testing](.openharness/memory/testing.md) - finish checklist and validation commands",
+        "- [style](.openharness/memory/style.md) - final response formatting preferences"
+      ].join("\n"),
+      "utf8"
+    );
+    await writeFile(
+      path.join(workspaceRoot, ".openharness", "memory", "testing.md"),
+      [
+        "---",
+        "name: Testing",
+        "description: Finish checklist and validation commands.",
+        "type: project",
+        "---",
+        "",
+        "# Testing",
+        "",
+        "- Always run `pnpm test` before finishing repo work."
+      ].join("\n"),
+      "utf8"
+    );
+    await writeFile(
+      path.join(workspaceRoot, ".openharness", "memory", "style.md"),
+      [
+        "---",
+        "name: Style",
+        "description: Final response formatting preferences.",
+        "type: feedback",
+        "---",
+        "",
+        "# Style",
+        "",
+        "- Keep final responses terse and avoid trailing summaries."
+      ].join("\n"),
+      "utf8"
+    );
+
+    const { gateway, runtimeService, workspace } = await createRuntime(0, {
+      rootPath: workspaceRoot,
+      workspaceSettings: {
+        engine: {
+          workspaceMemory: {
+            enabled: true
+          }
+        }
+      }
+    });
+    let selectorCallCount = 0;
+    gateway.generateResponseFactory = (input) => {
+      const systemPrompt = input.messages?.find((message) => message.role === "system");
+      if (
+        typeof systemPrompt?.content === "string" &&
+        systemPrompt.content.includes("workspace memory recall selector")
+      ) {
+        selectorCallCount += 1;
+        return {
+          model: input.model ?? "openai-default",
+          text: JSON.stringify({
+            paths: [".openharness/memory/testing.md"]
+          }),
+          finishReason: "stop",
+          usage: {
+            inputTokens: 12,
+            outputTokens: 6,
+            totalTokens: 18
+          }
+        };
+      }
+
+      return undefined;
+    };
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: workspace.id,
+      caller,
+      input: {}
+    });
+
+    const firstAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "How should I finish repo work and shape the final response?" }
+    });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(firstAccepted.runId);
+      return run.status === "completed";
+    });
+
+    const firstRunSteps = await runtimeService.listRunSteps(firstAccepted.runId);
+    const firstRecallStep = firstRunSteps.items.find((step) => step.name === "workspace_memory_recall");
+    expect(firstRecallStep?.output).toMatchObject({
+      recalledPaths: [".openharness/memory/testing.md"]
+    });
+
+    const secondAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "How should I finish repo work and shape the final response?" }
+    });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(secondAccepted.runId);
+      return run.status === "completed";
+    });
+
+    const selectorInvocations = gateway.invocations.filter((candidate) =>
+      candidate.input.messages?.some(
+        (message) =>
+          typeof message.content === "string" && message.content.includes("workspace memory recall selector")
+      )
+    );
+    const secondSelectorText = (selectorInvocations.at(-1)?.input.messages ?? [])
+      .map((message) => (typeof message.content === "string" ? message.content : JSON.stringify(message.content)))
+      .join("\n\n");
+    const secondSelectorManifest = secondSelectorText.match(
+      /<available_workspace_memory_topics>\n([\s\S]*?)\n<\/available_workspace_memory_topics>/
+    )?.[1] ?? "";
+    const modelInvocationsWithTopics = gateway.invocations.filter((candidate) =>
+      candidate.input.messages?.some(
+        (message) => typeof message.content === "string" && message.content.includes("<workspace_memory_file")
+      )
+    );
+    const secondInvocationText = (modelInvocationsWithTopics.at(-1)?.input.messages ?? [])
+      .map((message) => (typeof message.content === "string" ? message.content : JSON.stringify(message.content)))
+      .join("\n\n");
+
+    expect(selectorCallCount).toBeGreaterThanOrEqual(2);
+    expect(secondSelectorManifest).not.toContain(".openharness/memory/testing.md");
+    expect(secondSelectorManifest).toContain(".openharness/memory/style.md");
+    expect(secondInvocationText).toContain('<workspace_memory_file path=".openharness/memory/style.md">');
+    expect(secondInvocationText).not.toContain('<workspace_memory_file path=".openharness/memory/testing.md">');
+  });
+
+  it("uses the default platform model for workspace memory recall selection even when the main run uses a workspace model", async () => {
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), "oah-workspace-memory-selector-model-"));
+    await mkdir(path.join(workspaceRoot, ".openharness", "memory"), { recursive: true });
+    await writeFile(
+      path.join(workspaceRoot, ".openharness", "memory", "MEMORY.md"),
+      "- [testing](.openharness/memory/testing.md) - finish checklist and validation commands\n",
+      "utf8"
+    );
+    await writeFile(
+      path.join(workspaceRoot, ".openharness", "memory", "testing.md"),
+      [
+        "---",
+        "name: Testing",
+        "description: Finish checklist and validation commands.",
+        "type: project",
+        "---",
+        "",
+        "# Testing",
+        "",
+        "- Always run `pnpm test` before finishing repo work."
+      ].join("\n"),
+      "utf8"
+    );
+    gateway.generateResponseFactory = (input) => {
+      const systemPrompt = input.messages?.find((message) => message.role === "system");
+      if (
+        typeof systemPrompt?.content === "string" &&
+        systemPrompt.content.includes("workspace memory recall selector")
+      ) {
+        return {
+          model: input.model ?? "openai-default",
+          text: JSON.stringify({
+            paths: [".openharness/memory/testing.md"]
+          }),
+          finishReason: "stop",
+          usage: {
+            inputTokens: 12,
+            outputTokens: 6,
+            totalTokens: 18
+          }
+        };
+      }
+
+      return undefined;
+    };
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence,
+      platformModels: {
+        "openai-default": {
+          provider: "openai",
+          name: "gpt-4.1-mini"
+        }
+      }
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_workspace_memory_selector_model",
+      name: "workspace-memory-selector-model",
+      rootPath: workspaceRoot,
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "writer",
+      settings: {
+        defaultAgent: "writer",
+        skillDirs: [],
+        engine: {
+          workspaceMemory: {
+            enabled: true
+          }
+        }
+      },
+      workspaceModels: {
+        "repo-model": {
+          provider: "openai",
+          name: "gpt-4.1"
+        }
+      },
+      agents: {
+        writer: {
+          name: "writer",
+          mode: "primary",
+          prompt: "Use the repo model.",
+          modelRef: "workspace/repo-model",
+          tools: {
+            native: [],
+            actions: [],
+            skills: [],
+            external: []
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_workspace_memory_selector_model",
+        agents: [{ name: "writer", mode: "primary", source: "workspace" }],
+        models: [
+          {
+            ref: "workspace/repo-model",
+            name: "repo-model",
+            source: "workspace",
+            provider: "openai",
+            modelName: "gpt-4.1"
+          },
+          {
+            ref: "platform/openai-default",
+            name: "openai-default",
+            source: "platform",
+            provider: "openai",
+            modelName: "gpt-4.1-mini"
+          }
+        ],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: "project_workspace_memory_selector_model",
+      caller,
+      input: {}
+    });
+
+    await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Should I run tests before finishing this repo task?" }
+    });
+
+    await waitFor(() => gateway.invocations.length >= 2);
+
+    const selectorInvocation = gateway.invocations.find((candidate) =>
+      candidate.input.messages?.some(
+        (message) => typeof message.content === "string" && message.content.includes("workspace memory recall selector")
+      )
+    );
+    const mainInvocation = gateway.invocations.find((candidate) =>
+      candidate.input.messages?.some(
+        (message) => typeof message.content === "string" && message.content.includes("<workspace_memory_file")
+      )
+    );
+
+    expect(selectorInvocation?.model).toBe("openai-default");
+    expect(mainInvocation?.model).toBe("workspace/repo-model");
+  });
+
+  it("runs workspace memory extraction in a background child run and writes MEMORY.md after completion", async () => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), "oah-workspace-memory-writeback-"));
+    await mkdir(path.join(workspaceRoot, ".openharness", "memory"), { recursive: true });
+    await writeFile(
+      path.join(workspaceRoot, ".openharness", "memory", "MEMORY.md"),
+      "- [conventions](.openharness/memory/conventions.md) - concise memory habits\n",
+      "utf8"
+    );
+    await writeFile(
+      path.join(workspaceRoot, ".openharness", "memory", "conventions.md"),
+      "# Conventions\n\n- Existing note: keep memory concise.\n",
+      "utf8"
+    );
+    const { gateway, runtimeService, workspace } = await createRuntime(0, {
+      rootPath: workspaceRoot,
+      workspaceSettings: {
+        engine: {
+          workspaceMemory: {
+            enabled: true
+          }
+        }
+      }
+    });
+    gateway.streamScenarioFactory = (input) => {
+      const systemPrompt = input.messages?.find((message) => message.role === "system");
+      if (
+        typeof systemPrompt?.content === "string" &&
+        systemPrompt.content.includes("workspace memory extraction subagent")
+      ) {
+        return {
+          text: "Workspace memory updated.",
+          toolSteps: [
+            {
+              toolName: "Read",
+              input: {
+                file_path: ".openharness/memory/MEMORY.md"
+              },
+              toolCallId: "call_workspace_memory_read"
+            },
+            {
+              toolName: "Write",
+              input: {
+                file_path: ".openharness/memory/repo-conventions.md",
+                content:
+                  "---\nname: Repo Conventions\ndescription: Durable repository conventions and response constraints.\n---\n\n# Repo Conventions\n\n- Stable repo fact: validation uses pnpm test.\n- Constraint: keep responses concise and actionable.\n- Existing note: keep memory concise.\n"
+              },
+              toolCallId: "call_workspace_memory_topic_write"
+            },
+            {
+              toolName: "Write",
+              input: {
+                file_path: ".openharness/memory/MEMORY.md",
+                content:
+                  "- [conventions](.openharness/memory/conventions.md) - concise memory habits\n- [repo-conventions](.openharness/memory/repo-conventions.md) - validation command and response constraints\n"
+              },
+              toolCallId: "call_workspace_memory_index_write"
+            }
+          ]
+        };
+      }
+
+      return undefined;
+    };
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: workspace.id,
+      caller,
+      input: {}
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Please inspect the repo conventions and keep the answer concise." }
+    });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    let queuedWorkspaceMemoryStep:
+      | Awaited<ReturnType<typeof runtimeService.listRunSteps>>["items"][number]
+      | undefined;
+    await waitFor(async () => {
+      const parentRunSteps = await runtimeService.listRunSteps(accepted.runId);
+      queuedWorkspaceMemoryStep = parentRunSteps.items.find((step) => step.name === "workspace_memory_extract_queued");
+      return Boolean(queuedWorkspaceMemoryStep);
+    });
+    const childRunId =
+      typeof (queuedWorkspaceMemoryStep?.output as { childRunId?: unknown } | undefined)?.childRunId === "string"
+        ? ((queuedWorkspaceMemoryStep?.output as { childRunId: string }).childRunId)
+        : undefined;
+
+    expect(childRunId).toBeTruthy();
+
+    let childRun: Run | undefined;
+    await waitFor(async () => {
+      if (!childRunId) {
+        return false;
+      }
+
+      childRun = await runtimeService.getRun(childRunId);
+      return childRun.status === "completed";
+    });
+
+    const memoryPath = path.join(workspaceRoot, ".openharness", "memory", "MEMORY.md");
+    const topicPath = path.join(workspaceRoot, ".openharness", "memory", "repo-conventions.md");
+    let memoryContent = "";
+    let topicContent = "";
+    await waitFor(async () => {
+      try {
+        memoryContent = await readFile(memoryPath, "utf8");
+        topicContent = await readFile(topicPath, "utf8");
+        return (
+          memoryContent.includes("repo-conventions.md") &&
+          topicContent.includes("Stable repo fact: validation uses pnpm test.")
+        );
+      } catch {
+        return false;
+      }
+    });
+
+    const extractorInvocation = gateway.invocations.find((candidate) =>
+      candidate.input.messages?.some(
+        (message) => typeof message.content === "string" && message.content.includes("workspace memory extraction subagent")
+      )
+    );
+    const extractorInvocationText = (extractorInvocation?.input.messages ?? [])
+      .map((message) => (typeof message.content === "string" ? message.content : JSON.stringify(message.content)))
+      .join("\n\n");
+    const childMessages = childRun?.sessionId ? await runtimeService.listSessionMessages(childRun.sessionId, 50) : { items: [] };
+    const readToolMessage = childMessages.items.find(
+      (message) => message.role === "tool" && messageToolName(message) === "Read"
+    );
+    const writeToolMessages = childMessages.items.filter(
+      (message) => message.role === "tool" && messageToolName(message) === "Write"
+    );
+
+    expect(childRun?.parentRunId).toBe(accepted.runId);
+    expect(childRun?.triggerType).toBe("system");
+    expect(childRun?.effectiveAgentName).toBe("__workspace_memory_extractor__");
+    expect(extractorInvocation).toBeTruthy();
+    expect(extractorInvocationText).toContain("## Types of memory");
+    expect(extractorInvocationText).toContain("type: {{user, feedback, project, reference}}");
+    expect(messageText(readToolMessage)).toContain("file_path: .openharness/memory/MEMORY.md");
+    expect(writeToolMessages.some((message) => messageText(message)?.includes("file_path: .openharness/memory/repo-conventions.md"))).toBe(
+      true
+    );
+    expect(writeToolMessages.some((message) => messageText(message)?.includes("file_path: .openharness/memory/MEMORY.md"))).toBe(true);
+    expect(memoryContent).toContain("repo-conventions.md");
+    expect(topicContent).toContain("Stable repo fact: validation uses pnpm test.");
+    expect(topicContent).toContain("Constraint: keep responses concise and actionable.");
+    expect(topicContent).toContain("Existing note: keep memory concise.");
+  }, 15_000);
 
   it("skips redundant runtime message rewrites when later events do not change the projection", async () => {
     const gateway = new FakeModelGateway();

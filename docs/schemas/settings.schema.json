@@ -58,6 +58,9 @@
       },
       "uniqueItems": true
     },
+    "engine": {
+      "$ref": "#/$defs/engine"
+    },
     "imports": {
       "$ref": "#/$defs/imports"
     },
@@ -83,6 +86,30 @@
         },
         "skills": {
           "$ref": "#/$defs/namedImports"
+        }
+      }
+    },
+    "engineToggle": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "compact": {
+          "$ref": "#/$defs/engineToggle"
+        },
+        "session_memory": {
+          "$ref": "#/$defs/engineToggle"
+        },
+        "workspace_memory": {
+          "$ref": "#/$defs/engineToggle"
         }
       }
     },

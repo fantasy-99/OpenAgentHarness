@@ -1079,6 +1079,39 @@ imports:
     });
   });
 
+  it("loads optional workspace engine settings", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-settings-engine-"));
+    tempDirs.push(tempDir);
+
+    await mkdir(path.join(tempDir, ".openharness"), { recursive: true });
+    await writeFile(
+      path.join(tempDir, ".openharness", "settings.yaml"),
+      `
+engine:
+  compact:
+    enabled: false
+  session_memory:
+    enabled: true
+  workspace_memory:
+    enabled: true
+`,
+      "utf8"
+    );
+
+    const settings = await loadWorkspaceSettings(tempDir);
+    expect(settings.engine).toEqual({
+      compact: {
+        enabled: false
+      },
+      sessionMemory: {
+        enabled: true
+      },
+      workspaceMemory: {
+        enabled: true
+      }
+    });
+  });
+
   it("loads workspace model aliases and prompt config from prompts.yaml", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-settings-model-aliases-"));
     tempDirs.push(tempDir);

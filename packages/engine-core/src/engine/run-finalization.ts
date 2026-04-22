@@ -37,6 +37,9 @@ export interface RunFinalizationServiceDependencies {
     eventName: "run_completed" | "run_failed"
   ) => Promise<void>;
   dispatchNextQueuedRun: (sessionId: string) => Promise<string | undefined>;
+  afterSuccessfulRun?:
+    | ((input: { workspace: WorkspaceRecord; session: Session; run: Run }) => Promise<void> | void)
+    | undefined;
   buildGeneratedMessageMetadata: (
     workspace: WorkspaceRecord,
     agentName: string,
@@ -58,6 +61,7 @@ export class RunFinalizationService {
   readonly #recordSystemStep: RunFinalizationServiceDependencies["recordSystemStep"];
   readonly #runLifecycleHooks: RunFinalizationServiceDependencies["runLifecycleHooks"];
   readonly #dispatchNextQueuedRun: RunFinalizationServiceDependencies["dispatchNextQueuedRun"];
+  readonly #afterSuccessfulRun: RunFinalizationServiceDependencies["afterSuccessfulRun"];
   readonly #buildGeneratedMessageMetadata: RunFinalizationServiceDependencies["buildGeneratedMessageMetadata"];
   readonly #nowIso: RunFinalizationServiceDependencies["nowIso"];
 
@@ -73,6 +77,7 @@ export class RunFinalizationService {
     this.#recordSystemStep = dependencies.recordSystemStep;
     this.#runLifecycleHooks = dependencies.runLifecycleHooks;
     this.#dispatchNextQueuedRun = dependencies.dispatchNextQueuedRun;
+    this.#afterSuccessfulRun = dependencies.afterSuccessfulRun;
     this.#buildGeneratedMessageMetadata = dependencies.buildGeneratedMessageMetadata;
     this.#nowIso = dependencies.nowIso;
   }
@@ -145,6 +150,11 @@ export class RunFinalizationService {
     });
 
     await this.#runLifecycleHooks(input.workspace, input.session, updatedRun, "run_completed");
+    await this.#afterSuccessfulRun?.({
+      workspace: input.workspace,
+      session: input.session,
+      run: updatedRun
+    });
     await this.#dispatchNextQueuedRun(input.session.id);
   }
 

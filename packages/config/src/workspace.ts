@@ -132,6 +132,17 @@ export async function loadWorkspaceSettings(workspaceRoot: string): Promise<Work
         }
     >;
     skill_dirs?: string[];
+    engine?: {
+      compact?: {
+        enabled?: boolean;
+      };
+      session_memory?: {
+        enabled?: boolean;
+      };
+      workspace_memory?: {
+        enabled?: boolean;
+      };
+    };
     imports?: {
       tools?: string[];
       skills?: string[];
@@ -222,6 +233,39 @@ export async function loadWorkspaceSettings(workspaceRoot: string): Promise<Work
     ...(typedParsedSettings.runtime ? { runtime: typedParsedSettings.runtime } : {}),
     ...(normalizedModels ? { models: normalizedModels } : {}),
     ...(typedParsedSettings.skill_dirs ? { skillDirs: typedParsedSettings.skill_dirs } : {}),
+    ...(typedParsedSettings.engine
+      ? {
+          engine: {
+            ...(typedParsedSettings.engine.compact
+              ? {
+                  compact: {
+                    ...(typeof typedParsedSettings.engine.compact.enabled === "boolean"
+                      ? { enabled: typedParsedSettings.engine.compact.enabled }
+                      : {})
+                  }
+                }
+              : {}),
+            ...(typedParsedSettings.engine.session_memory
+              ? {
+                  sessionMemory: {
+                    ...(typeof typedParsedSettings.engine.session_memory.enabled === "boolean"
+                      ? { enabled: typedParsedSettings.engine.session_memory.enabled }
+                      : {})
+                  }
+                }
+              : {}),
+            ...(typedParsedSettings.engine.workspace_memory
+              ? {
+                  workspaceMemory: {
+                    ...(typeof typedParsedSettings.engine.workspace_memory.enabled === "boolean"
+                      ? { enabled: typedParsedSettings.engine.workspace_memory.enabled }
+                      : {})
+                  }
+                }
+              : {})
+          }
+        }
+      : {}),
     ...(typedParsedSettings.imports
       ? {
           imports: {

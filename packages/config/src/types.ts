@@ -222,6 +222,7 @@ export interface WorkspaceSettings {
   runtime?: string | undefined;
   models?: Record<string, WorkspaceModelPreset> | undefined;
   skillDirs?: string[] | undefined;
+  engine?: WorkspaceEngineSettings | undefined;
   imports?:
     | {
         tools?: string[] | undefined;
@@ -229,6 +230,16 @@ export interface WorkspaceSettings {
       }
     | undefined;
   systemPrompt?: WorkspaceSystemPromptSettings | undefined;
+}
+
+export interface WorkspaceEngineSettings {
+  compact?: WorkspaceEngineToggleSettings | undefined;
+  sessionMemory?: WorkspaceEngineToggleSettings | undefined;
+  workspaceMemory?: WorkspaceEngineToggleSettings | undefined;
+}
+
+export interface WorkspaceEngineToggleSettings {
+  enabled?: boolean | undefined;
 }
 
 export interface WorkspaceModelPreset {

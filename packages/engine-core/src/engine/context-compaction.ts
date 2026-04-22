@@ -1,6 +1,7 @@
 import type { ChatMessage, Message, Run, Session } from "@oah/api-contracts";
 
 import type { EngineLogger, MessageRepository, ModelGateway, SessionEvent, WorkspaceRecord } from "../types.js";
+import type { ContextPreparationModule } from "./context-modules.js";
 import type { EngineMessage } from "./engine-messages.js";
 import { EngineMessageProjector, type CompactMessage } from "./message-projections.js";
 import type { ResolvedRunModel } from "./model-resolver.js";
@@ -263,7 +264,8 @@ export interface ContextCompactionServiceDependencies {
   buildEngineMessagesForSession: (sessionId: string, persistedMessages?: Message[]) => Promise<EngineMessage[]>;
 }
 
-export class ContextCompactionService {
+export class ContextCompactionService implements ContextPreparationModule {
+  readonly name = "compact";
   readonly #logger?: EngineLogger | undefined;
   readonly #messageRepository: ContextCompactionServiceDependencies["messageRepository"];
   readonly #modelGateway: ContextCompactionServiceDependencies["modelGateway"];
@@ -293,14 +295,19 @@ export class ContextCompactionService {
     this.#buildEngineMessagesForSession = dependencies.buildEngineMessagesForSession;
   }
 
+  isEnabled(workspace: WorkspaceRecord): boolean {
+    return workspace.settings.engine?.compact?.enabled ?? true;
+  }
+
   async prepareMessagesForModelInput(input: {
     workspace: WorkspaceRecord;
     session: Session;
     run: Run;
     activeAgentName: string;
     messages: Message[];
+    engineMessages: EngineMessage[];
   }): Promise<EngineMessage[]> {
-    const engineMessages = await this.#buildEngineMessagesForSession(input.session.id, input.messages);
+    const engineMessages = input.engineMessages;
     const resolvedModel = this.#resolveRunModel(input.workspace, input.session, input.run, input.activeAgentName);
     const contextWindowTokens = readContextWindowTokens(resolvedModel);
     if (!contextWindowTokens) {
