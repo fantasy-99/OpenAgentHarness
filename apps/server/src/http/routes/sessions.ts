@@ -8,8 +8,11 @@ import {
   createMessageRequestSchema,
   guideQueuedRunAcceptedSchema,
   messageAcceptedSchema,
+  messageContextQuerySchema,
+  messageContextSchema,
   messageListQuerySchema,
   messagePageSchema,
+  messageSchema,
   pageQuerySchema,
   requeueRunAcceptedSchema,
   sessionQueueSchema,
@@ -65,6 +68,24 @@ export function registerSessionRoutes(app: FastifyInstance, dependencies: AppDep
       query.direction
     );
     return reply.send(messagePageSchema.parse(page));
+  });
+
+  app.get("/api/v1/sessions/:sessionId/messages/:messageId", async (request, reply) => {
+    const params = createParamsSchema("sessionId", "messageId").parse(request.params);
+    const message = await dependencies.runtimeService.getSessionMessage(params.sessionId, params.messageId);
+    return reply.send(messageSchema.parse(message));
+  });
+
+  app.get("/api/v1/sessions/:sessionId/messages/:messageId/context", async (request, reply) => {
+    const params = createParamsSchema("sessionId", "messageId").parse(request.params);
+    const query = messageContextQuerySchema.parse(request.query);
+    const context = await dependencies.runtimeService.getSessionMessageContext(
+      params.sessionId,
+      params.messageId,
+      query.before,
+      query.after
+    );
+    return reply.send(messageContextSchema.parse(context));
   });
 
   app.get("/api/v1/sessions/:sessionId/runs", async (request, reply) => {

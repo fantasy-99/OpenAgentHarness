@@ -12386,4 +12386,101 @@ describe("runtime service", () => {
     const page = await runtimeService.listSessionMessages(session.id, 50);
     expect(messageText(page.items.find((message) => message.role === "assistant"))).toBe("hooked reply");
   });
+
+  it("supports single-message lookup, anchor context lookup, and storage-backed message pagination", async () => {
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    const now = new Date().toISOString();
+    await persistence.workspaceRepository.upsert({
+      id: "project_message_queries",
+      name: "message-queries",
+      rootPath: "/tmp/message-queries",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "default",
+      settings: {
+        defaultAgent: "default",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {},
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_message_queries",
+        agents: [],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+    const session = await runtimeService.createSession({
+      workspaceId: "project_message_queries",
+      caller,
+      input: {}
+    });
+
+    for (const [index, text] of ["message-1", "message-2", "message-3", "message-4", "message-5"].entries()) {
+      await persistence.messageRepository.create({
+        id: `msg_query_${index + 1}`,
+        sessionId: session.id,
+        runId: `run_query_${index + 1}`,
+        role: index % 2 === 0 ? "user" : "assistant",
+        content: text,
+        createdAt: new Date(Date.UTC(2024, 0, 1, 0, 0, index)).toISOString()
+      });
+    }
+
+    const newestPage = await runtimeService.listSessionMessages(session.id, 2, undefined, "backward");
+    expect(newestPage.items.map((message) => messageText(message))).toEqual(["message-4", "message-5"]);
+    expect(newestPage.nextCursor).toEqual(expect.any(String));
+
+    const olderPage = await runtimeService.listSessionMessages(session.id, 2, newestPage.nextCursor, "backward");
+    expect(olderPage.items.map((message) => messageText(message))).toEqual(["message-2", "message-3"]);
+    expect(olderPage.nextCursor).toEqual(expect.any(String));
+
+    const oldestPage = await runtimeService.listSessionMessages(session.id, 2, olderPage.nextCursor, "backward");
+    expect(oldestPage.items.map((message) => messageText(message))).toEqual(["message-1"]);
+    expect(oldestPage.nextCursor).toBeUndefined();
+
+    const forwardPage = await runtimeService.listSessionMessages(session.id, 2);
+    expect(forwardPage.items.map((message) => messageText(message))).toEqual(["message-1", "message-2"]);
+    expect(forwardPage.nextCursor).toEqual(expect.any(String));
+
+    const nextForwardPage = await runtimeService.listSessionMessages(session.id, 2, forwardPage.nextCursor);
+    expect(nextForwardPage.items.map((message) => messageText(message))).toEqual(["message-3", "message-4"]);
+
+    const message = await runtimeService.getSessionMessage(session.id, "msg_query_3");
+    expect(messageText(message)).toBe("message-3");
+
+    const context = await runtimeService.getSessionMessageContext(session.id, "msg_query_3", 2, 1);
+    expect(messageText(context.anchor)).toBe("message-3");
+    expect(context.before.map((item) => messageText(item))).toEqual(["message-1", "message-2"]);
+    expect(context.after.map((item) => messageText(item))).toEqual(["message-4"]);
+    expect(context.hasMoreBefore).toBe(false);
+    expect(context.hasMoreAfter).toBe(true);
+  });
 });

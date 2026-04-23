@@ -187,6 +187,14 @@ export interface MessageListResult {
   nextCursor?: string | undefined;
 }
 
+export interface MessageContextResult {
+  anchor: Message;
+  before: Message[];
+  after: Message[];
+  hasMoreBefore: boolean;
+  hasMoreAfter: boolean;
+}
+
 export interface WorkspaceListResult {
   items: Workspace[];
   nextCursor?: string | undefined;

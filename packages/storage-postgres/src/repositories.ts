@@ -7,6 +7,7 @@ import type {
   HookRunAuditRepository,
   Message,
   MessageRepository,
+  MessagePageCursor,
   EngineMessage,
   EngineMessageRepository,
   Run,
@@ -26,8 +27,8 @@ import type {
   WorkspaceRecord,
   WorkspaceRepository
 } from "@oah/engine-core";
-import { AppError, createId, nowIso, parseCursor } from "@oah/engine-core";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { AppError, createId, nowIso, parseCursor, parseMessagePageCursor } from "@oah/engine-core";
+import { and, asc, desc, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
 import type { OahDatabase, OahTransaction } from "./schema.js";
 import {
   archives,
@@ -239,6 +240,23 @@ export class PostgresSessionRepository implements SessionRepository {
 export class PostgresMessageRepository implements MessageRepository {
   constructor(private readonly db: OahDatabase) {}
 
+  #buildMessageCursorPredicate(
+    cursor: MessagePageCursor,
+    direction: "forward" | "backward"
+  ): ReturnType<typeof or> {
+    if (direction === "backward") {
+      return or(
+        lt(messages.createdAt, cursor.createdAt),
+        and(eq(messages.createdAt, cursor.createdAt), lt(messages.id, cursor.id))
+      );
+    }
+
+    return or(
+      gt(messages.createdAt, cursor.createdAt),
+      and(eq(messages.createdAt, cursor.createdAt), gt(messages.id, cursor.id))
+    );
+  }
+
   async create(input: Message): Promise<Message> {
     return this.db.transaction(async (tx) => {
       const [row] = await tx.insert(messages).values(buildMessageRow(input)).returning();
@@ -288,6 +306,37 @@ export class PostgresMessageRepository implements MessageRepository {
       .orderBy(asc(messages.createdAt), asc(messages.id));
 
     return rows.map(toMessage);
+  }
+
+  async listPageBySessionId(input: {
+    sessionId: string;
+    pageSize: number;
+    cursor?: string | undefined;
+    direction?: "forward" | "backward" | undefined;
+  }): Promise<{ items: Message[]; hasMore: boolean }> {
+    const direction = input.direction ?? "forward";
+    const cursor = parseMessagePageCursor(input.cursor);
+    const whereClause = cursor
+      ? and(eq(messages.sessionId, input.sessionId), this.#buildMessageCursorPredicate(cursor, direction))
+      : eq(messages.sessionId, input.sessionId);
+    const rows = await this.db
+      .select()
+      .from(messages)
+      .where(whereClause)
+      .orderBy(
+        direction === "backward" ? desc(messages.createdAt) : asc(messages.createdAt),
+        direction === "backward" ? desc(messages.id) : asc(messages.id)
+      )
+      .limit(input.pageSize + 1);
+
+    const hasMore = rows.length > input.pageSize;
+    const pageRows = hasMore ? rows.slice(0, input.pageSize) : rows;
+    const orderedRows = direction === "backward" ? [...pageRows].reverse() : pageRows;
+
+    return {
+      items: orderedRows.map(toMessage),
+      hasMore
+    };
   }
 }
 

@@ -1,8 +1,15 @@
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { DeleteObjectsCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectsCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  S3Client
+} from "@aws-sdk/client-s3";
 import type { ServerConfig } from "@oah/config";
 
 export type ManagedPathKey = "workspace" | "runtime" | "model" | "tool" | "skill";
@@ -18,10 +25,20 @@ interface ObjectStorageEntry {
 
 export interface DirectoryObjectStore {
   listEntries(prefix: string): Promise<ObjectStorageEntry[]>;
+  getObjectInfo?(
+    key: string
+  ): Promise<{ size?: number | undefined; lastModified?: Date | undefined; metadata?: Record<string, string> | undefined }>;
   getObject(key: string): Promise<{ body: Buffer; metadata?: Record<string, string> | undefined }>;
   putObject(key: string, body: Buffer, options?: { mtimeMs?: number | undefined }): Promise<void>;
   deleteObjects(keys: string[]): Promise<void>;
   bucket?: string | undefined;
+}
+
+export interface DirectorySyncResult {
+  localFingerprint: string;
+  uploadedFileCount: number;
+  deletedRemoteCount: number;
+  createdEmptyDirectoryCount: number;
 }
 
 interface LocalDirectorySnapshot {
@@ -48,6 +65,7 @@ const DEFAULT_KEY_PREFIXES: Record<ManagedPathKey, string> = {
   skill: "skill"
 };
 const OBJECT_MTIME_METADATA_KEY = "oah-mtime-ms";
+const DEFAULT_DIRECTORY_SYNC_CONCURRENCY = 8;
 
 const DEFAULT_MANAGED_PATHS = Object.keys(DEFAULT_KEY_PREFIXES) as ManagedPathKey[];
 
@@ -118,6 +136,71 @@ function parseObjectMtimeMs(metadata: Record<string, string> | undefined): numbe
   return Math.trunc(parsed);
 }
 
+function resolveDirectorySyncConcurrency(): number {
+  const raw = process.env.OAH_OBJECT_STORAGE_SYNC_CONCURRENCY;
+  if (!raw || raw.trim().length === 0) {
+    return DEFAULT_DIRECTORY_SYNC_CONCURRENCY;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_DIRECTORY_SYNC_CONCURRENCY;
+}
+
+async function runWithConcurrency<T>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>
+): Promise<void> {
+  if (items.length === 0) {
+    return;
+  }
+
+  const limit = Math.max(1, Math.min(items.length, concurrency));
+  let nextIndex = 0;
+  await Promise.all(
+    Array.from({ length: limit }, async () => {
+      while (true) {
+        const index = nextIndex;
+        nextIndex += 1;
+        if (index >= items.length) {
+          return;
+        }
+
+        await worker(items[index]!);
+      }
+    })
+  );
+}
+
+function shouldPreserveTopLevelName(relativePath: string, options?: DirectorySyncOptions): boolean {
+  if (!options?.preserveTopLevelNames || options.preserveTopLevelNames.length === 0) {
+    return false;
+  }
+
+  const normalized = normalizeRelativePath(relativePath);
+  if (!normalized) {
+    return false;
+  }
+
+  const topLevelName = normalized.split("/")[0];
+  return topLevelName ? options.preserveTopLevelNames.includes(topLevelName) : false;
+}
+
+function addDirectoryWithParents(relativePath: string, directories: Set<string>): void {
+  const normalized = normalizeRelativePath(relativePath);
+  if (!normalized) {
+    return;
+  }
+
+  const segments = normalized.split("/");
+  for (let index = 0; index < segments.length; index += 1) {
+    const candidate = segments.slice(0, index + 1).join("/");
+    if (candidate) {
+      directories.add(candidate);
+    }
+  }
+}
+
 async function collectLocalDirectorySnapshot(rootDir: string, options?: DirectorySyncOptions): Promise<LocalDirectorySnapshot> {
   const files = new Map<string, { absolutePath: string; size: number; mtimeMs: number }>();
   const emptyDirectories = new Set<string>();
@@ -145,14 +228,17 @@ async function collectLocalDirectorySnapshot(rootDir: string, options?: Director
 
     entries.sort((left, right) => left.name.localeCompare(right.name));
     let visibleChildren = 0;
+    let suppressedChildren = false;
 
     for (const entry of entries) {
       const absolutePath = path.join(directory, entry.name);
       const relativePath = normalizeRelativePath(path.relative(rootDir, absolutePath));
       if (shouldIgnoreRelativePath(relativePath)) {
+        suppressedChildren = true;
         continue;
       }
       if (options?.excludeRelativePath?.(relativePath)) {
+        suppressedChildren = true;
         continue;
       }
 
@@ -182,7 +268,7 @@ async function collectLocalDirectorySnapshot(rootDir: string, options?: Director
     }
 
     const relativeDirectory = normalizeRelativePath(path.relative(rootDir, directory));
-    if (visibleChildren === 0 && relativeDirectory) {
+    if (visibleChildren === 0 && relativeDirectory && !suppressedChildren) {
       emptyDirectories.add(relativeDirectory);
     }
   };
@@ -202,26 +288,92 @@ function createDirectoryFingerprint(snapshot: LocalDirectorySnapshot): string {
   return hash.digest("hex");
 }
 
-export async function computeLocalDirectoryFingerprint(rootDir: string): Promise<string> {
-  return createDirectoryFingerprint(await collectLocalDirectorySnapshot(rootDir));
+export async function computeLocalDirectoryFingerprint(rootDir: string, options?: DirectorySyncOptions): Promise<string> {
+  return createDirectoryFingerprint(await collectLocalDirectorySnapshot(rootDir, options));
 }
 
-async function removeDirectoryContents(rootDir: string, options?: DirectorySyncOptions): Promise<void> {
-  const rootExists = await stat(rootDir).catch(() => null);
+async function removeUnexpectedLocalEntries(
+  rootDir: string,
+  remoteFiles: Set<string>,
+  remoteDirectories: Set<string>,
+  options?: DirectorySyncOptions
+): Promise<void> {
+  const rootExists = await stat(rootDir).catch((error) => {
+    if (isNotFoundError(error)) {
+      return null;
+    }
+    throw error;
+  });
   if (!rootExists?.isDirectory()) {
     await mkdir(rootDir, { recursive: true });
     return;
   }
 
-  const entries = await readdir(rootDir, { withFileTypes: true });
-  await Promise.all(
-    entries.map(async (entry) => {
-      if (options?.preserveTopLevelNames?.includes(entry.name)) {
-        return;
+  const walk = async (directory: string): Promise<void> => {
+    const entries = await readdir(directory, { withFileTypes: true }).catch((error) => {
+      if (isNotFoundError(error)) {
+        return null;
       }
-      await rm(path.join(rootDir, entry.name), { recursive: true, force: true });
-    })
-  );
+      throw error;
+    });
+    if (!entries) {
+      return;
+    }
+
+    for (const entry of entries) {
+      const absolutePath = path.join(directory, entry.name);
+      const relativePath = normalizeRelativePath(path.relative(rootDir, absolutePath));
+
+      if (options?.excludeRelativePath?.(relativePath)) {
+        continue;
+      }
+
+      if (shouldIgnoreRelativePath(relativePath)) {
+        await rm(absolutePath, { recursive: true, force: true });
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        await walk(absolutePath);
+        if (shouldPreserveTopLevelName(relativePath, options) || remoteDirectories.has(relativePath)) {
+          continue;
+        }
+
+        const remainingEntries = await readdir(absolutePath).catch((error) => {
+          if (isNotFoundError(error)) {
+            return null;
+          }
+          throw error;
+        });
+        if (remainingEntries && remainingEntries.length === 0) {
+          await rm(absolutePath, { recursive: true, force: true });
+        }
+        continue;
+      }
+
+      if (!remoteFiles.has(relativePath)) {
+        await rm(absolutePath, { recursive: true, force: true });
+      }
+    }
+  };
+
+  await walk(rootDir);
+}
+
+async function statIfExists(targetPath: string) {
+  return stat(targetPath).catch((error) => {
+    if (isNotFoundError(error)) {
+      return null;
+    }
+    throw error;
+  });
+}
+
+function resolveTargetMtimeMs(input: {
+  metadata?: Record<string, string> | undefined;
+  lastModified?: Date | undefined;
+}): number | undefined {
+  return parseObjectMtimeMs(input.metadata) ?? (input.lastModified ? Math.trunc(input.lastModified.getTime()) : undefined);
 }
 
 function shouldExcludeWorkspaceMirrorRelativePath(relativePath: string): boolean {
@@ -375,6 +527,23 @@ class S3DirectoryStore implements DirectoryObjectStore {
     };
   }
 
+  async getObjectInfo(
+    key: string
+  ): Promise<{ size?: number | undefined; lastModified?: Date | undefined; metadata?: Record<string, string> | undefined }> {
+    const response = await this.#client.send(
+      new HeadObjectCommand({
+        Bucket: this.#bucket,
+        Key: key
+      })
+    );
+
+    return {
+      ...(typeof response.ContentLength === "number" ? { size: response.ContentLength } : {}),
+      ...(response.LastModified ? { lastModified: response.LastModified } : {}),
+      ...(response.Metadata ? { metadata: response.Metadata } : {})
+    };
+  }
+
   async putObject(key: string, body: Buffer, options?: { mtimeMs?: number | undefined }): Promise<void> {
     await this.#client.send(
       new PutObjectCommand({
@@ -421,7 +590,7 @@ export function createDirectoryObjectStore(config: ObjectStorageConfig): Directo
 }
 
 export class ObjectStorageMirrorController {
-  readonly #store: S3DirectoryStore;
+  readonly #store: DirectoryObjectStore & { close(): Promise<void> };
   readonly #mappings: ManagedPathMapping[];
   readonly #pollIntervalMs: number;
   readonly #syncOnBoot: boolean;
@@ -430,9 +599,20 @@ export class ObjectStorageMirrorController {
   readonly #logger: (message: string) => void;
   #pollTimer: NodeJS.Timeout | undefined;
   #syncInFlight: Promise<void> | undefined;
+  #localPreparationPromise: Promise<void> | undefined;
+  #initializationPromise: Promise<void> | undefined;
+  #backgroundInitializationObserved = false;
+  #initializationError: unknown;
 
-  constructor(config: ObjectStorageConfig, paths: ServerConfig["paths"], logger?: (message: string) => void) {
-    this.#store = new S3DirectoryStore(config);
+  constructor(
+    config: ObjectStorageConfig,
+    paths: ServerConfig["paths"],
+    logger?: (message: string) => void,
+    options?: {
+      store?: (DirectoryObjectStore & { close(): Promise<void> }) | undefined;
+    }
+  ) {
+    this.#store = options?.store ?? new S3DirectoryStore(config);
     this.#pollIntervalMs = config.poll_interval_ms ?? 5000;
     this.#syncOnBoot = config.sync_on_boot ?? true;
     this.#syncOnChange = config.sync_on_change ?? true;
@@ -468,27 +648,26 @@ export class ObjectStorageMirrorController {
     return `s3://${this.#store.bucket}/${key}`;
   }
 
-  async initialize(): Promise<void> {
-    for (const mapping of this.#mappings) {
-      await mkdir(mapping.localDir, { recursive: true });
+  async initialize(options?: { awaitInitialSync?: boolean | undefined }): Promise<void> {
+    const awaitInitialSync = options?.awaitInitialSync ?? true;
+    const localPreparation = this.#ensureLocalPreparation();
+    const initialization = this.#ensureInitialization();
+
+    if (awaitInitialSync) {
+      await initialization;
+      return;
     }
 
-    if (this.#syncOnBoot) {
-      for (const mapping of this.#mappings) {
-        await this.#syncRemoteToLocal(mapping);
-      }
+    if (!this.#backgroundInitializationObserved) {
+      this.#backgroundInitializationObserved = true;
+      void initialization.catch((error) => {
+        this.#logger(
+          `background mirror initialization failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+      });
     }
 
-    for (const mapping of this.#mappings) {
-      this.#fingerprints.set(mapping.key, await this.#captureFingerprint(mapping.localDir));
-    }
-
-    if (this.#syncOnChange) {
-      this.#pollTimer = setInterval(() => {
-        void this.syncChangedMappings();
-      }, this.#pollIntervalMs);
-      this.#pollTimer.unref();
-    }
+    await localPreparation;
   }
 
   async close(): Promise<void> {
@@ -497,11 +676,16 @@ export class ObjectStorageMirrorController {
       this.#pollTimer = undefined;
     }
 
-    await this.syncChangedMappings();
+    await this.#initializationPromise?.catch(() => undefined);
+    if (this.#initializationError === undefined) {
+      await this.syncChangedMappings();
+    }
     await this.#store.close();
   }
 
   async syncChangedMappings(): Promise<void> {
+    await this.#initializationPromise;
+
     if (this.#syncInFlight) {
       return this.#syncInFlight;
     }
@@ -566,6 +750,48 @@ export class ObjectStorageMirrorController {
           }
         : undefined
     );
+  }
+
+  #ensureLocalPreparation(): Promise<void> {
+    if (!this.#localPreparationPromise) {
+      this.#localPreparationPromise = (async () => {
+        for (const mapping of this.#mappings) {
+          await mkdir(mapping.localDir, { recursive: true });
+        }
+      })();
+    }
+
+    return this.#localPreparationPromise;
+  }
+
+  #ensureInitialization(): Promise<void> {
+    if (!this.#initializationPromise) {
+      this.#initializationPromise = (async () => {
+        await this.#ensureLocalPreparation();
+
+        if (this.#syncOnBoot) {
+          for (const mapping of this.#mappings) {
+            await this.#syncRemoteToLocal(mapping);
+          }
+        }
+
+        for (const mapping of this.#mappings) {
+          this.#fingerprints.set(mapping.key, await this.#captureFingerprint(mapping.localDir));
+        }
+
+        if (this.#syncOnChange && !this.#pollTimer) {
+          this.#pollTimer = setInterval(() => {
+            void this.syncChangedMappings();
+          }, this.#pollIntervalMs);
+          this.#pollTimer.unref();
+        }
+      })().catch((error) => {
+        this.#initializationError = error;
+        throw error;
+      });
+    }
+
+    return this.#initializationPromise;
   }
 }
 
@@ -676,8 +902,10 @@ export async function syncRemotePrefixToLocal(
 ): Promise<void> {
   logger?.(`syncing ${(label ?? remotePrefix) || "."} from object storage into ${localDir}`);
   const entries = await store.listEntries(remotePrefix);
-  await removeDirectoryContents(localDir, options);
   await mkdir(localDir, { recursive: true });
+
+  const remoteDirectories = new Set<string>();
+  const remoteFiles = new Map<string, ObjectStorageEntry>();
 
   for (const entry of entries) {
     const relativePath = relativePathFromRemoteKey(remotePrefix, entry.key);
@@ -692,26 +920,66 @@ export async function syncRemotePrefixToLocal(
       continue;
     }
 
-    const targetPath = path.join(localDir, relativePath);
     if (entry.key.endsWith("/")) {
-      await mkdir(targetPath, { recursive: true });
-      if (entry.lastModified) {
-        await utimes(targetPath, entry.lastModified, entry.lastModified);
-      }
+      addDirectoryWithParents(relativePath, remoteDirectories);
       continue;
     }
 
-    await mkdir(path.dirname(targetPath), { recursive: true });
-    const object = await store.getObject(entry.key);
-    await writeFile(targetPath, object.body);
-    const preservedMtimeMs = parseObjectMtimeMs(object.metadata);
-    if (typeof preservedMtimeMs === "number") {
-      const preservedDate = new Date(preservedMtimeMs);
-      await utimes(targetPath, preservedDate, preservedDate);
-    } else if (entry.lastModified) {
-      await utimes(targetPath, entry.lastModified, entry.lastModified);
+    remoteFiles.set(relativePath, entry);
+    const parentDirectory = normalizeRelativePath(path.posix.dirname(relativePath));
+    if (parentDirectory && parentDirectory !== ".") {
+      addDirectoryWithParents(parentDirectory, remoteDirectories);
     }
   }
+
+  await removeUnexpectedLocalEntries(localDir, new Set(remoteFiles.keys()), remoteDirectories, options);
+
+  const concurrency = resolveDirectorySyncConcurrency();
+  const orderedDirectories = [...remoteDirectories].sort((left, right) => {
+    const depthDifference = left.split("/").length - right.split("/").length;
+    return depthDifference !== 0 ? depthDifference : left.localeCompare(right);
+  });
+  await runWithConcurrency(orderedDirectories, concurrency, async (relativePath) => {
+    const targetPath = path.join(localDir, relativePath);
+    const existing = await statIfExists(targetPath);
+    if (existing && !existing.isDirectory()) {
+      await rm(targetPath, { recursive: true, force: true });
+    }
+    await mkdir(targetPath, { recursive: true });
+  });
+
+  await runWithConcurrency([...remoteFiles.entries()], concurrency, async ([relativePath, entry]) => {
+    const targetPath = path.join(localDir, relativePath);
+    const existing = await statIfExists(targetPath);
+    if (existing && !existing.isFile()) {
+      await rm(targetPath, { recursive: true, force: true });
+    }
+
+    await mkdir(path.dirname(targetPath), { recursive: true });
+
+    const currentFile = existing?.isFile() ? existing : null;
+    if (currentFile && currentFile.size === entry.size) {
+      const objectInfo = await store.getObjectInfo?.(entry.key);
+      const targetMtimeMs = resolveTargetMtimeMs({
+        metadata: objectInfo?.metadata,
+        lastModified: objectInfo?.lastModified ?? entry.lastModified
+      });
+      if (typeof targetMtimeMs === "number" && Math.trunc(currentFile.mtimeMs) === targetMtimeMs) {
+        return;
+      }
+    }
+
+    const object = await store.getObject(entry.key);
+    await writeFile(targetPath, object.body);
+    const targetMtimeMs = resolveTargetMtimeMs({
+      metadata: object.metadata,
+      lastModified: entry.lastModified
+    });
+    if (typeof targetMtimeMs === "number") {
+      const preservedDate = new Date(targetMtimeMs);
+      await utimes(targetPath, preservedDate, preservedDate);
+    }
+  });
 }
 
 export async function syncLocalDirectoryToRemote(
@@ -721,9 +989,10 @@ export async function syncLocalDirectoryToRemote(
   logger?: (message: string) => void,
   label?: string,
   options?: DirectorySyncOptions
-): Promise<void> {
+): Promise<DirectorySyncResult> {
   logger?.(`syncing local changes in ${localDir} back to object storage (${(label ?? remotePrefix) || "."})`);
   const [snapshot, remoteEntries] = await Promise.all([collectLocalDirectorySnapshot(localDir, options), store.listEntries(remotePrefix)]);
+  const localFingerprint = createDirectoryFingerprint(snapshot);
 
   const remoteByRelativePath = new Map<string, ObjectStorageEntry>();
   for (const entry of remoteEntries) {
@@ -735,18 +1004,25 @@ export async function syncLocalDirectoryToRemote(
   }
 
   const seenRemoteRelativePaths = new Set<string>();
+  let uploadedFileCount = 0;
+  let createdEmptyDirectoryCount = 0;
+  const concurrency = resolveDirectorySyncConcurrency();
 
-  for (const [relativePath, file] of snapshot.files.entries()) {
+  await runWithConcurrency([...snapshot.files.entries()], concurrency, async ([relativePath, file]) => {
     const remoteEntry = remoteByRelativePath.get(relativePath);
     seenRemoteRelativePaths.add(relativePath);
-    if (
-      remoteEntry &&
-      !remoteEntry.key.endsWith("/") &&
-      remoteEntry.size === file.size &&
-      remoteEntry.lastModified &&
-      remoteEntry.lastModified.getTime() >= Math.trunc(file.mtimeMs)
-    ) {
-      continue;
+    if (remoteEntry && !remoteEntry.key.endsWith("/") && remoteEntry.size === file.size) {
+      const remoteInfo = await store.getObjectInfo?.(remoteEntry.key);
+      const remoteMtimeMs = resolveTargetMtimeMs({
+        metadata: remoteInfo?.metadata,
+        lastModified: remoteInfo?.lastModified ?? remoteEntry.lastModified
+      });
+      if (typeof remoteMtimeMs === "number" && remoteMtimeMs === Math.trunc(file.mtimeMs)) {
+        return;
+      }
+      if (!remoteInfo && remoteEntry.lastModified && remoteEntry.lastModified.getTime() >= Math.trunc(file.mtimeMs)) {
+        return;
+      }
     }
 
     const body = await readFile(file.absolutePath).catch((error) => {
@@ -756,20 +1032,22 @@ export async function syncLocalDirectoryToRemote(
       throw error;
     });
     if (!body) {
-      continue;
+      return;
     }
 
     await store.putObject(buildRemoteKey(remotePrefix, relativePath), body, { mtimeMs: file.mtimeMs });
-  }
+    uploadedFileCount += 1;
+  });
 
-  for (const relativePath of snapshot.emptyDirectories) {
+  await runWithConcurrency([...snapshot.emptyDirectories], concurrency, async (relativePath) => {
     seenRemoteRelativePaths.add(relativePath);
     const remoteEntry = remoteByRelativePath.get(relativePath);
     if (remoteEntry?.key.endsWith("/")) {
-      continue;
+      return;
     }
     await store.putObject(`${buildRemoteKey(remotePrefix, relativePath)}/`, Buffer.alloc(0));
-  }
+    createdEmptyDirectoryCount += 1;
+  });
 
   const keysToDelete: string[] = [];
   for (const [relativePath, remoteEntry] of remoteByRelativePath.entries()) {
@@ -786,4 +1064,10 @@ export async function syncLocalDirectoryToRemote(
   }
 
   await pruneEmptyDirectories(localDir);
+  return {
+    localFingerprint,
+    uploadedFileCount,
+    deletedRemoteCount: keysToDelete.length,
+    createdEmptyDirectoryCount
+  };
 }

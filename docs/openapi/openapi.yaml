@@ -682,10 +682,15 @@ paths:
       tags: [Messages]
       summary: List session messages
       operationId: listSessionMessages
+      description: |
+        Lists persisted session messages in chronological order.
+        Use `direction=backward` to page from the latest message toward older history.
+        `cursor` is an opaque keyset cursor derived from message position.
       parameters:
         - $ref: '#/components/parameters/SessionId'
         - $ref: '#/components/parameters/PageSize'
         - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/MessageDirection'
       responses:
         '200':
           description: Message page
@@ -720,6 +725,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MessageAccepted'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /sessions/{sessionId}/messages/{messageId}:
+    get:
+      tags: [Messages]
+      summary: Get a single session message
+      operationId: getSessionMessage
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/MessageId'
+      responses:
+        '200':
+          description: Message record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
+  /sessions/{sessionId}/messages/{messageId}/context:
+    get:
+      tags: [Messages]
+      summary: Get message context around an anchor message
+      operationId: getSessionMessageContext
+      description: |
+        Returns the anchor message together with a bounded window of messages
+        immediately before and after it.
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - $ref: '#/components/parameters/MessageId'
+        - $ref: '#/components/parameters/MessagesBefore'
+        - $ref: '#/components/parameters/MessagesAfter'
+      responses:
+        '200':
+          description: Anchor message context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageContext'
         default:
           $ref: '#/components/responses/ErrorResponse'
   /sessions/{sessionId}/queue:
@@ -892,6 +936,12 @@ components:
       required: true
       schema:
         type: string
+    MessageId:
+      name: messageId
+      in: path
+      required: true
+      schema:
+        type: string
     ActionName:
       name: actionName
       in: path
@@ -913,6 +963,32 @@ components:
       required: false
       schema:
         type: string
+    MessageDirection:
+      name: direction
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [forward, backward]
+        default: forward
+    MessagesBefore:
+      name: before
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 200
+        default: 20
+    MessagesAfter:
+      name: after
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 200
+        default: 20
     DirectoryPathQuery:
       name: path
       in: query
@@ -2182,6 +2258,30 @@ components:
             $ref: '#/components/schemas/Message'
         nextCursor:
           type: string
+          description: Opaque cursor for the next page in the requested direction
+    MessageContext:
+      type: object
+      required:
+        - anchor
+        - before
+        - after
+        - hasMoreBefore
+        - hasMoreAfter
+      properties:
+        anchor:
+          $ref: '#/components/schemas/Message'
+        before:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+        after:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+        hasMoreBefore:
+          type: boolean
+        hasMoreAfter:
+          type: boolean
     Run:
       type: object
       required:

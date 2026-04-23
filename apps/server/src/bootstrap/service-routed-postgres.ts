@@ -1009,6 +1009,15 @@ class RoutedMessageRepository implements MessageRepository {
   async listBySessionId(sessionId: string): Promise<Message[]> {
     return (await this.router.getBackendForSessionId(sessionId)).messageRepository.listBySessionId(sessionId);
   }
+
+  async listPageBySessionId(input: {
+    sessionId: string;
+    pageSize: number;
+    cursor?: string | undefined;
+    direction?: "forward" | "backward" | undefined;
+  }): Promise<{ items: Message[]; hasMore: boolean }> {
+    return (await this.router.getBackendForSessionId(input.sessionId)).messageRepository.listPageBySessionId(input);
+  }
 }
 
 class RoutedEngineMessageRepository implements EngineMessageRepository {

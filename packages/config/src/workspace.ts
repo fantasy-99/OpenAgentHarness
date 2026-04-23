@@ -5,13 +5,12 @@ import path from "node:path";
 import matter from "gray-matter";
 import YAML from "yaml";
 import {
-  createAjv,
   createWorkspaceCatalog,
   expandEnv,
   inferSkillDescription,
   isDefined,
+  loadSchemaValidator,
   loadModelRegistryFromDirectory,
-  loadSchema,
   nowIso,
   pathExists,
   readDirectoryEntriesIfExists,
@@ -106,13 +105,12 @@ export async function loadWorkspaceSettings(workspaceRoot: string): Promise<Work
 
   let parsed: Record<string, unknown> = {};
   if (settingsExists) {
-    const [schema, fileContent] = await Promise.all([
-      loadSchema<object>("../../../docs/schemas/settings.schema.json"),
+    const [validate, fileContent] = await Promise.all([
+      loadSchemaValidator<Record<string, unknown>>("../../../docs/schemas/settings.schema.json"),
       readFile(settingsPath, "utf8")
     ]);
 
     parsed = expandEnv(YAML.parse(fileContent) ?? {});
-    const validate = createAjv().compile<Record<string, unknown>>(schema);
     if (!validate(parsed)) {
       throw new Error(`Invalid workspace settings in ${settingsPath}: ${validationMessage(validate.errors)}`);
     }
@@ -199,12 +197,11 @@ export async function loadWorkspaceSettings(workspaceRoot: string): Promise<Work
   } | undefined = typedParsedSettings.system_prompt;
 
   if (promptsExists) {
-    const [schema, fileContent] = await Promise.all([
-      loadSchema<object>("../../../docs/schemas/prompts.schema.json"),
+    const [validate, fileContent] = await Promise.all([
+      loadSchemaValidator<Record<string, unknown>>("../../../docs/schemas/prompts.schema.json"),
       readFile(promptsPath, "utf8")
     ]);
     const parsedPrompts = expandEnv(YAML.parse(fileContent) ?? {});
-    const validate = createAjv().compile<Record<string, unknown>>(schema);
     if (!validate(parsedPrompts)) {
       throw new Error(`Invalid workspace prompts in ${promptsPath}: ${validationMessage(validate.errors)}`);
     }
@@ -391,13 +388,12 @@ export async function loadWorkspaceToolServers(
     return {};
   }
 
-  const [schema, fileContent] = await Promise.all([
-    loadSchema<object>("../../../docs/schemas/mcp-settings.schema.json"),
+  const [validate, fileContent] = await Promise.all([
+    loadSchemaValidator<Record<string, unknown>>("../../../docs/schemas/mcp-settings.schema.json"),
     readFile(settingsPath, "utf8")
   ]);
 
   const parsed = expandEnv(YAML.parse(fileContent) ?? {});
-  const validate = createAjv().compile<Record<string, unknown>>(schema);
   if (!validate(parsed)) {
     throw new Error(`Invalid tool settings in ${settingsPath}: ${validationMessage(validate.errors)}`);
   }
@@ -622,8 +618,7 @@ export async function loadWorkspaceAgents(
 export async function loadWorkspaceActions(workspaceRoot: string): Promise<Record<string, DiscoveredAction>> {
   const actionsDir = path.join(workspaceRoot, ".openharness", "actions");
   const directoryEntries = await readDirectoryEntriesIfExists(actionsDir);
-  const schema = await loadSchema<object>("../../../docs/schemas/action.schema.json");
-  const validate = createAjv().compile<Record<string, unknown>>(schema);
+  const validate = await loadSchemaValidator<Record<string, unknown>>("../../../docs/schemas/action.schema.json");
   const actions: Record<string, DiscoveredAction> = {};
 
   for (const entry of directoryEntries) {
@@ -691,8 +686,7 @@ export async function loadWorkspaceActions(workspaceRoot: string): Promise<Recor
 export async function loadWorkspaceHooks(workspaceRoot: string): Promise<Record<string, DiscoveredHook>> {
   const hooksDir = path.join(workspaceRoot, ".openharness", "hooks");
   const directoryEntries = await readDirectoryEntriesIfExists(hooksDir);
-  const schema = await loadSchema<object>("../../../docs/schemas/hook.schema.json");
-  const validate = createAjv().compile<Record<string, unknown>>(schema);
+  const validate = await loadSchemaValidator<Record<string, unknown>>("../../../docs/schemas/hook.schema.json");
   const hooks: Record<string, DiscoveredHook> = {};
 
   for (const entry of directoryEntries) {

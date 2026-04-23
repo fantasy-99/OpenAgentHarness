@@ -213,6 +213,19 @@ export const messageListQuerySchema = pageQuerySchema.extend({
   direction: z.enum(["forward", "backward"]).default("forward")
 });
 
+export const messageContextQuerySchema = z.object({
+  before: z.coerce.number().int().min(0).max(200).default(20),
+  after: z.coerce.number().int().min(0).max(200).default(20)
+});
+
+export const messageContextSchema = z.object({
+  anchor: messageSchema,
+  before: z.array(messageSchema),
+  after: z.array(messageSchema),
+  hasMoreBefore: z.boolean(),
+  hasMoreAfter: z.boolean()
+});
+
 export const chatMessageSchema = z.union([
   systemChatMessageSchema,
   userChatMessageSchema,
@@ -258,6 +271,8 @@ export const messageAcceptedSchema = z.object({
 export type Message = z.infer<typeof messageSchema>;
 export type MessagePage = z.infer<typeof messagePageSchema>;
 export type MessageListQuery = z.infer<typeof messageListQuerySchema>;
+export type MessageContextQuery = z.infer<typeof messageContextQuerySchema>;
+export type MessageContext = z.infer<typeof messageContextSchema>;
 export type MessagePart = z.infer<typeof messagePartSchema>;
 export type MessageContent = z.infer<typeof messageContentSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;

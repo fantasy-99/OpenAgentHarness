@@ -17,15 +17,28 @@ import type {
 import { AppError } from "@oah/engine-core";
 
 function maybeToUrl(value: string): string | URL {
-  if (!/^[a-z][a-z0-9+.-]*:\/\//iu.test(value)) {
-    return value;
+  const trimmed = value.trim();
+  if (!/^[a-z][a-z0-9+.-]*:\/\//iu.test(trimmed)) {
+    return trimmed;
   }
 
   try {
-    return new URL(value);
+    return new URL(trimmed);
   } catch {
-    return value;
+    return trimmed;
   }
+}
+
+function parseDataUrl(value: string): { mediaType?: string; data: string } | null {
+  const match = value.trim().match(/^data:([^;,]+)?;base64,(.+)$/iu);
+  if (!match?.[2]) {
+    return null;
+  }
+
+  return {
+    ...(match[1] ? { mediaType: match[1] } : {}),
+    data: match[2]
+  };
 }
 
 export function normalizeMessages(messages: GenerateModelInput["messages"]): ModelMessage[] | undefined {
@@ -36,16 +49,20 @@ export function normalizeMessages(messages: GenerateModelInput["messages"]): Mod
         ? message.content
         : message.content.map((part) => {
             if (part.type === "image") {
+              const parsed = parseDataUrl(part.image);
               return {
                 ...part,
-                image: maybeToUrl(part.image)
+                image: parsed?.data ?? maybeToUrl(part.image),
+                mediaType: parsed?.mediaType ?? part.mediaType
               };
             }
 
             if (part.type === "file") {
+              const parsed = parseDataUrl(part.data);
               return {
                 ...part,
-                data: maybeToUrl(part.data)
+                data: parsed?.data ?? maybeToUrl(part.data),
+                mediaType: parsed?.mediaType ?? part.mediaType
               };
             }
 

@@ -10,6 +10,7 @@ import type {
   ToolCatalogItem
 } from "@oah/api-contracts";
 import type { ErrorObject } from "ajv";
+import type { ValidateFunction } from "ajv";
 import YAML from "yaml";
 import type {
   DiscoveredAction,
@@ -40,14 +41,35 @@ export function createAjv() {
   return ajv;
 }
 
+const schemaCache = new Map<string, Promise<unknown>>();
+const schemaValidatorCache = new Map<string, Promise<ValidateFunction<unknown>>>();
+
 export function isDefined<T>(value: T | undefined): value is T {
   return value !== undefined;
 }
 
 export async function loadSchema<T>(relativePath: string): Promise<T> {
   const fileUrl = new URL(relativePath, import.meta.url);
-  const fileContent = await readFile(fileUrl, "utf8");
-  return JSON.parse(fileContent) as T;
+  const cacheKey = fileUrl.toString();
+  let cached = schemaCache.get(cacheKey);
+  if (!cached) {
+    cached = readFile(fileUrl, "utf8").then((fileContent) => JSON.parse(fileContent));
+    schemaCache.set(cacheKey, cached);
+  }
+
+  return cached as Promise<T>;
+}
+
+export async function loadSchemaValidator<T>(relativePath: string): Promise<ValidateFunction<T>> {
+  const fileUrl = new URL(relativePath, import.meta.url);
+  const cacheKey = fileUrl.toString();
+  let cached = schemaValidatorCache.get(cacheKey);
+  if (!cached) {
+    cached = loadSchema<object>(relativePath).then((schema) => createAjv().compile<T>(schema));
+    schemaValidatorCache.set(cacheKey, cached);
+  }
+
+  return cached as Promise<ValidateFunction<T>>;
 }
 
 function expandEnvInString(input: string): string {

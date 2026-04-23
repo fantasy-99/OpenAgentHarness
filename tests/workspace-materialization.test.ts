@@ -609,6 +609,45 @@ describe("workspace materialization", () => {
     await manager.close();
   });
 
+  it("ignores runtime-only state changes for dirty detection when releasing a write lease", async () => {
+    const cacheRoot = await mkdtemp(path.join(os.tmpdir(), "oah-materialization-cache-"));
+    tempDirs.push(cacheRoot);
+    const store = new FakeDirectoryObjectStore();
+    await store.putObject("workspace/demo/README.md", Buffer.from("# demo\n"));
+    const manager = new WorkspaceMaterializationManager({
+      cacheRoot,
+      workerId: "worker_1",
+      store
+    });
+
+    const lease = await manager.acquireWorkspace({
+      workspace: {
+        id: "ws_1",
+        rootPath: "/unused",
+        externalRef: "s3://test-bucket/workspace/demo"
+      } as never
+    });
+
+    await mkdir(path.join(lease.localPath, ".openharness", "state", "background-tasks", "ses_1"), { recursive: true });
+    await writeFile(
+      path.join(lease.localPath, ".openharness", "state", "background-tasks", "ses_1", "stdout.log"),
+      "runtime only\n",
+      "utf8"
+    );
+
+    await lease.release({ dirty: true });
+
+    expect(manager.snapshot()).toEqual([
+      expect.objectContaining({
+        workspaceId: "ws_1",
+        dirty: false,
+        refCount: 0
+      })
+    ]);
+
+    await manager.close();
+  });
+
   it("flushes and evicts idle object-store copies when drain begins", async () => {
     const cacheRoot = await mkdtemp(path.join(os.tmpdir(), "oah-materialization-cache-"));
     tempDirs.push(cacheRoot);

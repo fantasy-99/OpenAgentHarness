@@ -29,6 +29,8 @@ type ControlPlaneRuntimeKernel = Pick<
   | "updateSession"
   | "deleteSession"
   | "listSessionMessages"
+  | "getSessionMessage"
+  | "getSessionMessageContext"
   | "listSessionRuns"
   | "listSessionQueuedRuns"
   | "compactSession"
@@ -77,6 +79,8 @@ export class ControlPlaneEngineService implements ControlPlaneRuntimeOperations 
   readonly updateSession: EngineService["updateSession"];
   readonly deleteSession: EngineService["deleteSession"];
   readonly listSessionMessages: EngineService["listSessionMessages"];
+  readonly getSessionMessage: EngineService["getSessionMessage"];
+  readonly getSessionMessageContext: EngineService["getSessionMessageContext"];
   readonly listSessionRuns: EngineService["listSessionRuns"];
   readonly listSessionQueuedRuns: EngineService["listSessionQueuedRuns"];
   readonly compactSession: EngineService["compactSession"];
@@ -223,6 +227,16 @@ export class ControlPlaneEngineService implements ControlPlaneRuntimeOperations 
       const messages = await kernel.listSessionMessages(sessionId, pageSize, cursor, direction);
       await this.#touchSessionWorkspace(sessionId);
       return messages;
+    };
+    this.getSessionMessage = async (sessionId, messageId) => {
+      const message = await kernel.getSessionMessage(sessionId, messageId);
+      await this.#touchSessionWorkspace(sessionId);
+      return message;
+    };
+    this.getSessionMessageContext = async (sessionId, messageId, before, after) => {
+      const context = await kernel.getSessionMessageContext(sessionId, messageId, before, after);
+      await this.#touchSessionWorkspace(sessionId);
+      return context;
     };
     this.listSessionRuns = async (sessionId, pageSize, cursor) => {
       const runs = await kernel.listSessionRuns(sessionId, pageSize, cursor);

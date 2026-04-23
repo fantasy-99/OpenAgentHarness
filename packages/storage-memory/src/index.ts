@@ -14,7 +14,7 @@ import type {
   RunRepository,
   RunStepRepository
 } from "@oah/engine-core";
-import { AppError, createId, nowIso, parseCursor } from "@oah/engine-core";
+import { AppError, createId, nowIso, parseCursor, parseMessagePageCursor } from "@oah/engine-core";
 import type { SessionPendingRunQueueEntry, SessionPendingRunQueueRepository } from "@oah/engine-core";
 
 export class InMemoryWorkspaceRepository implements WorkspaceRepository {
@@ -110,6 +110,18 @@ export class InMemoryMessageRepository implements MessageRepository {
   readonly #items = new Map<string, Message>();
   readonly #sessionMessageIds = new Map<string, string[]>();
 
+  #compareMessages(left: Pick<Message, "createdAt" | "id">, right: Pick<Message, "createdAt" | "id">): number {
+    return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
+  }
+
+  #listSortedSessionMessages(sessionId: string): Message[] {
+    const ids = this.#sessionMessageIds.get(sessionId) ?? [];
+    return ids
+      .map((id) => this.#items.get(id))
+      .filter((value): value is Message => value !== undefined)
+      .sort((left, right) => this.#compareMessages(left, right));
+  }
+
   async create(input: Message): Promise<Message> {
     this.#items.set(input.id, input);
     const existing = this.#sessionMessageIds.get(input.sessionId) ?? [];
@@ -132,10 +144,38 @@ export class InMemoryMessageRepository implements MessageRepository {
   }
 
   async listBySessionId(sessionId: string): Promise<Message[]> {
-    const ids = this.#sessionMessageIds.get(sessionId) ?? [];
-    return ids
-      .map((id) => this.#items.get(id))
-      .filter((value): value is Message => value !== undefined);
+    return this.#listSortedSessionMessages(sessionId);
+  }
+
+  async listPageBySessionId(input: {
+    sessionId: string;
+    pageSize: number;
+    cursor?: string | undefined;
+    direction?: "forward" | "backward" | undefined;
+  }): Promise<{ items: Message[]; hasMore: boolean }> {
+    const direction = input.direction ?? "forward";
+    const items = this.#listSortedSessionMessages(input.sessionId);
+    const cursor = parseMessagePageCursor(input.cursor);
+
+    let filtered = items;
+    if (cursor) {
+      filtered = items.filter((message) => {
+        const comparison = this.#compareMessages(message, cursor);
+        return direction === "backward" ? comparison < 0 : comparison > 0;
+      });
+    }
+
+    if (direction === "backward") {
+      const page = filtered.slice(Math.max(0, filtered.length - (input.pageSize + 1)));
+      const hasMore = page.length > input.pageSize;
+      const visibleItems = hasMore ? page.slice(1) : page;
+      return { items: visibleItems, hasMore };
+    }
+
+    const page = filtered.slice(0, input.pageSize + 1);
+    const hasMore = page.length > input.pageSize;
+    const visibleItems = hasMore ? page.slice(0, input.pageSize) : page;
+    return { items: visibleItems, hasMore };
   }
 
   deleteBySessionIds(sessionIds: string[]): void {

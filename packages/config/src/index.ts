@@ -7,10 +7,9 @@ import {
 } from "./object-storage.js";
 import type { ObjectStorageConfig } from "./object-storage.js";
 import {
-  createAjv,
   emitConfigDeprecationWarnings,
   expandEnv,
-  loadSchema,
+  loadSchemaValidator,
   resolveConfigPaths,
   validationMessage
 } from "./shared.js";
@@ -90,8 +89,8 @@ export {
 } from "./workspace.js";
 
 export async function loadServerConfig(configPath: string): Promise<ServerConfig> {
-  const [schema, fileContent] = await Promise.all([
-    loadSchema<object>("../../../docs/schemas/server-config.schema.json"),
+  const [validate, fileContent] = await Promise.all([
+    loadSchemaValidator<ServerConfig>("../../../docs/schemas/server-config.schema.json"),
     readFile(configPath, "utf8")
   ]);
 
@@ -112,7 +111,6 @@ export async function loadServerConfig(configPath: string): Promise<ServerConfig
             : {}
       } as Record<string, unknown>)
     : expandedRaw;
-  const validate = createAjv().compile<ServerConfig>(schema);
   if (!validate(expanded)) {
     throw new Error(`Invalid server config: ${validationMessage(validate.errors)}`);
   }

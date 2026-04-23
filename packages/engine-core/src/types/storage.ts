@@ -177,6 +177,15 @@ export interface MessageRepository {
   getById(id: string): Promise<Message | null>;
   update(input: Message): Promise<Message>;
   listBySessionId(sessionId: string): Promise<Message[]>;
+  listPageBySessionId(input: {
+    sessionId: string;
+    pageSize: number;
+    cursor?: string | undefined;
+    direction?: "forward" | "backward" | undefined;
+  }): Promise<{
+    items: Message[];
+    hasMore: boolean;
+  }>;
 }
 
 export interface EngineMessageRepository {

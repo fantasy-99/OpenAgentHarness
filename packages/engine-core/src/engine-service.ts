@@ -57,6 +57,7 @@ import {
   type CancelRunResult,
   type CompactSessionParams,
   type RequeueRunResult,
+  type MessageContextResult,
   type MessageAcceptedResult,
   type CreateSessionMessageParams,
   type CreateSessionParams,
@@ -637,6 +638,19 @@ export class EngineService {
     direction: MessagePageDirection = "forward"
   ): Promise<MessageListResult> {
     return this.#sessionRuntime.listSessionMessages(sessionId, pageSize, cursor, direction);
+  }
+
+  async getSessionMessage(sessionId: string, messageId: string): Promise<Message> {
+    return this.#sessionRuntime.getSessionMessage(sessionId, messageId);
+  }
+
+  async getSessionMessageContext(
+    sessionId: string,
+    messageId: string,
+    before = 20,
+    after = 20
+  ): Promise<MessageContextResult> {
+    return this.#sessionRuntime.getSessionMessageContext(sessionId, messageId, before, after);
   }
 
   async listSessionEngineMessages(sessionId: string, pageSize = 100, cursor?: string): Promise<EngineMessageListResult> {

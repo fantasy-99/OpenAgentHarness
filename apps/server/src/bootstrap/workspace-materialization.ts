@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, rename, rm } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { WorkspaceRecord } from "@oah/engine-core";
@@ -7,6 +7,7 @@ import type { WorkspaceLeaseRegistry, WorkspacePlacementRegistry } from "@oah/st
 
 import {
   computeLocalDirectoryFingerprint,
+  shouldExcludeWorkspaceBackingStoreRelativePath,
   syncWorkspaceRootToObjectStore,
   syncRemotePrefixToLocal,
   type DirectoryObjectStore
@@ -34,6 +35,7 @@ interface WorkspaceMaterializationEntry {
   dirty: boolean;
   refCount: number;
   materializedAt?: string | undefined;
+  lastSyncedLocalFingerprint?: string | undefined;
   lastActivityAt: string;
   inFlight?: Promise<void> | undefined;
 }
@@ -168,6 +170,12 @@ const BACKGROUND_STATE_DIRECTORY_CANDIDATES = [
   [".openharness", "state", "background-tasks"],
   [".openharness", "state", "background"]
 ];
+const MATERIALIZATION_SYNC_METADATA_DIRECTORY = ".sync-metadata";
+
+interface MaterializationSyncMetadata {
+  localFingerprint: string;
+  syncedAt: string;
+}
 
 function normalizeRemotePrefix(prefix: string): string {
   return prefix.replace(/^\/+|\/+$/g, "");
@@ -277,7 +285,15 @@ export class WorkspaceMaterializationManager {
 
     await this.#ensureMaterialized(entry);
     const baselineFingerprint =
-      entry.source.kind === "object_store" ? await computeLocalDirectoryFingerprint(entry.localPath) : undefined;
+      entry.source.kind === "object_store"
+        ? (entry.lastSyncedLocalFingerprint ?? (await this.#readSyncMetadata(entry))?.localFingerprint) ??
+          (await computeLocalDirectoryFingerprint(entry.localPath, {
+            excludeRelativePath: shouldExcludeWorkspaceBackingStoreRelativePath
+          }))
+        : undefined;
+    if (baselineFingerprint !== undefined) {
+      entry.lastSyncedLocalFingerprint = baselineFingerprint;
+    }
     entry.refCount += 1;
     this.#touchEntry(entry);
     await this.#publishEntry(entry);
@@ -305,7 +321,10 @@ export class WorkspaceMaterializationManager {
         released = true;
         if (options?.dirty) {
           if (baselineFingerprint !== undefined) {
-            entry!.dirty ||= (await computeLocalDirectoryFingerprint(entry!.localPath)) !== baselineFingerprint;
+            entry!.dirty ||=
+              (await computeLocalDirectoryFingerprint(entry!.localPath, {
+                excludeRelativePath: shouldExcludeWorkspaceBackingStoreRelativePath
+              })) !== baselineFingerprint;
           } else {
             entry!.dirty = true;
           }
@@ -523,6 +542,10 @@ export class WorkspaceMaterializationManager {
             `[workspace-materialization] materializing workspace ${entry.workspaceId} (${entry.version}) from ${source.remotePrefix} into ${entry.localPath}`
           );
           await syncRemotePrefixToLocal(this.#store, source.remotePrefix, entry.localPath, this.#logger, entry.workspaceId);
+          entry.lastSyncedLocalFingerprint = await computeLocalDirectoryFingerprint(entry.localPath, {
+            excludeRelativePath: shouldExcludeWorkspaceBackingStoreRelativePath
+          });
+          await this.#writeSyncMetadata(entry);
           entry.materializedAt = nowIso();
           this.#failures.delete(entry.cacheKey);
         } catch (error) {
@@ -552,6 +575,10 @@ export class WorkspaceMaterializationManager {
         this.#logger,
         entry.workspaceId
       );
+      entry.lastSyncedLocalFingerprint = await computeLocalDirectoryFingerprint(entry.localPath, {
+        excludeRelativePath: shouldExcludeWorkspaceBackingStoreRelativePath
+      });
+      await this.#writeSyncMetadata(entry);
       entry.dirty = false;
       this.#touchEntry(entry);
       this.#failures.delete(entry.cacheKey);
@@ -803,6 +830,7 @@ export class WorkspaceMaterializationManager {
       await rm(entry.localPath, { recursive: true, force: true });
       await rename(legacyPath, entry.localPath);
       await this.#pruneEmptyParents(path.dirname(legacyPath), this.#cacheRoot);
+      entry.lastSyncedLocalFingerprint ??= (await this.#readSyncMetadata(entry))?.localFingerprint;
       return legacyPath;
     }
 
@@ -852,6 +880,58 @@ export class WorkspaceMaterializationManager {
       }
       currentPath = path.dirname(currentPath);
     }
+  }
+
+  #syncMetadataPath(entry: WorkspaceMaterializationEntry): string {
+    return path.join(this.#cacheRoot, MATERIALIZATION_SYNC_METADATA_DIRECTORY, `${safeSegment(entry.cacheKey)}.json`);
+  }
+
+  async #readSyncMetadata(entry: WorkspaceMaterializationEntry): Promise<MaterializationSyncMetadata | undefined> {
+    const metadataPath = this.#syncMetadataPath(entry);
+    const content = await readFile(metadataPath, "utf8").catch((error) => {
+      if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+        return undefined;
+      }
+      throw error;
+    });
+    if (!content) {
+      return undefined;
+    }
+
+    try {
+      const parsed = JSON.parse(content) as Partial<MaterializationSyncMetadata>;
+      if (typeof parsed.localFingerprint !== "string" || parsed.localFingerprint.length === 0) {
+        return undefined;
+      }
+
+      return {
+        localFingerprint: parsed.localFingerprint,
+        syncedAt: typeof parsed.syncedAt === "string" ? parsed.syncedAt : nowIso()
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  async #writeSyncMetadata(entry: WorkspaceMaterializationEntry): Promise<void> {
+    if (entry.source.kind !== "object_store" || !entry.lastSyncedLocalFingerprint) {
+      return;
+    }
+
+    const metadataPath = this.#syncMetadataPath(entry);
+    await mkdir(path.dirname(metadataPath), { recursive: true });
+    await writeFile(
+      metadataPath,
+      `${JSON.stringify(
+        {
+          localFingerprint: entry.lastSyncedLocalFingerprint,
+          syncedAt: nowIso()
+        } satisfies MaterializationSyncMetadata,
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
   }
 
   #isIdle(entry: WorkspaceMaterializationEntry, thresholdMs: number): boolean {

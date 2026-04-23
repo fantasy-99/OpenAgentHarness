@@ -16,7 +16,11 @@
 
 ### `GET /sessions/{sessionId}/messages`
 
-分页读取历史消息。参数：`pageSize`、`cursor`。
+分页读取历史消息。参数：`pageSize`、`cursor`、`direction`。
+
+- `direction=forward`：从最旧消息向后翻页
+- `direction=backward`：从最新消息向前翻页，适合聊天窗口“加载更早消息”
+- `cursor` 是 opaque keyset cursor，不再是 offset
 
 `Message.content` 采用 AI SDK 风格 role-aware 结构：
 
@@ -26,6 +30,24 @@
 - `tool` — `tool-result / tool-approval-response` parts 数组
 
 `tool-result.output` 为 `ToolResultOutput` 结构（如 `{ "type": "text", "value": "..." }`）。
+
+### `GET /sessions/{sessionId}/messages/{messageId}`
+
+按 `messageId` 读取当前 session 下的单条消息。若消息不存在，或不属于该 session，返回 404。
+
+### `GET /sessions/{sessionId}/messages/{messageId}/context`
+
+按锚点消息读取上下文窗口。参数：
+
+- `before`：返回锚点之前的消息数，默认 `20`
+- `after`：返回锚点之后的消息数，默认 `20`
+
+返回字段：
+
+- `anchor`：锚点消息本身
+- `before`：锚点之前的消息，按时间正序返回
+- `after`：锚点之后的消息，按时间正序返回
+- `hasMoreBefore` / `hasMoreAfter`：锚点两侧是否还有未返回消息
 
 ### `POST /sessions/{sessionId}/messages`
 
@@ -87,3 +109,4 @@
 - runtime 按 AI SDK 兼容结构持久化消息（含 tool-call / tool-result）
 - session 维护 `activeAgentName`，run 内 `agent.switch` 后可同步更新
 - session/message/run 统一保存到中心库，本地 `history.db` 仅作为运行时数据文件
+- 长会话消息列表现在走存储层真分页，不再先全量加载后在内存里 slice

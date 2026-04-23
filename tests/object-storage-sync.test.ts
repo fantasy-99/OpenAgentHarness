@@ -16,6 +16,9 @@ import {
 class FakeDirectoryObjectStore implements DirectoryObjectStore {
   readonly bucket = "test-bucket";
   readonly objects = new Map<string, { body: Buffer; lastModified: Date; metadata?: Record<string, string> | undefined }>();
+  getObjectCalls = 0;
+  getObjectInfoCalls = 0;
+  putObjectCalls = 0;
 
   async listEntries(prefix: string) {
     const normalizedPrefix = prefix ? `${prefix}/` : "";
@@ -30,6 +33,7 @@ class FakeDirectoryObjectStore implements DirectoryObjectStore {
   }
 
   async getObject(key: string): Promise<{ body: Buffer; metadata?: Record<string, string> | undefined }> {
+    this.getObjectCalls += 1;
     const entry = this.objects.get(key);
     if (!entry) {
       throw new Error(`Missing object ${key}`);
@@ -40,7 +44,23 @@ class FakeDirectoryObjectStore implements DirectoryObjectStore {
     };
   }
 
+  async getObjectInfo(
+    key: string
+  ): Promise<{ size?: number | undefined; lastModified?: Date | undefined; metadata?: Record<string, string> | undefined }> {
+    this.getObjectInfoCalls += 1;
+    const entry = this.objects.get(key);
+    if (!entry) {
+      throw new Error(`Missing object ${key}`);
+    }
+    return {
+      size: entry.body.length,
+      lastModified: entry.lastModified,
+      ...(entry.metadata ? { metadata: { ...entry.metadata } } : {})
+    };
+  }
+
   async putObject(key: string, body: Buffer, options?: { mtimeMs?: number | undefined }): Promise<void> {
+    this.putObjectCalls += 1;
     this.objects.set(key, {
       body: Buffer.from(body),
       lastModified: new Date(),
@@ -58,6 +78,10 @@ class FakeDirectoryObjectStore implements DirectoryObjectStore {
     for (const key of keys) {
       this.objects.delete(key);
     }
+  }
+
+  async close(): Promise<void> {
+    return undefined;
   }
 }
 
@@ -142,6 +166,24 @@ describe("object storage sync", () => {
     );
   });
 
+  it("skips re-uploading unchanged local files when remote metadata already matches", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-push-skip-"));
+    tempDirs.push(directory);
+    const store = new FakeDirectoryObjectStore();
+    const expectedMtime = new Date("2026-04-18T08:09:10.000Z");
+
+    await writeFile(path.join(directory, "README.md"), "# synced\n", "utf8");
+    await utimes(path.join(directory, "README.md"), expectedMtime, expectedMtime);
+    await store.putObject("workspace/demo/README.md", Buffer.from("# synced\n"), { mtimeMs: expectedMtime.getTime() });
+    store.putObjectCalls = 0;
+
+    const result = await syncLocalDirectoryToRemote(store, "workspace/demo", directory);
+
+    expect(result.uploadedFileCount).toBe(0);
+    expect(store.getObjectInfoCalls).toBe(1);
+    expect(store.putObjectCalls).toBe(0);
+  });
+
   it("ignores files that disappear while collecting a local snapshot", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-snapshot-race-"));
     tempDirs.push(directory);
@@ -164,7 +206,9 @@ describe("object storage sync", () => {
       }
     });
 
-    await expect(objectStorage.syncLocalDirectoryToRemote(store, "workspace/demo", directory)).resolves.toBeUndefined();
+    await expect(objectStorage.syncLocalDirectoryToRemote(store, "workspace/demo", directory)).resolves.toMatchObject({
+      uploadedFileCount: 1
+    });
     vi.doUnmock("node:fs/promises");
     vi.resetModules();
 
@@ -193,7 +237,9 @@ describe("object storage sync", () => {
       }
     });
 
-    await expect(objectStorage.syncLocalDirectoryToRemote(store, "workspace/demo", directory)).resolves.toBeUndefined();
+    await expect(objectStorage.syncLocalDirectoryToRemote(store, "workspace/demo", directory)).resolves.toMatchObject({
+      uploadedFileCount: 1
+    });
     vi.doUnmock("node:fs/promises");
     vi.resetModules();
 
@@ -216,6 +262,31 @@ describe("object storage sync", () => {
     const materializedStat = await stat(path.join(targetDirectory, "README.md"));
     expect(Math.trunc(materializedStat.mtimeMs)).toBe(expectedMtime.getTime());
     expect(store.objects.get("workspace/demo/README.md")?.metadata?.["oah-mtime-ms"]).toBe(String(expectedMtime.getTime()));
+  });
+
+  it("incrementally refreshes only changed remote files and removes stale local entries", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-incremental-pull-"));
+    tempDirs.push(directory);
+    const store = new FakeDirectoryObjectStore();
+    const preservedMtime = new Date("2026-04-18T08:09:10.000Z");
+    const changedMtime = new Date("2026-04-19T09:10:11.000Z");
+
+    await mkdir(path.join(directory, "docs"), { recursive: true });
+    await writeFile(path.join(directory, "README.md"), "# demo\n", "utf8");
+    await utimes(path.join(directory, "README.md"), preservedMtime, preservedMtime);
+    await writeFile(path.join(directory, "stale.txt"), "remove me\n", "utf8");
+
+    await store.putObject("workspace/demo/README.md", Buffer.from("# demo\n"), { mtimeMs: preservedMtime.getTime() });
+    await store.putObject("workspace/demo/docs/guide.md", Buffer.from("fresh\n"), { mtimeMs: changedMtime.getTime() });
+
+    await syncRemotePrefixToLocal(store, "workspace/demo", directory);
+
+    await expect(readFile(path.join(directory, "README.md"), "utf8")).resolves.toBe("# demo\n");
+    await expect(readFile(path.join(directory, "docs", "guide.md"), "utf8")).resolves.toBe("fresh\n");
+    await expect(stat(path.join(directory, "stale.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(store.getObjectCalls).toBe(1);
+    expect(store.getObjectInfoCalls).toBe(1);
+    expect(Math.trunc((await stat(path.join(directory, "README.md"))).mtimeMs)).toBe(preservedMtime.getTime());
   });
 
   it("pushes workspace roots to object storage while excluding runtime-only state", async () => {
@@ -297,6 +368,63 @@ describe("object storage sync", () => {
         workspace_dir: "/tmp/workspaces"
       })
     ).toBeUndefined();
+  });
+
+  it("can continue mirror initialization in the background after local paths are prepared", async () => {
+    const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-bg-init-workspaces-"));
+    const runtimeDir = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-bg-init-runtimes-"));
+    const modelDir = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-bg-init-models-"));
+    const toolDir = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-bg-init-tools-"));
+    const skillDir = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-bg-init-skills-"));
+    tempDirs.push(workspaceDir, runtimeDir, modelDir, toolDir, skillDir);
+
+    let releaseRemoteScan!: () => void;
+    const remoteScanGate = new Promise<void>((resolve) => {
+      releaseRemoteScan = resolve;
+    });
+
+    const store = new FakeDirectoryObjectStore();
+    await store.putObject("workspace/ws_1/README.md", Buffer.from("# demo\n"));
+    const originalListEntries = store.listEntries.bind(store);
+    store.listEntries = async (prefix: string) => {
+      await remoteScanGate;
+      return originalListEntries(prefix);
+    };
+
+    const controller = new ObjectStorageMirrorController(
+      {
+        provider: "s3",
+        bucket: "test-bucket",
+        region: "us-east-1",
+        endpoint: "http://127.0.0.1:9000",
+        force_path_style: true,
+        managed_paths: ["workspace"],
+        sync_on_boot: true,
+        sync_on_change: false
+      },
+      {
+        workspace_dir: workspaceDir,
+        runtime_dir: runtimeDir,
+        model_dir: modelDir,
+        tool_dir: toolDir,
+        skill_dir: skillDir
+      },
+      undefined,
+      {
+        store
+      }
+    );
+
+    await controller.initialize({ awaitInitialSync: false });
+
+    await expect(stat(workspaceDir)).resolves.toBeTruthy();
+    await expect(readFile(path.join(workspaceDir, "ws_1", "README.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+
+    releaseRemoteScan();
+    await controller.syncChangedMappings();
+
+    await expect(readFile(path.join(workspaceDir, "ws_1", "README.md"), "utf8")).resolves.toBe("# demo\n");
+    await controller.close();
   });
 
   it("ignores workspace_dir top-level runtime internals while still syncing real workspace contents", async () => {

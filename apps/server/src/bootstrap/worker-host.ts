@@ -79,6 +79,23 @@ function readNonNegativeIntEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
+function readBooleanEnv(name: string, fallback: boolean): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) {
+    return fallback;
+  }
+
+  if (["1", "true", "yes", "on"].includes(raw)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(raw)) {
+    return false;
+  }
+
+  return fallback;
+}
+
 export function resolveWorkerDrainConfig(): WorkerDrainConfig {
   const timeoutRaw = process.env.OAH_WORKER_DRAIN_TIMEOUT_MS;
   const parsedTimeout = timeoutRaw ? Number.parseInt(timeoutRaw, 10) : NaN;
@@ -132,25 +149,26 @@ export function resolveEmbeddedWorkerPoolConfig(options: {
     minWorkers,
     readPositiveIntEnv("OAH_EMBEDDED_WORKER_MAX", embedded?.max_count ?? minWorkers)
   );
+  const latencyFirst = readBooleanEnv("OAH_LATENCY_FIRST_PROFILE", false) || minWorkers === maxWorkers;
   const scaleIntervalMs = readPositiveIntEnv(
     "OAH_EMBEDDED_WORKER_SCALE_INTERVAL_MS",
-    embedded?.scale_interval_ms ?? 5_000
+    embedded?.scale_interval_ms ?? (latencyFirst ? 1_000 : 5_000)
   );
-  const scaleUpCooldownMs = readPositiveIntEnv(
+  const scaleUpCooldownMs = readNonNegativeIntEnv(
     "OAH_EMBEDDED_WORKER_SCALE_UP_COOLDOWN_MS",
-    embedded?.cooldown_ms ?? 1_000
+    embedded?.cooldown_ms ?? (latencyFirst ? 0 : 1_000)
   );
-  const scaleDownCooldownMs = readPositiveIntEnv(
+  const scaleDownCooldownMs = readNonNegativeIntEnv(
     "OAH_EMBEDDED_WORKER_SCALE_DOWN_COOLDOWN_MS",
-    embedded?.cooldown_ms ?? 15_000
+    embedded?.cooldown_ms ?? (latencyFirst ? 0 : 15_000)
   );
   const scaleUpSampleSize = readPositiveIntEnv(
     "OAH_EMBEDDED_WORKER_SCALE_UP_SAMPLE_SIZE",
-    embedded?.scale_up_window ?? 2
+    embedded?.scale_up_window ?? (latencyFirst ? 1 : 2)
   );
   const scaleDownSampleSize = readPositiveIntEnv(
     "OAH_EMBEDDED_WORKER_SCALE_DOWN_SAMPLE_SIZE",
-    embedded?.scale_down_window ?? 3
+    embedded?.scale_down_window ?? (latencyFirst ? 1 : 3)
   );
   const scaleUpBusyRatioThreshold = Math.min(
     1,
@@ -159,7 +177,10 @@ export function resolveEmbeddedWorkerPoolConfig(options: {
       readPositiveIntEnv("OAH_EMBEDDED_WORKER_SCALE_UP_BUSY_RATIO_PERCENT", 75) / 100
     )
   );
-  const scaleUpMaxReadyAgeMs = readPositiveIntEnv("OAH_EMBEDDED_WORKER_SCALE_UP_MAX_READY_AGE_MS", 2_000);
+  const scaleUpMaxReadyAgeMs = readPositiveIntEnv(
+    "OAH_EMBEDDED_WORKER_SCALE_UP_MAX_READY_AGE_MS",
+    latencyFirst ? 500 : 2_000
+  );
 
   return {
     minWorkers,

@@ -15,6 +15,7 @@ import type {
   CreateSessionMessageParams,
   CreateSessionParams,
   GuideQueuedRunResult,
+  MessageContextResult,
   MessagePageDirection,
   MessageListResult,
   MessageAcceptedResult,
@@ -29,7 +30,7 @@ import type {
   UpdateSessionParams,
   WorkspaceRecord
 } from "../types.js";
-import { createId, nowIso, parseCursor } from "../utils.js";
+import { createId, encodeMessagePageCursor, nowIso, parseCursor } from "../utils.js";
 import { buildArchiveMetadata } from "./internal-helpers.js";
 import type { EngineMessage } from "./engine-messages.js";
 
@@ -251,21 +252,71 @@ export class SessionEngineService {
     direction: MessagePageDirection = "forward"
   ): Promise<MessageListResult> {
     await this.getSession(sessionId);
-    const messages = await this.#messageRepository.listBySessionId(sessionId);
-    if (direction === "backward") {
-      const endIndex = cursor ? parseCursor(cursor) : messages.length;
-      const startIndex = Math.max(0, endIndex - pageSize);
-      const items = messages.slice(startIndex, endIndex);
-      const nextCursor = startIndex > 0 ? String(startIndex) : undefined;
+    const page = await this.#messageRepository.listPageBySessionId({
+      sessionId,
+      pageSize,
+      cursor,
+      direction
+    });
+    const boundaryMessage = direction === "backward" ? page.items[0] : page.items.at(-1);
+    const nextCursor =
+      page.hasMore && boundaryMessage
+        ? encodeMessagePageCursor({
+            createdAt: boundaryMessage.createdAt,
+            id: boundaryMessage.id
+          })
+        : undefined;
 
-      return nextCursor === undefined ? { items } : { items, nextCursor };
+    return nextCursor === undefined ? { items: page.items } : { items: page.items, nextCursor };
+  }
+
+  async getSessionMessage(sessionId: string, messageId: string): Promise<Message> {
+    await this.getSession(sessionId);
+    const message = await this.#messageRepository.getById(messageId);
+    if (!message || message.sessionId !== sessionId) {
+      throw new AppError(404, "message_not_found", `Message ${messageId} was not found in session ${sessionId}.`);
     }
 
-    const startIndex = parseCursor(cursor);
-    const items = messages.slice(startIndex, startIndex + pageSize);
-    const nextCursor = startIndex + pageSize < messages.length ? String(startIndex + pageSize) : undefined;
+    return message;
+  }
 
-    return nextCursor === undefined ? { items } : { items, nextCursor };
+  async getSessionMessageContext(
+    sessionId: string,
+    messageId: string,
+    before = 20,
+    after = 20
+  ): Promise<MessageContextResult> {
+    const anchor = await this.getSessionMessage(sessionId, messageId);
+    const anchorCursor = encodeMessagePageCursor({
+      createdAt: anchor.createdAt,
+      id: anchor.id
+    });
+    const [beforePage, afterPage] = await Promise.all([
+      before > 0
+        ? this.#messageRepository.listPageBySessionId({
+            sessionId,
+            pageSize: before,
+            cursor: anchorCursor,
+            direction: "backward"
+          })
+        : Promise.resolve({ items: [], hasMore: false }),
+      after > 0
+        ? this.#messageRepository.listPageBySessionId({
+            sessionId,
+            pageSize: after,
+            cursor: anchorCursor,
+            direction: "forward"
+          })
+        : Promise.resolve({ items: [], hasMore: false })
+    ]);
+
+    return {
+      anchor,
+      before: beforePage.items,
+      after: afterPage.items,
+      hasMoreBefore: beforePage.hasMore,
+      hasMoreAfter: afterPage.hasMore
+    };
   }
 
   async listSessionEngineMessages(sessionId: string, pageSize = 100, cursor?: string): Promise<EngineMessageListResult> {

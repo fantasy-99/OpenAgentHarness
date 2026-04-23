@@ -362,6 +362,47 @@ function parsePositiveIntEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function parseNonNegativeIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw || raw.trim().length === 0) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function parseBooleanEnv(name: string, fallback: boolean): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) {
+    return fallback;
+  }
+
+  if (["1", "true", "yes", "on"].includes(raw)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(raw)) {
+    return false;
+  }
+
+  return fallback;
+}
+
+export function resolveObjectStorageMirrorBlockingInit(): boolean {
+  const latencyFirst = parseBooleanEnv("OAH_LATENCY_FIRST_PROFILE", false);
+  return parseBooleanEnv("OAH_OBJECT_STORAGE_MIRROR_BLOCKING_INIT", !latencyFirst);
+}
+
+export function resolveWorkspacePrewarmConfig(): { enabled: boolean; delayMs: number; coalesceWindowMs: number } {
+  const latencyFirst = parseBooleanEnv("OAH_LATENCY_FIRST_PROFILE", false);
+  return {
+    enabled: parseBooleanEnv("OAH_WORKSPACE_PREWARM_ENABLED", true),
+    delayMs: parseNonNegativeIntEnv("OAH_WORKSPACE_PREWARM_DELAY_MS", latencyFirst ? 250 : 0),
+    coalesceWindowMs: parseNonNegativeIntEnv("OAH_WORKSPACE_PREWARM_COALESCE_MS", latencyFirst ? 1_000 : 0)
+  };
+}
+
 export function resolveWorkspaceMaterializationConfig(
   config: Pick<ServerConfig, "workspace">
 ): { idleTtlMs: number; maintenanceIntervalMs: number } {
@@ -575,16 +616,29 @@ function resolveRuntimeInstanceId(processKind: "api" | "worker"): string {
   return `${processKind}:${process.pid}`;
 }
 
-function createWorkspacePrewarmer(options: {
+export function createWorkspacePrewarmer(options: {
   sandboxHost: SandboxHost;
   getWorkspaceRecord(workspaceId: string): Promise<WorkspaceRecord>;
+  delayMs?: number | undefined;
+  coalesceWindowMs?: number | undefined;
 }): WorkspacePrewarmer {
   const inFlightByWorkspaceId = new Map<string, Promise<void>>();
+  const lastCompletedAtByWorkspaceId = new Map<string, number>();
 
   return {
     async prewarmWorkspace(workspaceId: string): Promise<void> {
       const normalizedWorkspaceId = workspaceId.trim();
       if (normalizedWorkspaceId.length === 0) {
+        return;
+      }
+
+      const coalesceWindowMs = Math.max(0, options.coalesceWindowMs ?? 0);
+      const lastCompletedAt = lastCompletedAtByWorkspaceId.get(normalizedWorkspaceId);
+      if (
+        coalesceWindowMs > 0 &&
+        typeof lastCompletedAt === "number" &&
+        Date.now() - lastCompletedAt < coalesceWindowMs
+      ) {
         return;
       }
 
@@ -596,12 +650,16 @@ function createWorkspacePrewarmer(options: {
 
       let task: Promise<void>;
       task = (async () => {
+        if ((options.delayMs ?? 0) > 0) {
+          await new Promise((resolve) => setTimeout(resolve, options.delayMs));
+        }
         const workspace = await options.getWorkspaceRecord(normalizedWorkspaceId);
         const lease = await options.sandboxHost.workspaceFileAccessProvider.acquire({
           workspace,
           access: "read"
         });
         await lease.release();
+        lastCompletedAtByWorkspaceId.set(normalizedWorkspaceId, Date.now());
       })().finally(() => {
         if (inFlightByWorkspaceId.get(normalizedWorkspaceId) === task) {
           inFlightByWorkspaceId.delete(normalizedWorkspaceId);
@@ -675,7 +733,13 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     : undefined;
   const ownerBaseUrl = resolveInternalBaseUrl(config);
   if (objectStorageMirror) {
-    await objectStorageMirror.initialize();
+    const blockingMirrorInit = resolveObjectStorageMirrorBlockingInit();
+    await objectStorageMirror.initialize({
+      awaitInitialSync: blockingMirrorInit
+    });
+    if (!blockingMirrorInit) {
+      console.info("[oah-object-storage] mirror initialization continues in background after readiness");
+    }
   }
   let workspaceMaterializationManager: WorkspaceMaterializationManager | undefined;
   let sandboxHost: SandboxHost | undefined;
@@ -1333,11 +1397,16 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         }
       : {})
   });
+  const workspacePrewarmConfig = resolveWorkspacePrewarmConfig();
   const workspacePrewarmer = sandboxHost
-    ? createWorkspacePrewarmer({
-        sandboxHost,
-        getWorkspaceRecord: (workspaceId: string) => runtimeService.getWorkspaceRecord(workspaceId)
-      })
+    ? workspacePrewarmConfig.enabled
+      ? createWorkspacePrewarmer({
+          sandboxHost,
+          getWorkspaceRecord: (workspaceId: string) => runtimeService.getWorkspaceRecord(workspaceId),
+          delayMs: workspacePrewarmConfig.delayMs,
+          coalesceWindowMs: workspacePrewarmConfig.coalesceWindowMs
+        })
+      : undefined
     : undefined;
   const controlPlaneEngineService = new ControlPlaneEngineService(runtimeService, {
     ...(workspaceMaterializationManager

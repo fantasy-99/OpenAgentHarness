@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AiSdkModelGateway, prepareToolServers } from "@oah/model-gateway";
+import { normalizeMessages } from "../packages/model-gateway/src/gateway-helpers.ts";
 import { normalizeRemoteMcpUrl } from "../packages/model-gateway/src/mcp-endpoint-utils.ts";
 
 const globalWithAiSdkWarnings = globalThis as typeof globalThis & { AI_SDK_LOG_WARNINGS?: boolean };
@@ -120,6 +121,67 @@ afterEach(async () => {
 });
 
 describe("model gateway mcp tools", () => {
+  it("normalizes raw base64 and data URL attachments without forcing a single client format", () => {
+    const normalized = normalizeMessages([
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "describe these"
+          },
+          {
+            type: "image",
+            image: "AAAA",
+            mediaType: "image/png"
+          },
+          {
+            type: "image",
+            image: "data:image/png;base64,BBBB",
+            mediaType: "image/png"
+          },
+          {
+            type: "file",
+            data: "data:text/plain;base64,SGVsbG8=",
+            mediaType: "text/plain"
+          },
+          {
+            type: "image",
+            image: "data:image/jpeg;base64,CCCC"
+          }
+        ]
+      }
+    ]);
+
+    expect(normalized).toHaveLength(1);
+    const content = normalized?.[0]?.content;
+    expect(Array.isArray(content)).toBe(true);
+    expect(content?.[1]).toMatchObject({
+      type: "image",
+      image: "AAAA",
+      mediaType: "image/png"
+    });
+    expect(content?.[2]).toMatchObject({
+      type: "image",
+      mediaType: "image/png"
+    });
+    expect(content?.[3]).toMatchObject({
+      type: "file",
+      data: "SGVsbG8=",
+      mediaType: "text/plain"
+    });
+    expect(content?.[2]).toMatchObject({
+      type: "image",
+      image: "BBBB",
+      mediaType: "image/png"
+    });
+    expect(content?.[4]).toMatchObject({
+      type: "image",
+      image: "CCCC",
+      mediaType: "image/jpeg"
+    });
+  });
+
   it("rewrites loopback MCP HTTP URLs to the container host alias when running in Docker", () => {
     process.env.OAH_RUNNING_IN_DOCKER = "true";
 

@@ -4172,4 +4172,139 @@ Use ripgrep first.
     const page = (await messagesResponse.json()) as { items: Array<{ role: string; content: unknown }> };
     expect(page.items.some((item) => item.role === "system" && extractMessageText(item.content).length > 0)).toBe(true);
   });
+
+  it("serves single-message lookup, anchor context lookup, and keyset-paginated session messages over HTTP", async () => {
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    const now = new Date().toISOString();
+    await persistence.workspaceRepository.upsert({
+      id: "project_http_message_queries",
+      name: "http-message-queries",
+      rootPath: "/tmp/http-message-queries",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "default",
+      settings: {
+        defaultAgent: "default",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {},
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_http_message_queries",
+        agents: [],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    } satisfies CallerContext;
+
+    const session = await runtimeService.createSession({
+      workspaceId: "project_http_message_queries",
+      caller,
+      input: {}
+    });
+
+    for (const [index, text] of ["message-1", "message-2", "message-3", "message-4", "message-5"].entries()) {
+      await persistence.messageRepository.create({
+        id: `msg_http_query_${index + 1}`,
+        sessionId: session.id,
+        runId: `run_http_query_${index + 1}`,
+        role: index % 2 === 0 ? "user" : "assistant",
+        content: text,
+        createdAt: new Date(Date.UTC(2024, 0, 1, 0, 0, index)).toISOString()
+      });
+    }
+
+    activeApp = await createStartedAppWithEngineService(runtimeService, gateway);
+
+    const newestPageResponse = await fetch(
+      `${activeApp.baseUrl}/api/v1/sessions/${session.id}/messages?pageSize=2&direction=backward`,
+      {
+        headers: {
+          authorization: "Bearer token-1"
+        }
+      }
+    );
+    expect(newestPageResponse.status).toBe(200);
+    const newestPage = (await newestPageResponse.json()) as {
+      items: Array<{ content: unknown }>;
+      nextCursor?: string;
+    };
+    expect(newestPage.items.map((message) => extractMessageText(message.content))).toEqual(["message-4", "message-5"]);
+    expect(newestPage.nextCursor).toEqual(expect.any(String));
+
+    const olderPageResponse = await fetch(
+      `${activeApp.baseUrl}/api/v1/sessions/${session.id}/messages?pageSize=2&direction=backward&cursor=${encodeURIComponent(newestPage.nextCursor ?? "")}`,
+      {
+        headers: {
+          authorization: "Bearer token-1"
+        }
+      }
+    );
+    expect(olderPageResponse.status).toBe(200);
+    const olderPage = (await olderPageResponse.json()) as {
+      items: Array<{ content: unknown }>;
+      nextCursor?: string;
+    };
+    expect(olderPage.items.map((message) => extractMessageText(message.content))).toEqual(["message-2", "message-3"]);
+    expect(olderPage.nextCursor).toEqual(expect.any(String));
+
+    const messageResponse = await fetch(`${activeApp.baseUrl}/api/v1/sessions/${session.id}/messages/msg_http_query_3`, {
+      headers: {
+        authorization: "Bearer token-1"
+      }
+    });
+    expect(messageResponse.status).toBe(200);
+    const message = (await messageResponse.json()) as { id: string; content: unknown };
+    expect(message.id).toBe("msg_http_query_3");
+    expect(extractMessageText(message.content)).toBe("message-3");
+
+    const contextResponse = await fetch(
+      `${activeApp.baseUrl}/api/v1/sessions/${session.id}/messages/msg_http_query_3/context?before=2&after=1`,
+      {
+        headers: {
+          authorization: "Bearer token-1"
+        }
+      }
+    );
+    expect(contextResponse.status).toBe(200);
+    const context = (await contextResponse.json()) as {
+      anchor: { content: unknown };
+      before: Array<{ content: unknown }>;
+      after: Array<{ content: unknown }>;
+      hasMoreBefore: boolean;
+      hasMoreAfter: boolean;
+    };
+    expect(extractMessageText(context.anchor.content)).toBe("message-3");
+    expect(context.before.map((item) => extractMessageText(item.content))).toEqual(["message-1", "message-2"]);
+    expect(context.after.map((item) => extractMessageText(item.content))).toEqual(["message-4"]);
+    expect(context.hasMoreBefore).toBe(false);
+    expect(context.hasMoreAfter).toBe(true);
+  });
 });

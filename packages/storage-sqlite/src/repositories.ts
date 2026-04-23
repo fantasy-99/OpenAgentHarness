@@ -24,7 +24,15 @@ import type {
   WorkspaceRecord,
   WorkspaceRepository
 } from "@oah/engine-core";
-import { AppError, createId, isMessageRole, isEngineMessageKind, nowIso, parseCursor } from "@oah/engine-core";
+import {
+  AppError,
+  createId,
+  isMessageRole,
+  isEngineMessageKind,
+  nowIso,
+  parseCursor,
+  parseMessagePageCursor
+} from "@oah/engine-core";
 import type { SQLitePersistenceCoordinator } from "./coordinator.js";
 import type { CursorRow, HistoryEventRow, IdRow, JsonRow } from "./shared.js";
 import {
@@ -243,6 +251,48 @@ export class SQLiteMessageRepository implements MessageRepository {
       handle.db.prepare("select payload from messages where session_id = ? order by created_at asc, id asc").all(sessionId)
     );
     return rows.map((row) => parseJson<Message>(row.payload));
+  }
+
+  async listPageBySessionId(input: {
+    sessionId: string;
+    pageSize: number;
+    cursor?: string | undefined;
+    direction?: "forward" | "backward" | undefined;
+  }): Promise<{ items: Message[]; hasMore: boolean }> {
+    const handle = await this.#coordinator.getSessionHandle(input.sessionId);
+    const direction = input.direction ?? "forward";
+    const cursor = parseMessagePageCursor(input.cursor);
+    const comparisonOperator = direction === "backward" ? "<" : ">";
+    const orderDirection = direction === "backward" ? "desc" : "asc";
+    const params: Array<string | number> = [input.sessionId];
+    let predicate = "where session_id = ?";
+
+    if (cursor) {
+      predicate += ` and (created_at ${comparisonOperator} ? or (created_at = ? and id ${comparisonOperator} ?))`;
+      params.push(cursor.createdAt, cursor.createdAt, cursor.id);
+    }
+
+    params.push(input.pageSize + 1);
+
+    const rows = coerceRows<JsonRow>(
+      handle.db
+        .prepare(
+          `select payload from messages
+           ${predicate}
+           order by created_at ${orderDirection}, id ${orderDirection}
+           limit ?`
+        )
+        .all(...params)
+    );
+
+    const hasMore = rows.length > input.pageSize;
+    const pageRows = hasMore ? rows.slice(0, input.pageSize) : rows;
+    const orderedRows = direction === "backward" ? [...pageRows].reverse() : pageRows;
+
+    return {
+      items: orderedRows.map((row) => parseJson<Message>(row.payload)),
+      hasMore
+    };
   }
 
   async listKnownWorkspaces(): Promise<WorkspaceRecord[]> {

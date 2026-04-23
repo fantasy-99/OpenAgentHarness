@@ -385,6 +385,23 @@ function cooldownRemainingMs(lastChangeAtMs: number | undefined, cooldownMs: num
   return Math.max(0, lastChangeAtMs + cooldownMs - nowMs);
 }
 
+function readBooleanEnv(name: string, fallback: boolean): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) {
+    return fallback;
+  }
+
+  if (["1", "true", "yes", "on"].includes(raw)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(raw)) {
+    return false;
+  }
+
+  return fallback;
+}
+
 export function resolveStandaloneControllerConfig(config: ServerConfig): StandaloneControllerConfig {
   const standalone = config.workers?.standalone;
   const controller = config.workers?.controller;
@@ -398,6 +415,7 @@ export function resolveStandaloneControllerConfig(config: ServerConfig): Standal
       standalone?.max_replicas ?? (sandboxFleet.managedByController ? Math.max(minReplicas, sandboxFleet.maxCount) : minReplicas)
     )
   );
+  const latencyFirst = readBooleanEnv("OAH_LATENCY_FIRST_PROFILE", false) || minReplicas === maxReplicas;
 
   return {
     minReplicas,
@@ -410,13 +428,31 @@ export function resolveStandaloneControllerConfig(config: ServerConfig): Standal
       "OAH_STANDALONE_WORKER_RESERVED_CAPACITY_FOR_SUBAGENT",
       standalone?.reserved_capacity_for_subagent ?? 1
     ),
-    scaleIntervalMs: readPositiveIntEnv("OAH_CONTROLLER_SCALE_INTERVAL_MS", controller?.scale_interval_ms ?? 5_000),
-    scaleUpCooldownMs: readPositiveIntEnv("OAH_CONTROLLER_SCALE_UP_COOLDOWN_MS", controller?.cooldown_ms ?? 1_000),
-    scaleDownCooldownMs: readPositiveIntEnv("OAH_CONTROLLER_SCALE_DOWN_COOLDOWN_MS", controller?.cooldown_ms ?? 15_000),
-    scaleUpSampleSize: readPositiveIntEnv("OAH_CONTROLLER_SCALE_UP_SAMPLE_SIZE", controller?.scale_up_window ?? 2),
-    scaleDownSampleSize: readPositiveIntEnv("OAH_CONTROLLER_SCALE_DOWN_SAMPLE_SIZE", controller?.scale_down_window ?? 3),
+    scaleIntervalMs: readPositiveIntEnv(
+      "OAH_CONTROLLER_SCALE_INTERVAL_MS",
+      controller?.scale_interval_ms ?? (latencyFirst ? 1_000 : 5_000)
+    ),
+    scaleUpCooldownMs: readNonNegativeIntEnv(
+      "OAH_CONTROLLER_SCALE_UP_COOLDOWN_MS",
+      controller?.cooldown_ms ?? (latencyFirst ? 0 : 1_000)
+    ),
+    scaleDownCooldownMs: readNonNegativeIntEnv(
+      "OAH_CONTROLLER_SCALE_DOWN_COOLDOWN_MS",
+      controller?.cooldown_ms ?? (latencyFirst ? 0 : 15_000)
+    ),
+    scaleUpSampleSize: readPositiveIntEnv(
+      "OAH_CONTROLLER_SCALE_UP_SAMPLE_SIZE",
+      controller?.scale_up_window ?? (latencyFirst ? 1 : 2)
+    ),
+    scaleDownSampleSize: readPositiveIntEnv(
+      "OAH_CONTROLLER_SCALE_DOWN_SAMPLE_SIZE",
+      controller?.scale_down_window ?? (latencyFirst ? 1 : 3)
+    ),
     scaleUpBusyRatioThreshold: readRatioEnv("OAH_CONTROLLER_SCALE_UP_BUSY_RATIO_THRESHOLD", controller?.scale_up_busy_ratio_threshold ?? 0.75),
-    scaleUpMaxReadyAgeMs: readPositiveIntEnv("OAH_CONTROLLER_SCALE_UP_MAX_READY_AGE_MS", controller?.scale_up_max_ready_age_ms ?? 2_000)
+    scaleUpMaxReadyAgeMs: readPositiveIntEnv(
+      "OAH_CONTROLLER_SCALE_UP_MAX_READY_AGE_MS",
+      controller?.scale_up_max_ready_age_ms ?? (latencyFirst ? 500 : 2_000)
+    )
   };
 }
 

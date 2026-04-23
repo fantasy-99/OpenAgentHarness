@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { RedisWorkerRegistryEntry, RedisWorkspacePlacementEntry } from "@oah/storage-redis";
 
@@ -37,6 +37,7 @@ import {
 const tempDirs: string[] = [];
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -958,6 +959,43 @@ describe("controller", () => {
       scaleDownSampleSize: 6,
       scaleUpBusyRatioThreshold: 0.9,
       scaleUpMaxReadyAgeMs: 3200
+    });
+  });
+
+  it("uses latency-first controller defaults for fixed-topology fleets", () => {
+    const config = resolveStandaloneControllerConfig({
+      server: { host: "127.0.0.1", port: 8787 },
+      storage: { redis_url: "redis://local/0" },
+      paths: {
+        workspace_dir: "/tmp/workspaces",
+        runtime_dir: "/tmp/runtimes",
+        model_dir: "/tmp/models",
+        tool_dir: "/tmp/tools",
+        skill_dir: "/tmp/skills"
+      },
+      workers: {
+        standalone: {
+          min_replicas: 1,
+          max_replicas: 1
+        }
+      },
+      llm: {
+        default_model: "openai-default"
+      }
+    });
+
+    expect(config).toEqual({
+      minReplicas: 1,
+      maxReplicas: 1,
+      readySessionsPerCapacityUnit: 1,
+      reservedSubagentCapacity: 1,
+      scaleIntervalMs: 1_000,
+      scaleUpCooldownMs: 0,
+      scaleDownCooldownMs: 0,
+      scaleUpSampleSize: 1,
+      scaleDownSampleSize: 1,
+      scaleUpBusyRatioThreshold: 0.75,
+      scaleUpMaxReadyAgeMs: 500
     });
   });
 

@@ -2,10 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createPlacementAwareSessionRunQueue,
+  createWorkspacePrewarmer,
   describeEngineProcess,
   parseSingleWorkspaceOptions,
+  resolveObjectStorageMirrorBlockingInit,
   resolveRuntimeAssemblyProfile,
   resolveEmbeddedWorkerPoolConfig,
+  resolveWorkspacePrewarmConfig,
   resolveWorkspaceMaterializationConfig,
   resolveWorkerMode,
   shouldManageWorkspaceRegistry,
@@ -117,6 +120,120 @@ describe("server runtime process modes", () => {
       enablePlatformModelLiveReload: false,
       enableWorkerRuntime: false
     });
+  });
+
+  it("blocks on object storage mirror initialization by default", () => {
+    expect(resolveObjectStorageMirrorBlockingInit()).toBe(true);
+  });
+
+  it("allows latency-first startup to disable blocking mirror initialization", () => {
+    vi.stubEnv("OAH_LATENCY_FIRST_PROFILE", "true");
+    expect(resolveObjectStorageMirrorBlockingInit()).toBe(false);
+  });
+
+  it("lets env vars override latency-first mirror initialization policy", () => {
+    vi.stubEnv("OAH_LATENCY_FIRST_PROFILE", "true");
+    vi.stubEnv("OAH_OBJECT_STORAGE_MIRROR_BLOCKING_INIT", "true");
+    expect(resolveObjectStorageMirrorBlockingInit()).toBe(true);
+  });
+
+  it("derives latency-first workspace prewarm defaults from env", () => {
+    vi.stubEnv("OAH_LATENCY_FIRST_PROFILE", "true");
+    expect(resolveWorkspacePrewarmConfig()).toEqual({
+      enabled: true,
+      delayMs: 250,
+      coalesceWindowMs: 1_000
+    });
+  });
+
+  it("lets env vars override workspace prewarm policy", () => {
+    vi.stubEnv("OAH_WORKSPACE_PREWARM_ENABLED", "false");
+    vi.stubEnv("OAH_WORKSPACE_PREWARM_DELAY_MS", "900");
+    vi.stubEnv("OAH_WORKSPACE_PREWARM_COALESCE_MS", "1200");
+    expect(resolveWorkspacePrewarmConfig()).toEqual({
+      enabled: false,
+      delayMs: 900,
+      coalesceWindowMs: 1_200
+    });
+  });
+
+  it("coalesces repeated workspace prewarm requests within a short window", async () => {
+    const acquire = vi.fn(async (input: { workspace: { id: string } }) => ({
+      workspace: {
+        ...input.workspace,
+        rootPath: "/workspace"
+      },
+      async release() {
+        return undefined;
+      }
+    }));
+    const prewarmer = createWorkspacePrewarmer({
+      sandboxHost: {
+        providerKind: "embedded",
+        workspaceCommandExecutor: {} as never,
+        workspaceFileSystem: {} as never,
+        workspaceExecutionProvider: {} as never,
+        workspaceFileAccessProvider: {
+          acquire
+        },
+        diagnostics() {
+          return {
+            provider: "embedded",
+            executionModel: "local_embedded",
+            workerPlacement: "api_process"
+          };
+        },
+        async maintain() {
+          return undefined;
+        },
+        async beginDrain() {
+          return undefined;
+        },
+        async close() {
+          return undefined;
+        }
+      },
+      getWorkspaceRecord: async (workspaceId: string) =>
+        ({
+          id: workspaceId,
+          kind: "project",
+          name: workspaceId,
+          rootPath: "/workspace",
+          readOnly: false,
+          historyMirrorEnabled: true,
+          defaultAgent: "assistant",
+          settings: {},
+          workspaceModels: {},
+          agents: {},
+          actions: {},
+          skills: {},
+          toolServers: {},
+          hooks: {},
+          catalog: {
+            workspaceId,
+            rootPath: "/workspace",
+            models: {},
+            agents: {},
+            actions: {},
+            skills: {},
+            tools: {},
+            prompts: {}
+          },
+          executionPolicy: "local",
+          status: "active",
+          createdAt: "2026-04-23T00:00:00.000Z",
+          updatedAt: "2026-04-23T00:00:00.000Z"
+        }) as never,
+      coalesceWindowMs: 50
+    });
+
+    await prewarmer.prewarmWorkspace("ws_1");
+    await prewarmer.prewarmWorkspace("ws_1");
+    expect(acquire).toHaveBeenCalledTimes(1);
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    await prewarmer.prewarmWorkspace("ws_1");
+    expect(acquire).toHaveBeenCalledTimes(2);
   });
 
   it("keeps eager execution services for embedded api runtimes and workers", () => {
@@ -465,6 +582,37 @@ describe("server runtime process modes", () => {
       scaleDownSampleSize: 6,
       scaleUpBusyRatioThreshold: 0.9,
       scaleUpMaxReadyAgeMs: 3_200
+    });
+  });
+
+  it("uses latency-first embedded worker defaults for fixed topologies", () => {
+    expect(
+      resolveEmbeddedWorkerPoolConfig({
+        processKind: "api",
+        config: {
+          storage: {
+            redis_url: "redis://local/0"
+          },
+          workers: {
+            embedded: {
+              min_count: 1,
+              max_count: 1
+            }
+          }
+        }
+      })
+    ).toEqual({
+      minWorkers: 1,
+      maxWorkers: 1,
+      scaleIntervalMs: 1_000,
+      readySessionsPerCapacityUnit: 1,
+      reservedSubagentCapacity: 1,
+      scaleUpCooldownMs: 0,
+      scaleDownCooldownMs: 0,
+      scaleUpSampleSize: 1,
+      scaleDownSampleSize: 1,
+      scaleUpBusyRatioThreshold: 0.75,
+      scaleUpMaxReadyAgeMs: 500
     });
   });
 
