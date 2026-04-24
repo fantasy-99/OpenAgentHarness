@@ -151,6 +151,7 @@ export interface NativeSyncLocalToRemoteResult extends NativeCommandSuccessRespo
 }
 
 export interface NativeSyncRemoteToLocalResult extends NativeCommandSuccessResponse {
+  localFingerprint: string;
   removedPathCount: number;
   createdDirectoryCount: number;
   downloadedFileCount: number;
@@ -202,6 +203,20 @@ function resolveNativeWorkspaceSyncWorkerCount(): number {
 
 function isPersistentNativeWorkspaceSyncEnabled(): boolean {
   return readBooleanEnv("OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT");
+}
+
+function shouldUsePersistentNativeWorkspaceSyncCommand(command: string): boolean {
+  return [
+    "fingerprint",
+    "fingerprint-batch",
+    "scan-local-tree",
+    "plan-local-to-remote",
+    "plan-remote-to-local",
+    "plan-seed-upload",
+    "sync-local-to-remote",
+    "sync-remote-to-local",
+    "sync-local-to-sandbox-http"
+  ].includes(command);
 }
 
 function getNativeWorkspaceSyncStdin(child: ReturnType<typeof spawn>) {
@@ -256,6 +271,7 @@ class NativeWorkspaceSyncWorker {
   #stdoutBuffer = "";
   #stderrBuffer = "";
   #closed = false;
+  #closePromise: Promise<void> | undefined;
 
   constructor(child: ReturnType<typeof spawn>, onTerminated?: (error: NativeWorkspaceSyncBridgeError) => void) {
     this.#child = child;
@@ -329,7 +345,7 @@ class NativeWorkspaceSyncWorker {
         };
         await writeNativeWorkspaceSyncPayload(this.#child, `${JSON.stringify(request)}\n`);
         const response = await responsePromise;
-        return response as TResponse;
+        return response as unknown as TResponse;
       } catch (error) {
         const pending = this.#pendingResponses.get(requestId);
         if (pending) {
@@ -393,6 +409,32 @@ class NativeWorkspaceSyncWorker {
     }
     this.#pendingResponses.clear();
   }
+
+  close(): Promise<void> {
+    if (this.#closePromise) {
+      return this.#closePromise;
+    }
+
+    const waitForClose = new Promise<void>((resolve) => {
+      const finish = () => resolve();
+      this.#child.once("close", finish);
+      this.#child.once("error", finish);
+      setTimeout(finish, 500).unref();
+    });
+
+    if (this.#closed) {
+      this.#closePromise = waitForClose;
+      return this.#closePromise;
+    }
+
+    this.#closed = true;
+    this.#child.kill("SIGTERM");
+    this.#failAllPending(
+      new NativeWorkspaceSyncBridgeError("Native workspace sync worker was closed.", "native_worker_closed")
+    );
+    this.#closePromise = waitForClose;
+    return this.#closePromise;
+  }
 }
 
 class NativeWorkspaceSyncWorkerPool {
@@ -410,6 +452,10 @@ class NativeWorkspaceSyncWorkerPool {
       throw new NativeWorkspaceSyncBridgeError("Native workspace sync worker pool is empty.", "native_worker_unavailable");
     }
     return worker.runCommand<TResponse>(command, payload);
+  }
+
+  async close(): Promise<void> {
+    await Promise.all(this.workers.map((worker) => worker.close()));
   }
 }
 
@@ -437,6 +483,12 @@ async function getNativeWorkspaceSyncWorkerPool(): Promise<NativeWorkspaceSyncWo
     )
   );
   return nativeWorkspaceSyncWorkerPoolPromise;
+}
+
+export async function shutdownNativeWorkspaceSyncWorkerPool(): Promise<void> {
+  const workerPool = await nativeWorkspaceSyncWorkerPoolPromise?.catch(() => undefined);
+  nativeWorkspaceSyncWorkerPoolPromise = undefined;
+  await workerPool?.close();
 }
 
 async function runNativeWorkspaceSyncCommandOnce<TResponse extends NativeCommandSuccessResponse>(
@@ -514,11 +566,7 @@ async function runNativeWorkspaceSyncCommand<TResponse extends NativeCommandSucc
   args: string[],
   payload?: Record<string, unknown>
 ): Promise<TResponse> {
-  if (
-    isPersistentNativeWorkspaceSyncEnabled() &&
-    args.length === 1 &&
-    (args[0] === "sync-local-to-remote" || args[0] === "sync-remote-to-local")
-  ) {
+  if (isPersistentNativeWorkspaceSyncEnabled() && args.length === 1 && shouldUsePersistentNativeWorkspaceSyncCommand(args[0]!)) {
     try {
       const workerPool = await getNativeWorkspaceSyncWorkerPool();
       return await workerPool.runCommand<TResponse>(args[0]!, payload);

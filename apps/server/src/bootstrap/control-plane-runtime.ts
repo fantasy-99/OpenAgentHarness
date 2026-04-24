@@ -12,7 +12,6 @@ import type {
   WorkspaceRepository
 } from "../../../../packages/engine-core/src/types.js";
 import { cleanupWorkspaceLocalArtifacts } from "./engine-state-paths.js";
-import { enrichWorkspaceModelsWithDiscoveredMetadata } from "./model-metadata-discovery.js";
 import { ScopedRunRepository, ScopedSessionRepository, ScopedWorkspaceRepository } from "./scoped-repositories.js";
 import type { SandboxHost } from "./sandbox-host.js";
 import {
@@ -26,10 +25,16 @@ import {
 } from "./workspace-registry.js";
 
 let workspaceDefinitionHelpersPromise: Promise<typeof import("./workspace-definition-helpers.js")> | undefined;
+let modelMetadataDiscoveryModulePromise: Promise<typeof import("./model-metadata-discovery.js")> | undefined;
 
 function loadWorkspaceDefinitionHelpersModule(): Promise<typeof import("./workspace-definition-helpers.js")> {
   workspaceDefinitionHelpersPromise ??= import("./workspace-definition-helpers.js");
   return workspaceDefinitionHelpersPromise;
+}
+
+function loadModelMetadataDiscoveryModule(): Promise<typeof import("./model-metadata-discovery.js")> {
+  modelMetadataDiscoveryModulePromise ??= import("./model-metadata-discovery.js");
+  return modelMetadataDiscoveryModulePromise;
 }
 
 function mergeRefreshedWorkspaceRecord(
@@ -137,6 +142,7 @@ export async function prepareControlPlaneRuntime(options: {
   const sessionRepository = new ScopedSessionRepository(options.persistence.sessionRepository, visibleWorkspaceIds);
   const runRepository = new ScopedRunRepository(options.persistence.runRepository, visibleWorkspaceIds);
   const workspaceDefinitionRefreshes = new Map<string, Promise<void>>();
+  const workspaceRegistrySyncDebounceMs = 200;
   let workspaceRegistrySyncPromise: Promise<void> | undefined;
   let lastWorkspaceRegistrySyncAt = 0;
   let workspaceRegistryPollTimer: NodeJS.Timeout | undefined;
@@ -283,7 +289,8 @@ export async function prepareControlPlaneRuntime(options: {
     if (workspaceRegistrySyncPromise) {
       return workspaceRegistrySyncPromise;
     }
-    if (now - lastWorkspaceRegistrySyncAt < 200) {
+    if (now - lastWorkspaceRegistrySyncAt < workspaceRegistrySyncDebounceMs) {
+      scheduleWorkspaceRegistrySync(workspaceRegistrySyncDebounceMs - (now - lastWorkspaceRegistrySyncAt) + 25);
       return;
     }
 
@@ -298,9 +305,11 @@ export async function prepareControlPlaneRuntime(options: {
           onError: ({ rootPath, error }: { rootPath: string; kind: "project"; error: unknown }) => {
             options.logWorkspaceDiscoveryError(rootPath, "project", error);
           }
-        }).then((workspaces) => Promise.all(workspaces.map((workspace) => enrichWorkspaceModelsWithDiscoveredMetadata(workspace))))
+        }).then(async (workspaces) => {
+          const { enrichWorkspaceModelsWithDiscoveredMetadata } = await loadModelMetadataDiscoveryModule();
+          return Promise.all(workspaces.map((workspace) => enrichWorkspaceModelsWithDiscoveredMetadata(workspace)));
+        })
       ).map((workspace) => options.applyManagedWorkspaceExternalRef(workspace as WorkspaceRecord));
-
       const persistedWorkspaces = await options.listRepositoryWorkspaces(options.persistence.workspaceRepository);
       const staticWorkspaces = persistedWorkspaces.filter((workspace) => !isManagedWorkspace(workspace, options.config.paths));
       const latestDiscoveredWorkspaces = [...latestProjectWorkspaces, ...staticWorkspaces];
@@ -389,7 +398,7 @@ export async function prepareControlPlaneRuntime(options: {
     }
   }
 
-  function scheduleWorkspaceRegistrySync(): void {
+  function scheduleWorkspaceRegistrySync(delayMs = 150): void {
     if (!options.managesWorkspaceRegistry) {
       return;
     }
@@ -403,7 +412,7 @@ export async function prepareControlPlaneRuntime(options: {
       void syncWorkspaceRegistry().catch((error) => {
         console.warn("Workspace registry sync failed.", error);
       });
-    }, 150);
+    }, Math.max(0, delayMs));
     workspaceSyncTimer.unref?.();
   }
 

@@ -77,7 +77,28 @@ Current judgment:
 - functionally correct
 - valuable for reducing Node-side RSS in larger filesystem-heavy cases
 - not yet good enough to become the default execution path
-- persistent-worker groundwork now exists in the native bridge and Rust binary, but it remains experimental and is not enabled by default
+- persistent-worker groundwork now exists in the native bridge and Rust binary; it is now enabled by default in the Docker runtime images and `docker-compose.local.yml`, while non-Docker usage still remains opt-in
+- the default TS materialization path now reuses the sync-produced local fingerprint when available, which removes one extra full local directory scan after remote-to-local materialization
+- sandbox-backed workspace initialization now uploads directly from the cached prepared seed root instead of copying each seed into a per-request staging directory first
+- the default TS sandbox seed upload path now skips file writes when the remote workspace file already matches local size and mtime
+- the default TS sandbox seed upload path now also prunes stale or type-mismatched remote entries before upload, so repeated seed operations behave more like a real mirror
+- the native self-hosted sandbox upload path now also skips uploads for unchanged remote files by checking sandbox file stat before sending bytes
+- the native self-hosted sandbox upload path now also prunes stale or type-mismatched remote entries, bringing its mirror semantics much closer to the TS path
+- native seed-upload path building now preserves absolute sandbox roots like `/workspace/...`, fixing a correctness issue that could otherwise misplace uploads
+- the experimental persistent native workspace-sync worker now covers more hot commands beyond the two original sync calls, including fingerprint / plan / seed-upload-related commands
+- the mainline benchmark script `scripts/bench-workspace-mainline.ts` now covers both native-direct sync primitives and end-to-end sandbox-backed initializer seed preparation
+- prepared seed cache key generation now uses native `fingerprint-batch` for the runtime/tool/skill directory set instead of issuing four separate native fingerprint calls
+- native sandbox HTTP sync now reuses `files/entries` metadata (`sizeBytes` / `updatedAt`) to avoid some follow-up per-file `stat` calls and to skip redundant directory-create requests when the remote tree is already present
+- native sandbox HTTP sync now only issues explicit sandbox `mkdir` for the root path and true empty directories; non-empty parent directories are left to file-upload parent creation
+- a container-oriented benchmark entrypoint now exists at `scripts/bench-workspace-mainline-docker.sh` so the same benchmark can be run under explicit Docker CPU and memory limits
+- Docker runtime images and local compose now default to `OAH_NATIVE_WORKSPACE_SYNC=1` and `OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT=1`, so the main container path actually exercises the native implementation without extra manual configuration
+- the mainline benchmark now also reports average sandbox HTTP request counts per scenario, broken out by `createSandbox`, `stat`, `entries`, `mkdir`, `upload`, and `delete`
+- the TS fallback seed-upload path now also reuses remote listing metadata (`sizeBytes` / `updatedAt`) to avoid per-file `stat` probes when sandbox listings already prove file state
+- the TS fallback seed-upload path now only issues explicit non-root `mkdir` for leaf empty directories on `self_hosted` sandboxes, relying on HTTP upload parent creation for non-empty directory trees
+- self-hosted sandbox seed initialization now has an archive fast path in the TS control plane: it can package the prepared seed into a single local tar, upload once, and extract once inside the sandbox
+- the prepared-seed cache now also reuses that local seed tar on repeated initialization, so warm self-hosted seed prep no longer rebuilds the same archive every time
+- object-store workspace flush now also reuses the `localFingerprint` returned by sync instead of rescanning the whole local tree after a successful push, extending the earlier "reuse sync fingerprint" pattern from materialization into the flush path
+- native object-store remote-to-local sync now also returns `localFingerprint`, so native-backed materialization can reuse the sync result instead of immediately rescanning the materialized tree
 
 ### 2. Archive Export
 
@@ -156,6 +177,28 @@ Practical conclusion:
 - keep optimizing this path aggressively
 - do not default it yet
 - judge success by end-to-end workspace lifecycle wins, not by isolated microbenchmarks
+- keep harvesting wins on the default TS path too, especially anywhere we can remove redundant scan or diff work without waiting for native-default readiness
+- reducing duplicated local copy work in the TS seed path is already paying off and should continue alongside native-path work
+- repeated seed upload now has a safe incremental fast path on the TS side for unchanged files, which reduces remote write amplification even before native-default rollout
+- repeated seed upload on the TS path now also cleans stale remote entries, reducing workspace drift across repeated sandbox preparation
+- the same unchanged-file skip now exists in the native self-hosted upload path, so both default TS and native seed flows benefit from lower remote write churn
+- native self-hosted seed upload now also cleans stale/type-mismatched remote entries, reducing drift between TS fallback behavior and native behavior
+- persistent worker reuse is now valuable on a wider set of native workspace-sync commands, and the Docker/container path now enables it by default so those savings can show up in real deployments instead of only in opt-in tests
+- the benchmark script now compares `ts`, `native oneshot`, and `native persistent` on repeated sandbox seed preparation through the real `createSandboxBackedWorkspaceInitializer(...)` path, not just isolated native calls
+- bridge-side binary resolution now prefers fresh local build outputs under `.native-target/` and `native/target/` before `native/bin/`, because `native/bin/` is a distribution artifact and can drift from the currently tested build
+- prepared seed cache key generation now batches native fingerprinting for the four main input directories, removing repeated per-directory native bridge calls from the warm initializer path
+- `fingerprint-batch` now also routes through the persistent native worker path, so repeated cache-key generation no longer pays one-shot process startup in persistent mode
+- native sandbox HTTP sync now consumes listing metadata from `files/entries` so it can avoid extra remote `stat` probes for many unchanged files and avoid redundant `mkdir` calls for directories that already exist
+- native sandbox HTTP sync now limits explicit `mkdir` calls to the root path plus true empty directories, which reduces directory-create chatter on the hot upload path
+- the self-hosted initializer now short-circuits that per-file upload shape with the archive fast path: on the same local sample (`--files 96 --size-bytes 4096 --iterations 2 --seed-sync-repeats 2`), initializer seed preparation now averages just `5` sandbox HTTP requests per run for `ts`, `native oneshot`, and `native persistent`
+- the current request shape for that initializer path is now effectively fixed at `1 createSandbox + 1 stat + 1 mkdir + 1 upload + 1 foregroundCommand`
+- after switching the archive path to plain `tar` and caching the built archive alongside the prepared seed, warm initializer latency on that sample now lands around `71ms` for `ts`, `59ms` for `native oneshot`, and `62ms` for `native persistent`
+- on that same sample, cold initializer latency is still meaningfully higher because it includes prepared workspace construction and first archive build, landing around `272ms` for `ts`, `149ms` for `native oneshot`, and `142ms` for `native persistent`
+- this means the biggest initializer win is now proven: request count is no longer dominated by per-file upload churn, and warm repeated sandbox preparation benefits directly from prepared-seed archive reuse
+- on that same sample, the native-direct micro path still shows clear wins for persistent mode on fingerprint and planning, and a smaller but still positive gain on sandbox HTTP sync
+- because Docker runtime images now default to native persistent mode, these gains are positioned on the actual main deployment path rather than only behind a manual env toggle
+- the object-store-backed materialization path now also avoids one redundant full local fingerprint scan after flush, which directly reduces local filesystem walk / hash work on dirty workspace eviction and close paths
+- the native object-store materialization path now also avoids the extra post-sync local fingerprint scan, bringing the same "sync computes the fingerprint once" behavior to both TS and native-backed restore flows
 
 ## Archive Export
 
@@ -176,11 +219,11 @@ Practical conclusion:
 The biggest remaining problems are now on the workspace side:
 
 - sidecar overhead is still too visible in sync/materialization
-- scan + diff + execute still pay too much request-boundary cost
-- seed upload still has room to eliminate repeated work
+- general sync/materialization still pays too much per-file upload cost once we leave the self-hosted initializer archive fast path
+- seed upload cold-start still pays for the first archive build, even though warm repeated initialization now reuses the archive
 - prepared workspace reuse can be pushed harder
-- Docker-heavy cases still need better default behavior before native sync can be enabled broadly
-- `fingerprint_batch` is currently not stable enough to stay on the critical path, so initializer-side native fingerprinting currently uses per-directory calls instead
+- Docker-heavy cases still need broader benchmark proof before we call the rollout universally proven, even though the main Docker runtime path now defaults to native persistent mode
+- we now have a Docker benchmark entrypoint, but it still needs a successful end-to-end run in an environment that can pull base images reliably before it becomes part of the normal proof path
 
 Secondary problem:
 
@@ -200,6 +243,7 @@ Next work:
 - improve batching and concurrency for Docker workloads
 - keep validating semantics against current TS behavior
 - finish stabilizing and benchmarking the persistent worker path before any default rollout
+- run the new Docker-oriented benchmark profile regularly so we can measure whether the local initializer wins still hold once filesystem virtualization and container resource limits are in play
 
 Success bar:
 
@@ -213,10 +257,17 @@ Treat this as the second half of the same runtime path.
 Next work:
 
 - reduce repeated fingerprint work during workspace preparation
+- extend the new "sync returns local fingerprint" pattern to more mainline restore / seed / initializer flows where we still rescan immediately after sync
 - strengthen prepared seed cache usage
-- avoid unnecessary upload/copy of unchanged files
+- keep removing duplicated local staging/copy work from seed upload paths
+- avoid unnecessary upload/copy of unchanged files that still remain outside the current seed fast path
 - push more seed planning into Rust
+- decide whether the current TS/native cleanup semantics should grow from seed-root mirroring into broader remote diffing rules only if that remains safe for workspace initialization semantics
+- keep stabilizing the broader persistent-worker command set before considering any larger rollout
 - optimize sandbox HTTP upload path where Rust already has enough context to help
+- use the new local benchmark as a guardrail while we add a Docker-scale benchmark and decide whether persistent native workspace sync is strong enough to become the preferred path for self-hosted sandbox seed preparation
+- consider pushing more remote tree information into a single sandbox listing pass if the current `files/entries` metadata still leaves too many fallback `stat` requests on large unchanged trees
+- now that request-count instrumentation exists, use it to focus on the remaining real bottlenecks: upload volume, prepared-seed reuse quality, and any still-unnecessary directory-create traffic
 
 Success bar:
 

@@ -10,6 +10,7 @@ import {
   syncLocalDirectoryToRemote,
   syncRemotePrefixToLocal
 } from "../apps/server/src/object-storage.ts";
+import { resolveWorkspaceSyncBinary } from "../packages/native-bridge/src/index.ts";
 
 const minioEnabled = process.env.OAH_TEST_MINIO_E2E === "1";
 const endpoint = process.env.OAH_TEST_MINIO_ENDPOINT || "http://127.0.0.1:9000";
@@ -35,7 +36,7 @@ describe.skipIf(!minioEnabled)("object storage MinIO e2e", () => {
   it("round-trips workspace content through MinIO with native sync enabled", async () => {
     process.env.OAH_NATIVE_WORKSPACE_SYNC = "1";
     process.env.OAH_NATIVE_WORKSPACE_SYNC_BINARY =
-      process.env.OAH_NATIVE_WORKSPACE_SYNC_BINARY || path.resolve(process.cwd(), "native/bin/oah-workspace-sync");
+      process.env.OAH_NATIVE_WORKSPACE_SYNC_BINARY || resolveWorkspaceSyncBinary() || path.resolve(process.cwd(), "native/bin/oah-workspace-sync");
     process.env.OAH_OBJECT_STORAGE_SYNC_CONCURRENCY = "4";
 
     const sourceDir = await mkdtemp(path.join(os.tmpdir(), "oah-minio-sync-source-"));

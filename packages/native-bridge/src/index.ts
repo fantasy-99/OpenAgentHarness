@@ -6,6 +6,7 @@ export {
   planNativeLocalToRemote,
   resolveWorkspaceSyncBinary,
   scanNativeLocalTree,
+  shutdownNativeWorkspaceSyncWorkerPool,
   runWorkspaceSyncVersion,
   type NativeDirectoryFingerprintInput,
   type NativeDirectoryFingerprintBatchEntry,

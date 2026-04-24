@@ -2,6 +2,7 @@ references
 test_server
 tmp
 .native-target
+.oah-runtime-bundles/
 native/bin
 native/target
 

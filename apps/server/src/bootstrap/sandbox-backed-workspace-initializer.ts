@@ -1,11 +1,12 @@
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cp, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import { sandboxSchema, type CreateWorkspaceRequest } from "@oah/api-contracts";
 import { discoverWorkspace, initializeWorkspaceFromRuntime, type DiscoveredAgent, type PlatformModelRegistry } from "@oah/config";
-import { createId, type WorkspaceInitializationResult } from "@oah/engine-core";
+import { createId, type WorkspaceInitializationResult, type WorkspaceRecord } from "@oah/engine-core";
 import * as nativeBridge from "@oah/native-bridge";
 
 import {
@@ -17,11 +18,38 @@ import { enrichWorkspaceModelsWithDiscoveredMetadata } from "./model-metadata-di
 
 const SANDBOX_WORKSPACE_ROOT = "/workspace";
 const DEFAULT_SEED_UPLOAD_CONCURRENCY = 8;
-const preparedSeedCache = new Map<string, Promise<{ preparedWorkspaceRoot: string; discovered: WorkspaceInitializationResult }>>();
+const DEFAULT_SEED_ARCHIVE_UPLOAD_MODE = "auto";
+const DEFAULT_SEED_ARCHIVE_MIN_FILE_COUNT = 16;
+const DEFAULT_SEED_ARCHIVE_MIN_TOTAL_BYTES = 128 * 1024;
+const DEFAULT_SEED_ARCHIVE_TIMEOUT_MS = 5 * 60 * 1000;
+interface PreparedSeedCacheEntry {
+  cacheRoot: string;
+  preparedWorkspaceRoot: string;
+  discovered: WorkspaceInitializationResult;
+  archivePath?: string | undefined;
+  archivePromise?: Promise<string> | undefined;
+}
+
+const preparedSeedCache = new Map<string, Promise<PreparedSeedCacheEntry>>();
+
+interface SeedUploadPlanFile {
+  localPath: string;
+  remotePath: string;
+  size: number;
+  mtimeMs: number;
+}
+
+interface RemoteWorkspaceEntry {
+  path: string;
+  kind: "file" | "directory" | "other";
+  sizeBytes?: number | undefined;
+  updatedAt?: string | undefined;
+}
 
 export const nativeWorkspaceSyncAdapter = {
   isEnabled: nativeBridge.isNativeWorkspaceSyncEnabled,
   computeDirectoryFingerprint: nativeBridge.computeNativeDirectoryFingerprint,
+  computeDirectoryFingerprintBatch: nativeBridge.computeNativeDirectoryFingerprintBatch,
   planSeedUpload: nativeBridge.planNativeSeedUpload,
   syncLocalToSandboxHttp: nativeBridge.syncNativeLocalToSandboxHttp
 };
@@ -34,6 +62,77 @@ function resolveSeedUploadConcurrency(): number {
 
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_SEED_UPLOAD_CONCURRENCY;
+}
+
+function resolveSeedArchiveUploadMode(): "off" | "auto" | "force" {
+  const raw = process.env.OAH_SANDBOX_SEED_ARCHIVE_UPLOAD?.trim().toLowerCase();
+  if (!raw) {
+    return DEFAULT_SEED_ARCHIVE_UPLOAD_MODE as "auto";
+  }
+
+  if (["0", "false", "off", "no", "disabled"].includes(raw)) {
+    return "off";
+  }
+
+  if (["1", "true", "on", "yes", "enabled", "force"].includes(raw)) {
+    return "force";
+  }
+
+  return "auto";
+}
+
+function resolveSeedArchiveTimeoutMs(): number {
+  const raw = process.env.OAH_SANDBOX_SEED_ARCHIVE_TIMEOUT_MS?.trim();
+  if (!raw) {
+    return DEFAULT_SEED_ARCHIVE_TIMEOUT_MS;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_SEED_ARCHIVE_TIMEOUT_MS;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\"'\"'`)}'`;
+}
+
+async function runLocalProcess(input: {
+  executable: string;
+  args: string[];
+  cwd?: string | undefined;
+  timeoutMs?: number | undefined;
+}): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(input.executable, input.args, {
+      ...(input.cwd ? { cwd: input.cwd } : {}),
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stderr = "";
+    let timeoutTriggered = false;
+    const timeoutHandle = setTimeout(() => {
+      timeoutTriggered = true;
+      child.kill("SIGTERM");
+    }, input.timeoutMs ?? DEFAULT_SEED_ARCHIVE_TIMEOUT_MS);
+
+    child.stderr.on("data", (chunk: Buffer | string) => {
+      stderr = `${stderr}${chunk.toString()}`.slice(-32_768);
+    });
+    child.on("error", (error) => {
+      clearTimeout(timeoutHandle);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timeoutHandle);
+      if (timeoutTriggered) {
+        reject(new Error(`Process timed out after ${input.timeoutMs ?? DEFAULT_SEED_ARCHIVE_TIMEOUT_MS}ms.`));
+        return;
+      }
+      if ((code ?? 0) !== 0) {
+        reject(new Error(stderr.trim() || `Process exited with code ${code ?? 0}.`));
+        return;
+      }
+      resolve();
+    });
+  });
 }
 
 async function collectDirectoryFingerprint(rootPath: string): Promise<string> {
@@ -125,30 +224,31 @@ async function buildPreparedSeedCacheKey(input: {
   const directoryFingerprints = new Map<string, string>();
   if (nativeWorkspaceSyncAdapter.isEnabled()) {
     try {
-      const results = await Promise.all(
-        fingerprintInputs.map(async (entry) => {
-          const result = await observeNativeWorkspaceSyncOperation({
-            operation: "fingerprint",
-            implementation: "rust",
-            target: entry.rootDir,
-            logFailure: false,
-            metadata: {
-              fingerprintKey: entry.key
-            },
-            action: () => nativeWorkspaceSyncAdapter.computeDirectoryFingerprint({ rootDir: entry.rootDir })
-          });
-          return {
-            key: entry.key,
-            fingerprint: result.fingerprint
-          };
-        })
-      );
-      for (const result of results) {
-        directoryFingerprints.set(result.key, result.fingerprint);
+      const result = await observeNativeWorkspaceSyncOperation({
+        operation: "fingerprint_batch",
+        implementation: "rust",
+        target: runtimeRoot,
+        logFailure: false,
+        metadata: {
+          directoryCount: fingerprintInputs.length
+        },
+        action: () =>
+          nativeWorkspaceSyncAdapter.computeDirectoryFingerprintBatch({
+            directories: fingerprintInputs.map((entry) => ({
+              rootDir: entry.rootDir
+            }))
+          })
+      });
+      for (const [index, entry] of result.results.entries()) {
+        const fingerprintInput = fingerprintInputs[index];
+        if (!fingerprintInput) {
+          continue;
+        }
+        directoryFingerprints.set(fingerprintInput.key, entry.fingerprint);
       }
     } catch (error) {
       recordNativeWorkspaceSyncFallback({
-        operation: "fingerprint",
+        operation: "fingerprint_batch",
         target: runtimeRoot,
         error,
         metadata: {
@@ -209,10 +309,10 @@ async function collectDirectoryUploadPlan(input: {
   currentRemotePath: string;
 }): Promise<{
   directories: string[];
-  files: Array<{ localPath: string; remotePath: string; mtimeMs?: number | undefined }>;
+  files: SeedUploadPlanFile[];
 }> {
   const directories: string[] = [];
-  const files: Array<{ localPath: string; remotePath: string; mtimeMs?: number | undefined }> = [];
+  const files: SeedUploadPlanFile[] = [];
   const entries = await readdir(input.currentLocalPath, { withFileTypes: true });
   for (const entry of entries) {
     const localPath = path.join(input.currentLocalPath, entry.name);
@@ -231,9 +331,12 @@ async function collectDirectoryUploadPlan(input: {
     }
 
     if (entry.isFile()) {
+      const entryStat = await stat(localPath);
       files.push({
         localPath,
-        remotePath
+        remotePath,
+        size: entryStat.size,
+        mtimeMs: entryStat.mtimeMs
       });
     }
   }
@@ -249,7 +352,7 @@ async function collectNativeDirectoryUploadPlan(input: {
   currentRemotePath: string;
 }): Promise<{
   directories: string[];
-  files: Array<{ localPath: string; remotePath: string; mtimeMs?: number | undefined }>;
+  files: SeedUploadPlanFile[];
 } | undefined> {
   if (!nativeWorkspaceSyncAdapter.isEnabled()) {
     return undefined;
@@ -275,6 +378,7 @@ async function collectNativeDirectoryUploadPlan(input: {
       files: result.files.map((file) => ({
         localPath: file.absolutePath,
         remotePath: file.remotePath,
+        size: file.size,
         mtimeMs: file.mtimeMs
       }))
     };
@@ -289,6 +393,275 @@ async function collectNativeDirectoryUploadPlan(input: {
     });
     return undefined;
   }
+}
+
+function isWorkspaceFileMtimeMatch(currentMtimeMs: number, targetMtimeMs: number): boolean {
+  return Math.abs(currentMtimeMs - targetMtimeMs) < 1;
+}
+
+function parseRemoteWorkspaceEntryMtimeMs(updatedAt: string | undefined): number | undefined {
+  if (!updatedAt || updatedAt.trim().length === 0) {
+    return undefined;
+  }
+
+  const parsed = Date.parse(updatedAt);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function isRemoteWorkspaceEntryFileMatch(input: {
+  remoteEntry: RemoteWorkspaceEntry | undefined;
+  localSize: number;
+  localMtimeMs: number;
+}): boolean {
+  const remoteSize = input.remoteEntry?.sizeBytes;
+  const remoteMtimeMs = parseRemoteWorkspaceEntryMtimeMs(input.remoteEntry?.updatedAt);
+  return (
+    input.remoteEntry?.kind === "file" &&
+    typeof remoteSize === "number" &&
+    remoteSize === input.localSize &&
+    typeof remoteMtimeMs === "number" &&
+    isWorkspaceFileMtimeMatch(remoteMtimeMs, input.localMtimeMs)
+  );
+}
+
+async function shouldSkipSeedFileUpload(input: {
+  sandboxHost: SandboxHost;
+  remotePath: string;
+  localSize: number;
+  localMtimeMs: number;
+  remoteEntryFound: boolean;
+  remoteEntry?: RemoteWorkspaceEntry | undefined;
+}): Promise<boolean> {
+  if (!input.remoteEntryFound) {
+    return false;
+  }
+
+  if (
+    isRemoteWorkspaceEntryFileMatch({
+      remoteEntry: input.remoteEntry,
+      localSize: input.localSize,
+      localMtimeMs: input.localMtimeMs
+    })
+  ) {
+    return true;
+  }
+
+  const remoteStat = await input.sandboxHost.workspaceFileSystem.stat(input.remotePath).catch(() => null);
+  return (
+    remoteStat?.kind === "file" &&
+    remoteStat.size === input.localSize &&
+    isWorkspaceFileMtimeMatch(remoteStat.mtimeMs, input.localMtimeMs)
+  );
+}
+
+async function collectRemoteWorkspaceEntries(
+  sandboxHost: SandboxHost,
+  rootPath: string
+): Promise<RemoteWorkspaceEntry[]> {
+  const visit = async (currentPath: string): Promise<RemoteWorkspaceEntry[]> => {
+    const entries = await sandboxHost.workspaceFileSystem.readdir(currentPath).catch(() => []);
+    const collected: RemoteWorkspaceEntry[] = [];
+
+    for (const entry of entries) {
+      const entryPath = path.posix.join(currentPath, entry.name);
+      collected.push({
+        path: entryPath,
+        kind: entry.kind,
+        ...(typeof entry.sizeBytes === "number" ? { sizeBytes: entry.sizeBytes } : {}),
+        ...(typeof entry.updatedAt === "string" && entry.updatedAt.trim().length > 0 ? { updatedAt: entry.updatedAt } : {})
+      });
+
+      if (entry.kind === "directory") {
+        collected.push(...(await visit(entryPath)));
+      }
+    }
+
+    return collected;
+  };
+
+  return visit(rootPath);
+}
+
+async function pruneUnexpectedRemoteWorkspaceEntries(input: {
+  sandboxHost: SandboxHost;
+  rootPath: string;
+  expectedDirectories: Iterable<string>;
+  expectedFiles: Iterable<string>;
+}): Promise<Map<string, RemoteWorkspaceEntry>> {
+  const expectedDirectorySet = new Set([...input.expectedDirectories, input.rootPath]);
+  const expectedFileSet = new Set(input.expectedFiles);
+  const remoteEntries = await collectRemoteWorkspaceEntries(input.sandboxHost, input.rootPath);
+  const keptEntries = new Map<string, RemoteWorkspaceEntry>();
+
+  const sortedEntries = [...remoteEntries].sort((left, right) => right.path.length - left.path.length);
+  for (const entry of sortedEntries) {
+    const shouldKeepDirectory = entry.kind === "directory" && expectedDirectorySet.has(entry.path) && !expectedFileSet.has(entry.path);
+    const shouldKeepFile = entry.kind === "file" && expectedFileSet.has(entry.path) && !expectedDirectorySet.has(entry.path);
+
+    if (shouldKeepDirectory || shouldKeepFile) {
+      keptEntries.set(entry.path, entry);
+      continue;
+    }
+
+    await input.sandboxHost.workspaceFileSystem.rm(entry.path, {
+      recursive: entry.kind === "directory",
+      force: true
+    });
+  }
+
+  return keptEntries;
+}
+
+function resolveLeafEmptyRemoteDirectories(input: {
+  directories: Iterable<string>;
+  filePaths: Iterable<string>;
+}): string[] {
+  const directories = [...input.directories]
+    .map((directory) => directory.trim())
+    .filter((directory) => directory.length > 0)
+    .sort((left, right) => left.localeCompare(right));
+  const filePaths = [...input.filePaths]
+    .map((filePath) => filePath.trim())
+    .filter((filePath) => filePath.length > 0);
+
+  return directories.filter((candidate) => {
+    const childPrefix = `${candidate}/`;
+    return (
+      !filePaths.some((filePath) => filePath.startsWith(childPrefix)) &&
+      !directories.some((directory) => directory !== candidate && directory.startsWith(childPrefix))
+    );
+  });
+}
+
+function shouldAttemptSeedArchiveUpload(input: {
+  sandboxHost: SandboxHost;
+  plan: {
+    files: SeedUploadPlanFile[];
+  };
+}): boolean {
+  if (input.sandboxHost.providerKind !== "self_hosted") {
+    return false;
+  }
+
+  const mode = resolveSeedArchiveUploadMode();
+  if (mode === "off") {
+    return false;
+  }
+
+  const totalBytes = input.plan.files.reduce((sum, file) => sum + file.size, 0);
+  if (mode === "force") {
+    return input.plan.files.length > 0;
+  }
+
+  return (
+    input.plan.files.length >= DEFAULT_SEED_ARCHIVE_MIN_FILE_COUNT ||
+    totalBytes >= DEFAULT_SEED_ARCHIVE_MIN_TOTAL_BYTES
+  );
+}
+
+async function maybeUploadSeedArchive(input: {
+  sandboxHost: SandboxHost;
+  workspace: WorkspaceRecord;
+  resolveArchivePath: () => Promise<string>;
+  plan: {
+    files: SeedUploadPlanFile[];
+  };
+}): Promise<boolean> {
+  if (!shouldAttemptSeedArchiveUpload(input)) {
+    return false;
+  }
+
+  const archivePath = await input.resolveArchivePath();
+  const archiveRelativePath = path.posix.join(".openharness", ".oah-seed-upload", path.basename(archivePath));
+  const archiveWorkspacePath = path.posix.join(input.workspace.rootPath, archiveRelativePath);
+  const timeoutMs = resolveSeedArchiveTimeoutMs();
+  let needsRemoteCleanup = false;
+
+  try {
+    const archiveBytes = await readFile(archivePath);
+    await input.sandboxHost.workspaceFileSystem.writeFile(archiveWorkspacePath, archiveBytes);
+    needsRemoteCleanup = true;
+
+    const result = await input.sandboxHost.workspaceCommandExecutor.runForeground({
+      workspace: input.workspace,
+      cwd: input.workspace.rootPath,
+      timeoutMs,
+      command: [
+        "set -e",
+        `tar -xf ${shellQuote(archiveRelativePath)} -C .`,
+        `rm -f -- ${shellQuote(archiveRelativePath)}`,
+        `rmdir -- ${shellQuote(path.posix.dirname(archiveRelativePath))} 2>/dev/null || true`
+      ].join("; ")
+    });
+    if (result.exitCode !== 0) {
+      throw new Error(result.stderr.trim() || result.stdout.trim() || `Archive extraction exited with code ${result.exitCode}.`);
+    }
+
+    needsRemoteCleanup = false;
+    return true;
+  } finally {
+    if (needsRemoteCleanup) {
+      await input.sandboxHost.workspaceFileSystem.rm(archiveWorkspacePath, {
+        force: true
+      }).catch(() => undefined);
+    }
+  }
+}
+
+async function buildSeedArchive(input: {
+  localSeedRoot: string;
+  archivePath: string;
+  timeoutMs?: number | undefined;
+}): Promise<string> {
+  const tempArchivePath = `${input.archivePath}.tmp-${createId("seed")}`;
+  try {
+    await runLocalProcess({
+      executable: "tar",
+      args: [
+        "-cf",
+        tempArchivePath,
+        "--exclude=.DS_Store",
+        "--exclude=__pycache__",
+        "--exclude=*/__pycache__",
+        "--exclude=*.pyc",
+        "--exclude=*.db-shm",
+        "--exclude=*.db-wal",
+        "-C",
+        input.localSeedRoot,
+        "."
+      ],
+      timeoutMs: input.timeoutMs
+    });
+    await rename(tempArchivePath, input.archivePath);
+    return input.archivePath;
+  } catch (error) {
+    await rm(tempArchivePath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+function ensurePreparedSeedArchive(entry: PreparedSeedCacheEntry): Promise<string> {
+  if (entry.archivePath) {
+    return Promise.resolve(entry.archivePath);
+  }
+
+  if (!entry.archivePromise) {
+    entry.archivePromise = buildSeedArchive({
+      localSeedRoot: entry.preparedWorkspaceRoot,
+      archivePath: path.join(entry.cacheRoot, "workspace-seed.tar"),
+      timeoutMs: resolveSeedArchiveTimeoutMs()
+    })
+      .then((archivePath) => {
+        entry.archivePath = archivePath;
+        return archivePath;
+      })
+      .catch((error) => {
+        entry.archivePromise = undefined;
+        throw error;
+      });
+  }
+
+  return entry.archivePromise;
 }
 
 async function uploadDirectoryTree(input: {
@@ -321,18 +694,43 @@ async function uploadDirectoryTree(input: {
         }));
       const concurrency = resolveSeedUploadConcurrency();
 
-      await runWithConcurrency(plan.directories, concurrency, async (remotePath) => {
+      const remoteEntries = await pruneUnexpectedRemoteWorkspaceEntries({
+        sandboxHost: input.sandboxHost,
+        rootPath: input.currentRemotePath,
+        expectedDirectories: plan.directories,
+        expectedFiles: plan.files.map((file) => file.remotePath)
+      });
+
+      const directoriesToCreate = (
+        input.sandboxHost.providerKind === "self_hosted"
+          ? resolveLeafEmptyRemoteDirectories({
+              directories: plan.directories,
+              filePaths: plan.files.map((file) => file.remotePath)
+            })
+          : plan.directories
+      ).filter((remotePath) => remoteEntries.get(remotePath)?.kind !== "directory");
+
+      await runWithConcurrency(directoriesToCreate, concurrency, async (remotePath) => {
         await input.sandboxHost.workspaceFileSystem.mkdir(remotePath, { recursive: true });
       });
 
-      await runWithConcurrency(plan.files, concurrency, async ({ localPath, remotePath, mtimeMs }) => {
+      await runWithConcurrency(plan.files, concurrency, async ({ localPath, remotePath, size, mtimeMs }) => {
+        if (
+          await shouldSkipSeedFileUpload({
+            sandboxHost: input.sandboxHost,
+            remotePath,
+            localSize: size,
+            localMtimeMs: mtimeMs,
+            remoteEntryFound: remoteEntries.has(remotePath),
+            remoteEntry: remoteEntries.get(remotePath)
+          })
+        ) {
+          return;
+        }
+
         const data = await readFile(localPath);
-        const resolvedMtimeMs =
-          typeof mtimeMs === "number" && Number.isFinite(mtimeMs) && mtimeMs > 0
-            ? mtimeMs
-            : (await stat(localPath)).mtimeMs;
         await input.sandboxHost.workspaceFileSystem.writeFile(remotePath, data, {
-          ...(Number.isFinite(resolvedMtimeMs) && resolvedMtimeMs > 0 ? { mtimeMs: Number(resolvedMtimeMs) } : {})
+          ...(Number.isFinite(mtimeMs) && mtimeMs > 0 ? { mtimeMs: Number(mtimeMs) } : {})
         });
       });
     }
@@ -377,7 +775,8 @@ async function uploadWorkspaceSeed(input: {
   workspaceId: string;
   request: CreateWorkspaceRequest;
   initialized: WorkspaceInitializationResult;
-  stagingWorkspaceRoot: string;
+  localSeedRoot: string;
+  resolveArchivePath: () => Promise<string>;
   sandboxHost: SandboxHost;
   remoteRootPath?: string | undefined;
   selfHostedSandbox?:
@@ -399,15 +798,57 @@ async function uploadWorkspaceSeed(input: {
   });
 
   try {
-    await input.sandboxHost.workspaceFileSystem.stat(lease.workspace.rootPath).catch(async () => {
+    const existingRoot = await input.sandboxHost.workspaceFileSystem.stat(lease.workspace.rootPath).catch(() => null);
+    if (existingRoot?.kind && existingRoot.kind !== "directory") {
+      await input.sandboxHost.workspaceFileSystem.rm(lease.workspace.rootPath, {
+        recursive: true,
+        force: true
+      });
+    }
+    if (!existingRoot || existingRoot.kind !== "directory") {
       if (lease.workspace.rootPath !== SANDBOX_WORKSPACE_ROOT) {
         await input.sandboxHost.workspaceFileSystem.mkdir(lease.workspace.rootPath, { recursive: true });
       }
-    });
+    }
+    if (input.selfHostedSandbox) {
+      try {
+        const archivePlan =
+          (await collectNativeDirectoryUploadPlan({
+            currentLocalPath: input.localSeedRoot,
+            currentRemotePath: lease.workspace.rootPath
+          })) ?? (await collectDirectoryUploadPlan({
+            currentLocalPath: input.localSeedRoot,
+            currentRemotePath: lease.workspace.rootPath
+          }));
+        if (
+          await maybeUploadSeedArchive({
+            sandboxHost: input.sandboxHost,
+            workspace: lease.workspace,
+            resolveArchivePath: input.resolveArchivePath,
+            plan: archivePlan
+          })
+        ) {
+          return;
+        }
+      } catch (error) {
+        recordNativeWorkspaceSyncFallback({
+          operation: "sync_local_to_sandbox_http",
+          target: input.localSeedRoot,
+          attemptedImplementation: "ts",
+          fallbackImplementation: nativeWorkspaceSyncAdapter.isEnabled() ? "rust" : "ts",
+          error,
+          metadata: {
+            mode: "archive_upload",
+            remoteRootPath: input.remoteRootPath ?? SANDBOX_WORKSPACE_ROOT,
+            ...(input.selfHostedSandbox ? { sandboxId: input.selfHostedSandbox.id } : {})
+          }
+        });
+      }
+    }
     if (input.selfHostedSandbox && nativeWorkspaceSyncAdapter.isEnabled()) {
       try {
         await uploadDirectoryTreeToSelfHostedSandboxNative({
-          currentLocalPath: input.stagingWorkspaceRoot,
+          currentLocalPath: input.localSeedRoot,
           currentRemotePath: input.remoteRootPath ?? SANDBOX_WORKSPACE_ROOT,
           sandbox: input.selfHostedSandbox
         });
@@ -415,7 +856,7 @@ async function uploadWorkspaceSeed(input: {
       } catch (error) {
         recordNativeWorkspaceSyncFallback({
           operation: "sync_local_to_sandbox_http",
-          target: input.stagingWorkspaceRoot,
+          target: input.localSeedRoot,
           error,
           metadata: {
             remoteRootPath: input.remoteRootPath ?? SANDBOX_WORKSPACE_ROOT,
@@ -426,7 +867,7 @@ async function uploadWorkspaceSeed(input: {
     }
 
     await uploadDirectoryTree({
-      currentLocalPath: input.stagingWorkspaceRoot,
+      currentLocalPath: input.localSeedRoot,
       currentRemotePath: lease.workspace.rootPath,
       sandboxHost: input.sandboxHost
     });
@@ -514,10 +955,7 @@ export function createSandboxBackedWorkspaceInitializer(options: {
     headers?: Record<string, string> | undefined;
   } | undefined;
 }) {
-  async function prepareSeed(input: CreateWorkspaceRequest): Promise<{
-    preparedWorkspaceRoot: string;
-    discovered: WorkspaceInitializationResult;
-  }> {
+  async function prepareSeed(input: CreateWorkspaceRequest): Promise<PreparedSeedCacheEntry> {
     const cacheKey = await buildPreparedSeedCacheKey({
       runtimeDir: options.runtimeDir,
       runtimeName: input.runtime,
@@ -556,6 +994,7 @@ export function createSandboxBackedWorkspaceInitializer(options: {
         );
 
         return {
+          cacheRoot,
           preparedWorkspaceRoot,
           discovered
         };
@@ -586,49 +1025,37 @@ export function createSandboxBackedWorkspaceInitializer(options: {
         | undefined;
 
       const prepared = await prepareSeed(input);
-      const stagingRoot = await mkdtemp(path.join(os.tmpdir(), "oah-sandbox-workspace-"));
-      const stagingWorkspaceRoot = path.join(stagingRoot, "workspace");
 
-      try {
-        await cp(prepared.preparedWorkspaceRoot, stagingWorkspaceRoot, {
-          recursive: true,
-          force: false,
-          errorOnExist: false,
-          preserveTimestamps: true
-        });
-
-        if (options.selfHosted) {
-          const sandbox = await createSelfHostedSandbox({
-            request: input,
-            baseUrl: options.selfHosted.baseUrl,
-            headers: options.selfHosted.headers
-          });
-          remoteRootPath = sandbox.rootPath;
-          selfHostedSandbox = {
-            id: sandbox.id,
-            baseUrl: options.selfHosted.baseUrl,
-            ...(options.selfHosted.headers ? { headers: options.selfHosted.headers } : {})
-          };
-        }
-
-        await uploadWorkspaceSeed({
-          workspaceId,
+      if (options.selfHosted) {
+        const sandbox = await createSelfHostedSandbox({
           request: input,
-          initialized: prepared.discovered,
-          stagingWorkspaceRoot,
-          sandboxHost: options.sandboxHost,
-          remoteRootPath,
-          selfHostedSandbox
+          baseUrl: options.selfHosted.baseUrl,
+          headers: options.selfHosted.headers
         });
-
-        return {
-          ...prepared.discovered,
-          id: workspaceId,
-          rootPath: remoteRootPath
+        remoteRootPath = sandbox.rootPath;
+        selfHostedSandbox = {
+          id: sandbox.id,
+          baseUrl: options.selfHosted.baseUrl,
+          ...(options.selfHosted.headers ? { headers: options.selfHosted.headers } : {})
         };
-      } finally {
-        await rm(stagingRoot, { recursive: true, force: true });
       }
+
+      await uploadWorkspaceSeed({
+        workspaceId,
+        request: input,
+        initialized: prepared.discovered,
+        localSeedRoot: prepared.preparedWorkspaceRoot,
+        resolveArchivePath: () => ensurePreparedSeedArchive(prepared),
+        sandboxHost: options.sandboxHost,
+        remoteRootPath,
+        selfHostedSandbox
+      });
+
+      return {
+        ...prepared.discovered,
+        id: workspaceId,
+        rootPath: remoteRootPath
+      };
     }
   };
 }

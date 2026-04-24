@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { DirectoryObjectStore } from "../apps/server/src/object-storage.ts";
 import {
+  computeLocalDirectoryFingerprint,
   deleteRemotePrefixFromObjectStore,
   ObjectStorageMirrorController,
   syncLocalDirectoryToRemote,
@@ -136,6 +137,25 @@ describe("object storage sync", () => {
     expect((await stat(path.join(directory, "empty-dir"))).isDirectory()).toBe(true);
   });
 
+  it("returns the local fingerprint computed during remote-to-local sync", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-pull-fingerprint-"));
+    tempDirs.push(directory);
+    const store = new FakeDirectoryObjectStore();
+    const preservedMtime = new Date("2026-04-18T08:09:10.000Z");
+
+    await store.putObject("workspace/demo/.openharness/settings.yaml", Buffer.from("default_agent: builder\n"));
+    await store.putObject("workspace/demo/README.md", Buffer.from("# demo\n"), { mtimeMs: preservedMtime.getTime() });
+    await store.putObject("workspace/demo/empty-dir/", Buffer.alloc(0));
+
+    const result = await syncRemotePrefixToLocal(store, "workspace/demo", directory);
+
+    expect(result.localFingerprint).toBe(
+      await computeLocalDirectoryFingerprint(directory, {
+        excludeRelativePath: undefined
+      })
+    );
+  });
+
   it("preserves remote lastModified timestamps when materializing locally", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-pull-mtime-"));
     tempDirs.push(directory);
@@ -247,6 +267,39 @@ describe("object storage sync", () => {
 
     expect(pushedConcurrency).toBe(3);
     expect(pulledConcurrency).toBe(3);
+  });
+
+  it("returns the native local fingerprint during remote-to-local sync", async () => {
+    vi.stubEnv("OAH_NATIVE_WORKSPACE_SYNC", "1");
+
+    const targetDirectory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-native-fingerprint-"));
+    tempDirs.push(targetDirectory);
+
+    const objectStorage = await importObjectStorageWithNativeBridgeOverrides({
+      isNativeWorkspaceSyncEnabled: () => true,
+      syncNativeRemoteToLocal: vi.fn(async () => ({
+        ok: true as const,
+        protocolVersion: 1,
+        localFingerprint: "native-materialized-fingerprint",
+        removedPathCount: 0,
+        createdDirectoryCount: 0,
+        downloadedFileCount: 0
+      }))
+    });
+
+    const store = new FakeDirectoryObjectStore();
+    store.getNativeWorkspaceSyncConfig = () => ({
+      bucket: "test-bucket",
+      region: "us-east-1",
+      endpoint: "http://127.0.0.1:9000",
+      forcePathStyle: true,
+      accessKey: "test",
+      secretKey: "test"
+    });
+
+    await expect(objectStorage.syncRemotePrefixToLocal(store, "workspace/demo", targetDirectory)).resolves.toMatchObject({
+      localFingerprint: "native-materialized-fingerprint"
+    });
   });
 
   it("ignores files that disappear while collecting a local snapshot", async () => {

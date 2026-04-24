@@ -17,7 +17,7 @@ import {
   createHttpE2BCompatibleSandboxService
 } from "../apps/server/src/bootstrap/e2b-compatible-sandbox-host.ts";
 import { createApp } from "../apps/server/src/app.ts";
-import { createMaterializationSandboxHost } from "../apps/server/src/bootstrap/sandbox-host.ts";
+import { createLazySandboxHost, createMaterializationSandboxHost } from "../apps/server/src/bootstrap/sandbox-host.ts";
 import { WorkspaceMaterializationDrainingError } from "../apps/server/src/bootstrap/workspace-materialization.ts";
 import { FakeModelGateway } from "./helpers/fake-model-gateway";
 
@@ -173,6 +173,78 @@ describe("materialization sandbox host", () => {
       code: "workspace_materialization_draining",
       message: "draining"
     });
+  });
+
+  it("defers embedded host construction until workspace access is requested", async () => {
+    const acquireWorkspace = vi.fn(async () => ({
+      workspaceId: "ws_test",
+      version: "live",
+      ownerWorkerId: "worker_1",
+      localPath: "/tmp/materialized/ws_test",
+      sourceKind: "object_store" as const,
+      remotePrefix: "workspaces/ws_test",
+      markDirty: vi.fn(),
+      touch: vi.fn(),
+      release: vi.fn(async () => undefined)
+    }));
+    const createHost = vi.fn(() =>
+      createMaterializationSandboxHost({
+        materializationManager: {
+          acquireWorkspace,
+          diagnostics: vi.fn(() => ({
+            draining: false,
+            cachedCopies: 1,
+            objectStoreCopies: 1,
+            dirtyCopies: 0,
+            busyCopies: 0,
+            idleCopies: 1,
+            failureCount: 0,
+            blockerCount: 0,
+            failures: []
+          })),
+          refreshLeases: vi.fn(async () => undefined),
+          flushIdleCopies: vi.fn(async () => []),
+          evictIdleCopies: vi.fn(async () => []),
+          beginDrain: vi.fn(async () => ({
+            drainStartedAt: "2026-04-15T00:00:00.000Z",
+            flushed: [],
+            evicted: []
+          })),
+          close: vi.fn(async () => undefined)
+        } as never
+      })
+    );
+
+    const host = createLazySandboxHost({
+      providerKind: "embedded",
+      createHost,
+      diagnostics: {
+        provider: "embedded",
+        executionModel: "local_embedded",
+        workerPlacement: "api_process"
+      }
+    });
+
+    expect(createHost).not.toHaveBeenCalled();
+    expect(host.diagnostics()).toMatchObject({
+      provider: "embedded",
+      executionModel: "local_embedded",
+      workerPlacement: "api_process"
+    });
+
+    await host.maintain({ idleBefore: "2026-04-15T00:00:00.000Z" });
+    await host.beginDrain();
+    await host.close();
+
+    expect(createHost).not.toHaveBeenCalled();
+
+    await host.workspaceFileAccessProvider.acquire({
+      workspace: buildWorkspace(),
+      access: "read"
+    });
+
+    expect(createHost).toHaveBeenCalledTimes(1);
+    expect(acquireWorkspace).toHaveBeenCalledTimes(1);
   });
 
   it("adapts an e2b-compatible sandbox service into the sandbox host contract", async () => {

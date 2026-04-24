@@ -107,7 +107,22 @@ describe("server runtime process modes", () => {
     ).toBe("external");
   });
 
-  it("uses a lighter assembly profile for api-only remote sandbox control planes", () => {
+  it("uses a lighter assembly profile for api-only control planes", () => {
+    expect(
+      resolveRuntimeAssemblyProfile({
+        processKind: "api",
+        startWorker: false,
+        remoteSandboxProvider: false
+      })
+    ).toEqual({
+      id: "api_control_plane",
+      executionServicesMode: "lazy",
+      enablePlatformModelLiveReload: false,
+      enableWorkerRuntime: false,
+      enableAdminCapabilities: true,
+      enableControlPlaneFacade: true
+    });
+
     expect(
       resolveRuntimeAssemblyProfile({
         processKind: "api",

@@ -1,6 +1,8 @@
 ARG BASE_BUILD_IMAGE=node:24-bookworm
 ARG BASE_RUNTIME_IMAGE=debian:bookworm-slim
-ARG BASE_RUST_IMAGE=rust:1.95-bookworm
+ARG BASE_EXECUTION_LITE_IMAGE=node:24-alpine
+ARG BASE_EXECUTION_LITE_RUNTIME_IMAGE=alpine:3.22
+ARG BASE_RUST_LITE_IMAGE=rust:1.95-alpine
 ARG DOCKER_COMPOSE_VERSION=2.40.3
 
 FROM ${BASE_BUILD_IMAGE} AS deps
@@ -133,21 +135,48 @@ RUN pnpm --filter @oah/compose-scaler deploy --legacy --prod /opt/oah/compose-sc
   && find /opt/oah/compose-scaler/node_modules -type d -empty -delete \
   && rm -rf /opt/oah/compose-scaler/src
 
-FROM ${BASE_RUST_IMAGE} AS native-build
+FROM ${BASE_RUST_LITE_IMAGE} AS native-build-lite
 
 WORKDIR /app/native
 
-COPY native ./ 
+RUN --mount=type=cache,target=/var/cache/apk \
+  apk add --update-cache build-base cmake perl pkgconf
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-  --mount=type=cache,target=/tmp/oah-native-target \
-  cargo build --locked --release -p oah-workspace-sync --target-dir /tmp/oah-native-target \
-  && strip --strip-unneeded /tmp/oah-native-target/release/oah-workspace-sync \
-  && cp /tmp/oah-native-target/release/oah-workspace-sync /usr/local/bin/oah-workspace-sync
+COPY native/Cargo.toml native/Cargo.lock ./
+COPY native/oah-workspace-sync/Cargo.toml ./oah-workspace-sync/Cargo.toml
+COPY native/oah-archive-export/Cargo.toml ./oah-archive-export/Cargo.toml
+
+RUN mkdir -p /app/native/oah-workspace-sync/src /app/native/oah-archive-export/src \
+  && printf 'fn main() {}\n' > /app/native/oah-workspace-sync/src/main.rs \
+  && printf 'fn main() {}\n' > /app/native/oah-archive-export/src/main.rs
+
+RUN --mount=type=cache,id=oah-native-lite-cargo-registry,target=/usr/local/cargo/registry \
+  --mount=type=cache,id=oah-native-lite-cargo-git,target=/usr/local/cargo/git \
+  --mount=type=cache,id=oah-native-lite-target,target=/tmp/oah-native-lite-target \
+  cargo build --locked --release -p oah-workspace-sync --target-dir /tmp/oah-native-lite-target
+
+COPY native/oah-workspace-sync/src ./oah-workspace-sync/src
+COPY native/oah-archive-export/src ./oah-archive-export/src
+
+RUN --mount=type=cache,id=oah-native-lite-cargo-registry,target=/usr/local/cargo/registry \
+  --mount=type=cache,id=oah-native-lite-cargo-git,target=/usr/local/cargo/git \
+  --mount=type=cache,id=oah-native-lite-target,target=/tmp/oah-native-lite-target \
+  cargo build --locked --release -p oah-workspace-sync --target-dir /tmp/oah-native-lite-target \
+  && strip /tmp/oah-native-lite-target/release/oah-workspace-sync \
+  && cp /tmp/oah-native-lite-target/release/oah-workspace-sync /usr/local/bin/oah-workspace-sync
+
+FROM native-build-lite AS native-build
 
 FROM deps AS node-runtime-binary
 
 RUN strip --strip-unneeded /usr/local/bin/node
+
+FROM ${BASE_EXECUTION_LITE_IMAGE} AS node-runtime-binary-lite
+
+RUN apk add --no-cache binutils \
+  && cp /usr/local/bin/node /tmp/node \
+  && strip /tmp/node \
+  && mv /tmp/node /usr/local/bin/node
 
 FROM debian:bookworm-slim AS docker-cli-build
 
@@ -174,6 +203,8 @@ COPY --from=node-runtime-binary /usr/local/bin/node /usr/local/bin/node
 FROM runtime-common AS runtime-execution-base
 
 ENV OAH_DOCS_ROOT=/app
+ENV OAH_NATIVE_WORKSPACE_SYNC=1
+ENV OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT=1
 ENV OAH_NATIVE_WORKSPACE_SYNC_BINARY=/app/native/oah-workspace-sync
 
 RUN mkdir -p /var/lib/oah/workspaces \
@@ -185,13 +216,47 @@ RUN mkdir -p /var/lib/oah/workspaces \
   && mkdir -p /app/native \
   && printf '%s\n' '{"type":"module"}' > /app/package.json
 
+FROM ${BASE_EXECUTION_LITE_RUNTIME_IMAGE} AS runtime-execution-lite-base
+
+ENV NODE_ENV=production
+ENV OAH_DOCS_ROOT=/app
+ENV OAH_NATIVE_WORKSPACE_SYNC=1
+ENV OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT=1
+ENV OAH_NATIVE_WORKSPACE_SYNC_BINARY=/app/native/oah-workspace-sync
+
+WORKDIR /app
+
+RUN apk add --no-cache ca-certificates libgcc libstdc++ \
+  && mkdir -p /var/lib/oah/workspaces \
+  && mkdir -p /var/lib/oah/runtimes \
+  && mkdir -p /var/lib/oah/models \
+  && mkdir -p /var/lib/oah/tools \
+  && mkdir -p /var/lib/oah/skills \
+  && mkdir -p /var/lib/oah/archives \
+  && mkdir -p /app/native \
+  && printf '%s\n' '{"type":"module"}' > /app/package.json
+
+COPY --from=node-runtime-binary-lite /usr/local/bin/node /usr/local/bin/node
+
 FROM runtime-execution-base AS api-runtime
 
 COPY --from=server-runtime-bundles /opt/oah/runtime-bundles/api /app/dist
 COPY docs/schemas /app/docs/schemas
 COPY docs/openapi /app/docs/openapi
 COPY assets/logo-readme.png /app/assets/logo-readme.png
-COPY --from=native-build /usr/local/bin/oah-workspace-sync /app/native/oah-workspace-sync
+COPY --from=native-build-lite /usr/local/bin/oah-workspace-sync /app/native/oah-workspace-sync
+
+EXPOSE 8787
+
+CMD ["node", "dist/index.js", "--config", "/etc/oah/server.yaml"]
+
+FROM runtime-execution-lite-base AS api-runtime-lite
+
+COPY --from=server-runtime-bundles /opt/oah/runtime-bundles/api /app/dist
+COPY docs/schemas /app/docs/schemas
+COPY docs/openapi /app/docs/openapi
+COPY assets/logo-readme.png /app/assets/logo-readme.png
+COPY --from=native-build-lite /usr/local/bin/oah-workspace-sync /app/native/oah-workspace-sync
 
 EXPOSE 8787
 
@@ -201,7 +266,17 @@ FROM runtime-execution-base AS worker-runtime
 
 COPY --from=server-runtime-bundles /opt/oah/runtime-bundles/worker /app/dist
 COPY docs/schemas /app/docs/schemas
-COPY --from=native-build /usr/local/bin/oah-workspace-sync /app/native/oah-workspace-sync
+COPY --from=native-build-lite /usr/local/bin/oah-workspace-sync /app/native/oah-workspace-sync
+
+EXPOSE 8787
+
+CMD ["node", "dist/worker.js", "--config", "/etc/oah/server.yaml"]
+
+FROM runtime-execution-lite-base AS worker-runtime-lite
+
+COPY --from=server-runtime-bundles /opt/oah/runtime-bundles/worker /app/dist
+COPY docs/schemas /app/docs/schemas
+COPY --from=native-build-lite /usr/local/bin/oah-workspace-sync /app/native/oah-workspace-sync
 
 EXPOSE 8787
 

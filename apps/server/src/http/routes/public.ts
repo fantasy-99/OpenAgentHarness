@@ -29,22 +29,26 @@ import {
   uploadWorkspaceRuntimeResponseSchema,
   workspaceRuntimeListSchema
 } from "@oah/api-contracts";
-import { SUPPORTED_MODEL_PROVIDERS } from "@oah/model-gateway";
 import { AppError } from "@oah/engine-core";
 
 import { createParamsSchema, writeSseEvent } from "../context.js";
 import { describeSandboxTopology } from "../../sandbox-topology.js";
 import { resolveOwnerId } from "../proxy-utils.js";
-import {
-  buildApiIndex,
-  buildDeveloperDocsHtml,
-  buildDeveloperLandingHtml,
-  getRequestOrigin,
-  loadOpenApiDocument,
-  loadOpenApiSpec
-} from "../developer-docs.js";
 import type { AppDependencies, AppRouteOptions } from "../types.js";
 import { renderNativeWorkspaceSyncMetrics } from "../../observability/native-workspace-sync.js";
+
+let developerDocsModulePromise: Promise<typeof import("../developer-docs.js")> | undefined;
+let modelGatewayProvidersModulePromise: Promise<typeof import("../../../../../packages/model-gateway/src/providers.js")> | undefined;
+
+function loadDeveloperDocsModule(): Promise<typeof import("../developer-docs.js")> {
+  developerDocsModulePromise ??= import("../developer-docs.js");
+  return developerDocsModulePromise;
+}
+
+function loadModelGatewayProvidersModule(): Promise<typeof import("../../../../../packages/model-gateway/src/providers.js")> {
+  modelGatewayProvidersModulePromise ??= import("../../../../../packages/model-gateway/src/providers.js");
+  return modelGatewayProvidersModulePromise;
+}
 
 export function registerPublicRoutes(app: FastifyInstance, dependencies: AppDependencies, options: AppRouteOptions): void {
   const listRuntimes = async (_request: FastifyRequest, reply: FastifyReply) => {
@@ -111,20 +115,24 @@ export function registerPublicRoutes(app: FastifyInstance, dependencies: AppDepe
 
   app.get("/", async (request, reply) => {
     reply.type("text/html; charset=utf-8");
-    return reply.send(buildDeveloperLandingHtml(request));
+    return reply.send((await loadDeveloperDocsModule()).buildDeveloperLandingHtml(request));
   });
 
   app.get("/docs", async (request, reply) => {
     reply.type("text/html; charset=utf-8");
-    return reply.send(buildDeveloperDocsHtml(request));
+    return reply.send((await loadDeveloperDocsModule()).buildDeveloperDocsHtml(request));
   });
 
   app.get("/openapi.yaml", async (request, reply) => {
     reply.type("application/yaml; charset=utf-8");
-    return reply.send(await loadOpenApiSpec(getRequestOrigin(request)));
+    const developerDocs = await loadDeveloperDocsModule();
+    return reply.send(await developerDocs.loadOpenApiSpec(developerDocs.getRequestOrigin(request)));
   });
 
-  app.get("/openapi.json", async (request, reply) => reply.send(await loadOpenApiDocument(getRequestOrigin(request))));
+  app.get("/openapi.json", async (request, reply) => {
+    const developerDocs = await loadDeveloperDocsModule();
+    return reply.send(await developerDocs.loadOpenApiDocument(developerDocs.getRequestOrigin(request)));
+  });
 
   app.get("/healthz", async () =>
     healthReportSchema.parse(
@@ -196,7 +204,7 @@ export function registerPublicRoutes(app: FastifyInstance, dependencies: AppDepe
     return reply.send(renderNativeWorkspaceSyncMetrics());
   });
 
-  app.get("/api/v1", async (request, reply) => reply.send(buildApiIndex(request)));
+  app.get("/api/v1", async (request, reply) => reply.send((await loadDeveloperDocsModule()).buildApiIndex(request)));
 
   app.get("/api/v1/runtimes", listRuntimes);
   app.post("/api/v1/runtimes/upload", uploadRuntime);
@@ -209,7 +217,7 @@ export function registerPublicRoutes(app: FastifyInstance, dependencies: AppDepe
   app.get("/api/v1/model-providers", async (_request, reply) =>
     reply.send(
       modelProviderListSchema.parse({
-        items: SUPPORTED_MODEL_PROVIDERS
+        items: (await loadModelGatewayProvidersModule()).SUPPORTED_MODEL_PROVIDERS
       })
     )
   );

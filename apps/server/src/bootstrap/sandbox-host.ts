@@ -47,6 +47,97 @@ export interface SandboxHost {
   close(): Promise<void>;
 }
 
+export function createLazySandboxHost(options: {
+  providerKind: SandboxHost["providerKind"];
+  createHost: () => SandboxHost;
+  diagnostics?: SandboxHostDiagnostics | (() => SandboxHostDiagnostics);
+}): SandboxHost {
+  let host: SandboxHost | undefined;
+
+  const getHost = (): SandboxHost => {
+    host ??= options.createHost();
+    return host;
+  };
+
+  const resolveDiagnostics = (): SandboxHostDiagnostics | undefined =>
+    typeof options.diagnostics === "function" ? options.diagnostics() : options.diagnostics;
+
+  return {
+    providerKind: options.providerKind,
+    workspaceCommandExecutor: {
+      runForeground(input) {
+        return getHost().workspaceCommandExecutor.runForeground(input);
+      },
+      runProcess(input) {
+        return getHost().workspaceCommandExecutor.runProcess(input);
+      },
+      runBackground(input) {
+        return getHost().workspaceCommandExecutor.runBackground(input);
+      }
+    },
+    workspaceFileSystem: {
+      realpath(targetPath) {
+        return getHost().workspaceFileSystem.realpath(targetPath);
+      },
+      stat(targetPath) {
+        return getHost().workspaceFileSystem.stat(targetPath);
+      },
+      readFile(targetPath) {
+        return getHost().workspaceFileSystem.readFile(targetPath);
+      },
+      openReadStream(targetPath) {
+        return getHost().workspaceFileSystem.openReadStream(targetPath);
+      },
+      readdir(targetPath) {
+        return getHost().workspaceFileSystem.readdir(targetPath);
+      },
+      mkdir(targetPath, options) {
+        return getHost().workspaceFileSystem.mkdir(targetPath, options);
+      },
+      writeFile(targetPath, data, options) {
+        return getHost().workspaceFileSystem.writeFile(targetPath, data, options);
+      },
+      rm(targetPath, options) {
+        return getHost().workspaceFileSystem.rm(targetPath, options);
+      },
+      rename(sourcePath, targetPath) {
+        return getHost().workspaceFileSystem.rename(sourcePath, targetPath);
+      }
+    },
+    workspaceExecutionProvider: {
+      acquire(input) {
+        return getHost().workspaceExecutionProvider.acquire(input);
+      }
+    },
+    workspaceFileAccessProvider: {
+      acquire(input) {
+        return getHost().workspaceFileAccessProvider.acquire(input);
+      }
+    },
+    diagnostics() {
+      return host?.diagnostics() ?? resolveDiagnostics() ?? { provider: options.providerKind };
+    },
+    async maintain(options) {
+      if (!host) {
+        return;
+      }
+      await host.maintain(options);
+    },
+    async beginDrain() {
+      if (!host) {
+        return;
+      }
+      await host.beginDrain();
+    },
+    async close() {
+      if (!host) {
+        return;
+      }
+      await host.close();
+    }
+  };
+}
+
 function leaseToExecutionWorkspace(workspace: WorkspaceRecord, lease: WorkspaceMaterializationLease): WorkspaceRecord {
   return {
     ...workspace,

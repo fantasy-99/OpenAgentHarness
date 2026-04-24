@@ -670,6 +670,9 @@ async function syncNativeRemotePrefixToLocalIfAvailable(
         })
     });
     return {
+      ...("localFingerprint" in result && typeof result.localFingerprint === "string"
+        ? { localFingerprint: result.localFingerprint }
+        : {}),
       removedPathCount: result.removedPathCount,
       createdDirectoryCount: result.createdDirectoryCount,
       downloadedFileCount: result.downloadedFileCount
@@ -781,6 +784,10 @@ function resolveTargetMtimeMs(input: {
   lastModified?: Date | undefined;
 }): number | undefined {
   return parseObjectMtimeMs(input.metadata) ?? (input.lastModified ? Math.trunc(input.lastModified.getTime()) : undefined);
+}
+
+function isMaterializedMtimeMatch(currentMtimeMs: number, targetMtimeMs: number): boolean {
+  return Math.abs(currentMtimeMs - targetMtimeMs) < 1;
 }
 
 function shouldExcludeWorkspaceMirrorRelativePath(relativePath: string): boolean {
@@ -1287,8 +1294,8 @@ export async function syncWorkspaceRootToObjectStore(
   localDir: string,
   logger?: (message: string) => void,
   label?: string
-): Promise<void> {
-  await syncLocalDirectoryToRemote(store, remotePrefix, localDir, logger, label, {
+): Promise<DirectorySyncResult> {
+  return syncLocalDirectoryToRemote(store, remotePrefix, localDir, logger, label, {
     excludeRelativePath: shouldExcludeWorkspaceBackingStoreRelativePath
   });
 }
@@ -1487,11 +1494,11 @@ export async function syncRemotePrefixToLocal(
             metadata: objectInfo?.metadata,
             lastModified: objectInfo?.lastModified ?? input.entry.lastModified
           });
-          if (typeof resolvedMtimeMs === "number" && Math.trunc(currentFile.mtimeMs) === resolvedMtimeMs) {
+          if (typeof resolvedMtimeMs === "number" && isMaterializedMtimeMatch(currentFile.mtimeMs, resolvedMtimeMs)) {
             fingerprintFiles.push({
               relativePath: input.relativePath,
               size: input.entry.size,
-              mtimeMs: resolvedMtimeMs
+              mtimeMs: Math.trunc(currentFile.mtimeMs)
             });
             return;
           }
@@ -1509,10 +1516,11 @@ export async function syncRemotePrefixToLocal(
           const preservedDate = new Date(resolvedMtimeMs);
           await utimes(input.targetPath, preservedDate, preservedDate);
         }
+        const materializedFile = await stat(input.targetPath);
         fingerprintFiles.push({
           relativePath: input.relativePath,
-          size: input.entry.size,
-          mtimeMs: resolvedMtimeMs
+          size: materializedFile.size,
+          mtimeMs: Math.trunc(materializedFile.mtimeMs)
         });
       };
 

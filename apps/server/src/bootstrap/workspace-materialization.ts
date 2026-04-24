@@ -541,10 +541,18 @@ export class WorkspaceMaterializationManager {
           this.#logger(
             `[workspace-materialization] materializing workspace ${entry.workspaceId} (${entry.version}) from ${source.remotePrefix} into ${entry.localPath}`
           );
-          await syncRemotePrefixToLocal(this.#store, source.remotePrefix, entry.localPath, this.#logger, entry.workspaceId);
-          entry.lastSyncedLocalFingerprint = await computeLocalDirectoryFingerprint(entry.localPath, {
-            excludeRelativePath: shouldExcludeWorkspaceBackingStoreRelativePath
-          });
+          const syncResult = await syncRemotePrefixToLocal(
+            this.#store,
+            source.remotePrefix,
+            entry.localPath,
+            this.#logger,
+            entry.workspaceId
+          );
+          entry.lastSyncedLocalFingerprint =
+            syncResult.localFingerprint ??
+            (await computeLocalDirectoryFingerprint(entry.localPath, {
+              excludeRelativePath: shouldExcludeWorkspaceBackingStoreRelativePath
+            }));
           await this.#writeSyncMetadata(entry);
           entry.materializedAt = nowIso();
           this.#failures.delete(entry.cacheKey);
@@ -568,16 +576,18 @@ export class WorkspaceMaterializationManager {
       this.#logger(
         `[workspace-materialization] flushing workspace ${entry.workspaceId} (${entry.version}) from ${entry.localPath} back to ${entry.source.remotePrefix}`
       );
-      await syncWorkspaceRootToObjectStore(
+      const syncResult = await syncWorkspaceRootToObjectStore(
         this.#store,
         entry.source.remotePrefix,
         entry.localPath,
         this.#logger,
         entry.workspaceId
       );
-      entry.lastSyncedLocalFingerprint = await computeLocalDirectoryFingerprint(entry.localPath, {
-        excludeRelativePath: shouldExcludeWorkspaceBackingStoreRelativePath
-      });
+      entry.lastSyncedLocalFingerprint =
+        syncResult.localFingerprint ??
+        (await computeLocalDirectoryFingerprint(entry.localPath, {
+          excludeRelativePath: shouldExcludeWorkspaceBackingStoreRelativePath
+        }));
       await this.#writeSyncMetadata(entry);
       entry.dirty = false;
       this.#touchEntry(entry);

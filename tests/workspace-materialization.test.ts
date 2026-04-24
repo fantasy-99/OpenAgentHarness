@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { DirectoryObjectStore } from "../apps/server/src/object-storage.ts";
 import {
@@ -74,6 +74,9 @@ afterEach(async () => {
       await rm(directory, { recursive: true, force: true });
     })
   );
+  vi.doUnmock("../apps/server/src/object-storage.ts");
+  vi.restoreAllMocks();
+  vi.resetModules();
 });
 
 describe("workspace materialization", () => {
@@ -605,6 +608,130 @@ describe("workspace materialization", () => {
         refCount: 0
       })
     ]);
+
+    await manager.close();
+  });
+
+  it("reuses the sync fingerprint returned during materialization instead of rescanning the local workspace", async () => {
+    const cacheRoot = await mkdtemp(path.join(os.tmpdir(), "oah-materialization-cache-"));
+    tempDirs.push(cacheRoot);
+
+    const syncRemotePrefixToLocal = vi.fn(async (_store: DirectoryObjectStore, _remotePrefix: string, localDir: string) => {
+      await mkdir(localDir, { recursive: true });
+      await writeFile(path.join(localDir, "README.md"), "# demo\n", "utf8");
+      return {
+        localFingerprint: "materialized-sync-fingerprint",
+        removedPathCount: 0,
+        createdDirectoryCount: 0,
+        downloadedFileCount: 1
+      };
+    });
+    const computeLocalDirectoryFingerprint = vi.fn(async () => {
+      throw new Error("expected materialization to reuse the sync fingerprint");
+    });
+
+    vi.resetModules();
+    vi.doMock("../apps/server/src/object-storage.ts", async () => {
+      const actual = await vi.importActual<typeof import("../apps/server/src/object-storage.ts")>(
+        "../apps/server/src/object-storage.ts"
+      );
+      return {
+        ...actual,
+        syncRemotePrefixToLocal,
+        computeLocalDirectoryFingerprint
+      };
+    });
+
+    const { WorkspaceMaterializationManager: TestWorkspaceMaterializationManager } = await import(
+      "../apps/server/src/bootstrap/workspace-materialization.ts"
+    );
+
+    const manager = new TestWorkspaceMaterializationManager({
+      cacheRoot,
+      workerId: "worker_1",
+      store: new FakeDirectoryObjectStore()
+    });
+
+    const lease = await manager.acquireWorkspace({
+      workspace: {
+        id: "ws_1",
+        rootPath: "/unused",
+        externalRef: "s3://test-bucket/workspace/demo"
+      } as never
+    });
+
+    expect(syncRemotePrefixToLocal).toHaveBeenCalledTimes(1);
+    expect(computeLocalDirectoryFingerprint).not.toHaveBeenCalled();
+    await expect(readFile(path.join(lease.localPath, "README.md"), "utf8")).resolves.toBe("# demo\n");
+
+    await lease.release();
+    await manager.close();
+  });
+
+  it("reuses the sync fingerprint returned during flush instead of rescanning the local workspace", async () => {
+    const cacheRoot = await mkdtemp(path.join(os.tmpdir(), "oah-materialization-cache-"));
+    tempDirs.push(cacheRoot);
+
+    const syncRemotePrefixToLocal = vi.fn(async (_store: DirectoryObjectStore, _remotePrefix: string, localDir: string) => {
+      await mkdir(localDir, { recursive: true });
+      await writeFile(path.join(localDir, "README.md"), "# demo\n", "utf8");
+      return {
+        localFingerprint: "materialized-sync-fingerprint",
+        removedPathCount: 0,
+        createdDirectoryCount: 0,
+        downloadedFileCount: 1
+      };
+    });
+    const syncWorkspaceRootToObjectStore = vi.fn(async () => ({
+      localFingerprint: "flushed-sync-fingerprint",
+      uploadedFileCount: 1,
+      deletedRemoteCount: 0,
+      createdEmptyDirectoryCount: 0
+    }));
+    const computeLocalDirectoryFingerprint = vi.fn(async () => {
+      throw new Error("expected flush to reuse the sync fingerprint");
+    });
+
+    vi.resetModules();
+    vi.doMock("../apps/server/src/object-storage.ts", async () => {
+      const actual = await vi.importActual<typeof import("../apps/server/src/object-storage.ts")>(
+        "../apps/server/src/object-storage.ts"
+      );
+      return {
+        ...actual,
+        syncRemotePrefixToLocal,
+        syncWorkspaceRootToObjectStore,
+        computeLocalDirectoryFingerprint
+      };
+    });
+
+    const { WorkspaceMaterializationManager: TestWorkspaceMaterializationManager } = await import(
+      "../apps/server/src/bootstrap/workspace-materialization.ts"
+    );
+
+    const manager = new TestWorkspaceMaterializationManager({
+      cacheRoot,
+      workerId: "worker_1",
+      store: new FakeDirectoryObjectStore()
+    });
+
+    const lease = await manager.acquireWorkspace({
+      workspace: {
+        id: "ws_1",
+        rootPath: "/unused",
+        externalRef: "s3://test-bucket/workspace/demo"
+      } as never
+    });
+
+    await writeFile(path.join(lease.localPath, "README.md"), "# changed\n", "utf8");
+    lease.markDirty();
+    await lease.release();
+
+    const flushed = await manager.flushIdleCopies({ idleBefore: new Date(Date.now() + 1_000).toISOString() });
+    expect(flushed).toHaveLength(1);
+    expect(syncRemotePrefixToLocal).toHaveBeenCalledTimes(1);
+    expect(syncWorkspaceRootToObjectStore).toHaveBeenCalledTimes(1);
+    expect(computeLocalDirectoryFingerprint).not.toHaveBeenCalled();
 
     await manager.close();
   });

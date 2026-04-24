@@ -12,9 +12,11 @@ export function resolveWorkspaceSyncBinary(): string | undefined {
   const configured = envPath("OAH_NATIVE_WORKSPACE_SYNC_BINARY");
   const candidates = [
     configured,
-    path.resolve(process.cwd(), "native", WORKSPACE_SYNC_BINARY_BASENAME),
+    path.resolve(process.cwd(), ".native-target", "release", WORKSPACE_SYNC_BINARY_BASENAME),
+    path.resolve(process.cwd(), "native", "target", "release", WORKSPACE_SYNC_BINARY_BASENAME),
+    path.resolve(process.cwd(), "native", "target", "debug", WORKSPACE_SYNC_BINARY_BASENAME),
     path.resolve(process.cwd(), "native", "bin", WORKSPACE_SYNC_BINARY_BASENAME),
-    path.resolve(process.cwd(), "native", "target", "release", WORKSPACE_SYNC_BINARY_BASENAME)
+    path.resolve(process.cwd(), "native", WORKSPACE_SYNC_BINARY_BASENAME)
   ].filter((candidate): candidate is string => typeof candidate === "string" && candidate.length > 0);
 
   return candidates.find((candidate) => {

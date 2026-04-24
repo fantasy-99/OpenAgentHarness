@@ -176,4 +176,84 @@ openrouter-main:
       globalThis.fetch = originalFetch;
     }
   });
+
+  it("does not block startup when metadata discovery runs in background", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-platform-model-service-background-"));
+    tempDirs.push(tempDir);
+
+    const modelsDir = path.join(tempDir, "models");
+    await mkdir(modelsDir, { recursive: true });
+    await writeFile(
+      path.join(modelsDir, "models.yaml"),
+      `
+openrouter-main:
+  provider: openai-compatible
+  key: secret-key
+  url: https://llm.example.com/v1
+  name: openai/gpt-5
+`,
+      "utf8"
+    );
+
+    let resolveFetch: ((response: Response) => void) | undefined;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (() =>
+      new Promise<Response>((resolve) => {
+        resolveFetch = resolve;
+      })) as typeof fetch;
+
+    try {
+      const service = await createPlatformModelCatalogService({
+        modelDir: modelsDir,
+        stateDir: path.join(tempDir, "state"),
+        defaultModel: "openrouter-main",
+        metadataDiscovery: "background",
+        onLoadError({ error }) {
+          throw error;
+        }
+      });
+
+      expect(service.definitions["openrouter-main"]?.metadata).toBeUndefined();
+
+      for (let attempt = 0; attempt < 20 && !resolveFetch; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      expect(resolveFetch).toBeTypeOf("function");
+
+      resolveFetch!(
+        new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "openai/gpt-5",
+                max_model_len: 200_000
+              }
+            ]
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json"
+            }
+          }
+        )
+      );
+
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if (service.definitions["openrouter-main"]?.metadata?.contextWindowTokens === 200_000) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      expect(service.definitions["openrouter-main"]?.metadata).toEqual(
+        expect.objectContaining({
+          contextWindowTokens: 200_000
+        })
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

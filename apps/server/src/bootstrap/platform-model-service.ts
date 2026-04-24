@@ -2,7 +2,6 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { PlatformModelRegistry } from "@oah/config";
-import { enrichModelRegistryWithDiscoveredMetadata } from "./model-metadata-discovery.js";
 import { normalizeModelMetadata, normalizePlatformModelRegistry, readContextWindowTokens } from "./platform-model-metadata.js";
 
 let platformModelsModulePromise:
@@ -13,6 +12,7 @@ let platformModelsModulePromise:
       ) => Promise<PlatformModelRegistry>;
     }>
   | undefined;
+let modelMetadataDiscoveryModulePromise: Promise<typeof import("./model-metadata-discovery.js")> | undefined;
 
 function loadPlatformModelsModule(): Promise<{
   loadPlatformModels: (
@@ -24,6 +24,11 @@ function loadPlatformModelsModule(): Promise<{
     return import("../../../../packages/config/dist/platform-models.js");
   });
   return platformModelsModulePromise;
+}
+
+function loadModelMetadataDiscoveryModule(): Promise<typeof import("./model-metadata-discovery.js")> {
+  modelMetadataDiscoveryModulePromise ??= import("./model-metadata-discovery.js");
+  return modelMetadataDiscoveryModulePromise;
 }
 const PERSISTED_MODEL_METADATA_FILENAME = ".oah-platform-model-metadata.json";
 
@@ -238,8 +243,9 @@ export async function createPlatformModelCatalogService(options: {
   defaultModel: string;
   onLoadError(input: { filePath: string; error: unknown }): void;
   onModelsChanged?: ((models: PlatformModelRegistry) => Promise<void> | void) | undefined;
+  metadataDiscovery?: "eager" | "background" | "disabled" | undefined;
 }): Promise<PlatformModelCatalogService> {
-  async function loadDefinitions(): Promise<PlatformModelRegistry> {
+  async function loadDefinitions(input?: { discoverMetadata?: boolean | undefined }): Promise<PlatformModelRegistry> {
     const { loadPlatformModels } = await loadPlatformModelsModule();
     const loadedModels = normalizePlatformModelRegistry(
       await loadPlatformModels(options.modelDir, {
@@ -251,7 +257,13 @@ export async function createPlatformModelCatalogService(options: {
       onLoadError: options.onLoadError
     });
     const mergedModels = applyPersistedContextWindowTokens(loadedModels, persistedContextWindowTokens);
-    const enrichedModels = await enrichModelRegistryWithDiscoveredMetadata(mergedModels);
+    if (!input?.discoverMetadata) {
+      return mergedModels;
+    }
+
+    const enrichedModels = await (await loadModelMetadataDiscoveryModule()).enrichModelRegistryWithDiscoveredMetadata(
+      mergedModels
+    );
     await persistContextWindowTokens({
       modelDir: options.stateDir,
       models: enrichedModels,
@@ -260,12 +272,17 @@ export async function createPlatformModelCatalogService(options: {
     return enrichedModels;
   }
 
-  const definitions = await loadDefinitions();
+  const metadataDiscoveryMode = options.metadataDiscovery ?? "eager";
+  const definitions = await loadDefinitions({
+    discoverMetadata: metadataDiscoveryMode === "eager"
+  });
   const listeners = new Set<(snapshot: PlatformModelSnapshot) => void>();
   let revision = 0;
   let reloadPromise: Promise<void> | undefined;
+  let backgroundHydrationStarted = false;
 
   async function getSnapshot(): Promise<PlatformModelSnapshot> {
+    startBackgroundHydration();
     return {
       revision,
       items: toPlatformModelItems(definitions, options.defaultModel)
@@ -283,6 +300,34 @@ export async function createPlatformModelCatalogService(options: {
     }
   }
 
+  async function reloadDefinitions(input?: { discoverMetadata?: boolean | undefined }): Promise<PlatformModelSnapshot> {
+    const currentSnapshot = serializePlatformModels(definitions);
+    const nextModels = await loadDefinitions(input);
+    const nextSnapshot = serializePlatformModels(nextModels);
+
+    if (currentSnapshot !== nextSnapshot) {
+      replacePlatformModels(definitions, nextModels);
+      await options.onModelsChanged?.(definitions);
+      revision += 1;
+      await publishSnapshot();
+    }
+
+    return getSnapshot();
+  }
+
+  function startBackgroundHydration(): void {
+    if (metadataDiscoveryMode !== "background" || backgroundHydrationStarted) {
+      return;
+    }
+
+    backgroundHydrationStarted = true;
+    queueMicrotask(() => {
+      void reloadDefinitions({
+        discoverMetadata: true
+      }).catch(() => undefined);
+    });
+  }
+
   async function refresh(): Promise<PlatformModelSnapshot> {
     if (reloadPromise) {
       await reloadPromise;
@@ -290,18 +335,9 @@ export async function createPlatformModelCatalogService(options: {
     }
 
     reloadPromise = (async () => {
-      const currentSnapshot = serializePlatformModels(definitions);
-      const nextModels = await loadDefinitions();
-      const nextSnapshot = serializePlatformModels(nextModels);
-
-      if (currentSnapshot === nextSnapshot) {
-        return;
-      }
-
-      replacePlatformModels(definitions, nextModels);
-      await options.onModelsChanged?.(definitions);
-      revision += 1;
-      await publishSnapshot();
+      await reloadDefinitions({
+        discoverMetadata: metadataDiscoveryMode !== "disabled"
+      });
     })().finally(() => {
       reloadPromise = undefined;
     });
@@ -310,14 +346,18 @@ export async function createPlatformModelCatalogService(options: {
     return getSnapshot();
   }
 
+  startBackgroundHydration();
+
   return {
     definitions,
     async listModels() {
+      startBackgroundHydration();
       return toPlatformModelItems(definitions, options.defaultModel);
     },
     getSnapshot,
     refresh,
     subscribe(listener) {
+      startBackgroundHydration();
       listeners.add(listener);
       return () => {
         listeners.delete(listener);

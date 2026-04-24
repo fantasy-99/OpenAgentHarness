@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::future::Future;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
@@ -15,12 +15,13 @@ use aws_sdk_s3::Client as S3Client;
 use clap::{Parser, Subcommand};
 use filetime::{set_file_mtime, FileTime};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
-use reqwest::{Client as HttpClient, Url};
+use reqwest::{Client as HttpClient, StatusCode, Url};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 use sha1::{Digest, Sha1};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::io::AsyncWriteExt;
 use tokio::runtime::Builder as RuntimeBuilder;
 use tokio::task::JoinSet;
@@ -323,6 +324,7 @@ struct SyncLocalToRemoteResponse {
 struct SyncRemoteToLocalResponse {
     ok: bool,
     protocol_version: u32,
+    local_fingerprint: String,
     removed_path_count: usize,
     created_directory_count: usize,
     downloaded_file_count: usize,
@@ -336,6 +338,36 @@ struct SyncLocalToSandboxHttpResponse {
     local_fingerprint: String,
     created_directory_count: usize,
     uploaded_file_count: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeSandboxHttpFileStat {
+    kind: String,
+    size: u64,
+    mtime_ms: f64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeSandboxHttpEntryPage {
+    items: Vec<NativeSandboxHttpEntry>,
+    next_cursor: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeSandboxHttpEntry {
+    path: String,
+    #[serde(rename = "type")]
+    entry_type: String,
+    size_bytes: Option<u64>,
+    updated_at: Option<String>,
+}
+
+struct NativeSandboxHttpRemoteState {
+    existing_directories: BTreeSet<String>,
+    existing_file_stats: BTreeMap<String, NativeSandboxHttpFileStat>,
 }
 
 fn main() -> ExitCode {
@@ -872,6 +904,144 @@ impl NativeSandboxHttpClient {
             "Failed to upload sandbox file {path}: HTTP {status} {body}"
         ))
     }
+
+    async fn stat_path(&self, path: &str) -> Result<Option<NativeSandboxHttpFileStat>, String> {
+        let url = self.build_url(
+            &format!("/api/v1/sandboxes/{}/files/stat", self.sandbox_id),
+            &[("path", path.to_string())],
+        )?;
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| format!("Failed to stat sandbox file {path}: {error}"))?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if response.status().is_success() {
+            let payload = response.json::<NativeSandboxHttpFileStat>().await.map_err(|error| {
+                format!("Failed to decode sandbox file stat response for {path}: {error}")
+            })?;
+            return Ok(Some(payload));
+        }
+
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| String::from("<unavailable>"));
+        Err(format!(
+            "Failed to stat sandbox file {path}: HTTP {status} {body}"
+        ))
+    }
+
+    async fn list_entries(
+        &self,
+        path: &str,
+        cursor: Option<&str>,
+    ) -> Result<NativeSandboxHttpEntryPage, String> {
+        let mut query = vec![
+            ("path", path.to_string()),
+            ("pageSize", "200".to_string()),
+            ("sortBy", "name".to_string()),
+            ("sortOrder", "asc".to_string()),
+        ];
+        if let Some(cursor) = cursor {
+            query.push(("cursor", cursor.to_string()));
+        }
+        let url = self.build_url(
+            &format!("/api/v1/sandboxes/{}/files/entries", self.sandbox_id),
+            &query,
+        )?;
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|error| format!("Failed to list sandbox entries under {path}: {error}"))?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(NativeSandboxHttpEntryPage {
+                items: Vec::new(),
+                next_cursor: None,
+            });
+        }
+        if response.status().is_success() {
+            return response
+                .json::<NativeSandboxHttpEntryPage>()
+                .await
+                .map_err(|error| {
+                    format!("Failed to decode sandbox entry listing for {path}: {error}")
+                });
+        }
+
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| String::from("<unavailable>"));
+        Err(format!(
+            "Failed to list sandbox entries under {path}: HTTP {status} {body}"
+        ))
+    }
+
+    async fn delete_entry(&self, path: &str, recursive: bool) -> Result<(), String> {
+        let url = self.build_url(
+            &format!("/api/v1/sandboxes/{}/files/entry", self.sandbox_id),
+            &[
+                ("path", path.to_string()),
+                ("recursive", recursive.to_string()),
+            ],
+        )?;
+        let response = self
+            .client
+            .delete(url)
+            .send()
+            .await
+            .map_err(|error| format!("Failed to delete sandbox entry {path}: {error}"))?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(());
+        }
+        if response.status().is_success() {
+            return Ok(());
+        }
+
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| String::from("<unavailable>"));
+        Err(format!(
+            "Failed to delete sandbox entry {path}: HTTP {status} {body}"
+        ))
+    }
+}
+
+fn sandbox_mtime_matches(local_mtime_ms: u128, remote_mtime_ms: f64) -> bool {
+    (remote_mtime_ms - local_mtime_ms as f64).abs() < 1.0
+}
+
+fn sandbox_file_matches(local_size: u64, local_mtime_ms: u128, remote: &NativeSandboxHttpFileStat) -> bool {
+    remote.kind == "file"
+        && remote.size == local_size
+        && sandbox_mtime_matches(local_mtime_ms, remote.mtime_ms)
+}
+
+fn parse_workspace_entry_updated_at_ms(value: &str) -> Option<f64> {
+    let parsed = OffsetDateTime::parse(value.trim(), &Rfc3339).ok()?;
+    Some(parsed.unix_timestamp_nanos() as f64 / 1_000_000.0)
+}
+
+fn sandbox_entry_file_stat(entry: &NativeSandboxHttpEntry) -> Option<NativeSandboxHttpFileStat> {
+    if entry.entry_type != "file" {
+        return None;
+    }
+
+    Some(NativeSandboxHttpFileStat {
+        kind: "file".to_string(),
+        size: entry.size_bytes?,
+        mtime_ms: parse_workspace_entry_updated_at_ms(entry.updated_at.as_deref()?)?,
+    })
 }
 
 async fn process_with_concurrency<T, R, F, Fut>(
@@ -923,7 +1093,7 @@ where
 }
 
 fn build_remote_path(base_path: &str, relative_path: &str) -> String {
-    let normalized_base = normalize_relative_path(base_path);
+    let normalized_base = base_path.replace('\\', "/").trim_end_matches('/').to_string();
     let normalized_relative = normalize_relative_path(relative_path);
 
     if normalized_base.is_empty() {
@@ -935,6 +1105,91 @@ fn build_remote_path(base_path: &str, relative_path: &str) -> String {
     }
 
     format!("{normalized_base}/{normalized_relative}")
+}
+
+async fn collect_remote_sandbox_entries(
+    sandbox_client: &NativeSandboxHttpClient,
+    root_path: &str,
+) -> Result<Vec<NativeSandboxHttpEntry>, String> {
+    let mut directories_to_visit = vec![root_path.to_string()];
+    let mut collected = Vec::new();
+
+    while let Some(current_path) = directories_to_visit.pop() {
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = sandbox_client
+                .list_entries(&current_path, cursor.as_deref())
+                .await?;
+            for entry in page.items {
+                if entry.entry_type == "directory" {
+                    directories_to_visit.push(entry.path.clone());
+                }
+                collected.push(entry);
+            }
+
+            match page.next_cursor {
+                Some(next_cursor) => {
+                    cursor = Some(next_cursor);
+                }
+                None => break,
+            }
+        }
+    }
+
+    Ok(collected)
+}
+
+async fn prune_unexpected_remote_sandbox_entries(
+    sandbox_client: &NativeSandboxHttpClient,
+    root_path: &str,
+    expected_directories: &BTreeSet<String>,
+    expected_files: &BTreeSet<String>,
+) -> Result<NativeSandboxHttpRemoteState, String> {
+    let mut keep_directories = expected_directories.clone();
+    keep_directories.insert(root_path.to_string());
+    let mut remote_entries = collect_remote_sandbox_entries(sandbox_client, root_path).await?;
+    remote_entries.sort_by(|left, right| right.path.len().cmp(&left.path.len()));
+    let mut remote_state = NativeSandboxHttpRemoteState {
+        existing_directories: BTreeSet::new(),
+        existing_file_stats: BTreeMap::new(),
+    };
+
+    for entry in remote_entries {
+        if should_keep_remote_sandbox_entry(
+            &entry,
+            &keep_directories,
+            expected_files,
+        ) {
+            if entry.entry_type == "directory" {
+                remote_state.existing_directories.insert(entry.path.clone());
+            } else if let Some(file_stat) = sandbox_entry_file_stat(&entry) {
+                remote_state
+                    .existing_file_stats
+                    .insert(entry.path.clone(), file_stat);
+            }
+            continue;
+        }
+
+        sandbox_client
+            .delete_entry(&entry.path, entry.entry_type == "directory")
+            .await?;
+    }
+
+    Ok(remote_state)
+}
+
+fn should_keep_remote_sandbox_entry(
+    entry: &NativeSandboxHttpEntry,
+    expected_directories: &BTreeSet<String>,
+    expected_files: &BTreeSet<String>,
+) -> bool {
+    let keep_directory = entry.entry_type == "directory"
+        && expected_directories.contains(&entry.path)
+        && !expected_files.contains(&entry.path);
+    let keep_file = entry.entry_type == "file"
+        && expected_files.contains(&entry.path)
+        && !expected_directories.contains(&entry.path);
+    keep_directory || keep_file
 }
 
 fn normalize_exclude_paths(paths: Vec<String>) -> Vec<String> {
@@ -1118,6 +1373,42 @@ fn create_fingerprint(snapshot: &Snapshot) -> String {
     }
 
     format!("{:x}", hash.finalize())
+}
+
+fn create_fingerprint_from_entries(
+    files: &[(String, u64, u128)],
+    empty_directories: &BTreeSet<String>,
+) -> String {
+    let mut hash = Sha1::new();
+    let mut sorted_files = files.iter().collect::<Vec<_>>();
+    sorted_files.sort_by(|left, right| left.0.cmp(&right.0));
+
+    for (relative_path, size, mtime_ms) in sorted_files {
+        hash.update(format!("file:{relative_path}:{size}:{mtime_ms}\n").as_bytes());
+    }
+
+    for relative_directory in empty_directories {
+        hash.update(format!("dir:{relative_directory}\n").as_bytes());
+    }
+
+    format!("{:x}", hash.finalize())
+}
+
+fn resolve_empty_remote_directories(
+    explicit_directories: &BTreeSet<String>,
+    file_paths: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    explicit_directories
+        .iter()
+        .filter(|candidate| {
+            let child_prefix = format!("{candidate}/");
+            !explicit_directories
+                .iter()
+                .any(|directory| directory.starts_with(&child_prefix))
+                && !file_paths.iter().any(|file_path| file_path.starts_with(&child_prefix))
+        })
+        .cloned()
+        .collect()
 }
 
 fn create_local_to_remote_plan(
@@ -1536,7 +1827,7 @@ async fn download_remote_file(
     config: &NativeObjectStoreConfig,
     key: &str,
     target_path: &Path,
-) -> Result<(), String> {
+) -> Result<u128, String> {
     let response = client
         .get_object()
         .bucket(&config.bucket)
@@ -1584,9 +1875,25 @@ async fn download_remote_file(
                 target_path.display()
             )
         })?;
+        return Ok(target_mtime_ms);
     }
 
-    Ok(())
+    let metadata = tokio::fs::metadata(target_path).await.map_err(|error| {
+        format!(
+            "Failed to read metadata for downloaded local file {}: {error}",
+            target_path.display()
+        )
+    })?;
+    metadata
+        .modified()
+        .ok()
+        .and_then(system_time_to_mtime_ms)
+        .ok_or_else(|| {
+            format!(
+                "Failed to resolve mtime for downloaded local file {}.",
+                target_path.display()
+            )
+        })
 }
 
 async fn sync_remote_to_local(
@@ -1601,6 +1908,18 @@ async fn sync_remote_to_local(
     let client = create_s3_client(&request.object_store);
     let remote_entries =
         list_remote_entries(&client, &request.object_store, &request.remote_prefix).await?;
+    let explicit_remote_directories = remote_entries
+        .iter()
+        .filter(|entry| entry.is_directory)
+        .map(|entry| normalize_relative_path(&entry.relative_path))
+        .filter(|relative_path| !relative_path.is_empty())
+        .collect::<BTreeSet<_>>();
+    let remote_file_paths = remote_entries
+        .iter()
+        .filter(|entry| !entry.is_directory)
+        .map(|entry| normalize_relative_path(&entry.relative_path))
+        .filter(|relative_path| !relative_path.is_empty())
+        .collect::<BTreeSet<_>>();
     let plan = create_remote_to_local_plan(
         &root_dir,
         &snapshot,
@@ -1655,9 +1974,10 @@ async fn sync_remote_to_local(
             async move {
                 let target_path = PathBuf::from(&candidate.target_path);
                 prepare_local_file_target(&target_path).await?;
-                download_remote_file(&client, &object_store, &candidate.remote_key, &target_path)
-                    .await?;
-                Ok(true)
+                let mtime_ms =
+                    download_remote_file(&client, &object_store, &candidate.remote_key, &target_path)
+                        .await?;
+                Ok((candidate.relative_path, candidate.size, mtime_ms, true))
             }
         },
     )
@@ -1675,7 +1995,7 @@ async fn sync_remote_to_local(
                 let target_path = PathBuf::from(&candidate.target_path);
                 let existing = prepare_local_file_target(&target_path).await?;
 
-                let should_download = match existing {
+                let should_download: Result<(bool, Option<u128>), String> = match existing {
                     Some(metadata) if metadata.len() == candidate.size => {
                         let head = client
                             .head_object()
@@ -1696,37 +2016,59 @@ async fn sync_remote_to_local(
                                     metadata.modified().ok().and_then(system_time_to_mtime_ms);
                                 match (remote_mtime_ms, local_mtime_ms) {
                                     (Some(remote_mtime_ms), Some(local_mtime_ms)) => {
-                                        remote_mtime_ms != local_mtime_ms
+                                        if remote_mtime_ms != local_mtime_ms {
+                                            Ok((true, None))
+                                        } else {
+                                            Ok((false, Some(local_mtime_ms)))
+                                        }
                                     }
-                                    _ => true,
+                                    _ => Ok((true, None)),
                                 }
                             }
-                            Err(_) => true,
+                            Err(_) => Ok((true, None)),
                         }
                     }
-                    _ => true,
+                    _ => Ok((true, None)),
                 };
 
+                let (should_download, existing_mtime_ms) = should_download?;
                 if !should_download {
-                    return Ok(false);
+                    return Ok((
+                        candidate.relative_path,
+                        candidate.size,
+                        existing_mtime_ms.unwrap_or_default(),
+                        false,
+                    ));
                 }
 
-                download_remote_file(&client, &object_store, &candidate.remote_key, &target_path)
-                    .await?;
-                Ok(true)
+                let mtime_ms =
+                    download_remote_file(&client, &object_store, &candidate.remote_key, &target_path)
+                        .await?;
+                Ok((candidate.relative_path, candidate.size, mtime_ms, true))
             }
         },
     )
     .await?;
     let downloaded_file_count = downloaded_candidates.len()
         + info_checked_candidates
-            .into_iter()
-            .filter(|downloaded| *downloaded)
+            .iter()
+            .filter(|(_, _, _, downloaded)| *downloaded)
             .count();
+    let local_fingerprint = create_fingerprint_from_entries(
+        &downloaded_candidates
+            .into_iter()
+            .chain(info_checked_candidates.into_iter())
+            .map(|(relative_path, size, mtime_ms, _downloaded)| {
+                (relative_path, size, mtime_ms)
+            })
+            .collect::<Vec<_>>(),
+        &resolve_empty_remote_directories(&explicit_remote_directories, &remote_file_paths),
+    );
 
     Ok(SyncRemoteToLocalResponse {
         ok: true,
         protocol_version: PROTOCOL_VERSION,
+        local_fingerprint,
         removed_path_count,
         created_directory_count,
         downloaded_file_count,
@@ -1925,14 +2267,49 @@ async fn sync_local_to_sandbox_http(
     let snapshot = collect_snapshot(&PathBuf::from(&request.root_dir), &excludes)?;
     let local_fingerprint = create_fingerprint(&snapshot);
     let plan = create_seed_upload_plan(&snapshot, &request.remote_root_path);
+    let empty_directories_to_create = snapshot
+        .empty_directories
+        .iter()
+        .map(|relative_path| build_remote_path(&request.remote_root_path, relative_path))
+        .collect::<BTreeSet<_>>();
     let sandbox_client = NativeSandboxHttpClient::new(&request.sandbox)?;
 
     let root_path = request.remote_root_path.clone();
-    sandbox_client.create_directory(&root_path).await?;
+    let root_directory_exists = if let Some(existing_root) = sandbox_client.stat_path(&root_path).await? {
+        if existing_root.kind != "directory" {
+            sandbox_client.delete_entry(&root_path, true).await?;
+            false
+        } else {
+            true
+        }
+    } else {
+        false
+    };
+    if !root_directory_exists {
+        sandbox_client.create_directory(&root_path).await?;
+    }
+    let expected_directories = plan.directories.iter().cloned().collect::<BTreeSet<_>>();
+    let expected_files = plan
+        .files
+        .iter()
+        .map(|file| file.remote_path.clone())
+        .collect::<BTreeSet<_>>();
+    let remote_state = prune_unexpected_remote_sandbox_entries(
+        &sandbox_client,
+        &root_path,
+        &expected_directories,
+        &expected_files,
+    )
+    .await?;
+    let directories_to_create = empty_directories_to_create
+        .iter()
+        .filter(|remote_path| !remote_state.existing_directories.contains(*remote_path))
+        .cloned()
+        .collect::<Vec<_>>();
 
     let sandbox_client_for_directories = sandbox_client.clone();
     let created_directory_count = process_with_concurrency(
-        plan.directories.clone(),
+        directories_to_create,
         max_concurrency,
         move |remote_path| {
             let sandbox_client = sandbox_client_for_directories.clone();
@@ -1944,15 +2321,22 @@ async fn sync_local_to_sandbox_http(
     )
     .await?
     .len()
-        + 1;
+        + if root_directory_exists { 0 } else { 1 };
 
     let sandbox_client_for_uploads = sandbox_client.clone();
+    let remote_file_stats = Arc::new(remote_state.existing_file_stats);
     let uploaded_file_count = process_with_concurrency(
         plan.files.clone(),
         max_concurrency,
         move |file| {
             let sandbox_client = sandbox_client_for_uploads.clone();
+            let remote_file_stats = Arc::clone(&remote_file_stats);
             async move {
+                if let Some(remote_stat) = remote_file_stats.get(&file.remote_path) {
+                    if sandbox_file_matches(file.size, file.mtime_ms, remote_stat) {
+                        return Ok(false);
+                    }
+                }
                 let data = tokio::fs::read(&file.absolute_path).await.map_err(|error| {
                     format!(
                         "Failed to read local file {} for sandbox upload: {error}",
@@ -1967,7 +2351,9 @@ async fn sync_local_to_sandbox_http(
         },
     )
     .await?
-    .len();
+    .into_iter()
+    .filter(|uploaded| *uploaded)
+    .count();
 
     Ok(SyncLocalToSandboxHttpResponse {
         ok: true,
@@ -2131,15 +2517,15 @@ mod tests {
         assert_eq!(
             plan.directories,
             vec![
-                "workspace/root/foo".to_string(),
-                "workspace/root/keep".to_string(),
-                "workspace/root/foo/nested".to_string(),
+                "/workspace/root/foo".to_string(),
+                "/workspace/root/keep".to_string(),
+                "/workspace/root/foo/nested".to_string(),
             ]
         );
         assert_eq!(plan.files.len(), 3);
-        assert_eq!(plan.files[0].remote_path, "workspace/root/foo/a.txt");
-        assert_eq!(plan.files[1].remote_path, "workspace/root/keep/child.txt");
-        assert_eq!(plan.files[2].remote_path, "workspace/root/orphan.txt");
+        assert_eq!(plan.files[0].remote_path, "/workspace/root/foo/a.txt");
+        assert_eq!(plan.files[1].remote_path, "/workspace/root/keep/child.txt");
+        assert_eq!(plan.files[2].remote_path, "/workspace/root/orphan.txt");
         assert_eq!(plan.files[1].mtime_ms, 3000);
     }
 
@@ -2147,10 +2533,86 @@ mod tests {
     fn build_remote_path_trims_duplicate_separators() {
         assert_eq!(
             build_remote_path("/seed/workspace/", "/nested/file.txt"),
-            "seed/workspace/nested/file.txt"
+            "/seed/workspace/nested/file.txt"
         );
         assert_eq!(build_remote_path("", "/nested/file.txt"), "nested/file.txt");
-        assert_eq!(build_remote_path("/seed/workspace/", ""), "seed/workspace");
+        assert_eq!(build_remote_path("/seed/workspace/", ""), "/seed/workspace");
+    }
+
+    #[test]
+    fn sandbox_file_match_tolerates_sub_millisecond_mtime_drift() {
+        let remote = NativeSandboxHttpFileStat {
+            kind: "file".to_string(),
+            size: 12,
+            mtime_ms: 1_234.6,
+        };
+
+        assert!(sandbox_file_matches(12, 1_234, &remote));
+        assert!(!sandbox_file_matches(11, 1_234, &remote));
+        assert!(!sandbox_file_matches(12, 1_236, &remote));
+    }
+
+    #[test]
+    fn remote_sandbox_entry_keep_logic_respects_type_mismatches() {
+        let expected_directories =
+            BTreeSet::from(["/workspace".to_string(), "/workspace/nested".to_string()]);
+        let expected_files = BTreeSet::from(["/workspace/README.md".to_string()]);
+
+        assert!(should_keep_remote_sandbox_entry(
+            &NativeSandboxHttpEntry {
+                path: "/workspace/nested".to_string(),
+                entry_type: "directory".to_string(),
+                size_bytes: None,
+                updated_at: None,
+            },
+            &expected_directories,
+            &expected_files,
+        ));
+        assert!(should_keep_remote_sandbox_entry(
+            &NativeSandboxHttpEntry {
+                path: "/workspace/README.md".to_string(),
+                entry_type: "file".to_string(),
+                size_bytes: Some(12),
+                updated_at: Some("2026-04-24T00:00:00.000Z".to_string()),
+            },
+            &expected_directories,
+            &expected_files,
+        ));
+        assert!(!should_keep_remote_sandbox_entry(
+            &NativeSandboxHttpEntry {
+                path: "/workspace/nested".to_string(),
+                entry_type: "file".to_string(),
+                size_bytes: Some(12),
+                updated_at: Some("2026-04-24T00:00:00.000Z".to_string()),
+            },
+            &expected_directories,
+            &expected_files,
+        ));
+        assert!(!should_keep_remote_sandbox_entry(
+            &NativeSandboxHttpEntry {
+                path: "/workspace/stale.txt".to_string(),
+                entry_type: "file".to_string(),
+                size_bytes: Some(12),
+                updated_at: Some("2026-04-24T00:00:00.000Z".to_string()),
+            },
+            &expected_directories,
+            &expected_files,
+        ));
+    }
+
+    #[test]
+    fn sandbox_entry_file_stat_uses_listing_metadata() {
+        let entry = NativeSandboxHttpEntry {
+            path: "/workspace/README.md".to_string(),
+            entry_type: "file".to_string(),
+            size_bytes: Some(12),
+            updated_at: Some("2026-04-24T00:00:00.500Z".to_string()),
+        };
+
+        let stat = sandbox_entry_file_stat(&entry).expect("expected file stat");
+        assert_eq!(stat.kind, "file");
+        assert_eq!(stat.size, 12);
+        assert!(sandbox_mtime_matches(1_776_988_800_500, stat.mtime_ms));
     }
 
     #[test]
