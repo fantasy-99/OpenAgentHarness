@@ -1,6 +1,9 @@
 node_modules
 .git
 .github
+.native-target
+.oah-runtime-bundles
+references
 deploy
 docs
 !docs/
@@ -10,6 +13,7 @@ docs
 !docs/schemas/**
 assets
 !assets/
+!assets/logo.png
 !assets/logo-readme.png
 dist
 .vite

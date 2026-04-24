@@ -26,17 +26,28 @@ interface PreparedSeedCacheEntry {
   cacheRoot: string;
   preparedWorkspaceRoot: string;
   discovered: WorkspaceInitializationResult;
+  archiveMetrics?: PreparedSeedArchiveMetrics | undefined;
   archivePath?: string | undefined;
   archivePromise?: Promise<string> | undefined;
 }
 
 const preparedSeedCache = new Map<string, Promise<PreparedSeedCacheEntry>>();
 
+type PreparedSeedArchiveCarrier = Pick<
+  PreparedSeedCacheEntry,
+  "cacheRoot" | "preparedWorkspaceRoot" | "archivePath" | "archivePromise"
+>;
+
 interface SeedUploadPlanFile {
   localPath: string;
   remotePath: string;
   size: number;
   mtimeMs: number;
+}
+
+interface PreparedSeedArchiveMetrics {
+  fileCount: number;
+  totalBytes: number;
 }
 
 interface RemoteWorkspaceEntry {
@@ -89,6 +100,10 @@ function resolveSeedArchiveTimeoutMs(): number {
 
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_SEED_ARCHIVE_TIMEOUT_MS;
+}
+
+function shouldWarmPreparedSeedArchive(): boolean {
+  return resolveSeedArchiveUploadMode() !== "off";
 }
 
 function shellQuote(value: string): string {
@@ -395,6 +410,23 @@ async function collectNativeDirectoryUploadPlan(input: {
   }
 }
 
+async function collectPreparedSeedArchiveMetrics(rootPath: string): Promise<PreparedSeedArchiveMetrics> {
+  const plan =
+    (await collectNativeDirectoryUploadPlan({
+      currentLocalPath: rootPath,
+      currentRemotePath: "/workspace"
+    })) ??
+    (await collectDirectoryUploadPlan({
+      currentLocalPath: rootPath,
+      currentRemotePath: "/workspace"
+    }));
+
+  return {
+    fileCount: plan.files.length,
+    totalBytes: plan.files.reduce((sum, file) => sum + file.size, 0)
+  };
+}
+
 function isWorkspaceFileMtimeMatch(currentMtimeMs: number, targetMtimeMs: number): boolean {
   return Math.abs(currentMtimeMs - targetMtimeMs) < 1;
 }
@@ -533,41 +565,26 @@ function resolveLeafEmptyRemoteDirectories(input: {
   });
 }
 
-function shouldAttemptSeedArchiveUpload(input: {
-  sandboxHost: SandboxHost;
-  plan: {
-    files: SeedUploadPlanFile[];
-  };
-}): boolean {
-  if (input.sandboxHost.providerKind !== "self_hosted") {
-    return false;
-  }
-
+function shouldAttemptSeedArchiveUpload(input: PreparedSeedArchiveMetrics): boolean {
   const mode = resolveSeedArchiveUploadMode();
   if (mode === "off") {
     return false;
   }
 
-  const totalBytes = input.plan.files.reduce((sum, file) => sum + file.size, 0);
   if (mode === "force") {
-    return input.plan.files.length > 0;
+    return input.fileCount > 0;
   }
 
-  return (
-    input.plan.files.length >= DEFAULT_SEED_ARCHIVE_MIN_FILE_COUNT ||
-    totalBytes >= DEFAULT_SEED_ARCHIVE_MIN_TOTAL_BYTES
-  );
+  return input.fileCount >= DEFAULT_SEED_ARCHIVE_MIN_FILE_COUNT || input.totalBytes >= DEFAULT_SEED_ARCHIVE_MIN_TOTAL_BYTES;
 }
 
 async function maybeUploadSeedArchive(input: {
   sandboxHost: SandboxHost;
   workspace: WorkspaceRecord;
   resolveArchivePath: () => Promise<string>;
-  plan: {
-    files: SeedUploadPlanFile[];
-  };
+  archiveMetrics?: PreparedSeedArchiveMetrics | undefined;
 }): Promise<boolean> {
-  if (!shouldAttemptSeedArchiveUpload(input)) {
+  if (input.sandboxHost.providerKind !== "self_hosted" || !input.archiveMetrics || !shouldAttemptSeedArchiveUpload(input.archiveMetrics)) {
     return false;
   }
 
@@ -640,7 +657,7 @@ async function buildSeedArchive(input: {
   }
 }
 
-function ensurePreparedSeedArchive(entry: PreparedSeedCacheEntry): Promise<string> {
+function ensurePreparedSeedArchive(entry: PreparedSeedArchiveCarrier): Promise<string> {
   if (entry.archivePath) {
     return Promise.resolve(entry.archivePath);
   }
@@ -777,6 +794,7 @@ async function uploadWorkspaceSeed(input: {
   initialized: WorkspaceInitializationResult;
   localSeedRoot: string;
   resolveArchivePath: () => Promise<string>;
+  archiveMetrics?: PreparedSeedArchiveMetrics | undefined;
   sandboxHost: SandboxHost;
   remoteRootPath?: string | undefined;
   selfHostedSandbox?:
@@ -812,20 +830,12 @@ async function uploadWorkspaceSeed(input: {
     }
     if (input.selfHostedSandbox) {
       try {
-        const archivePlan =
-          (await collectNativeDirectoryUploadPlan({
-            currentLocalPath: input.localSeedRoot,
-            currentRemotePath: lease.workspace.rootPath
-          })) ?? (await collectDirectoryUploadPlan({
-            currentLocalPath: input.localSeedRoot,
-            currentRemotePath: lease.workspace.rootPath
-          }));
         if (
           await maybeUploadSeedArchive({
             sandboxHost: input.sandboxHost,
             workspace: lease.workspace,
             resolveArchivePath: input.resolveArchivePath,
-            plan: archivePlan
+            archiveMetrics: input.archiveMetrics
           })
         ) {
           return;
@@ -955,7 +965,13 @@ export function createSandboxBackedWorkspaceInitializer(options: {
     headers?: Record<string, string> | undefined;
   } | undefined;
 }) {
-  async function prepareSeed(input: CreateWorkspaceRequest): Promise<PreparedSeedCacheEntry> {
+  async function prepareSeed(
+    input: CreateWorkspaceRequest,
+    config?: {
+      includeArchiveMetrics?: boolean | undefined;
+      warmArchiveDuringPrepare?: boolean | undefined;
+    }
+  ): Promise<PreparedSeedCacheEntry> {
     const cacheKey = await buildPreparedSeedCacheKey({
       runtimeDir: options.runtimeDir,
       runtimeName: input.runtime,
@@ -972,6 +988,12 @@ export function createSandboxBackedWorkspaceInitializer(options: {
       cached = (async () => {
         const cacheRoot = await mkdtemp(path.join(os.tmpdir(), "oah-sandbox-prepared-seed-"));
         const preparedWorkspaceRoot = path.join(cacheRoot, "workspace");
+        const preparedEntry: PreparedSeedArchiveCarrier & {
+          archiveMetrics?: PreparedSeedArchiveMetrics | undefined;
+        } = {
+          cacheRoot,
+          preparedWorkspaceRoot
+        };
 
         await initializeWorkspaceFromRuntime({
           runtimeDir: options.runtimeDir,
@@ -984,6 +1006,21 @@ export function createSandboxBackedWorkspaceInitializer(options: {
           skills: input.skills
         });
 
+        const archiveMetricsPromise = config?.includeArchiveMetrics
+          ? collectPreparedSeedArchiveMetrics(preparedWorkspaceRoot).catch(() => undefined)
+          : Promise.resolve(undefined);
+        if (config?.warmArchiveDuringPrepare) {
+          void archiveMetricsPromise
+            .then((archiveMetrics) => {
+              preparedEntry.archiveMetrics = archiveMetrics;
+              if (archiveMetrics && shouldAttemptSeedArchiveUpload(archiveMetrics)) {
+                return ensurePreparedSeedArchive(preparedEntry);
+              }
+              return undefined;
+            })
+            .catch(() => undefined);
+        }
+
         const discovered = await enrichWorkspaceModelsWithDiscoveredMetadata(
           await discoverWorkspace(preparedWorkspaceRoot, "project", {
             platformModels: options.platformModels,
@@ -992,11 +1029,13 @@ export function createSandboxBackedWorkspaceInitializer(options: {
             platformToolDir: options.toolDir
           })
         );
+        const archiveMetrics = await archiveMetricsPromise;
+        preparedEntry.archiveMetrics = archiveMetrics;
 
         return {
-          cacheRoot,
-          preparedWorkspaceRoot,
-          discovered
+          ...preparedEntry,
+          discovered,
+          ...(archiveMetrics ? { archiveMetrics } : {})
         };
       })().catch((error) => {
         preparedSeedCache.delete(cacheKey);
@@ -1024,7 +1063,18 @@ export function createSandboxBackedWorkspaceInitializer(options: {
           }
         | undefined;
 
-      const prepared = await prepareSeed(input);
+      const prepared = await prepareSeed(input, {
+        includeArchiveMetrics: Boolean(options.selfHosted),
+        warmArchiveDuringPrepare: Boolean(options.selfHosted) && shouldWarmPreparedSeedArchive()
+      });
+      if (
+        options.selfHosted &&
+        shouldWarmPreparedSeedArchive() &&
+        prepared.archiveMetrics &&
+        shouldAttemptSeedArchiveUpload(prepared.archiveMetrics)
+      ) {
+        void ensurePreparedSeedArchive(prepared).catch(() => undefined);
+      }
 
       if (options.selfHosted) {
         const sandbox = await createSelfHostedSandbox({
@@ -1046,6 +1096,7 @@ export function createSandboxBackedWorkspaceInitializer(options: {
         initialized: prepared.discovered,
         localSeedRoot: prepared.preparedWorkspaceRoot,
         resolveArchivePath: () => ensurePreparedSeedArchive(prepared),
+        archiveMetrics: prepared.archiveMetrics,
         sandboxHost: options.sandboxHost,
         remoteRootPath,
         selfHostedSandbox

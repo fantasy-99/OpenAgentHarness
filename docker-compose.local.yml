@@ -62,9 +62,8 @@ services:
       dockerfile: Dockerfile
       target: ${OAH_DOCKER_API_TARGET:-api-runtime}
       args:
-        BASE_BUILD_IMAGE: ${OAH_DOCKER_BUILD_BASE_IMAGE:-mirror.gcr.io/library/node:24-bookworm-slim}
-        BASE_RUNTIME_IMAGE: ${OAH_DOCKER_RUNTIME_BASE_IMAGE:-debian:bookworm-slim}
-        BASE_EXECUTION_LITE_IMAGE: ${OAH_DOCKER_EXECUTION_LITE_IMAGE:-node:24-alpine}
+        BASE_BUILD_IMAGE: ${OAH_DOCKER_BUILD_BASE_IMAGE:-node:24-alpine}
+        BASE_RUNTIME_IMAGE: ${OAH_DOCKER_RUNTIME_BASE_IMAGE:-alpine:3.22}
     restart: unless-stopped
     command:
       - node
@@ -79,6 +78,7 @@ services:
       OAH_NATIVE_WORKSPACE_SYNC: ${OAH_NATIVE_WORKSPACE_SYNC:-1}
       OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT: ${OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT:-1}
       OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT: ${OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT:-primary}
+      OAH_OBJECT_STORAGE_SYNC_TRUST_MANAGED_PREFIXES: ${OAH_OBJECT_STORAGE_SYNC_TRUST_MANAGED_PREFIXES:-1}
       OAH_WORKSPACE_REGISTRY_POLL_INTERVAL_MS: "15000"
       OAH_WORKSPACE_PREWARM_ENABLED: "false"
     depends_on:
@@ -107,10 +107,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      target: ${OAH_DOCKER_CONTROLLER_TARGET:-controller-runtime-lite}
+      target: ${OAH_DOCKER_CONTROLLER_TARGET:-controller-runtime}
       args:
-        BASE_BUILD_IMAGE: ${OAH_DOCKER_BUILD_BASE_IMAGE:-mirror.gcr.io/library/node:24-bookworm-slim}
-        BASE_RUNTIME_IMAGE: ${OAH_DOCKER_RUNTIME_BASE_IMAGE:-debian:bookworm-slim}
+        BASE_BUILD_IMAGE: ${OAH_DOCKER_BUILD_BASE_IMAGE:-node:24-alpine}
+        BASE_RUNTIME_IMAGE: ${OAH_DOCKER_RUNTIME_BASE_IMAGE:-alpine:3.22}
     restart: unless-stopped
     command:
       - node
@@ -141,10 +141,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      target: ${OAH_DOCKER_COMPOSE_SCALER_TARGET:-compose-scaler-runtime-lite}
+      target: ${OAH_DOCKER_COMPOSE_SCALER_TARGET:-compose-scaler-runtime}
       args:
-        BASE_BUILD_IMAGE: ${OAH_DOCKER_BUILD_BASE_IMAGE:-mirror.gcr.io/library/node:24-bookworm-slim}
-        BASE_RUNTIME_IMAGE: ${OAH_DOCKER_RUNTIME_BASE_IMAGE:-debian:bookworm-slim}
+        BASE_BUILD_IMAGE: ${OAH_DOCKER_BUILD_BASE_IMAGE:-node:24-alpine}
+        BASE_RUNTIME_IMAGE: ${OAH_DOCKER_RUNTIME_BASE_IMAGE:-alpine:3.22}
     restart: unless-stopped
     environment:
       NODE_OPTIONS: "--max-old-space-size=64"
@@ -182,9 +182,8 @@ services:
       dockerfile: Dockerfile
       target: ${OAH_DOCKER_SANDBOX_TARGET:-worker-runtime}
       args:
-        BASE_BUILD_IMAGE: ${OAH_DOCKER_BUILD_BASE_IMAGE:-mirror.gcr.io/library/node:24-bookworm-slim}
-        BASE_RUNTIME_IMAGE: ${OAH_DOCKER_RUNTIME_BASE_IMAGE:-debian:bookworm-slim}
-        BASE_EXECUTION_LITE_IMAGE: ${OAH_DOCKER_EXECUTION_LITE_IMAGE:-node:24-alpine}
+        BASE_BUILD_IMAGE: ${OAH_DOCKER_BUILD_BASE_IMAGE:-node:24-alpine}
+        BASE_RUNTIME_IMAGE: ${OAH_DOCKER_RUNTIME_BASE_IMAGE:-alpine:3.22}
     restart: unless-stopped
     command:
       - node
@@ -197,6 +196,7 @@ services:
       OAH_NATIVE_WORKSPACE_SYNC: ${OAH_NATIVE_WORKSPACE_SYNC:-1}
       OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT: ${OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT:-1}
       OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT: ${OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT:-primary}
+      OAH_OBJECT_STORAGE_SYNC_TRUST_MANAGED_PREFIXES: ${OAH_OBJECT_STORAGE_SYNC_TRUST_MANAGED_PREFIXES:-1}
       OAH_WORKSPACE_MATERIALIZATION_MAINTENANCE_INTERVAL_MS: "15000"
     depends_on:
       postgres:

@@ -444,6 +444,7 @@ async function runCase(options: {
   process.env.OAH_NATIVE_WORKSPACE_SYNC = options.nativeEnabled ? "1" : "0";
   process.env.OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT = options.persistentNative ? "1" : "0";
   process.env.OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT = options.bundleLayout;
+  process.env.OAH_OBJECT_STORAGE_SYNC_TRUST_MANAGED_PREFIXES = options.bundleLayout === "primary" ? "1" : "0";
   await shutdownNativeWorkspaceSyncWorkerPool();
 
   try {

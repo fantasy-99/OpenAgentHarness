@@ -300,6 +300,32 @@ describe("object storage sync", () => {
     const result = await syncLocalDirectoryToRemote(store, "workspace/demo", directory);
 
     expect(result.uploadedFileCount).toBe(2);
+    expect(store.listEntriesCalls).toBe(1);
+    expect(store.putObjectCalls).toBe(2);
+    expect([...store.objects.keys()].sort()).toEqual([
+      "workspace/demo/.oah-sync-bundle.tar",
+      "workspace/demo/.oah-sync-manifest.json"
+    ]);
+  });
+
+  it("skips remote listing on trusted bundle-primary cold pushes", async () => {
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_BUNDLE", "1");
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT", "primary");
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_TRUST_MANAGED_PREFIXES", "1");
+
+    const directory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-bundle-primary-trusted-"));
+    tempDirs.push(directory);
+    const store = new FakeDirectoryObjectStore();
+
+    await mkdir(path.join(directory, "docs"), { recursive: true });
+    await writeFile(path.join(directory, "README.md"), "# synced\n", "utf8");
+    await writeFile(path.join(directory, "docs", "guide.md"), "hello\n", "utf8");
+
+    const result = await syncLocalDirectoryToRemote(store, "workspace/demo", directory);
+
+    expect(result.uploadedFileCount).toBe(2);
+    expect(store.listEntriesCalls).toBe(0);
+    expect(store.getObjectCalls).toBe(0);
     expect(store.putObjectCalls).toBe(2);
     expect([...store.objects.keys()].sort()).toEqual([
       "workspace/demo/.oah-sync-bundle.tar",

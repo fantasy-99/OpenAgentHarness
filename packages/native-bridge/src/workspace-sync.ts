@@ -142,6 +142,7 @@ export interface NativeSyncBundleConfig {
   minFileCount?: number | undefined;
   minTotalBytes?: number | undefined;
   layout?: "sidecar" | "primary" | undefined;
+  trustManagedPrefixes?: boolean | undefined;
 }
 
 export interface NativeSandboxHttpConfig {

@@ -1,4 +1,4 @@
-FROM node:24-bookworm
+FROM node:24-alpine
 
 LABEL org.opencontainers.image.title="Open Agent Harness" \
       org.opencontainers.image.description="Dockerized local development image for Open Agent Harness." \
@@ -14,10 +14,39 @@ RUN corepack enable
 
 WORKDIR /app
 
-COPY . .
+RUN npm install -g tsx@4.21.0 typescript@6.0.2
 
-RUN pnpm install --frozen-lockfile
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json tsconfig.base.json ./
+COPY apps/server/package.json ./apps/server/package.json
+COPY packages/api-contracts/package.json ./packages/api-contracts/package.json
+COPY packages/config/package.json ./packages/config/package.json
+COPY packages/engine-core/package.json ./packages/engine-core/package.json
+COPY packages/model-gateway/package.json ./packages/model-gateway/package.json
+COPY packages/native-bridge/package.json ./packages/native-bridge/package.json
+COPY packages/storage-memory/package.json ./packages/storage-memory/package.json
+COPY packages/storage-postgres/package.json ./packages/storage-postgres/package.json
+COPY packages/storage-redis/package.json ./packages/storage-redis/package.json
+COPY packages/storage-sqlite/package.json ./packages/storage-sqlite/package.json
+
+COPY apps/server ./apps/server
+COPY packages/api-contracts ./packages/api-contracts
+COPY packages/config ./packages/config
+COPY packages/engine-core ./packages/engine-core
+COPY packages/model-gateway ./packages/model-gateway
+COPY packages/native-bridge ./packages/native-bridge
+COPY packages/storage-memory ./packages/storage-memory
+COPY packages/storage-postgres ./packages/storage-postgres
+COPY packages/storage-redis ./packages/storage-redis
+COPY packages/storage-sqlite ./packages/storage-sqlite
+COPY docs/openapi ./docs/openapi
+COPY docs/schemas ./docs/schemas
+COPY assets/logo.png ./assets/logo.png
+COPY assets/logo-readme.png ./assets/logo-readme.png
+
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+  pnpm config set store-dir /pnpm/store \
+  && pnpm install --filter @oah/server... --frozen-lockfile
 
 EXPOSE 8787
 
-CMD ["pnpm", "exec", "tsx", "--tsconfig", "./apps/server/tsconfig.json", "./apps/server/src/index.ts", "--config", "/config/server.docker.yaml"]
+CMD ["tsx", "--tsconfig", "./apps/server/tsconfig.json", "./apps/server/src/index.ts", "--config", "/config/server.docker.yaml"]

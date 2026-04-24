@@ -12,15 +12,12 @@ docker build \
   -f - \
   -t "${IMAGE_TAG}" \
   "${ROOT_DIR}" <<'EOF'
-FROM node:24-bookworm
+FROM node:24-alpine
 
-ENV DEBIAN_FRONTEND=noninteractive
 ENV CARGO_HOME=/root/.cargo
 ENV PATH=/root/.cargo/bin:${PATH}
 
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends curl ca-certificates build-essential cmake perl pkg-config \
-  && rm -rf /var/lib/apt/lists/* \
+RUN apk add --no-cache curl ca-certificates build-base cmake perl pkgconf \
   && curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal
 
 RUN corepack enable

@@ -119,6 +119,7 @@ const DEFAULT_OBJECT_STORAGE_BUNDLE_MODE = "auto";
 const DEFAULT_OBJECT_STORAGE_BUNDLE_MIN_FILE_COUNT = 16;
 const DEFAULT_OBJECT_STORAGE_BUNDLE_MIN_TOTAL_BYTES = 128 * 1024;
 const DEFAULT_OBJECT_STORAGE_BUNDLE_TIMEOUT_MS = 5 * 60 * 1000;
+const trustedManagedObjectStoragePrefixes = new Set<string>();
 const DEFAULT_NATIVE_INLINE_UPLOAD_THRESHOLD_BYTES = 128 * 1024;
 
 const DEFAULT_MANAGED_PATHS = Object.keys(DEFAULT_KEY_PREFIXES) as ManagedPathKey[];
@@ -776,6 +777,19 @@ function resolveObjectStorageBundleConfig(): {
   };
 }
 
+function shouldTrustManagedObjectStoragePrefixes(): boolean {
+  const raw = process.env.OAH_OBJECT_STORAGE_SYNC_TRUST_MANAGED_PREFIXES?.trim().toLowerCase();
+  return raw ? ["1", "true", "on", "yes", "enabled"].includes(raw) : false;
+}
+
+function shouldAssumeEmptyTrustedManagedObjectStoragePrefix(remotePrefix: string): boolean {
+  if (!shouldTrustManagedObjectStoragePrefixes() || trustedManagedObjectStoragePrefixes.has(remotePrefix)) {
+    return false;
+  }
+  trustedManagedObjectStoragePrefixes.add(remotePrefix);
+  return true;
+}
+
 function resolveNativeInlineUploadThresholdBytes(): number {
   return (
     resolvePositiveIntegerEnv("OAH_NATIVE_WORKSPACE_SYNC_INLINE_UPLOAD_THRESHOLD_BYTES") ??
@@ -1210,7 +1224,17 @@ async function syncNativeLocalDirectoryToRemoteIfAvailable(
 
   try {
     const concurrency = resolveDirectorySyncConcurrency();
-    const syncBundle = resolveObjectStorageBundleConfig();
+    const bundleConfig = resolveObjectStorageBundleConfig();
+    const syncBundle = {
+      ...bundleConfig,
+      trustManagedPrefixes:
+        bundleConfig.layout === "primary" &&
+        shouldTrustManagedObjectStoragePrefixes() &&
+        (process.env.OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT?.trim().toLowerCase() === "1" ||
+          process.env.OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT?.trim().toLowerCase() === "true" ||
+          process.env.OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT?.trim().toLowerCase() === "yes" ||
+          process.env.OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT?.trim().toLowerCase() === "on")
+    } as NativeSyncBundleConfig;
     const result = await observeNativeWorkspaceSyncOperation({
       operation: "sync_local_to_remote",
       implementation: "rust",
@@ -2462,7 +2486,10 @@ export async function syncLocalDirectoryToRemote(
 
       if (bundlePrimaryEnabled) {
         bundleWriteHandledInPrimaryPath = true;
-        const existingManifestDocument = await loadRemoteDirectorySyncManifestDocument(store, remotePrefix);
+        const assumeEmptyTrustedPrefix = shouldAssumeEmptyTrustedManagedObjectStoragePrefix(remotePrefix);
+        const existingManifestDocument = assumeEmptyTrustedPrefix
+          ? undefined
+          : await loadRemoteDirectorySyncManifestDocument(store, remotePrefix);
         const syncManifest = existingManifestDocument
           ? new Map(
               Object.entries(existingManifestDocument.files)
@@ -2493,7 +2520,7 @@ export async function syncLocalDirectoryToRemote(
             keysToDelete = buildManagedRemoteKeysFromManifestDocument(remotePrefix, existingManifestDocument, options).filter(
               (key) => key !== buildRemoteKey(remotePrefix, INTERNAL_SYNC_MANIFEST_RELATIVE_PATH)
             );
-          } else if (!existingManifestDocument) {
+          } else if (!existingManifestDocument && !shouldTrustManagedObjectStoragePrefixes()) {
             const remoteEntries = await store.listEntries(remotePrefix);
             keysToDelete = remoteEntries
               .map((entry) => {

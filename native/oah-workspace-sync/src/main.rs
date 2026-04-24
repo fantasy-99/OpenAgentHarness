@@ -1,11 +1,11 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::future::Future;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command as ProcessCommand, ExitCode};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aws_credential_types::Credentials;
@@ -179,6 +179,7 @@ struct NativeSyncBundleConfig {
     min_file_count: Option<usize>,
     min_total_bytes: Option<u64>,
     layout: Option<String>,
+    trust_managed_prefixes: Option<bool>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -317,7 +318,10 @@ struct ResolvedSyncBundleConfig {
     min_file_count: usize,
     min_total_bytes: u64,
     layout: SyncBundleLayout,
+    trust_managed_prefixes: bool,
 }
+
+static TRUSTED_MANAGED_PREFIX_CACHE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -914,7 +918,36 @@ fn resolve_sync_bundle_config(value: Option<&NativeSyncBundleConfig>) -> Resolve
             .filter(|bytes| *bytes > 0)
             .unwrap_or(DEFAULT_SYNC_BUNDLE_MIN_TOTAL_BYTES),
         layout,
+        trust_managed_prefixes: value
+            .and_then(|config| config.trust_managed_prefixes)
+            .unwrap_or(false),
     }
+}
+
+fn mark_trusted_managed_prefix_seen(remote_prefix: &str) {
+    let cache = TRUSTED_MANAGED_PREFIX_CACHE.get_or_init(|| Mutex::new(HashSet::new()));
+    if let Ok(mut seen) = cache.lock() {
+        seen.insert(remote_prefix.to_string());
+    }
+}
+
+fn should_assume_empty_trusted_managed_prefix(
+    remote_prefix: &str,
+    config: ResolvedSyncBundleConfig,
+) -> bool {
+    if !config.trust_managed_prefixes {
+        return false;
+    }
+
+    let cache = TRUSTED_MANAGED_PREFIX_CACHE.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut seen) = cache.lock() else {
+        return false;
+    };
+    if seen.contains(remote_prefix) {
+        return false;
+    }
+    seen.insert(remote_prefix.to_string());
+    true
 }
 
 #[derive(Clone)]
@@ -2251,7 +2284,104 @@ fn build_local_sync_bundle_blocking(
     Ok(bundle_file.into_temp_path())
 }
 
-async fn build_local_sync_bundle(root_dir: &Path, snapshot: &Snapshot) -> Result<tempfile::TempPath, String> {
+fn try_build_local_sync_bundle_with_tar_blocking(
+    root_dir: &Path,
+    relative_paths: &[String],
+) -> Result<Option<tempfile::TempPath>, String> {
+    let mut bundle_file = tempfile::NamedTempFile::new()
+        .map_err(|error| format!("Failed to create temporary sync bundle file: {error}"))?;
+    let mut list_file = tempfile::NamedTempFile::new()
+        .map_err(|error| format!("Failed to create temporary sync bundle file list: {error}"))?;
+
+    for (index, relative_path) in relative_paths.iter().enumerate() {
+        list_file
+            .write_all(relative_path.as_bytes())
+            .map_err(|error| {
+                format!(
+                    "Failed to write sync bundle file list entry {relative_path}: {error}"
+                )
+            })?;
+        if index + 1 < relative_paths.len() {
+            list_file.write_all(&[0]).map_err(|error| {
+                format!(
+                    "Failed to write sync bundle file list separator after {relative_path}: {error}"
+                )
+            })?;
+        }
+    }
+    list_file
+        .flush()
+        .map_err(|error| format!("Failed to flush sync bundle file list: {error}"))?;
+
+    let status = match ProcessCommand::new("tar")
+        .env("COPYFILE_DISABLE", "1")
+        .env("COPY_EXTENDED_ATTRIBUTES_DISABLE", "1")
+        .arg("-cf")
+        .arg(bundle_file.path())
+        .arg("--null")
+        .arg("-T")
+        .arg(list_file.path())
+        .arg("-C")
+        .arg(root_dir)
+        .status()
+    {
+        Ok(status) => status,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Ok(None),
+    };
+
+    if !status.success() {
+        return Ok(None);
+    }
+
+    bundle_file
+        .as_file_mut()
+        .flush()
+        .map_err(|error| format!("Failed to flush sync bundle archive: {error}"))?;
+    Ok(Some(bundle_file.into_temp_path()))
+}
+
+fn try_build_local_sync_bundle_root_with_tar_blocking(
+    root_dir: &Path,
+) -> Result<Option<tempfile::TempPath>, String> {
+    let mut bundle_file = tempfile::NamedTempFile::new()
+        .map_err(|error| format!("Failed to create temporary sync bundle file: {error}"))?;
+
+    let status = match ProcessCommand::new("tar")
+        .env("COPYFILE_DISABLE", "1")
+        .env("COPY_EXTENDED_ATTRIBUTES_DISABLE", "1")
+        .arg("-cf")
+        .arg(bundle_file.path())
+        .arg("--exclude")
+        .arg(INTERNAL_SYNC_MANIFEST_RELATIVE_PATH)
+        .arg("--exclude")
+        .arg(INTERNAL_SYNC_BUNDLE_RELATIVE_PATH)
+        .arg("-C")
+        .arg(root_dir)
+        .arg(".")
+        .status()
+    {
+        Ok(status) => status,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Ok(None),
+    };
+
+    if !status.success() {
+        return Ok(None);
+    }
+
+    bundle_file
+        .as_file_mut()
+        .flush()
+        .map_err(|error| format!("Failed to flush sync bundle archive: {error}"))?;
+    Ok(Some(bundle_file.into_temp_path()))
+}
+
+async fn build_local_sync_bundle(
+    root_dir: &Path,
+    snapshot: &Snapshot,
+    excludes: &[String],
+) -> Result<tempfile::TempPath, String> {
     let mut file_entries = snapshot
         .files
         .iter()
@@ -2270,12 +2400,32 @@ async fn build_local_sync_bundle(root_dir: &Path, snapshot: &Snapshot) -> Result
         })
         .collect::<Vec<_>>();
     empty_directories.sort_by(|left, right| left.0.cmp(&right.0));
+    let root_dir_buf = root_dir.to_path_buf();
+    let no_excludes = excludes.is_empty();
 
     tokio::task::spawn_blocking(move || {
-        let empty_directories = empty_directories
-            .into_iter()
-            .map(|(relative_path, absolute_path)| (relative_path, absolute_path))
+        if no_excludes {
+            if let Some(bundle_path) =
+                try_build_local_sync_bundle_root_with_tar_blocking(&root_dir_buf)?
+            {
+                return Ok(bundle_path);
+            }
+        }
+
+        let relative_paths = file_entries
+            .iter()
+            .map(|(relative_path, _)| relative_path.clone())
+            .chain(
+                empty_directories
+                    .iter()
+                    .map(|(relative_path, _)| relative_path.clone()),
+            )
             .collect::<Vec<_>>();
+        if let Some(bundle_path) =
+            try_build_local_sync_bundle_with_tar_blocking(&root_dir_buf, &relative_paths)?
+        {
+            return Ok(bundle_path);
+        }
         build_local_sync_bundle_blocking(file_entries, empty_directories)
     })
     .await
@@ -2288,10 +2438,11 @@ async fn upload_sync_bundle(
     remote_prefix: &str,
     root_dir: &Path,
     snapshot: &Snapshot,
+    excludes: &[String],
     request_counter: &NativeObjectStoreRequestCounter,
 ) -> Result<(), String> {
     let key = build_remote_path(remote_prefix, INTERNAL_SYNC_BUNDLE_RELATIVE_PATH);
-    let bundle_path = build_local_sync_bundle(root_dir, snapshot).await?;
+    let bundle_path = build_local_sync_bundle(root_dir, snapshot, excludes).await?;
     let body = ByteStream::read_from()
         .path(bundle_path.as_ref() as &Path)
         .build()
@@ -3113,13 +3264,19 @@ async fn sync_local_to_remote(
     if sync_bundle_config.layout == SyncBundleLayout::Primary
         && should_attempt_sync_bundle_for_snapshot(&snapshot, sync_bundle_config)
     {
-        let existing_manifest_document = load_remote_sync_manifest_document(
-            &client,
-            &request.object_store,
-            &request.remote_prefix,
-            request_counts.as_ref(),
-        )
-        .await?;
+        let assume_empty_trusted_prefix =
+            should_assume_empty_trusted_managed_prefix(&request.remote_prefix, sync_bundle_config);
+        let existing_manifest_document = if assume_empty_trusted_prefix {
+            None
+        } else {
+            load_remote_sync_manifest_document(
+                &client,
+                &request.object_store,
+                &request.remote_prefix,
+                request_counts.as_ref(),
+            )
+            .await?
+        };
         let uploaded_file_count =
             count_snapshot_file_mutations(&snapshot, existing_manifest_document.as_ref());
         let deleted_remote_count =
@@ -3141,6 +3298,7 @@ async fn sync_local_to_remote(
                 &request.remote_prefix,
                 &root_dir,
                 &snapshot,
+                &excludes,
                 request_counts.as_ref(),
             )
             .await?;
@@ -3238,6 +3396,8 @@ async fn sync_local_to_remote(
             )
             .await?;
         }
+
+        mark_trusted_managed_prefix_seen(&request.remote_prefix);
 
         return Ok(SyncLocalToRemoteResponse {
             ok: true,
@@ -3503,6 +3663,7 @@ async fn sync_local_to_remote(
                 &request.remote_prefix,
                 &root_dir,
                 &snapshot,
+                &excludes,
                 request_counts.as_ref(),
             )
             .await?;

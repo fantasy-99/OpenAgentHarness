@@ -106,16 +106,20 @@ Current judgment:
 - the TS fallback object-store push path now also supports `bundle-primary`, so non-native execution can keep bundle-backed prefixes in `manifest + bundle` form instead of regressing to per-file object uploads
 - native object-store sync now tracks request counts all the way back into the TS benchmark/materialization harness, so request tables reflect real native `GET`/`PUT`/`LIST` behavior instead of only JS fallback traffic
 - native bundle upload/download now uses temp-file-backed streaming instead of full in-memory bundle buffers, lowering bundle-path peak memory pressure in Docker
+- native bundle creation now prefers system `tar` with macOS metadata sidecars disabled, then falls back to the Rust tar builder if shell tar is unavailable
 - Docker runtime images and `docker-compose.local.yml` now default `OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT=primary` on the API/sandbox execution path, so the object-store hot path uses the lower-request Rust layout by default in the main container workflow
+- Docker runtime images, local compose, and the benchmark path now also enable `OAH_OBJECT_STORAGE_SYNC_TRUST_MANAGED_PREFIXES=1`, so the mainline `bundle-primary` path can skip the last cold-push safety listing on trusted object-store prefixes
+- trusted managed prefixes now also skip the initial sync-manifest read on the first primary-bundle write in TS and native persistent mode, using in-process prefix state to preserve warm no-op behavior
+- self-hosted initializer now computes archive eligibility once per prepared-seed cache entry and starts archive construction during prepare-seed itself when eligible, so archive build can overlap later sandbox creation/discovery work instead of waiting until upload time
 - current benchmark proof for the main object-store hot path is now materially stronger:
   - `96 files x 4 KiB`:
-    TS sidecar push `99` requests / `325ms`, warm push `2` requests / `14ms`, materialize `2` requests / `46ms`, pull `2` requests / `40ms`, push RSS peak `36.61 MiB`
+    TS sidecar push `99` requests / `296ms`, warm push `2` requests / `16ms`, materialize `2` requests / `45ms`, pull `2` requests / `48ms`, push RSS peak `35.09 MiB`
   - `96 files x 4 KiB`:
-    TS `bundle-primary` push `4` requests / `66ms`, warm push `1` request / `6ms`, materialize `2 GET` / `41ms`, pull `2 GET` / `38ms`, push RSS peak `0.14 MiB`
+    TS `bundle-primary` push `2` requests / `64ms`, warm push `1` request / `5ms`, materialize `2 GET` / `39ms`, pull `2 GET` / `41ms`, push RSS peak `0.11 MiB`
   - `96 files x 4 KiB`:
-    native persistent push `3` requests / `123ms`, warm push `1` request / `3ms`, materialize `1 GET` / `13ms`, pull `1 GET` / `13ms`
+    native persistent push `2` requests / `131ms`, warm push `1` request / `3ms`, materialize `1 GET` / `13ms`, pull `1 GET` / `13ms`
   - current interpretation:
-    TS `bundle-primary` is now a very efficient fallback even on first push, while native persistent remains the strongest steady-state path for Docker-style restore/materialize workloads
+    on trusted mainline prefixes, TS `bundle-primary` and native persistent now both avoid any cold-push read request; TS remains the faster first-push path, while native persistent still wins most clearly on steady-state restore/materialize
 
 ### 2. Archive Export
 
@@ -209,8 +213,8 @@ Practical conclusion:
 - native sandbox HTTP sync now limits explicit `mkdir` calls to the root path plus true empty directories, which reduces directory-create chatter on the hot upload path
 - the self-hosted initializer now short-circuits that per-file upload shape with the archive fast path: on the same local sample (`--files 96 --size-bytes 4096 --iterations 2 --seed-sync-repeats 2`), initializer seed preparation now averages just `5` sandbox HTTP requests per run for `ts`, `native oneshot`, and `native persistent`
 - the current request shape for that initializer path is now effectively fixed at `1 createSandbox + 1 stat + 1 mkdir + 1 upload + 1 foregroundCommand`
-- after switching the archive path to plain `tar` and caching the built archive alongside the prepared seed, warm initializer latency on that sample now lands around `71ms` for `ts`, `59ms` for `native oneshot`, and `62ms` for `native persistent`
-- on that same sample, cold initializer latency is still meaningfully higher because it includes prepared workspace construction and first archive build, landing around `272ms` for `ts`, `149ms` for `native oneshot`, and `142ms` for `native persistent`
+- after switching the archive path to plain `tar`, caching the built archive alongside the prepared seed, reusing archive eligibility metrics, and warming archive creation during prepare-seed, warm initializer latency on the current sample (`--files 96 --size-bytes 4096 --iterations 3 --seed-sync-repeats 2`) now lands around `55.17ms` for `ts`, `51.68ms` for `native oneshot`, and `47.32ms` for `native persistent`
+- on that same sample, cold initializer latency is still meaningfully higher because it includes prepared workspace construction and the first archive build, but it now lands around `170.86ms` for `ts`, `125.97ms` for `native oneshot`, and `122.26ms` for `native persistent`
 - this means the biggest initializer win is now proven: request count is no longer dominated by per-file upload churn, and warm repeated sandbox preparation benefits directly from prepared-seed archive reuse
 - on that same sample, the native-direct micro path still shows clear wins for persistent mode on fingerprint and planning, and a smaller but still positive gain on sandbox HTTP sync
 - because Docker runtime images now default to native persistent mode, these gains are positioned on the actual main deployment path rather than only behind a manual env toggle
@@ -238,9 +242,9 @@ Practical conclusion:
 The biggest remaining problems are now on the workspace side:
 
 - sidecar overhead is still too visible in sync/materialization
-- TS `bundle-primary` first push is much cheaper now, but still pays one unmanaged-prefix safety probe when no manifest exists
-- native persistent wins clearly on warm push and restore/materialize, but native cold push is not yet the latency leader in the current benchmark
-- seed upload cold-start still pays for the first archive build, even though warm repeated initialization now reuses the archive
+- non-trusted TS `bundle-primary` cold push still keeps the unmanaged-prefix safety probe, by design
+- native persistent wins clearly on warm push and restore/materialize, but native cold push is still slower than TS `bundle-primary` even after request-count parity
+- seed upload cold-start still pays for the first archive build, even though eager archive warming now overlaps part of that work and warm repeated initialization reuses the archive
 - prepared workspace reuse can be pushed harder
 - Docker-heavy cases still need broader benchmark proof before we call the rollout universally proven, even though the main Docker runtime path now defaults to native persistent mode
 - we now have a Docker benchmark entrypoint, but it still needs a successful end-to-end run in an environment that can pull base images reliably before it becomes part of the normal proof path
@@ -258,7 +262,7 @@ Focus on the most frequently exercised hot path.
 Next work:
 
 - reduce sidecar startup overhead for sync operations
-- decide whether TS `bundle-primary` cold push can safely skip the unmanaged-prefix fallback list path for trusted prefixes, or whether that safety trade should remain
+- keep the trusted-prefix fast path scoped to truly managed prefixes, and avoid widening it into unsafe default behavior
 - keep more scan / diff / execute work inside Rust once invoked
 - reduce repeated JSON bridge overhead on large directory trees
 - improve batching and concurrency for Docker workloads
