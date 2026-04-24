@@ -96,6 +96,15 @@ async function importObjectStorageWithFsOverrides(overrides: Partial<typeof impo
   return import("../apps/server/src/object-storage.ts");
 }
 
+async function importObjectStorageWithNativeBridgeOverrides(overrides: Partial<typeof import("@oah/native-bridge")>) {
+  vi.resetModules();
+  vi.doMock("@oah/native-bridge", async () => {
+    const actual = await vi.importActual<typeof import("@oah/native-bridge")>("@oah/native-bridge");
+    return { ...actual, ...overrides };
+  });
+  return import("../apps/server/src/object-storage.ts");
+}
+
 afterEach(async () => {
   await Promise.all(
     tempDirs.splice(0).map(async (directory) => {
@@ -103,6 +112,7 @@ afterEach(async () => {
     })
   );
   vi.doUnmock("node:fs/promises");
+  vi.doUnmock("@oah/native-bridge");
   vi.restoreAllMocks();
   vi.resetModules();
 });
@@ -182,6 +192,60 @@ describe("object storage sync", () => {
     expect(result.uploadedFileCount).toBe(0);
     expect(store.getObjectInfoCalls).toBe(1);
     expect(store.putObjectCalls).toBe(0);
+  });
+
+  it("passes configured sync concurrency into native object-storage sync execution", async () => {
+    vi.stubEnv("OAH_NATIVE_WORKSPACE_SYNC", "1");
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_CONCURRENCY", "3");
+
+    const sourceDirectory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-native-push-"));
+    const targetDirectory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-native-pull-"));
+    tempDirs.push(sourceDirectory, targetDirectory);
+
+    await writeFile(path.join(sourceDirectory, "README.md"), "# native push\n", "utf8");
+
+    let pushedConcurrency: number | undefined;
+    let pulledConcurrency: number | undefined;
+    const objectStorage = await importObjectStorageWithNativeBridgeOverrides({
+      isNativeWorkspaceSyncEnabled: () => true,
+      syncNativeLocalToRemote: vi.fn(async (input) => {
+        pushedConcurrency = input.maxConcurrency;
+        return {
+          ok: true as const,
+          protocolVersion: 1,
+          localFingerprint: "native",
+          uploadedFileCount: 1,
+          deletedRemoteCount: 0,
+          createdEmptyDirectoryCount: 0
+        };
+      }),
+      syncNativeRemoteToLocal: vi.fn(async (input) => {
+        pulledConcurrency = input.maxConcurrency;
+        return {
+          ok: true as const,
+          protocolVersion: 1,
+          removedPathCount: 0,
+          createdDirectoryCount: 0,
+          downloadedFileCount: 0
+        };
+      })
+    });
+
+    const store = new FakeDirectoryObjectStore();
+    store.getNativeWorkspaceSyncConfig = () => ({
+      bucket: "test-bucket",
+      region: "us-east-1",
+      endpoint: "http://127.0.0.1:9000",
+      forcePathStyle: true,
+      accessKey: "test",
+      secretKey: "test"
+    });
+
+    await objectStorage.syncLocalDirectoryToRemote(store, "workspace/demo", sourceDirectory);
+    await objectStorage.syncRemotePrefixToLocal(store, "workspace/demo", targetDirectory);
+
+    expect(pushedConcurrency).toBe(3);
+    expect(pulledConcurrency).toBe(3);
   });
 
   it("ignores files that disappear while collecting a local snapshot", async () => {

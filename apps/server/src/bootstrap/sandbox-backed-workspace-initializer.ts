@@ -11,7 +11,12 @@ import {
 } from "@oah/config";
 import { sandboxSchema, type CreateWorkspaceRequest } from "@oah/api-contracts";
 import { createId, type WorkspaceInitializationResult } from "@oah/engine-core";
-import { computeNativeDirectoryFingerprint, isNativeWorkspaceSyncEnabled, scanNativeLocalTree } from "@oah/native-bridge";
+import {
+  computeNativeDirectoryFingerprint,
+  computeNativeDirectoryFingerprintBatch,
+  isNativeWorkspaceSyncEnabled,
+  planNativeSeedUpload
+} from "@oah/native-bridge";
 
 import type { SandboxHost } from "./sandbox-host.js";
 import { enrichWorkspaceModelsWithDiscoveredMetadata } from "./model-metadata-discovery.js";
@@ -92,16 +97,50 @@ async function buildPreparedSeedCacheKey(input: {
   skills?: Array<{ name: string; content: string }> | undefined;
 }): Promise<string> {
   const runtimeRoot = path.join(input.runtimeDir, input.runtimeName);
+  const fingerprintInputs = [
+    { key: "runtimeRoot", rootDir: runtimeRoot },
+    { key: "platformToolDir", rootDir: input.platformToolDir },
+    { key: "platformSkillDir", rootDir: input.platformSkillDir },
+    { key: "toolDir", rootDir: input.toolDir }
+  ] as const;
+
+  const directoryFingerprints = new Map<string, string>();
+  if (isNativeWorkspaceSyncEnabled()) {
+    try {
+      const result = await computeNativeDirectoryFingerprintBatch({
+        directories: fingerprintInputs.map((entry) => ({ rootDir: entry.rootDir }))
+      });
+      for (let index = 0; index < fingerprintInputs.length; index += 1) {
+        const inputEntry = fingerprintInputs[index];
+        const resultEntry = result.results[index];
+        if (!inputEntry) {
+          continue;
+        }
+        if (resultEntry?.rootDir === inputEntry.rootDir) {
+          directoryFingerprints.set(inputEntry.key, resultEntry.fingerprint);
+        }
+      }
+    } catch (error) {
+      console.warn(
+        `[oah-native] Falling back to per-directory seed fingerprints: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+  }
+
   const hash = createHash("sha1");
   hash.update(input.runtimeName);
   hash.update("\n");
-  hash.update(await collectDirectoryFingerprint(runtimeRoot));
+  hash.update(directoryFingerprints.get("runtimeRoot") ?? (await collectDirectoryFingerprint(runtimeRoot)));
   hash.update("\n");
-  hash.update(await collectDirectoryFingerprint(input.platformToolDir).catch(() => ""));
+  hash.update(directoryFingerprints.get("platformToolDir") ?? (await collectDirectoryFingerprint(input.platformToolDir).catch(() => "")));
   hash.update("\n");
-  hash.update(await collectDirectoryFingerprint(input.platformSkillDir).catch(() => ""));
+  hash.update(
+    directoryFingerprints.get("platformSkillDir") ?? (await collectDirectoryFingerprint(input.platformSkillDir).catch(() => ""))
+  );
   hash.update("\n");
-  hash.update(await collectDirectoryFingerprint(input.toolDir).catch(() => ""));
+  hash.update(directoryFingerprints.get("toolDir") ?? (await collectDirectoryFingerprint(input.toolDir).catch(() => "")));
   hash.update("\n");
   hash.update(input.agentsMd?.trim() ?? "");
   hash.update("\n");
@@ -141,10 +180,10 @@ async function collectDirectoryUploadPlan(input: {
   currentRemotePath: string;
 }): Promise<{
   directories: string[];
-  files: Array<{ localPath: string; remotePath: string }>;
+  files: Array<{ localPath: string; remotePath: string; mtimeMs?: number | undefined }>;
 }> {
   const directories: string[] = [];
-  const files: Array<{ localPath: string; remotePath: string }> = [];
+  const files: Array<{ localPath: string; remotePath: string; mtimeMs?: number | undefined }> = [];
   const entries = await readdir(input.currentLocalPath, { withFileTypes: true });
   for (const entry of entries) {
     const localPath = path.join(input.currentLocalPath, entry.name);
@@ -181,21 +220,23 @@ async function collectNativeDirectoryUploadPlan(input: {
   currentRemotePath: string;
 }): Promise<{
   directories: string[];
-  files: Array<{ localPath: string; remotePath: string }>;
+  files: Array<{ localPath: string; remotePath: string; mtimeMs?: number | undefined }>;
 } | undefined> {
   if (!isNativeWorkspaceSyncEnabled()) {
     return undefined;
   }
 
   try {
-    const result = await scanNativeLocalTree({
-      rootDir: input.currentLocalPath
+    const result = await planNativeSeedUpload({
+      rootDir: input.currentLocalPath,
+      remoteBasePath: input.currentRemotePath
     });
     return {
-      directories: result.directories.map((relativePath) => path.posix.join(input.currentRemotePath, relativePath)),
+      directories: result.directories,
       files: result.files.map((file) => ({
         localPath: file.absolutePath,
-        remotePath: path.posix.join(input.currentRemotePath, file.relativePath)
+        remotePath: file.remotePath,
+        mtimeMs: file.mtimeMs
       }))
     };
   } catch (error) {
@@ -220,10 +261,14 @@ async function uploadDirectoryTree(input: {
     await input.sandboxHost.workspaceFileSystem.mkdir(remotePath, { recursive: true });
   });
 
-  await runWithConcurrency(plan.files, concurrency, async ({ localPath, remotePath }) => {
-    const [data, fileStats] = await Promise.all([readFile(localPath), stat(localPath)]);
+  await runWithConcurrency(plan.files, concurrency, async ({ localPath, remotePath, mtimeMs }) => {
+    const data = await readFile(localPath);
+    const resolvedMtimeMs =
+      typeof mtimeMs === "number" && Number.isFinite(mtimeMs) && mtimeMs > 0
+        ? mtimeMs
+        : (await stat(localPath)).mtimeMs;
     await input.sandboxHost.workspaceFileSystem.writeFile(remotePath, data, {
-      ...(Number.isFinite(fileStats.mtimeMs) && fileStats.mtimeMs > 0 ? { mtimeMs: Number(fileStats.mtimeMs) } : {})
+      ...(Number.isFinite(resolvedMtimeMs) && resolvedMtimeMs > 0 ? { mtimeMs: Number(resolvedMtimeMs) } : {})
     });
   });
 }

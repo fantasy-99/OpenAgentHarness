@@ -524,7 +524,10 @@ Serializer 再将其转为 AI SDK payload。
 
 ```ts
 export interface ModelMessageSerializer {
-  toAiSdkMessages(messages: ModelMessage[]): ChatMessage[];
+  toAiSdkMessages(
+    messages: ModelMessage[],
+    options?: { workspace?: WorkspaceRecord }
+  ): Promise<ChatMessage[]>;
 }
 ```
 

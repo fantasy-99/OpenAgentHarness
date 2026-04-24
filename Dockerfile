@@ -1,6 +1,7 @@
 ARG BASE_BUILD_IMAGE=node:24-bookworm
-ARG BASE_RUNTIME_IMAGE=node:24-bookworm-slim
+ARG BASE_RUNTIME_IMAGE=debian:bookworm-slim
 ARG BASE_RUST_IMAGE=rust:1.87-bookworm
+ARG DOCKER_COMPOSE_VERSION=2.40.3
 
 FROM ${BASE_BUILD_IMAGE} AS deps
 
@@ -57,6 +58,19 @@ RUN pnpm build:runtime
 RUN pnpm --filter @oah/server deploy --legacy --prod /opt/oah/server \
   && pnpm --filter @oah/controller deploy --legacy --prod /opt/oah/controller \
   && find /opt/oah/server/dist /opt/oah/controller/dist -type f \( -name '*.map' -o -name '*.d.ts' -o -name '*.d.ts.map' \) -delete \
+  && find /opt/oah/server/node_modules /opt/oah/controller/node_modules -type f \( \
+    -name '*.map' -o \
+    -name '*.d.ts' -o \
+    -name '*.d.mts' -o \
+    -name '*.d.cts' -o \
+    -name '*.ts' -o \
+    -name '*.tsx' -o \
+    -name '*.mts' -o \
+    -name '*.cts' -o \
+    -iname 'README*' -o \
+    -iname 'CHANGELOG*' \
+  \) -delete \
+  && find /opt/oah/server/node_modules /opt/oah/controller/node_modules -type d -empty -delete \
   && rm -rf /opt/oah/server/src /opt/oah/controller/src
 
 FROM ${BASE_RUST_IMAGE} AS native-build
@@ -70,6 +84,18 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
   cargo build --release -p oah-workspace-sync --target-dir /tmp/oah-native-target \
   && cp /tmp/oah-native-target/release/oah-workspace-sync /usr/local/bin/oah-workspace-sync
 
+FROM deps AS node-runtime-binary
+
+RUN strip --strip-unneeded /usr/local/bin/node
+
+FROM debian:bookworm-slim AS docker-cli-build
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends docker.io \
+  && rm -rf /var/lib/apt/lists/*
+
+FROM docker/compose-bin:v${DOCKER_COMPOSE_VERSION} AS docker-compose-bin
+
 FROM ${BASE_RUNTIME_IMAGE} AS runtime-base
 
 ENV NODE_ENV=production
@@ -77,7 +103,7 @@ ENV OAH_DOCS_ROOT=/app
 ENV OAH_NATIVE_WORKSPACE_SYNC_BINARY=/app/native/oah-workspace-sync
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates \
+  && apt-get install -y --no-install-recommends ca-certificates libstdc++6 \
   && rm -rf /var/lib/apt/lists/* \
   && mkdir -p /etc/oah \
   && mkdir -p /var/lib/oah/workspaces \
@@ -86,9 +112,12 @@ RUN apt-get update \
   && mkdir -p /var/lib/oah/tools \
   && mkdir -p /var/lib/oah/skills \
   && mkdir -p /var/lib/oah/archives \
+  && mkdir -p /usr/libexec/docker/cli-plugins \
   && mkdir -p /app/native
 
 WORKDIR /app
+
+COPY --from=node-runtime-binary /usr/local/bin/node /usr/local/bin/node
 
 FROM runtime-base AS api-runtime
 
@@ -106,8 +135,6 @@ FROM runtime-base AS worker-runtime
 
 COPY --from=build /opt/oah/server /app
 COPY --from=build /app/docs/schemas /app/docs/schemas
-COPY --from=build /app/docs/openapi /app/docs/openapi
-COPY --from=build /app/assets/logo-readme.png /app/assets/logo-readme.png
 COPY --from=native-build /usr/local/bin/oah-workspace-sync /app/native/oah-workspace-sync
 
 EXPOSE 8787
@@ -116,22 +143,11 @@ CMD ["node", "dist/worker.js", "--config", "/etc/oah/server.yaml"]
 
 FROM runtime-base AS controller-runtime
 
-ARG TARGETOS=linux
-ARG TARGETARCH
-ARG DOCKER_COMPOSE_VERSION=2.40.3
+COPY --from=docker-cli-build /usr/bin/docker /usr/bin/docker
+COPY --from=docker-compose-bin /docker-compose /usr/libexec/docker/cli-plugins/docker-compose
 
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends curl docker.io \
-  && mkdir -p /usr/libexec/docker/cli-plugins \
-  && case "${TARGETARCH}" in \
-    "amd64") compose_arch="x86_64" ;; \
-    "arm64") compose_arch="aarch64" ;; \
-    *) compose_arch="${TARGETARCH}" ;; \
-  esac \
-  && curl -fsSL "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-${TARGETOS}-${compose_arch}" -o /usr/libexec/docker/cli-plugins/docker-compose \
-  && chmod +x /usr/libexec/docker/cli-plugins/docker-compose \
-  && docker compose version \
-  && rm -rf /var/lib/apt/lists/*
+RUN chmod +x /usr/bin/docker /usr/libexec/docker/cli-plugins/docker-compose \
+  && docker compose version
 
 COPY --from=build /opt/oah/controller /app
 COPY --from=build /app/docs/schemas /app/docs/schemas

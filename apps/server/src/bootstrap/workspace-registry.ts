@@ -2,12 +2,19 @@ import path from "node:path";
 import { watch, type FSWatcher } from "node:fs";
 import { readdir } from "node:fs/promises";
 
-import { discoverWorkspace, type DiscoveredWorkspace } from "@oah/config";
 import type { ServerConfig } from "@oah/config";
 import { parseCursor } from "@oah/engine-core";
 import type { WorkspaceRecord, WorkspaceRepository } from "@oah/engine-core";
 
 export type PlatformAgentRegistry = Record<string, import("@oah/config").DiscoveredAgent>;
+type DiscoveredWorkspace = import("@oah/config").DiscoveredWorkspace;
+
+let workspaceConfigModulePromise: Promise<typeof import("@oah/config/workspace")> | undefined;
+
+function loadWorkspaceConfigModule(): Promise<typeof import("@oah/config/workspace")> {
+  workspaceConfigModulePromise ??= import("@oah/config/workspace");
+  return workspaceConfigModulePromise;
+}
 
 function isDefined<T>(value: T | undefined): value is T {
   return value !== undefined;
@@ -128,6 +135,7 @@ export async function discoverProjectWorkspaces(input: {
   platformToolDir: string;
   onError?: ((input: { rootPath: string; kind: "project"; error: unknown }) => void) | undefined;
 }): Promise<DiscoveredWorkspace[]> {
+  const { discoverWorkspace } = await loadWorkspaceConfigModule();
   const entries = await readdir(input.workspaceDir, {
     withFileTypes: true
   }).catch(() => []);

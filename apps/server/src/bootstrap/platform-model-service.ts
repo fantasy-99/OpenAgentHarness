@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { loadPlatformModels } from "@oah/config";
+import { loadPlatformModels } from "@oah/config/platform-models";
 import { enrichModelRegistryWithDiscoveredMetadata } from "./model-metadata-discovery.js";
 import { normalizeModelMetadata, normalizePlatformModelRegistry, readContextWindowTokens } from "./platform-model-metadata.js";
 

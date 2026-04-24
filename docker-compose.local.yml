@@ -63,7 +63,7 @@ services:
       target: api-runtime
       args:
         BASE_BUILD_IMAGE: ${OAH_DOCKER_BUILD_BASE_IMAGE:-node:24-bookworm}
-        BASE_RUNTIME_IMAGE: ${OAH_DOCKER_RUNTIME_BASE_IMAGE:-node:24-bookworm-slim}
+        BASE_RUNTIME_IMAGE: ${OAH_DOCKER_RUNTIME_BASE_IMAGE:-debian:bookworm-slim}
     restart: unless-stopped
     command:
       - node
@@ -75,8 +75,9 @@ services:
       NODE_OPTIONS: "--max-old-space-size=512"
       OAH_ALLOW_PRIVATE_INTERNAL_MODEL_ROUTES: "true"
       OAH_INTERNAL_BASE_URL: "http://oah-api:8787"
-      OAH_WORKSPACE_PREWARM_ENABLED: "false"
+      OAH_NATIVE_WORKSPACE_SYNC: "1"
       OAH_WORKSPACE_REGISTRY_POLL_INTERVAL_MS: "15000"
+      OAH_WORKSPACE_PREWARM_ENABLED: "false"
     depends_on:
       postgres:
         condition: service_healthy
@@ -106,7 +107,7 @@ services:
       target: controller-runtime
       args:
         BASE_BUILD_IMAGE: ${OAH_DOCKER_BUILD_BASE_IMAGE:-node:24-bookworm}
-        BASE_RUNTIME_IMAGE: ${OAH_DOCKER_RUNTIME_BASE_IMAGE:-node:24-bookworm-slim}
+        BASE_RUNTIME_IMAGE: ${OAH_DOCKER_RUNTIME_BASE_IMAGE:-debian:bookworm-slim}
     restart: unless-stopped
     command:
       - node
@@ -146,7 +147,7 @@ services:
       target: worker-runtime
       args:
         BASE_BUILD_IMAGE: ${OAH_DOCKER_BUILD_BASE_IMAGE:-node:24-bookworm}
-        BASE_RUNTIME_IMAGE: ${OAH_DOCKER_RUNTIME_BASE_IMAGE:-node:24-bookworm-slim}
+        BASE_RUNTIME_IMAGE: ${OAH_DOCKER_RUNTIME_BASE_IMAGE:-debian:bookworm-slim}
     restart: unless-stopped
     command:
       - sh
@@ -155,6 +156,7 @@ services:
     environment:
       NODE_OPTIONS: "--max-old-space-size=384"
       OAH_ALLOW_PRIVATE_INTERNAL_ROUTES: "true"
+      OAH_NATIVE_WORKSPACE_SYNC: "1"
       OAH_WORKSPACE_MATERIALIZATION_MAINTENANCE_INTERVAL_MS: "15000"
     depends_on:
       postgres:

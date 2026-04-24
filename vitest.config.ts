@@ -12,6 +12,7 @@ export default defineConfig({
       "@oah/api-contracts": workspacePath("./packages/api-contracts/src/index.ts"),
       "@oah/config": workspacePath("./packages/config/src/index.ts"),
       "@oah/model-gateway": workspacePath("./packages/model-gateway/src/index.ts"),
+      "@oah/native-bridge": workspacePath("./packages/native-bridge/src/index.ts"),
       "@oah/engine-core": workspacePath("./packages/engine-core/src/index.ts"),
       "@oah/storage-memory": workspacePath("./packages/storage-memory/src/index.ts"),
       "@oah/storage-sqlite": workspacePath("./packages/storage-sqlite/src/index.ts"),

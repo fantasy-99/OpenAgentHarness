@@ -1,13 +1,40 @@
+import os from "node:os";
+import path from "node:path";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
+import type { Message } from "@oah/api-contracts";
 import { ModelMessageSerializer } from "../packages/engine-core/src/engine/ai-sdk-message-serializer";
-import { EngineMessageProjector } from "../packages/engine-core/src/engine/message-projections";
 import {
   buildSessionEngineMessages,
   type EngineMessage
 } from "../packages/engine-core/src/engine/engine-messages";
-import type { Message } from "@oah/api-contracts";
-import type { SessionEvent } from "../packages/engine-core/src/types";
+import { EngineMessageProjector } from "../packages/engine-core/src/engine/message-projections";
+import type { SessionEvent, WorkspaceRecord } from "../packages/engine-core/src/types";
+import { createLocalWorkspaceFileSystem } from "../packages/engine-core/src/workspace/workspace-file-system";
+
+function createWorkspaceRecord(rootPath: string): WorkspaceRecord {
+  return {
+    id: "ws_test",
+    name: "test-workspace",
+    rootPath,
+    executionPolicy: "local",
+    status: "active",
+    kind: "project",
+    readOnly: false,
+    historyMirrorEnabled: false,
+    settings: {},
+    workspaceModels: {},
+    agents: {},
+    actions: {},
+    skills: {},
+    toolServers: {},
+    hooks: {},
+    catalog: {},
+    createdAt: "2026-04-24T00:00:00.000Z",
+    updatedAt: "2026-04-24T00:00:00.000Z"
+  } as WorkspaceRecord;
+}
 
 describe("runtime message projections", () => {
   it("builds segmented runtime messages from interrupted assistant output", () => {
@@ -418,10 +445,10 @@ describe("runtime message projections", () => {
     ]);
   });
 
-  it("serializes model messages into AI SDK-compatible messages", () => {
+  it("serializes model messages into AI SDK-compatible messages", async () => {
     const serializer = new ModelMessageSerializer();
 
-    const serialized = serializer.toAiSdkMessages([
+    const serialized = await serializer.toAiSdkMessages([
       {
         view: "model",
         role: "system",
@@ -468,5 +495,193 @@ describe("runtime message projections", () => {
         ]
       }
     ]);
+  });
+
+  it("loads referenced workspace images into user model messages", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-message-serializer-"));
+    try {
+      await mkdir(path.join(workspaceRoot, "assets"), { recursive: true });
+      await writeFile(
+        path.join(workspaceRoot, "assets", "pixel.png"),
+        Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0a4AAAAASUVORK5CYII=",
+          "base64"
+        )
+      );
+
+      const serializer = new ModelMessageSerializer({
+        workspaceFileSystem: createLocalWorkspaceFileSystem()
+      });
+      const serialized = await serializer.toAiSdkMessages(
+        [
+          {
+            view: "model",
+            role: "user",
+            semanticType: "user_input",
+            sourceMessageIds: ["msg_user"],
+            content: '请描述 `assets/pixel.png` 这张图，并忽略不存在的 `assets/missing.png`。'
+          }
+        ],
+        {
+          workspace: createWorkspaceRecord(workspaceRoot)
+        }
+      );
+
+      expect(serialized).toEqual([
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: '请描述 `assets/pixel.png` 这张图，并忽略不存在的 `assets/missing.png`。'
+            },
+            {
+              type: "image",
+              image: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0a4AAAAASUVORK5CYII=",
+              mediaType: "image/png"
+            }
+          ]
+        }
+      ]);
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("supports both @path and plain path image references", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-message-serializer-at-path-"));
+    try {
+      await mkdir(path.join(workspaceRoot, "assets"), { recursive: true });
+      await writeFile(
+        path.join(workspaceRoot, "assets", "pixel.png"),
+        Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0a4AAAAASUVORK5CYII=",
+          "base64"
+        )
+      );
+
+      const serializer = new ModelMessageSerializer({
+        workspaceFileSystem: createLocalWorkspaceFileSystem()
+      });
+      const serialized = await serializer.toAiSdkMessages(
+        [
+          {
+            view: "model",
+            role: "user",
+            semanticType: "user_input",
+            sourceMessageIds: ["msg_user"],
+            content: "先看 @assets/pixel.png，再看 assets/pixel.png。"
+          }
+        ],
+        {
+          workspace: createWorkspaceRecord(workspaceRoot)
+        }
+      );
+
+      expect(serialized).toEqual([
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "先看 @assets/pixel.png，再看 assets/pixel.png。"
+            },
+            {
+              type: "image",
+              image: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0a4AAAAASUVORK5CYII=",
+              mediaType: "image/png"
+            }
+          ]
+        }
+      ]);
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps @path as plain text when the stripped workspace path does not exist", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-message-serializer-at-literal-"));
+    try {
+      await writeFile(
+        path.join(workspaceRoot, "@pixel.png"),
+        Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0a4AAAAASUVORK5CYII=",
+          "base64"
+        )
+      );
+
+      const serializer = new ModelMessageSerializer({
+        workspaceFileSystem: createLocalWorkspaceFileSystem()
+      });
+      const serialized = await serializer.toAiSdkMessages(
+        [
+          {
+            view: "model",
+            role: "user",
+            semanticType: "user_input",
+            sourceMessageIds: ["msg_user"],
+            content: "这里的 @pixel.png 不是可解析的工作区路径。"
+          }
+        ],
+        {
+          workspace: createWorkspaceRecord(workspaceRoot)
+        }
+      );
+
+      expect(serialized).toEqual([
+        {
+          role: "user",
+          content: "这里的 @pixel.png 不是可解析的工作区路径。"
+        }
+      ]);
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("loads explicit non-image workspace attachments as file parts", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-message-serializer-file-part-"));
+    try {
+      await mkdir(path.join(workspaceRoot, "docs"), { recursive: true });
+      await writeFile(path.join(workspaceRoot, "docs", "spec.pdf"), Buffer.from("%PDF-1.4\nfake pdf\n", "utf8"));
+
+      const serializer = new ModelMessageSerializer({
+        workspaceFileSystem: createLocalWorkspaceFileSystem()
+      });
+      const serialized = await serializer.toAiSdkMessages(
+        [
+          {
+            view: "model",
+            role: "user",
+            semanticType: "user_input",
+            sourceMessageIds: ["msg_user"],
+            content: "请总结 @docs/spec.pdf 的内容。"
+          }
+        ],
+        {
+          workspace: createWorkspaceRecord(workspaceRoot)
+        }
+      );
+
+      expect(serialized).toEqual([
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "请总结 @docs/spec.pdf 的内容。"
+            },
+            {
+              type: "file",
+              data: Buffer.from("%PDF-1.4\nfake pdf\n", "utf8").toString("base64"),
+              filename: "spec.pdf",
+              mediaType: "application/pdf"
+            }
+          ]
+        }
+      ]);
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
   });
 });

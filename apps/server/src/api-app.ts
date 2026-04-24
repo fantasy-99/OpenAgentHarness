@@ -1,0 +1,19 @@
+import { createBaseApp, registerInternalRoutes } from "./app-core.js";
+import { registerPublicRoutes } from "./http/routes/public.js";
+import { registerWorkspaceRoutes } from "./http/routes/workspaces.js";
+import { registerSandboxRoutes } from "./http/routes/sandboxes.js";
+import { registerSessionRoutes } from "./http/routes/sessions.js";
+import type { AppDependencies } from "./http/types.js";
+
+export function createApiApp(dependencies: AppDependencies) {
+  const app = createBaseApp(dependencies);
+  const workspaceMode = dependencies.workspaceMode ?? "multi";
+
+  registerPublicRoutes(app, dependencies, { workspaceMode });
+  registerWorkspaceRoutes(app, dependencies, { workspaceMode });
+  registerSandboxRoutes(app, dependencies, { workspaceMode });
+  registerSessionRoutes(app, dependencies);
+  registerInternalRoutes(app, dependencies);
+
+  return app;
+}

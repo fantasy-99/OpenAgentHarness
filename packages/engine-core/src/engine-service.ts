@@ -211,6 +211,8 @@ export class EngineService {
     this.#modelInputs = new ModelInputService({
       defaultModel: this.#defaultModel,
       platformModels: this.#platformModels,
+      workspaceFileSystem: this.#workspaceFileSystem,
+      workspaceFileAccessProvider: this.#workspaceFileAccessProvider,
       applyContextHooks: (workspace, session, run, eventName, messages) =>
         this.#applyContextHooks(workspace, session, run, eventName, messages),
       collapseLeadingSystemMessages: (messages) => collapseLeadingSystemMessages(messages)

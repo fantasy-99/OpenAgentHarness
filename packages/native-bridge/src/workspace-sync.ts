@@ -49,6 +49,17 @@ export interface NativeDirectoryFingerprintResult extends NativeCommandSuccessRe
   emptyDirectoryCount: number;
 }
 
+export interface NativeDirectoryFingerprintBatchEntry {
+  rootDir: string;
+  fingerprint: string;
+  fileCount: number;
+  emptyDirectoryCount: number;
+}
+
+export interface NativeDirectoryFingerprintBatchResult extends NativeCommandSuccessResponse {
+  results: NativeDirectoryFingerprintBatchEntry[];
+}
+
 export interface NativeScannedFileEntry {
   relativePath: string;
   absolutePath: string;
@@ -95,9 +106,47 @@ export interface NativePlanDownloadCandidate {
 }
 
 export interface NativePlanRemoteToLocalResult extends NativeCommandSuccessResponse {
+  removePaths: string[];
   directoriesToCreate: string[];
   downloadCandidates: NativePlanDownloadCandidate[];
   infoCheckCandidates: NativePlanDownloadCandidate[];
+}
+
+export interface NativeSeedUploadFile {
+  relativePath: string;
+  absolutePath: string;
+  remotePath: string;
+  size: number;
+  mtimeMs: number;
+}
+
+export interface NativePlanSeedUploadResult extends NativeCommandSuccessResponse {
+  fingerprint: string;
+  directories: string[];
+  files: NativeSeedUploadFile[];
+}
+
+export interface NativeWorkspaceSyncObjectStoreConfig {
+  bucket: string;
+  region: string;
+  endpoint?: string | undefined;
+  forcePathStyle?: boolean | undefined;
+  accessKey?: string | undefined;
+  secretKey?: string | undefined;
+  sessionToken?: string | undefined;
+}
+
+export interface NativeSyncLocalToRemoteResult extends NativeCommandSuccessResponse {
+  localFingerprint: string;
+  uploadedFileCount: number;
+  deletedRemoteCount: number;
+  createdEmptyDirectoryCount: number;
+}
+
+export interface NativeSyncRemoteToLocalResult extends NativeCommandSuccessResponse {
+  removedPathCount: number;
+  createdDirectoryCount: number;
+  downloadedFileCount: number;
 }
 
 export class NativeWorkspaceSyncBridgeError extends Error {
@@ -198,6 +247,17 @@ export async function computeNativeDirectoryFingerprint(
   });
 }
 
+export async function computeNativeDirectoryFingerprintBatch(input: {
+  directories: NativeDirectoryFingerprintInput[];
+}): Promise<NativeDirectoryFingerprintBatchResult> {
+  return runNativeWorkspaceSyncCommand<NativeDirectoryFingerprintBatchResult>(["fingerprint-batch"], {
+    directories: input.directories.map((directory) => ({
+      rootDir: directory.rootDir,
+      ...(directory.excludeRelativePaths ? { excludeRelativePaths: directory.excludeRelativePaths } : {})
+    }))
+  });
+}
+
 export async function scanNativeLocalTree(input: NativeDirectoryFingerprintInput): Promise<NativeScanLocalTreeResult> {
   return runNativeWorkspaceSyncCommand<NativeScanLocalTreeResult>(["scan-local-tree"], {
     rootDir: input.rootDir,
@@ -220,12 +280,60 @@ export async function planNativeLocalToRemote(input: {
 export async function planNativeRemoteToLocal(input: {
   rootDir: string;
   excludeRelativePaths?: string[] | undefined;
+  preserveTopLevelNames?: string[] | undefined;
   remoteEntries: NativePlanRemoteEntry[];
 }): Promise<NativePlanRemoteToLocalResult> {
   return runNativeWorkspaceSyncCommand<NativePlanRemoteToLocalResult>(["plan-remote-to-local"], {
     rootDir: input.rootDir,
     remoteEntries: input.remoteEntries,
+    ...(input.excludeRelativePaths ? { excludeRelativePaths: input.excludeRelativePaths } : {}),
+    ...(input.preserveTopLevelNames ? { preserveTopLevelNames: input.preserveTopLevelNames } : {})
+  });
+}
+
+export async function planNativeSeedUpload(input: {
+  rootDir: string;
+  remoteBasePath: string;
+  excludeRelativePaths?: string[] | undefined;
+}): Promise<NativePlanSeedUploadResult> {
+  return runNativeWorkspaceSyncCommand<NativePlanSeedUploadResult>(["plan-seed-upload"], {
+    rootDir: input.rootDir,
+    remoteBasePath: input.remoteBasePath,
     ...(input.excludeRelativePaths ? { excludeRelativePaths: input.excludeRelativePaths } : {})
+  });
+}
+
+export async function syncNativeLocalToRemote(input: {
+  rootDir: string;
+  remotePrefix: string;
+  excludeRelativePaths?: string[] | undefined;
+  maxConcurrency?: number | undefined;
+  objectStore: NativeWorkspaceSyncObjectStoreConfig;
+}): Promise<NativeSyncLocalToRemoteResult> {
+  return runNativeWorkspaceSyncCommand<NativeSyncLocalToRemoteResult>(["sync-local-to-remote"], {
+    rootDir: input.rootDir,
+    remotePrefix: input.remotePrefix,
+    objectStore: input.objectStore,
+    ...(input.excludeRelativePaths ? { excludeRelativePaths: input.excludeRelativePaths } : {}),
+    ...(input.maxConcurrency ? { maxConcurrency: input.maxConcurrency } : {})
+  });
+}
+
+export async function syncNativeRemoteToLocal(input: {
+  rootDir: string;
+  remotePrefix: string;
+  excludeRelativePaths?: string[] | undefined;
+  preserveTopLevelNames?: string[] | undefined;
+  maxConcurrency?: number | undefined;
+  objectStore: NativeWorkspaceSyncObjectStoreConfig;
+}): Promise<NativeSyncRemoteToLocalResult> {
+  return runNativeWorkspaceSyncCommand<NativeSyncRemoteToLocalResult>(["sync-remote-to-local"], {
+    rootDir: input.rootDir,
+    remotePrefix: input.remotePrefix,
+    objectStore: input.objectStore,
+    ...(input.excludeRelativePaths ? { excludeRelativePaths: input.excludeRelativePaths } : {}),
+    ...(input.preserveTopLevelNames ? { preserveTopLevelNames: input.preserveTopLevelNames } : {}),
+    ...(input.maxConcurrency ? { maxConcurrency: input.maxConcurrency } : {})
   });
 }
 

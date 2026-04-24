@@ -11,6 +11,7 @@ import { EngineService } from "@oah/engine-core";
 import { createMemoryRuntimePersistence } from "@oah/storage-memory";
 
 import { createApp } from "../apps/server/src/app.ts";
+import { createInternalWorkerApp } from "../apps/server/src/internal-worker-app.ts";
 import type { StorageAdmin } from "../apps/server/src/storage-admin.ts";
 import { FakeModelGateway } from "./helpers/fake-model-gateway";
 
@@ -310,6 +311,32 @@ async function createStartedAppWithWorkspaceAndGateway(
   return createStartedAppWithEngineService(runtimeService, gateway);
 }
 
+async function createStartedInternalWorkerApp(options?: {
+  sandboxHostProviderKind?: "embedded" | "self_hosted" | "e2b";
+}) {
+  const gateway = new FakeModelGateway(20);
+  const persistence = createMemoryRuntimePersistence();
+  const runtimeService = new EngineService({
+    defaultModel: "openai-default",
+    modelGateway: gateway,
+    ...persistence
+  });
+
+  const app = createInternalWorkerApp({
+    runtimeService,
+    modelGateway: gateway,
+    defaultModel: "openai-default",
+    logger: false,
+    ...(options?.sandboxHostProviderKind ? { sandboxHostProviderKind: options.sandboxHostProviderKind } : {})
+  });
+
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  const address = app.server.address() as AddressInfo;
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  return { app, baseUrl };
+}
+
 const tempWorkspaceRoots: string[] = [];
 
 async function createWorkspaceRecord(overrides?: Partial<WorkspaceRecord>): Promise<WorkspaceRecord> {
@@ -493,6 +520,38 @@ describe("http api", () => {
         redisRunQueue: "not_configured"
       }
     });
+  });
+
+  it("worker internal app exposes only readiness and internal surfaces", async () => {
+    activeApp = await createStartedInternalWorkerApp();
+
+    const [healthzResponse, readyzResponse, landingResponse] = await Promise.all([
+      fetch(`${activeApp.baseUrl}/healthz`),
+      fetch(`${activeApp.baseUrl}/readyz`),
+      fetch(`${activeApp.baseUrl}/`)
+    ]);
+
+    expect(healthzResponse.status).toBe(200);
+    await expect(healthzResponse.json()).resolves.toMatchObject({
+      process: {
+        mode: "standalone_worker",
+        label: "standalone worker",
+        execution: "redis_queue"
+      }
+    });
+
+    expect(readyzResponse.status).toBe(200);
+    await expect(readyzResponse.json()).resolves.toEqual({
+      status: "ready",
+      draining: false,
+      checks: {
+        postgres: "not_configured",
+        redisEvents: "not_configured",
+        redisRunQueue: "not_configured"
+      }
+    });
+
+    expect(landingResponse.status).toBe(404);
   });
 
   it("lists workspace runtimes from runtime_dir", async () => {

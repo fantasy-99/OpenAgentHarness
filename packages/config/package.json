@@ -9,6 +9,22 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./dist/index.js"
+    },
+    "./platform-models": {
+      "types": "./src/platform-models.ts",
+      "default": "./dist/platform-models.js"
+    },
+    "./runtimes": {
+      "types": "./src/runtimes.ts",
+      "default": "./dist/runtimes.js"
+    },
+    "./server-config": {
+      "types": "./src/server-config.ts",
+      "default": "./dist/server-config.js"
+    },
+    "./workspace": {
+      "types": "./src/workspace.ts",
+      "default": "./dist/workspace.js"
     }
   },
   "dependencies": {

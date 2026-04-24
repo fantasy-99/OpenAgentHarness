@@ -517,13 +517,13 @@ function ensureDockerBuildBaseImages() {
   const candidatePairs = [
     {
       build: "mirror.gcr.io/library/node:24-bookworm",
-      runtime: "mirror.gcr.io/library/node:24-bookworm",
-      description: "mirror.gcr.io Node 24 bookworm"
+      runtime: "debian:bookworm-slim",
+      description: "mirror.gcr.io Node 24 build image + Debian slim runtime"
     },
     {
       build: "node:24-bookworm",
-      runtime: "node:24-bookworm-slim",
-      description: "Docker Hub official Node 24 images"
+      runtime: "debian:bookworm-slim",
+      description: "Docker Hub Node 24 build image + Debian slim runtime"
     }
   ];
 

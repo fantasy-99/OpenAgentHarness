@@ -1,6 +1,9 @@
 references
 test_server
 tmp
+.native-target
+native/bin
+native/target
 
 node_modules
 dist

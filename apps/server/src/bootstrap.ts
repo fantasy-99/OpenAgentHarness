@@ -1,7 +1,6 @@
 import path from "node:path";
 import type { FSWatcher } from "node:fs";
-import os from "node:os";
-import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { access, rm } from "node:fs/promises";
 
 import {
   platformModelSnapshotSchema,
@@ -9,17 +8,8 @@ import {
   type HealthReport,
   type ReadinessReport
 } from "@oah/api-contracts";
-import {
-  deleteWorkspaceRuntime,
-  discoverWorkspace,
-  discoverWorkspaces,
-  initializeWorkspaceFromRuntime,
-  listWorkspaceRuntimes,
-  loadServerConfig,
-  resolveWorkspaceCreationRoot,
-  uploadWorkspaceRuntime
-} from "@oah/config";
 import type { ServerConfig } from "@oah/config";
+import { loadServerConfig } from "@oah/config/server-config";
 import {
   AppError,
   ControlPlaneEngineService,
@@ -106,7 +96,6 @@ import {
   type PlatformAgentRegistry
 } from "./bootstrap/workspace-registry.js";
 import { createBuiltInPlatformAgents } from "./platform-agents.js";
-import { createStorageAdmin } from "./storage-admin.js";
 import { createServiceRoutedPostgresRuntimePersistence } from "./bootstrap/service-routed-postgres.js";
 import {
   cleanupWorkspaceLocalArtifacts,
@@ -119,6 +108,25 @@ import {
 
 export { cleanupWorkspaceLocalArtifacts } from "./bootstrap/engine-state-paths.js";
 export type { WorkspaceLocalArtifactCleanupStatus } from "./bootstrap/engine-state-paths.js";
+
+let configWorkspaceModulePromise: Promise<typeof import("@oah/config/workspace")> | undefined;
+let configRuntimesModulePromise: Promise<typeof import("@oah/config/runtimes")> | undefined;
+let workspaceDefinitionHelpersPromise: Promise<typeof import("./bootstrap/workspace-definition-helpers.js")> | undefined;
+
+function loadConfigWorkspaceModule(): Promise<typeof import("@oah/config/workspace")> {
+  configWorkspaceModulePromise ??= import("@oah/config/workspace");
+  return configWorkspaceModulePromise;
+}
+
+function loadConfigRuntimesModule(): Promise<typeof import("@oah/config/runtimes")> {
+  configRuntimesModulePromise ??= import("@oah/config/runtimes");
+  return configRuntimesModulePromise;
+}
+
+function loadWorkspaceDefinitionHelpersModule(): Promise<typeof import("./bootstrap/workspace-definition-helpers.js")> {
+  workspaceDefinitionHelpersPromise ??= import("./bootstrap/workspace-definition-helpers.js");
+  return workspaceDefinitionHelpersPromise;
+}
 
 function hasRemoteErrorCode(error: unknown, code: string): boolean {
   if (error instanceof AppError) {
@@ -519,9 +527,10 @@ export interface BootstrappedRuntime {
     isLocalOwner: boolean;
   } | undefined>;
   clearWorkspaceCoordination?: (workspaceId: string) => Promise<void>;
-  adminCapabilities: EngineAdminCapabilities;
+  adminCapabilities?: EngineAdminCapabilities | undefined;
   sandboxHostProviderKind?: SandboxHostProviderKind | undefined;
   localOwnerBaseUrl?: string | undefined;
+  touchWorkspaceActivity?: (workspaceId: string) => Promise<void>;
   appendEngineLog(input: {
     sessionId: string;
     runId?: string | undefined;
@@ -560,6 +569,8 @@ export interface RuntimeAssemblyProfile {
   executionServicesMode: "eager" | "lazy";
   enablePlatformModelLiveReload: boolean;
   enableWorkerRuntime: boolean;
+  enableAdminCapabilities: boolean;
+  enableControlPlaneFacade: boolean;
 }
 
 export function resolveRuntimeAssemblyProfile(options: {
@@ -572,7 +583,9 @@ export function resolveRuntimeAssemblyProfile(options: {
       id: "worker_executor",
       executionServicesMode: "eager",
       enablePlatformModelLiveReload: false,
-      enableWorkerRuntime: true
+      enableWorkerRuntime: true,
+      enableAdminCapabilities: false,
+      enableControlPlaneFacade: false
     };
   }
 
@@ -581,7 +594,9 @@ export function resolveRuntimeAssemblyProfile(options: {
       id: "api_control_plane",
       executionServicesMode: "lazy",
       enablePlatformModelLiveReload: false,
-      enableWorkerRuntime: false
+      enableWorkerRuntime: false,
+      enableAdminCapabilities: true,
+      enableControlPlaneFacade: true
     };
   }
 
@@ -589,7 +604,9 @@ export function resolveRuntimeAssemblyProfile(options: {
     id: "api_embedded_runtime",
     executionServicesMode: "eager",
     enablePlatformModelLiveReload: false,
-    enableWorkerRuntime: true
+    enableWorkerRuntime: true,
+    enableAdminCapabilities: true,
+    enableControlPlaneFacade: true
   };
 }
 
@@ -775,208 +792,30 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     },
     onModelsChanged: async () => {
       (modelGateway as (AiSdkModelGateway & { clearModelCache?: () => void }) | undefined)?.clearModelCache?.();
-      await refreshWorkspaceDefinitionsForPlatformModels();
+      if (assemblyProfile.enableControlPlaneFacade) {
+        await refreshWorkspaceDefinitionsForPlatformModels();
+      }
     }
   });
   const models = platformModelService.definitions;
-  const platformAgents: PlatformAgentRegistry = {
-    ...createBuiltInPlatformAgents(),
-    ...(options.platformAgents ?? {})
-  };
+  let platformAgents: PlatformAgentRegistry | undefined;
+  function getPlatformAgents(): PlatformAgentRegistry {
+    platformAgents ??= {
+      ...createBuiltInPlatformAgents(),
+      ...(options.platformAgents ?? {})
+    };
+    return platformAgents;
+  }
   async function discoverWorkspaceWithEnrichedModels(rootPath: string, kind: "project") {
+    const { discoverWorkspace } = await loadConfigWorkspaceModule();
     return enrichWorkspaceModelsWithDiscoveredMetadata(
       await discoverWorkspace(rootPath, kind, {
         platformModels: models,
-        platformAgents,
+        platformAgents: getPlatformAgents(),
         platformSkillDir: config.paths.skill_dir,
         platformToolDir: toolDir
       } as Parameters<typeof discoverWorkspace>[2])
     );
-  }
-
-  interface DefinitionFsAccess {
-    stat(targetPath: string): Promise<Awaited<ReturnType<typeof stat>> | null>;
-    readdir(targetPath: string): Promise<Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>>;
-    readFile(targetPath: string): Promise<Buffer>;
-  }
-
-  async function withWorkspaceDefinitionAccess<T>(
-    workspace: WorkspaceRecord,
-    operation: (input: { rootPath: string; fs: DefinitionFsAccess }) => Promise<T>
-  ): Promise<T> {
-    const workspaceFileAccessProvider = sandboxHost?.workspaceFileAccessProvider;
-    const workspaceFileSystem = sandboxHost?.workspaceFileSystem;
-
-    if (!workspaceFileAccessProvider || !workspaceFileSystem) {
-      return operation({
-        rootPath: workspace.rootPath,
-        fs: {
-          async stat(targetPath) {
-            return stat(targetPath).catch(() => null);
-          },
-          async readdir(targetPath) {
-            return readdir(targetPath, { withFileTypes: true }).catch(() => []);
-          },
-          async readFile(targetPath) {
-            return readFile(targetPath);
-          }
-        }
-      });
-    }
-
-    const lease = await workspaceFileAccessProvider.acquire({
-      workspace,
-      access: "read"
-    });
-
-    try {
-      return await operation({
-        rootPath: lease.workspace.rootPath,
-        fs: {
-          async stat(targetPath) {
-            try {
-              const entry = await workspaceFileSystem.stat(targetPath);
-              return {
-                isDirectory: () => entry.kind === "directory",
-                isFile: () => entry.kind === "file",
-                mtimeMs: entry.mtimeMs
-              } as Awaited<ReturnType<typeof stat>>;
-            } catch {
-              return null;
-            }
-          },
-          async readdir(targetPath) {
-            const entries = await workspaceFileSystem.readdir(targetPath).catch(() => []);
-            return entries.map((entry) => ({
-              name: entry.name,
-              isDirectory: () => entry.kind === "directory",
-              isFile: () => entry.kind === "file"
-            }));
-          },
-          async readFile(targetPath) {
-            return workspaceFileSystem.readFile(targetPath);
-          }
-        }
-      });
-    } finally {
-      await lease.release({ dirty: false });
-    }
-  }
-
-  async function readLiveWorkspaceSkillNames(workspace: WorkspaceRecord): Promise<string[]> {
-    return withWorkspaceDefinitionAccess(workspace, async ({ rootPath, fs }) => {
-      const skillsRoot = path.join(rootPath, ".openharness", "skills");
-      const entries = await fs.readdir(skillsRoot);
-      const names: string[] = [];
-
-      for (const entry of entries) {
-        if (!entry.isDirectory()) {
-          continue;
-        }
-
-        const skillFilePath = path.join(skillsRoot, entry.name, "SKILL.md");
-        const skillFile = await fs.stat(skillFilePath);
-        if (skillFile?.isFile()) {
-          const rawContent = (await fs.readFile(skillFilePath)).toString("utf8");
-          const frontmatterMatch = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(rawContent);
-          const frontmatterBody = frontmatterMatch?.[1] ?? "";
-          const nameMatch = /^name:\s*(.+)$/mu.exec(frontmatterBody);
-          names.push(nameMatch?.[1]?.trim() || entry.name);
-        }
-      }
-
-      return names.sort((left, right) => left.localeCompare(right));
-    });
-  }
-
-  async function copyWorkspaceDefinitionSnapshot(workspace: WorkspaceRecord): Promise<string> {
-    return withWorkspaceDefinitionAccess(workspace, async ({ rootPath, fs }) => {
-      const snapshotRoot = await mkdtemp(path.join(os.tmpdir(), "oah-workspace-definition-"));
-      const candidates = [
-        "AGENTS.md",
-        path.join(".openharness", "settings.yaml"),
-        path.join(".openharness", "agents"),
-        path.join(".openharness", "actions"),
-        path.join(".openharness", "skills"),
-        path.join(".openharness", "tools"),
-        path.join(".openharness", "hooks"),
-        path.join(".openharness", "models")
-      ];
-
-      async function copyRelativePath(relativePath: string): Promise<void> {
-        const sourcePath = path.join(rootPath, relativePath);
-        const targetPath = path.join(snapshotRoot, relativePath);
-        const entry = await fs.stat(sourcePath);
-        if (!entry) {
-          return;
-        }
-
-        if (entry.isDirectory()) {
-          await mkdir(targetPath, { recursive: true });
-          const children = await fs.readdir(sourcePath);
-          for (const child of children) {
-            await copyRelativePath(path.join(relativePath, child.name));
-          }
-          return;
-        }
-
-        if (entry.isFile()) {
-          await mkdir(path.dirname(targetPath), { recursive: true });
-          await writeFile(targetPath, await fs.readFile(sourcePath));
-        }
-      }
-
-      for (const candidate of candidates) {
-        await copyRelativePath(candidate);
-      }
-
-      return snapshotRoot;
-    });
-  }
-
-  async function readLatestPathMtimeMs(targetPath: string): Promise<number | undefined> {
-    const entry = await stat(targetPath).catch(() => null);
-    if (!entry) {
-      return undefined;
-    }
-
-    let latest = Number(entry.mtimeMs);
-    if (!entry.isDirectory()) {
-      return latest;
-    }
-
-    const entries = await readdir(targetPath, { withFileTypes: true }).catch(() => []);
-    for (const child of entries) {
-      const childLatest = await readLatestPathMtimeMs(path.join(targetPath, child.name));
-      if (typeof childLatest === "number" && Number.isFinite(childLatest) && childLatest > latest) {
-        latest = childLatest;
-      }
-    }
-
-    return latest;
-  }
-
-  async function readLatestWorkspaceDefinitionMtimeMs(rootPath: string): Promise<number | undefined> {
-    const candidates = [
-      path.join(rootPath, "AGENTS.md"),
-      path.join(rootPath, ".openharness", "settings.yaml"),
-      path.join(rootPath, ".openharness", "agents"),
-      path.join(rootPath, ".openharness", "actions"),
-      path.join(rootPath, ".openharness", "skills"),
-      path.join(rootPath, ".openharness", "tools"),
-      path.join(rootPath, ".openharness", "hooks"),
-      path.join(rootPath, ".openharness", "models")
-    ];
-    let latest: number | undefined;
-
-    for (const candidate of candidates) {
-      const candidateLatest = await readLatestPathMtimeMs(candidate);
-      if (typeof candidateLatest === "number" && Number.isFinite(candidateLatest) && (latest === undefined || candidateLatest > latest)) {
-        latest = candidateLatest;
-      }
-    }
-
-    return latest;
   }
 
   function mergeRefreshedWorkspaceRecord(
@@ -1001,6 +840,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   }
 
   async function withWorkspaceDefinitionTimestamp(workspace: WorkspaceRecord): Promise<WorkspaceRecord> {
+    const { readLatestWorkspaceDefinitionMtimeMs } = await loadWorkspaceDefinitionHelpersModule();
     const latestDefinitionMtimeMs = await readLatestWorkspaceDefinitionMtimeMs(workspace.rootPath);
     if (latestDefinitionMtimeMs === undefined) {
       return workspace;
@@ -1029,12 +869,21 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     }
 
     const refreshTask = (async () => {
+      const {
+        copyWorkspaceDefinitionSnapshot,
+        readLatestWorkspaceDefinitionMtimeMs,
+        readLiveWorkspaceSkillNames
+      } = await loadWorkspaceDefinitionHelpersModule();
       const workspace = await persistence.workspaceRepository.getById(normalizedWorkspaceId);
       if (!workspace || workspace.kind !== "project") {
         return;
       }
 
-      const liveSkillNames = await readLiveWorkspaceSkillNames(workspace);
+      const liveSkillNames = await readLiveWorkspaceSkillNames({
+        workspace,
+        workspaceFileAccessProvider: sandboxHost?.workspaceFileAccessProvider,
+        workspaceFileSystem: sandboxHost?.workspaceFileSystem
+      });
       const cachedSkillNames = Object.keys(workspace.skills).sort((left, right) => left.localeCompare(right));
       const skillNamesChanged =
         liveSkillNames.length !== cachedSkillNames.length ||
@@ -1055,7 +904,14 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         return;
       }
 
-      const discoveryRoot = remoteSandboxProvider ? await copyWorkspaceDefinitionSnapshot(workspace) : workspace.rootPath;
+      const discoveryRoot =
+        remoteSandboxProvider
+          ? await copyWorkspaceDefinitionSnapshot({
+              workspace,
+              workspaceFileAccessProvider: sandboxHost?.workspaceFileAccessProvider,
+              workspaceFileSystem: sandboxHost?.workspaceFileSystem
+            })
+          : workspace.rootPath;
       try {
         const discovered = await discoverWorkspaceWithEnrichedModels(discoveryRoot, workspace.kind);
         const refreshed = withManagedWorkspaceExternalRef(
@@ -1090,14 +946,17 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       : !managesWorkspaceRegistry
         ? []
       : (
-          await discoverWorkspaces({
+          await (async () => {
+            const { discoverWorkspaces } = await loadConfigWorkspaceModule();
+            return discoverWorkspaces({
             paths: config.paths,
             platformModels: models,
-            platformAgents,
+            platformAgents: getPlatformAgents(),
             onError: ({ rootPath, kind, error }: { rootPath: string; kind: "project"; error: unknown }) => {
               logWorkspaceDiscoveryError(rootPath, kind, error);
             }
-          } as Parameters<typeof discoverWorkspaces>[0]).then((workspaces) =>
+          } as Parameters<typeof discoverWorkspaces>[0]);
+          })().then((workspaces) =>
             Promise.all(workspaces.map((workspace) => enrichWorkspaceModelsWithDiscoveredMetadata(workspace)))
           )
         ).map((workspace) =>
@@ -1214,19 +1073,23 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   const redisConfigured = Boolean(config.storage.redis_url && config.storage.redis_url.trim().length > 0);
   const useSandboxBackedWorkspaceInitializer =
     remoteSandboxProvider && sandboxHost && !objectStorageBacksManagedWorkspaces(config);
-  const adminCapabilities = createEngineAdminCapabilities({
-    storageAdmin: createStorageAdmin({
-      ...("pool" in persistence ? { postgresPool: persistence.pool } : {}),
-      ...(config.storage.postgres_url ? { postgresConnectionString: config.storage.postgres_url } : {}),
-      redisUrl: config.storage.redis_url,
-      redisAvailable: redisConfigured,
-      redisEventBusEnabled: Boolean(redisBus),
-      redisRunQueueEnabled: Boolean(redisRunQueue),
-      ...(redisWorkspacePlacementRegistry ? { workspacePlacementRegistry: redisWorkspacePlacementRegistry } : {}),
-      archiveExportEnabled: false,
-      archiveExportRoot: resolveArchiveExportRoot(config.paths)
-    })
-  });
+  const adminCapabilities = assemblyProfile.enableAdminCapabilities
+    ? createEngineAdminCapabilities({
+        storageAdmin: (
+          await import("./storage-admin.js")
+        ).createStorageAdmin({
+          ...("pool" in persistence ? { postgresPool: persistence.pool } : {}),
+          ...(config.storage.postgres_url ? { postgresConnectionString: config.storage.postgres_url } : {}),
+          redisUrl: config.storage.redis_url,
+          redisAvailable: redisConfigured,
+          redisEventBusEnabled: Boolean(redisBus),
+          redisRunQueueEnabled: Boolean(redisRunQueue),
+          ...(redisWorkspacePlacementRegistry ? { workspacePlacementRegistry: redisWorkspacePlacementRegistry } : {}),
+          archiveExportEnabled: false,
+          archiveExportRoot: resolveArchiveExportRoot(config.paths)
+        })
+      })
+    : undefined;
   const runtimeProcess = describeEngineProcess({
     processKind,
     startWorker,
@@ -1360,7 +1223,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
               await discoverProjectWorkspaces({
                 workspaceDir: config.paths.workspace_dir,
                 models,
-                platformAgents,
+                platformAgents: getPlatformAgents(),
                 platformSkillDir: config.paths.skill_dir,
                 platformToolDir: toolDir,
                 onError: ({ rootPath, error }: { rootPath: string; kind: "project"; error: unknown }) => {
@@ -1466,7 +1329,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   }
 
   async function refreshWorkspaceDefinitionsForPlatformModels(): Promise<void> {
-    if (remoteSandboxProvider) {
+    if (remoteSandboxProvider || !assemblyProfile.enableControlPlaneFacade) {
       return;
     }
 
@@ -1639,7 +1502,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
                   platformSkillDir: config.paths.skill_dir,
                   toolDir,
                   platformModels: models,
-                  platformAgents,
+                  platformAgents: getPlatformAgents(),
                   sandboxHost: sandboxHost!,
                   ...(sandboxHost?.providerKind === "self_hosted" && config.sandbox?.self_hosted?.base_url?.trim()
                     ? {
@@ -1651,6 +1514,8 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
                     : {})
                 }).initialize
               : async (input) => {
+                  const { resolveWorkspaceCreationRoot } = await loadConfigWorkspaceModule();
+                  const { initializeWorkspaceFromRuntime } = await loadConfigRuntimesModule();
                   const workspaceId = (
                     input as typeof input & {
                       workspaceId?: string | undefined;
@@ -1701,7 +1566,12 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       : {})
   });
   const workspacePrewarmConfig = resolveWorkspacePrewarmConfig();
-  const workspacePrewarmer = sandboxHost
+  const touchWorkspaceActivity = workspaceMaterializationManager
+    ? async (workspaceId: string) => {
+        await workspaceMaterializationManager.touchWorkspaceActivity(workspaceId);
+      }
+    : undefined;
+  const workspacePrewarmer = assemblyProfile.enableControlPlaneFacade && sandboxHost
     ? workspacePrewarmConfig.enabled
       ? createWorkspacePrewarmer({
           sandboxHost,
@@ -1711,24 +1581,26 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         })
       : undefined
     : undefined;
-  const controlPlaneEngineService = new ControlPlaneEngineService(runtimeService, {
-    workspaceDefinitionRefresher: {
-      async refreshWorkspaceDefinition(workspaceId: string) {
-        await refreshWorkspaceDefinitionIfNeeded(workspaceId);
-      }
-    },
-    ...(workspaceMaterializationManager
-      ? {
-          workspaceActivityTracker: {
-            async touchWorkspace(workspaceId: string) {
-              await workspaceMaterializationManager.touchWorkspaceActivity(workspaceId);
-            }
+  const controlPlaneEngineService: ControlPlaneRuntimeOperations = assemblyProfile.enableControlPlaneFacade
+    ? new ControlPlaneEngineService(runtimeService, {
+        workspaceDefinitionRefresher: {
+          async refreshWorkspaceDefinition(workspaceId: string) {
+            await refreshWorkspaceDefinitionIfNeeded(workspaceId);
           }
-        }
-      : {}),
-    ...(workspacePrewarmer ? { workspacePrewarmer } : {}),
-    ...(runtimeDebugLogger ? { logger: runtimeDebugLogger } : {})
-  });
+        },
+        ...(touchWorkspaceActivity
+          ? {
+              workspaceActivityTracker: {
+                async touchWorkspace(workspaceId: string) {
+                  await touchWorkspaceActivity(workspaceId);
+                }
+              }
+            }
+          : {}),
+        ...(workspacePrewarmer ? { workspacePrewarmer } : {}),
+        ...(runtimeDebugLogger ? { logger: runtimeDebugLogger } : {})
+      })
+    : runtimeService;
   const executionEngineService = new ExecutionEngineService(runtimeService);
   const workerRuntime = assemblyProfile.enableWorkerRuntime
     ? createWorkerRuntimeControl({
@@ -1894,26 +1766,42 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     modelGateway: resolvedModelGateway,
     process: runtimeProcess,
     workspaceMode,
-    listPlatformModels: () => platformModelService.listModels(),
-    getPlatformModelSnapshot: () => platformModelService.getSnapshot(),
     refreshPlatformModels: () => platformModelService.refresh(),
-    refreshDistributedPlatformModels,
-    subscribePlatformModelSnapshot: (listener) => platformModelService.subscribe(listener),
+    ...(assemblyProfile.enableControlPlaneFacade
+      ? {
+          listPlatformModels: () => platformModelService.listModels(),
+          getPlatformModelSnapshot: () => platformModelService.getSnapshot(),
+          refreshDistributedPlatformModels,
+          subscribePlatformModelSnapshot: (listener: (snapshot: PlatformModelSnapshot) => void) =>
+            platformModelService.subscribe(listener)
+        }
+      : {}),
     ...(singleWorkspace === undefined
       ? {
-          listWorkspaceRuntimes: () => listWorkspaceRuntimes(config.paths.runtime_dir),
-          uploadWorkspaceRuntime: (input: { runtimeName: string; zipBuffer: Buffer; overwrite?: boolean | undefined }) =>
-            uploadWorkspaceRuntime({
+          listWorkspaceRuntimes: async () => {
+            const { listWorkspaceRuntimes } = await loadConfigRuntimesModule();
+            return listWorkspaceRuntimes(config.paths.runtime_dir);
+          },
+          uploadWorkspaceRuntime: async (input: {
+            runtimeName: string;
+            zipBuffer: Buffer;
+            overwrite?: boolean | undefined;
+          }) => {
+            const { uploadWorkspaceRuntime } = await loadConfigRuntimesModule();
+            return uploadWorkspaceRuntime({
               runtimeDir: config.paths.runtime_dir,
               runtimeName: input.runtimeName,
               zipBuffer: input.zipBuffer,
               ...(input.overwrite !== undefined ? { overwrite: input.overwrite } : {})
-            }),
-          deleteWorkspaceRuntime: (input: { runtimeName: string }) =>
-            deleteWorkspaceRuntime({
+            });
+          },
+          deleteWorkspaceRuntime: async (input: { runtimeName: string }) => {
+            const { deleteWorkspaceRuntime } = await loadConfigRuntimesModule();
+            return deleteWorkspaceRuntime({
               runtimeDir: config.paths.runtime_dir,
               runtimeName: input.runtimeName
-            }),
+            });
+          },
           ...(!remoteSandboxProvider
             ? {
                 async importWorkspace(input) {
@@ -2003,9 +1891,10 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
           }
         }
       : {}),
-    adminCapabilities,
+    ...(adminCapabilities ? { adminCapabilities } : {}),
     ...(sandboxHost ? { sandboxHostProviderKind: sandboxHost.providerKind } : {}),
     ...(ownerBaseUrl ? { localOwnerBaseUrl: ownerBaseUrl } : {}),
+    ...(touchWorkspaceActivity ? { touchWorkspaceActivity } : {}),
     appendEngineLog(input) {
       return appendEngineLogEvent(primarySessionEventStore, {
         ...input,
@@ -2066,7 +1955,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     async close() {
       await Promise.all([
         workerRuntime?.close() ?? Promise.resolve(),
-        adminCapabilities.close(),
+        adminCapabilities?.close() ?? Promise.resolve(),
         redisBus?.close() ?? Promise.resolve(),
         redisWorkerRegistry?.close() ?? Promise.resolve(),
         redisWorkspaceLeaseRegistry?.close() ?? Promise.resolve(),

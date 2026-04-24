@@ -13,10 +13,14 @@ import {
 import type { ServerConfig } from "@oah/config";
 import {
   computeNativeDirectoryFingerprint,
+  computeNativeDirectoryFingerprintBatch,
   isNativeWorkspaceSyncEnabled,
   planNativeLocalToRemote,
   planNativeRemoteToLocal,
-  scanNativeLocalTree
+  scanNativeLocalTree,
+  syncNativeLocalToRemote,
+  syncNativeRemoteToLocal,
+  type NativeWorkspaceSyncObjectStoreConfig
 } from "@oah/native-bridge";
 
 export type ManagedPathKey = "workspace" | "runtime" | "model" | "tool" | "skill";
@@ -38,6 +42,7 @@ export interface DirectoryObjectStore {
   getObject(key: string): Promise<{ body: Buffer; metadata?: Record<string, string> | undefined }>;
   putObject(key: string, body: Buffer, options?: { mtimeMs?: number | undefined }): Promise<void>;
   deleteObjects(keys: string[]): Promise<void>;
+  getNativeWorkspaceSyncConfig?(): NativeWorkspaceSyncObjectStoreConfig | undefined;
   bucket?: string | undefined;
 }
 
@@ -328,6 +333,14 @@ function resolveNativeFingerprintExcludes(options?: DirectorySyncOptions): strin
   return undefined;
 }
 
+function resolveMirrorFingerprintOptions(mapping?: ManagedPathMapping): DirectorySyncOptions | undefined {
+  return mapping?.key === "workspace"
+    ? {
+        excludeRelativePath: shouldExcludeWorkspaceMirrorRelativePath
+      }
+    : undefined;
+}
+
 function buildNormalizedRemoteEntryMap(
   remotePrefix: string,
   remoteEntries: ObjectStorageEntry[],
@@ -441,6 +454,41 @@ async function collectNativeLocalToRemotePlanIfAvailable(
   }
 }
 
+async function syncNativeLocalDirectoryToRemoteIfAvailable(
+  store: DirectoryObjectStore,
+  remotePrefix: string,
+  localDir: string,
+  options?: DirectorySyncOptions
+): Promise<DirectorySyncResult | undefined> {
+  const nativeExcludes = resolveNativeFingerprintExcludes(options);
+  if (!isNativeWorkspaceSyncEnabled() || nativeExcludes === undefined) {
+    return undefined;
+  }
+
+  const nativeObjectStore = store.getNativeWorkspaceSyncConfig?.();
+  if (!nativeObjectStore) {
+    return undefined;
+  }
+
+  try {
+    const concurrency = resolveDirectorySyncConcurrency();
+    return await syncNativeLocalToRemote({
+      rootDir: localDir,
+      remotePrefix,
+      objectStore: nativeObjectStore,
+      maxConcurrency: concurrency,
+      ...(nativeExcludes.length > 0 ? { excludeRelativePaths: nativeExcludes } : {})
+    });
+  } catch (error) {
+    console.warn(
+      `[oah-native] Falling back to TypeScript local->remote sync for ${localDir}: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    return undefined;
+  }
+}
+
 async function collectNativeRemoteToLocalPlanIfAvailable(
   localDir: string,
   remotePrefix: string,
@@ -456,6 +504,7 @@ async function collectNativeRemoteToLocalPlanIfAvailable(
     return await planNativeRemoteToLocal({
       rootDir: localDir,
       ...(nativeExcludes.length > 0 ? { excludeRelativePaths: nativeExcludes } : {}),
+      ...(options?.preserveTopLevelNames ? { preserveTopLevelNames: options.preserveTopLevelNames } : {}),
       remoteEntries: remoteEntries
         .map((entry) => {
           const relativePath = relativePathFromRemoteKey(remotePrefix, entry.key);
@@ -482,6 +531,43 @@ async function collectNativeRemoteToLocalPlanIfAvailable(
       }`
     );
     return undefined;
+  }
+}
+
+async function syncNativeRemotePrefixToLocalIfAvailable(
+  store: DirectoryObjectStore,
+  remotePrefix: string,
+  localDir: string,
+  options?: DirectorySyncOptions
+): Promise<boolean> {
+  const nativeExcludes = resolveNativeFingerprintExcludes(options);
+  if (!isNativeWorkspaceSyncEnabled() || nativeExcludes === undefined) {
+    return false;
+  }
+
+  const nativeObjectStore = store.getNativeWorkspaceSyncConfig?.();
+  if (!nativeObjectStore) {
+    return false;
+  }
+
+  try {
+    const concurrency = resolveDirectorySyncConcurrency();
+    await syncNativeRemoteToLocal({
+      rootDir: localDir,
+      remotePrefix,
+      objectStore: nativeObjectStore,
+      maxConcurrency: concurrency,
+      ...(nativeExcludes.length > 0 ? { excludeRelativePaths: nativeExcludes } : {}),
+      ...(options?.preserveTopLevelNames ? { preserveTopLevelNames: options.preserveTopLevelNames } : {})
+    });
+    return true;
+  } catch (error) {
+    console.warn(
+      `[oah-native] Falling back to TypeScript remote->local sync for ${localDir}: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    return false;
   }
 }
 
@@ -527,6 +613,10 @@ async function removeUnexpectedLocalEntries(
       }
 
       if (entry.isDirectory()) {
+        if (shouldPreserveTopLevelName(relativePath, options)) {
+          continue;
+        }
+
         await walk(absolutePath);
         if (shouldPreserveTopLevelName(relativePath, options) || remoteDirectories.has(relativePath)) {
           continue;
@@ -541,6 +631,10 @@ async function removeUnexpectedLocalEntries(
         if (remainingEntries && remainingEntries.length === 0) {
           await rm(absolutePath, { recursive: true, force: true });
         }
+        continue;
+      }
+
+      if (shouldPreserveTopLevelName(relativePath, options)) {
         continue;
       }
 
@@ -653,8 +747,10 @@ async function streamBodyToBuffer(body: unknown): Promise<Buffer> {
 class S3DirectoryStore implements DirectoryObjectStore {
   readonly #bucket: string;
   readonly #client: S3Client;
+  readonly #config: ObjectStorageConfig;
 
   constructor(config: ObjectStorageConfig) {
+    this.#config = config;
     this.#bucket = config.bucket;
     this.#client = new S3Client({
       region: config.region,
@@ -674,6 +770,18 @@ class S3DirectoryStore implements DirectoryObjectStore {
 
   get bucket(): string {
     return this.#bucket;
+  }
+
+  getNativeWorkspaceSyncConfig(): NativeWorkspaceSyncObjectStoreConfig {
+    return {
+      bucket: this.#config.bucket,
+      region: this.#config.region,
+      ...(this.#config.endpoint ? { endpoint: this.#config.endpoint } : {}),
+      ...(this.#config.force_path_style !== undefined ? { forcePathStyle: this.#config.force_path_style } : {}),
+      ...(this.#config.access_key ? { accessKey: this.#config.access_key } : {}),
+      ...(this.#config.secret_key ? { secretKey: this.#config.secret_key } : {}),
+      ...(this.#config.session_token ? { sessionToken: this.#config.session_token } : {})
+    };
   }
 
   async listEntries(prefix: string): Promise<ObjectStorageEntry[]> {
@@ -885,8 +993,9 @@ export class ObjectStorageMirrorController {
 
     this.#syncInFlight = (async () => {
       try {
+        const nextFingerprints = await this.#captureFingerprints(this.#mappings);
         for (const mapping of this.#mappings) {
-          const nextFingerprint = await this.#captureFingerprint(mapping.localDir);
+          const nextFingerprint = nextFingerprints.get(mapping.key) ?? (await this.#captureFingerprint(mapping.localDir));
           const previousFingerprint = this.#fingerprints.get(mapping.key);
           if (previousFingerprint === nextFingerprint) {
             continue;
@@ -905,13 +1014,64 @@ export class ObjectStorageMirrorController {
 
   async #captureFingerprint(directory: string): Promise<string> {
     const mapping = this.#mappings.find((candidate) => candidate.localDir === directory);
-    return createDirectoryFingerprint(
-      await collectLocalDirectorySnapshot(directory, mapping?.key === "workspace"
-        ? {
-            excludeRelativePath: shouldExcludeWorkspaceMirrorRelativePath
+    return computeLocalDirectoryFingerprint(directory, resolveMirrorFingerprintOptions(mapping));
+  }
+
+  async #captureFingerprints(mappings: readonly ManagedPathMapping[]): Promise<Map<ManagedPathKey, string>> {
+    const fingerprints = new Map<ManagedPathKey, string>();
+    if (mappings.length === 0) {
+      return fingerprints;
+    }
+
+    const nativeInputs = mappings
+      .map((mapping) => {
+        const nativeExcludes = resolveNativeFingerprintExcludes(resolveMirrorFingerprintOptions(mapping));
+        if (nativeExcludes === undefined) {
+          return undefined;
+        }
+
+        return {
+          mapping,
+          input: {
+            rootDir: mapping.localDir,
+            ...(nativeExcludes.length > 0 ? { excludeRelativePaths: nativeExcludes } : {})
           }
-        : undefined)
-    );
+        };
+      });
+
+    if (isNativeWorkspaceSyncEnabled() && nativeInputs.every((entry) => entry !== undefined)) {
+      try {
+        const resolvedInputs = nativeInputs;
+        const result = await computeNativeDirectoryFingerprintBatch({
+          directories: resolvedInputs.map((entry) => entry.input)
+        });
+        for (let index = 0; index < resolvedInputs.length; index += 1) {
+          const nativeInput = resolvedInputs[index];
+          const nativeResult = result.results[index];
+          if (!nativeInput || !nativeResult || nativeResult.rootDir !== nativeInput.mapping.localDir) {
+            continue;
+          }
+
+          fingerprints.set(nativeInput.mapping.key, nativeResult.fingerprint);
+        }
+
+        if (fingerprints.size === mappings.length) {
+          return fingerprints;
+        }
+      } catch (error) {
+        console.warn(
+          `[oah-native] Falling back to per-directory mirror fingerprints: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      }
+    }
+
+    for (const mapping of mappings) {
+      fingerprints.set(mapping.key, await this.#captureFingerprint(mapping.localDir));
+    }
+
+    return fingerprints;
   }
 
   async #syncRemoteToLocal(mapping: ManagedPathMapping): Promise<void> {
@@ -968,8 +1128,8 @@ export class ObjectStorageMirrorController {
           }
         }
 
-        for (const mapping of this.#mappings) {
-          this.#fingerprints.set(mapping.key, await this.#captureFingerprint(mapping.localDir));
+        for (const [key, fingerprint] of await this.#captureFingerprints(this.#mappings)) {
+          this.#fingerprints.set(key, fingerprint);
         }
 
         if (this.#syncOnChange && !this.#pollTimer) {
@@ -1094,6 +1254,10 @@ export async function syncRemotePrefixToLocal(
   options?: DirectorySyncOptions
 ): Promise<void> {
   logger?.(`syncing ${(label ?? remotePrefix) || "."} from object storage into ${localDir}`);
+  if (await syncNativeRemotePrefixToLocalIfAvailable(store, remotePrefix, localDir, options)) {
+    return;
+  }
+
   const entries = await store.listEntries(remotePrefix);
   await mkdir(localDir, { recursive: true });
 
@@ -1125,10 +1289,16 @@ export async function syncRemotePrefixToLocal(
     }
   }
 
-  await removeUnexpectedLocalEntries(localDir, new Set(remoteFiles.keys()), remoteDirectories, options);
-
   const concurrency = resolveDirectorySyncConcurrency();
   const nativePlan = await collectNativeRemoteToLocalPlanIfAvailable(localDir, remotePrefix, entries, options);
+  if (nativePlan) {
+    await runWithConcurrency(nativePlan.removePaths, concurrency, async (targetPath) => {
+      await rm(targetPath, { recursive: true, force: true });
+    });
+  } else {
+    await removeUnexpectedLocalEntries(localDir, new Set(remoteFiles.keys()), remoteDirectories, options);
+  }
+
   const orderedDirectories = nativePlan?.directoriesToCreate ?? [...remoteDirectories].sort((left, right) => {
     const depthDifference = left.split("/").length - right.split("/").length;
     return depthDifference !== 0 ? depthDifference : left.localeCompare(right);
@@ -1239,6 +1409,12 @@ export async function syncLocalDirectoryToRemote(
   options?: DirectorySyncOptions
 ): Promise<DirectorySyncResult> {
   logger?.(`syncing local changes in ${localDir} back to object storage (${(label ?? remotePrefix) || "."})`);
+  const nativeSyncResult = await syncNativeLocalDirectoryToRemoteIfAvailable(store, remotePrefix, localDir, options);
+  if (nativeSyncResult) {
+    await pruneEmptyDirectories(localDir);
+    return nativeSyncResult;
+  }
+
   const remoteEntries = await store.listEntries(remotePrefix);
   const remoteByRelativePath = buildNormalizedRemoteEntryMap(remotePrefix, remoteEntries, options);
   let uploadedFileCount = 0;

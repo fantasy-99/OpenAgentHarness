@@ -1,6 +1,6 @@
 import type { ChatMessage, Run, Session } from "@oah/api-contracts";
 
-import type { ModelDefinition, WorkspaceRecord } from "../types.js";
+import type { ModelDefinition, WorkspaceFileAccessProvider, WorkspaceFileSystem, WorkspaceRecord } from "../types.js";
 import { ModelMessageSerializer } from "./ai-sdk-message-serializer.js";
 import { EngineMessageProjector } from "./message-projections.js";
 import { ModelResolverService, type ResolvedRunModel } from "./model-resolver.js";
@@ -21,6 +21,8 @@ export interface ModelExecutionInput {
 export interface ModelInputServiceDependencies {
   defaultModel: string;
   platformModels: Record<string, ModelDefinition>;
+  workspaceFileSystem?: WorkspaceFileSystem | undefined;
+  workspaceFileAccessProvider?: WorkspaceFileAccessProvider | undefined;
   applyContextHooks: (
     workspace: WorkspaceRecord,
     session: Session,
@@ -38,17 +40,21 @@ export class ModelInputService {
   readonly #modelMessageSerializer: ModelMessageSerializer;
   readonly #modelResolver: ModelResolverService;
   readonly #promptComposer: PromptComposerService;
+  readonly #workspaceFileAccessProvider: WorkspaceFileAccessProvider | undefined;
 
   constructor(dependencies: ModelInputServiceDependencies) {
     this.#applyContextHooks = dependencies.applyContextHooks;
     this.#collapseLeadingSystemMessages = dependencies.collapseLeadingSystemMessages;
     this.#engineMessageProjector = new EngineMessageProjector();
-    this.#modelMessageSerializer = new ModelMessageSerializer();
+    this.#modelMessageSerializer = new ModelMessageSerializer({
+      workspaceFileSystem: dependencies.workspaceFileSystem
+    });
     this.#modelResolver = new ModelResolverService({
       defaultModel: dependencies.defaultModel,
       platformModels: dependencies.platformModels
     });
     this.#promptComposer = new PromptComposerService();
+    this.#workspaceFileAccessProvider = dependencies.workspaceFileAccessProvider;
   }
 
   async buildModelInput(
@@ -104,7 +110,20 @@ export class ModelInputService {
       applyCompactBoundary: true
     });
     const applyHooks = options?.applyHooks !== false;
-    let contextMessages = this.#modelMessageSerializer.toAiSdkMessages(modelProjection.messages);
+    const workspaceFileAccess = this.#workspaceFileAccessProvider
+      ? await this.#workspaceFileAccessProvider.acquire({
+          workspace,
+          access: "read"
+        })
+      : undefined;
+    let contextMessages: ChatMessage[];
+    try {
+      contextMessages = await this.#modelMessageSerializer.toAiSdkMessages(modelProjection.messages, {
+        workspace
+      });
+    } finally {
+      await workspaceFileAccess?.release();
+    }
     if (applyHooks) {
       contextMessages = await this.#applyContextHooks(
         workspace,

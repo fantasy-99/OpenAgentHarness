@@ -97,6 +97,7 @@ export interface AppDependencies {
   sandboxHostProviderKind?: SandboxHostProviderKind | undefined;
   sandboxOwnerFallbackBaseUrl?: string | undefined;
   localOwnerBaseUrl?: string | undefined;
+  touchWorkspaceActivity?: ((workspaceId: string) => Promise<void>) | undefined;
 }
 
 export interface AppRouteOptions {

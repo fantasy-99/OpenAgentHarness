@@ -1,4 +1,6 @@
-import { createApp, type AppDependencies } from "./app.js";
+import { createApiApp } from "./api-app.js";
+import { createInternalWorkerApp } from "./internal-worker-app.js";
+import type { AppDependencies } from "./http/types.js";
 import { bootstrapRuntime, installSignalHandlers, shouldStartEmbeddedWorker, type BootstrappedRuntime } from "./bootstrap.js";
 
 function normalizeOwnerProxyBaseUrl(input: string | undefined): string | undefined {
@@ -16,7 +18,7 @@ function normalizeOwnerProxyBaseUrl(input: string | undefined): string | undefin
   }
 }
 
-function buildAppDependencies(runtime: BootstrappedRuntime): AppDependencies {
+function buildSharedAppDependencies(runtime: BootstrappedRuntime): AppDependencies {
   const sandboxOwnerFallbackBaseUrl =
     runtime.sandboxHostProviderKind === "self_hosted"
       ? normalizeOwnerProxyBaseUrl(runtime.config.sandbox?.self_hosted?.base_url)
@@ -29,10 +31,25 @@ function buildAppDependencies(runtime: BootstrappedRuntime): AppDependencies {
     workspaceMode: runtime.workspaceMode.kind,
     healthCheck: () => runtime.healthReport(),
     readinessCheck: () => runtime.readinessReport(),
-    storageAdmin: runtime.adminCapabilities.storageAdmin,
     appendEngineLog: runtime.appendEngineLog,
     ...(runtime.sandboxHostProviderKind ? { sandboxHostProviderKind: runtime.sandboxHostProviderKind } : {}),
     ...(sandboxOwnerFallbackBaseUrl ? { sandboxOwnerFallbackBaseUrl } : {}),
+    ...(runtime.resolveWorkspaceOwnership
+      ? { resolveWorkspaceOwnership: runtime.resolveWorkspaceOwnership }
+      : {}),
+    ...(runtime.clearWorkspaceCoordination
+      ? { clearWorkspaceCoordination: runtime.clearWorkspaceCoordination }
+      : {}),
+    ...(runtime.touchWorkspaceActivity
+      ? { touchWorkspaceActivity: runtime.touchWorkspaceActivity }
+      : {})
+  };
+}
+
+function buildApiAppDependencies(runtime: BootstrappedRuntime): AppDependencies {
+  return {
+    ...buildSharedAppDependencies(runtime),
+    ...(runtime.adminCapabilities?.storageAdmin ? { storageAdmin: runtime.adminCapabilities.storageAdmin } : {}),
     ...(runtime.listPlatformModels ? { listPlatformModels: runtime.listPlatformModels } : {}),
     ...(runtime.getPlatformModelSnapshot ? { getPlatformModelSnapshot: runtime.getPlatformModelSnapshot } : {}),
     ...(runtime.refreshPlatformModels ? { refreshPlatformModels: runtime.refreshPlatformModels } : {}),
@@ -45,13 +62,15 @@ function buildAppDependencies(runtime: BootstrappedRuntime): AppDependencies {
     ...(runtime.listWorkspaceRuntimes ? { listWorkspaceRuntimes: runtime.listWorkspaceRuntimes } : {}),
     ...(runtime.uploadWorkspaceRuntime ? { uploadWorkspaceRuntime: runtime.uploadWorkspaceRuntime } : {}),
     ...(runtime.deleteWorkspaceRuntime ? { deleteWorkspaceRuntime: runtime.deleteWorkspaceRuntime } : {}),
-    ...(runtime.importWorkspace ? { importWorkspace: runtime.importWorkspace } : {}),
-    ...(runtime.resolveWorkspaceOwnership
-      ? { resolveWorkspaceOwnership: runtime.resolveWorkspaceOwnership }
-      : {}),
-    ...(runtime.clearWorkspaceCoordination
-      ? { clearWorkspaceCoordination: runtime.clearWorkspaceCoordination }
-      : {})
+    ...(runtime.importWorkspace ? { importWorkspace: runtime.importWorkspace } : {})
+  };
+}
+
+function buildWorkerAppDependencies(runtime: BootstrappedRuntime): AppDependencies {
+  return {
+    ...buildSharedAppDependencies(runtime),
+    ...(runtime.refreshPlatformModels ? { refreshPlatformModels: runtime.refreshPlatformModels } : {}),
+    ...(runtime.localOwnerBaseUrl ? { localOwnerBaseUrl: runtime.localOwnerBaseUrl } : {})
   };
 }
 
@@ -62,7 +81,7 @@ export async function startApiServer(argv = process.argv.slice(2)): Promise<void
     processKind: "api"
   });
 
-  const app = createApp(buildAppDependencies(runtime));
+  const app = createApiApp(buildApiAppDependencies(runtime));
 
   app.addHook("onClose", async () => {
     await runtime.close();
@@ -96,15 +115,7 @@ export async function startWorkerServer(argv = process.argv.slice(2)): Promise<v
     processKind: "worker"
   });
 
-  const app = createApp(
-    {
-      ...buildAppDependencies(runtime),
-      ...(runtime.localOwnerBaseUrl ? { localOwnerBaseUrl: runtime.localOwnerBaseUrl } : {})
-    },
-    {
-      surface: "internal_only"
-    }
-  );
+  const app = createInternalWorkerApp(buildWorkerAppDependencies(runtime));
 
   app.addHook("onClose", async () => {
     await runtime.close();

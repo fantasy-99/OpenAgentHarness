@@ -164,6 +164,17 @@ function guessMimeType(filePath: string): string | undefined {
       return "image/gif";
     case ".webp":
       return "image/webp";
+    case ".bmp":
+      return "image/bmp";
+    case ".tif":
+    case ".tiff":
+      return "image/tiff";
+    case ".avif":
+      return "image/avif";
+    case ".heic":
+      return "image/heic";
+    case ".heif":
+      return "image/heif";
     case ".pdf":
       return "application/pdf";
     default:
