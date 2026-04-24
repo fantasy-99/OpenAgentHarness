@@ -7,6 +7,11 @@ import { writeSseEvent } from "../context.js";
 import type { AppDependencies } from "../types.js";
 
 export function registerInternalModelRoutes(app: FastifyInstance, dependencies: AppDependencies): void {
+  const modelGateway = dependencies.modelGateway;
+  if (!modelGateway) {
+    return;
+  }
+
   app.post("/internal/v1/platform-models/refresh", async (_request, reply) => {
     if (!dependencies.refreshPlatformModels) {
       throw new AppError(404, "platform_models_unavailable", "Platform model refresh is not available.");
@@ -17,7 +22,7 @@ export function registerInternalModelRoutes(app: FastifyInstance, dependencies: 
 
   app.post("/internal/v1/models/generate", async (request, reply) => {
     const input = modelGenerateRequestSchema.parse(request.body);
-    const response = await dependencies.modelGateway.generate(
+    const response = await modelGateway.generate(
       {
         ...input,
         model: input.model ?? dependencies.defaultModel
@@ -41,7 +46,7 @@ export function registerInternalModelRoutes(app: FastifyInstance, dependencies: 
     });
 
     try {
-      const response = await dependencies.modelGateway.stream(
+      const response = await modelGateway.stream(
         {
           ...input,
           model: input.model ?? dependencies.defaultModel

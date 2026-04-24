@@ -1,15 +1,16 @@
 import { performance } from "node:perf_hooks";
-import { mkdtemp, mkdir, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { planNativeSeedUpload } from "../packages/native-bridge/src/index.ts";
+import { planNativeSeedUpload, shutdownNativeWorkspaceSyncWorkerPool } from "../packages/native-bridge/src/index.ts";
 import { WorkspaceMaterializationManager } from "../apps/server/src/bootstrap/workspace-materialization.ts";
 import {
   createDirectoryObjectStore,
   deleteRemotePrefixFromObjectStore,
   syncLocalDirectoryToRemote,
-  syncRemotePrefixToLocal
+  syncRemotePrefixToLocal,
+  type DirectoryObjectStore
 } from "../apps/server/src/object-storage.ts";
 
 interface BenchmarkOptions {
@@ -23,6 +24,8 @@ interface BenchmarkOptions {
   forcePathStyle: boolean;
   memoryPollIntervalMs: number;
 }
+
+type BenchmarkMode = "typescript" | "native-oneshot" | "native-persistent";
 
 interface SeedUploadPlan {
   directories: string[];
@@ -43,6 +46,51 @@ interface TimedMeasurement<T> {
   memory: MemorySample;
   result: T;
 }
+
+interface StoreOperationCounts {
+  listEntries: number;
+  getObject: number;
+  getObjectInfo: number;
+  putObject: number;
+  deleteObjects: number;
+  deleteKeys: number;
+}
+
+interface BenchmarkCaseResult {
+  seedPlanMs: number;
+  pushMs: number;
+  pushWarmMs: number;
+  materializeMs: number;
+  pullMs: number;
+  seedPlanMemory: MemorySample;
+  pushMemory: MemorySample;
+  pushWarmMemory: MemorySample;
+  materializeMemory: MemorySample;
+  pullMemory: MemorySample;
+  plannedSeedFileCount: number;
+  uploadedFileCount: number;
+  materializedFileCount: number;
+  pulledFileCount: number;
+  pushRequests: StoreOperationCounts;
+  pushWarmRequests: StoreOperationCounts;
+  materializeRequests: StoreOperationCounts;
+  pullRequests: StoreOperationCounts;
+}
+
+interface CountingDirectoryObjectStore extends DirectoryObjectStore {
+  close?: (() => Promise<void>) | undefined;
+  getCounts(): StoreOperationCounts;
+}
+
+interface NativeRequestCountsLike {
+  listRequests: number;
+  getRequests: number;
+  headRequests: number;
+  putRequests: number;
+  deleteRequests: number;
+}
+
+const WORKSPACE_SYNC_BINARY_BASENAME = process.platform === "win32" ? "oah-workspace-sync.exe" : "oah-workspace-sync";
 
 const noisySdkBodyLogPattern = /^\{ sendHeader: false, bodyLength: \d+, threshold: \d+ \}\s*$/;
 
@@ -155,6 +203,32 @@ function parseArgs(argv: string[]): BenchmarkOptions {
   return options;
 }
 
+async function resolveKnownGoodWorkspaceSyncBinary(): Promise<string | undefined> {
+  const configured = process.env.OAH_NATIVE_WORKSPACE_SYNC_BINARY?.trim();
+  if (configured) {
+    return configured;
+  }
+
+  const candidates = [
+    path.resolve(process.cwd(), ".native-target", "release", WORKSPACE_SYNC_BINARY_BASENAME),
+    path.resolve(process.cwd(), "native", "target", "release", WORKSPACE_SYNC_BINARY_BASENAME),
+    path.resolve(process.cwd(), "native", "target", "debug", WORKSPACE_SYNC_BINARY_BASENAME),
+    path.resolve(process.cwd(), "native", "bin", WORKSPACE_SYNC_BINARY_BASENAME)
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      if ((await stat(candidate)).isFile()) {
+        return candidate;
+      }
+    } catch {
+      // Ignore missing candidates and keep scanning.
+    }
+  }
+
+  return undefined;
+}
+
 async function createFixture(rootDir: string, files: number, sizeBytes: number): Promise<void> {
   const payload = Buffer.alloc(sizeBytes, "a");
   for (let index = 0; index < files; index += 1) {
@@ -194,6 +268,94 @@ function round(value: number): number {
 
 function bytesToMiB(value: number): number {
   return round(value / (1024 * 1024));
+}
+
+function createEmptyStoreOperationCounts(): StoreOperationCounts {
+  return {
+    listEntries: 0,
+    getObject: 0,
+    getObjectInfo: 0,
+    putObject: 0,
+    deleteObjects: 0,
+    deleteKeys: 0
+  };
+}
+
+function diffStoreOperationCounts(after: StoreOperationCounts, before: StoreOperationCounts): StoreOperationCounts {
+  return {
+    listEntries: after.listEntries - before.listEntries,
+    getObject: after.getObject - before.getObject,
+    getObjectInfo: after.getObjectInfo - before.getObjectInfo,
+    putObject: after.putObject - before.putObject,
+    deleteObjects: after.deleteObjects - before.deleteObjects,
+    deleteKeys: after.deleteKeys - before.deleteKeys
+  };
+}
+
+function mergeStoreOperationCounts(left: StoreOperationCounts, right: StoreOperationCounts): StoreOperationCounts {
+  return {
+    listEntries: left.listEntries + right.listEntries,
+    getObject: left.getObject + right.getObject,
+    getObjectInfo: left.getObjectInfo + right.getObjectInfo,
+    putObject: left.putObject + right.putObject,
+    deleteObjects: left.deleteObjects + right.deleteObjects,
+    deleteKeys: left.deleteKeys + right.deleteKeys
+  };
+}
+
+function sumStoreOperationCounts(counts: StoreOperationCounts): number {
+  return counts.listEntries + counts.getObject + counts.getObjectInfo + counts.putObject + counts.deleteObjects;
+}
+
+function convertNativeRequestCounts(counts: NativeRequestCountsLike | undefined): StoreOperationCounts | undefined {
+  if (!counts) {
+    return undefined;
+  }
+
+  return {
+    listEntries: counts.listRequests,
+    getObject: counts.getRequests,
+    getObjectInfo: counts.headRequests,
+    putObject: counts.putRequests,
+    deleteObjects: counts.deleteRequests,
+    deleteKeys: 0
+  };
+}
+
+function createCountingStore(store: DirectoryObjectStore & { close?: (() => Promise<void>) | undefined }): CountingDirectoryObjectStore {
+  const counts = createEmptyStoreOperationCounts();
+
+  return {
+    bucket: store.bucket,
+    listEntries: async (prefix: string) => {
+      counts.listEntries += 1;
+      return store.listEntries(prefix);
+    },
+    getObject: async (key: string) => {
+      counts.getObject += 1;
+      return store.getObject(key);
+    },
+    getObjectInfo: store.getObjectInfo
+      ? async (key: string) => {
+          counts.getObjectInfo += 1;
+          return store.getObjectInfo?.(key) ?? {};
+        }
+      : undefined,
+    putObject: async (key: string, body: Buffer, options?: { mtimeMs?: number | undefined }) => {
+      counts.putObject += 1;
+      return store.putObject(key, body, options);
+    },
+    deleteObjects: async (keys: string[]) => {
+      counts.deleteObjects += 1;
+      counts.deleteKeys += keys.length;
+      return store.deleteObjects(keys);
+    },
+    getNativeWorkspaceSyncConfig: store.getNativeWorkspaceSyncConfig
+      ? () => store.getNativeWorkspaceSyncConfig?.()
+      : undefined,
+    close: store.close ? async () => store.close?.() : undefined,
+    getCounts: () => ({ ...counts })
+  };
 }
 
 async function measureOperation<T>(pollIntervalMs: number, action: () => Promise<T>): Promise<TimedMeasurement<T>> {
@@ -259,28 +421,16 @@ async function collectSeedUploadPlanTs(input: { currentLocalPath: string; curren
 }
 
 async function runCase(options: {
-  label: string;
+  label: BenchmarkMode;
   nativeEnabled: boolean;
+  persistentNative: boolean;
   remotePrefix: string;
   benchmark: BenchmarkOptions;
-}): Promise<{
-  seedPlanMs: number;
-  pushMs: number;
-  materializeMs: number;
-  pullMs: number;
-  seedPlanMemory: MemorySample;
-  pushMemory: MemorySample;
-  materializeMemory: MemorySample;
-  pullMemory: MemorySample;
-  plannedSeedFileCount: number;
-  uploadedFileCount: number;
-  materializedFileCount: number;
-  pulledFileCount: number;
-}> {
+}): Promise<BenchmarkCaseResult> {
   const sourceDir = await mkdtemp(path.join(os.tmpdir(), "oah-bench-source-"));
   const targetDir = await mkdtemp(path.join(os.tmpdir(), "oah-bench-target-"));
   const materializationCacheRoot = await mkdtemp(path.join(os.tmpdir(), "oah-bench-materialization-"));
-  const store = createDirectoryObjectStore({
+  const store = createCountingStore(createDirectoryObjectStore({
     provider: "s3",
     bucket: options.benchmark.bucket,
     region: options.benchmark.region,
@@ -288,9 +438,12 @@ async function runCase(options: {
     force_path_style: options.benchmark.forcePathStyle,
     access_key: options.benchmark.accessKey,
     secret_key: options.benchmark.secretKey
-  });
+  }));
 
   process.env.OAH_NATIVE_WORKSPACE_SYNC = options.nativeEnabled ? "1" : "0";
+  process.env.OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT = options.persistentNative ? "1" : "0";
+  process.env.OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT = options.nativeEnabled ? "primary" : "sidecar";
+  await shutdownNativeWorkspaceSyncWorkerPool();
 
   try {
     await createFixture(sourceDir, options.benchmark.files, options.benchmark.sizeBytes);
@@ -312,11 +465,31 @@ async function runCase(options: {
     console.log(`[bench-object-storage] case=${options.label} stage=seed-plan done ms=${Math.round(seedPlanMeasurement.durationMs)}`);
 
     console.log(`[bench-object-storage] case=${options.label} stage=push start prefix=${options.remotePrefix}`);
+    const pushCountsBefore = store.getCounts();
     const pushMeasurement = await measureOperation(options.benchmark.memoryPollIntervalMs, async () =>
       syncLocalDirectoryToRemote(store, options.remotePrefix, sourceDir)
     );
+    const pushStoreRequests = diffStoreOperationCounts(store.getCounts(), pushCountsBefore);
+    const pushRequests = mergeStoreOperationCounts(
+      pushStoreRequests,
+      convertNativeRequestCounts(pushMeasurement.result.requestCounts) ?? createEmptyStoreOperationCounts()
+    );
     console.log(
-      `[bench-object-storage] case=${options.label} stage=push done ms=${Math.round(pushMeasurement.durationMs)} uploaded=${pushMeasurement.result.uploadedFileCount}`
+      `[bench-object-storage] case=${options.label} stage=push done ms=${Math.round(pushMeasurement.durationMs)} uploaded=${pushMeasurement.result.uploadedFileCount} requests=${sumStoreOperationCounts(pushRequests)}`
+    );
+
+    console.log(`[bench-object-storage] case=${options.label} stage=push-warm start prefix=${options.remotePrefix}`);
+    const pushWarmCountsBefore = store.getCounts();
+    const pushWarmMeasurement = await measureOperation(options.benchmark.memoryPollIntervalMs, async () =>
+      syncLocalDirectoryToRemote(store, options.remotePrefix, sourceDir)
+    );
+    const pushWarmStoreRequests = diffStoreOperationCounts(store.getCounts(), pushWarmCountsBefore);
+    const pushWarmRequests = mergeStoreOperationCounts(
+      pushWarmStoreRequests,
+      convertNativeRequestCounts(pushWarmMeasurement.result.requestCounts) ?? createEmptyStoreOperationCounts()
+    );
+    console.log(
+      `[bench-object-storage] case=${options.label} stage=push-warm done ms=${Math.round(pushWarmMeasurement.durationMs)} uploaded=${pushWarmMeasurement.result.uploadedFileCount} requests=${sumStoreOperationCounts(pushWarmRequests)}`
     );
 
     const materializationManager = new WorkspaceMaterializationManager({
@@ -325,6 +498,7 @@ async function runCase(options: {
       store
     });
     console.log(`[bench-object-storage] case=${options.label} stage=materialize start prefix=${options.remotePrefix}`);
+    const materializeCountsBefore = store.getCounts();
     const materializeMeasurement = await measureOperation(options.benchmark.memoryPollIntervalMs, async () => {
       const lease = await materializationManager.acquireWorkspace({
         workspace: {
@@ -336,42 +510,61 @@ async function runCase(options: {
       });
       try {
         return {
-          localPath: lease.localPath
+          localPath: lease.localPath,
+          requestCounts: lease.materializeRequestCounts
         };
       } finally {
         await lease.release();
       }
     });
+    const materializeStoreRequests = diffStoreOperationCounts(store.getCounts(), materializeCountsBefore);
+    const materializeRequests = mergeStoreOperationCounts(
+      materializeStoreRequests,
+      convertNativeRequestCounts(materializeMeasurement.result.requestCounts) ?? createEmptyStoreOperationCounts()
+    );
     const materializedFileCount = await countLocalFiles(materializeMeasurement.result.localPath);
     console.log(
-      `[bench-object-storage] case=${options.label} stage=materialize done ms=${Math.round(materializeMeasurement.durationMs)} files=${materializedFileCount}`
+      `[bench-object-storage] case=${options.label} stage=materialize done ms=${Math.round(materializeMeasurement.durationMs)} files=${materializedFileCount} requests=${sumStoreOperationCounts(materializeRequests)}`
     );
     await materializationManager.close();
 
     console.log(`[bench-object-storage] case=${options.label} stage=pull start prefix=${options.remotePrefix}`);
+    const pullCountsBefore = store.getCounts();
     const pullMeasurement = await measureOperation(options.benchmark.memoryPollIntervalMs, async () =>
       syncRemotePrefixToLocal(store, options.remotePrefix, targetDir)
     );
+    const pullStoreRequests = diffStoreOperationCounts(store.getCounts(), pullCountsBefore);
+    const pullRequests = mergeStoreOperationCounts(
+      pullStoreRequests,
+      convertNativeRequestCounts(pullMeasurement.result.requestCounts) ?? createEmptyStoreOperationCounts()
+    );
     const pulledFileCount = await countLocalFiles(targetDir);
     console.log(
-      `[bench-object-storage] case=${options.label} stage=pull done ms=${Math.round(pullMeasurement.durationMs)} files=${pulledFileCount}`
+      `[bench-object-storage] case=${options.label} stage=pull done ms=${Math.round(pullMeasurement.durationMs)} files=${pulledFileCount} requests=${sumStoreOperationCounts(pullRequests)}`
     );
 
     return {
       seedPlanMs: seedPlanMeasurement.durationMs,
       pushMs: pushMeasurement.durationMs,
+      pushWarmMs: pushWarmMeasurement.durationMs,
       materializeMs: materializeMeasurement.durationMs,
       pullMs: pullMeasurement.durationMs,
       seedPlanMemory: seedPlanMeasurement.memory,
       pushMemory: pushMeasurement.memory,
+      pushWarmMemory: pushWarmMeasurement.memory,
       materializeMemory: materializeMeasurement.memory,
       pullMemory: pullMeasurement.memory,
       plannedSeedFileCount: seedPlanMeasurement.result.files.length,
       uploadedFileCount: pushMeasurement.result.uploadedFileCount,
       materializedFileCount,
-      pulledFileCount
+      pulledFileCount,
+      pushRequests,
+      pushWarmRequests,
+      materializeRequests,
+      pullRequests
     };
   } finally {
+    await shutdownNativeWorkspaceSyncWorkerPool().catch(() => undefined);
     await deleteRemotePrefixFromObjectStore(store, options.remotePrefix).catch(() => undefined);
     await rm(sourceDir, { recursive: true, force: true });
     await rm(targetDir, { recursive: true, force: true });
@@ -383,11 +576,20 @@ async function runCase(options: {
 async function main(): Promise<void> {
   installStdoutNoiseFilter();
   const options = parseArgs(process.argv.slice(2));
+  const nativeBinary = await resolveKnownGoodWorkspaceSyncBinary();
+  if (nativeBinary) {
+    process.env.OAH_NATIVE_WORKSPACE_SYNC_BINARY = nativeBinary;
+  }
+  process.env.OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT = "0";
+  await shutdownNativeWorkspaceSyncWorkerPool();
   const runId = Date.now().toString(36);
   const sharedPrefix = `benchmarks/object-storage-sync/${runId}`;
 
   console.log(
     `Benchmarking object-storage sync against ${options.endpoint} bucket=${options.bucket} prefix=${sharedPrefix} files=${options.files} sizeBytes=${options.sizeBytes}`
+  );
+  console.log(
+    `Native workspace sync binary: ${process.env.OAH_NATIVE_WORKSPACE_SYNC_BINARY || "<not found>"}`
   );
   console.log(
     "This script expects the target bucket to already exist. In the local stack, `pnpm storage:sync` prepares the default `test-oah-server` bucket."
@@ -396,13 +598,22 @@ async function main(): Promise<void> {
   const typescriptCase = await runCase({
     label: "typescript",
     nativeEnabled: false,
+    persistentNative: false,
     remotePrefix: `${sharedPrefix}/typescript`,
     benchmark: options
   });
-  const nativeCase = await runCase({
-    label: "native",
+  const nativeOneShotCase = await runCase({
+    label: "native-oneshot",
     nativeEnabled: true,
-    remotePrefix: `${sharedPrefix}/native`,
+    persistentNative: false,
+    remotePrefix: `${sharedPrefix}/native-oneshot`,
+    benchmark: options
+  });
+  const nativePersistentCase = await runCase({
+    label: "native-persistent",
+    nativeEnabled: true,
+    persistentNative: true,
+    remotePrefix: `${sharedPrefix}/native-persistent`,
     benchmark: options
   });
 
@@ -411,6 +622,7 @@ async function main(): Promise<void> {
       mode: "typescript",
       seedPlanMs: Math.round(typescriptCase.seedPlanMs),
       pushMs: Math.round(typescriptCase.pushMs),
+      pushWarmMs: Math.round(typescriptCase.pushWarmMs),
       materializeMs: Math.round(typescriptCase.materializeMs),
       pullMs: Math.round(typescriptCase.pullMs),
       plannedSeedFiles: typescriptCase.plannedSeedFileCount,
@@ -419,15 +631,28 @@ async function main(): Promise<void> {
       pulledFiles: typescriptCase.pulledFileCount
     },
     {
-      mode: "native",
-      seedPlanMs: Math.round(nativeCase.seedPlanMs),
-      pushMs: Math.round(nativeCase.pushMs),
-      materializeMs: Math.round(nativeCase.materializeMs),
-      pullMs: Math.round(nativeCase.pullMs),
-      plannedSeedFiles: nativeCase.plannedSeedFileCount,
-      uploadedFiles: nativeCase.uploadedFileCount,
-      materializedFiles: nativeCase.materializedFileCount,
-      pulledFiles: nativeCase.pulledFileCount
+      mode: "native-oneshot",
+      seedPlanMs: Math.round(nativeOneShotCase.seedPlanMs),
+      pushMs: Math.round(nativeOneShotCase.pushMs),
+      pushWarmMs: Math.round(nativeOneShotCase.pushWarmMs),
+      materializeMs: Math.round(nativeOneShotCase.materializeMs),
+      pullMs: Math.round(nativeOneShotCase.pullMs),
+      plannedSeedFiles: nativeOneShotCase.plannedSeedFileCount,
+      uploadedFiles: nativeOneShotCase.uploadedFileCount,
+      materializedFiles: nativeOneShotCase.materializedFileCount,
+      pulledFiles: nativeOneShotCase.pulledFileCount
+    },
+    {
+      mode: "native-persistent",
+      seedPlanMs: Math.round(nativePersistentCase.seedPlanMs),
+      pushMs: Math.round(nativePersistentCase.pushMs),
+      pushWarmMs: Math.round(nativePersistentCase.pushWarmMs),
+      materializeMs: Math.round(nativePersistentCase.materializeMs),
+      pullMs: Math.round(nativePersistentCase.pullMs),
+      plannedSeedFiles: nativePersistentCase.plannedSeedFileCount,
+      uploadedFiles: nativePersistentCase.uploadedFileCount,
+      materializedFiles: nativePersistentCase.materializedFileCount,
+      pulledFiles: nativePersistentCase.pulledFileCount
     }
   ]);
 
@@ -436,33 +661,147 @@ async function main(): Promise<void> {
       mode: "typescript",
       seedPlanRssPeakMiB: typescriptCase.seedPlanMemory.rssPeakDeltaMiB,
       pushRssPeakMiB: typescriptCase.pushMemory.rssPeakDeltaMiB,
+      pushWarmRssPeakMiB: typescriptCase.pushWarmMemory.rssPeakDeltaMiB,
       materializeRssPeakMiB: typescriptCase.materializeMemory.rssPeakDeltaMiB,
       pullRssPeakMiB: typescriptCase.pullMemory.rssPeakDeltaMiB,
       seedPlanHeapPeakMiB: typescriptCase.seedPlanMemory.heapPeakDeltaMiB,
       pushHeapPeakMiB: typescriptCase.pushMemory.heapPeakDeltaMiB,
+      pushWarmHeapPeakMiB: typescriptCase.pushWarmMemory.heapPeakDeltaMiB,
       materializeHeapPeakMiB: typescriptCase.materializeMemory.heapPeakDeltaMiB,
       pullHeapPeakMiB: typescriptCase.pullMemory.heapPeakDeltaMiB
     },
     {
-      mode: "native",
-      seedPlanRssPeakMiB: nativeCase.seedPlanMemory.rssPeakDeltaMiB,
-      pushRssPeakMiB: nativeCase.pushMemory.rssPeakDeltaMiB,
-      materializeRssPeakMiB: nativeCase.materializeMemory.rssPeakDeltaMiB,
-      pullRssPeakMiB: nativeCase.pullMemory.rssPeakDeltaMiB,
-      seedPlanHeapPeakMiB: nativeCase.seedPlanMemory.heapPeakDeltaMiB,
-      pushHeapPeakMiB: nativeCase.pushMemory.heapPeakDeltaMiB,
-      materializeHeapPeakMiB: nativeCase.materializeMemory.heapPeakDeltaMiB,
-      pullHeapPeakMiB: nativeCase.pullMemory.heapPeakDeltaMiB
+      mode: "native-oneshot",
+      seedPlanRssPeakMiB: nativeOneShotCase.seedPlanMemory.rssPeakDeltaMiB,
+      pushRssPeakMiB: nativeOneShotCase.pushMemory.rssPeakDeltaMiB,
+      pushWarmRssPeakMiB: nativeOneShotCase.pushWarmMemory.rssPeakDeltaMiB,
+      materializeRssPeakMiB: nativeOneShotCase.materializeMemory.rssPeakDeltaMiB,
+      pullRssPeakMiB: nativeOneShotCase.pullMemory.rssPeakDeltaMiB,
+      seedPlanHeapPeakMiB: nativeOneShotCase.seedPlanMemory.heapPeakDeltaMiB,
+      pushHeapPeakMiB: nativeOneShotCase.pushMemory.heapPeakDeltaMiB,
+      pushWarmHeapPeakMiB: nativeOneShotCase.pushWarmMemory.heapPeakDeltaMiB,
+      materializeHeapPeakMiB: nativeOneShotCase.materializeMemory.heapPeakDeltaMiB,
+      pullHeapPeakMiB: nativeOneShotCase.pullMemory.heapPeakDeltaMiB
+    },
+    {
+      mode: "native-persistent",
+      seedPlanRssPeakMiB: nativePersistentCase.seedPlanMemory.rssPeakDeltaMiB,
+      pushRssPeakMiB: nativePersistentCase.pushMemory.rssPeakDeltaMiB,
+      pushWarmRssPeakMiB: nativePersistentCase.pushWarmMemory.rssPeakDeltaMiB,
+      materializeRssPeakMiB: nativePersistentCase.materializeMemory.rssPeakDeltaMiB,
+      pullRssPeakMiB: nativePersistentCase.pullMemory.rssPeakDeltaMiB,
+      seedPlanHeapPeakMiB: nativePersistentCase.seedPlanMemory.heapPeakDeltaMiB,
+      pushHeapPeakMiB: nativePersistentCase.pushMemory.heapPeakDeltaMiB,
+      pushWarmHeapPeakMiB: nativePersistentCase.pushWarmMemory.heapPeakDeltaMiB,
+      materializeHeapPeakMiB: nativePersistentCase.materializeMemory.heapPeakDeltaMiB,
+      pullHeapPeakMiB: nativePersistentCase.pullMemory.heapPeakDeltaMiB
+    }
+  ]);
+
+  console.table([
+    {
+      mode: "typescript",
+      pushRequests: sumStoreOperationCounts(typescriptCase.pushRequests),
+      pushWarmRequests: sumStoreOperationCounts(typescriptCase.pushWarmRequests),
+      pushList: typescriptCase.pushRequests.listEntries,
+      pushGet: typescriptCase.pushRequests.getObject,
+      pushHead: typescriptCase.pushRequests.getObjectInfo,
+      pushPut: typescriptCase.pushRequests.putObject,
+      pushDelete: typescriptCase.pushRequests.deleteObjects,
+      materializeRequests: sumStoreOperationCounts(typescriptCase.materializeRequests),
+      pullRequests: sumStoreOperationCounts(typescriptCase.pullRequests)
+    },
+    {
+      mode: "native-oneshot",
+      pushRequests: sumStoreOperationCounts(nativeOneShotCase.pushRequests),
+      pushWarmRequests: sumStoreOperationCounts(nativeOneShotCase.pushWarmRequests),
+      pushList: nativeOneShotCase.pushRequests.listEntries,
+      pushGet: nativeOneShotCase.pushRequests.getObject,
+      pushHead: nativeOneShotCase.pushRequests.getObjectInfo,
+      pushPut: nativeOneShotCase.pushRequests.putObject,
+      pushDelete: nativeOneShotCase.pushRequests.deleteObjects,
+      materializeRequests: sumStoreOperationCounts(nativeOneShotCase.materializeRequests),
+      pullRequests: sumStoreOperationCounts(nativeOneShotCase.pullRequests)
+    },
+    {
+      mode: "native-persistent",
+      pushRequests: sumStoreOperationCounts(nativePersistentCase.pushRequests),
+      pushWarmRequests: sumStoreOperationCounts(nativePersistentCase.pushWarmRequests),
+      pushList: nativePersistentCase.pushRequests.listEntries,
+      pushGet: nativePersistentCase.pushRequests.getObject,
+      pushHead: nativePersistentCase.pushRequests.getObjectInfo,
+      pushPut: nativePersistentCase.pushRequests.putObject,
+      pushDelete: nativePersistentCase.pushRequests.deleteObjects,
+      materializeRequests: sumStoreOperationCounts(nativePersistentCase.materializeRequests),
+      pullRequests: sumStoreOperationCounts(nativePersistentCase.pullRequests)
+    }
+  ]);
+
+  console.table([
+    {
+      mode: "typescript",
+      materializeList: typescriptCase.materializeRequests.listEntries,
+      materializeGet: typescriptCase.materializeRequests.getObject,
+      materializeHead: typescriptCase.materializeRequests.getObjectInfo,
+      materializePut: typescriptCase.materializeRequests.putObject,
+      materializeDelete: typescriptCase.materializeRequests.deleteObjects,
+      pullList: typescriptCase.pullRequests.listEntries,
+      pullGet: typescriptCase.pullRequests.getObject,
+      pullHead: typescriptCase.pullRequests.getObjectInfo,
+      pullPut: typescriptCase.pullRequests.putObject,
+      pullDelete: typescriptCase.pullRequests.deleteObjects
+    },
+    {
+      mode: "native-oneshot",
+      materializeList: nativeOneShotCase.materializeRequests.listEntries,
+      materializeGet: nativeOneShotCase.materializeRequests.getObject,
+      materializeHead: nativeOneShotCase.materializeRequests.getObjectInfo,
+      materializePut: nativeOneShotCase.materializeRequests.putObject,
+      materializeDelete: nativeOneShotCase.materializeRequests.deleteObjects,
+      pullList: nativeOneShotCase.pullRequests.listEntries,
+      pullGet: nativeOneShotCase.pullRequests.getObject,
+      pullHead: nativeOneShotCase.pullRequests.getObjectInfo,
+      pullPut: nativeOneShotCase.pullRequests.putObject,
+      pullDelete: nativeOneShotCase.pullRequests.deleteObjects
+    },
+    {
+      mode: "native-persistent",
+      materializeList: nativePersistentCase.materializeRequests.listEntries,
+      materializeGet: nativePersistentCase.materializeRequests.getObject,
+      materializeHead: nativePersistentCase.materializeRequests.getObjectInfo,
+      materializePut: nativePersistentCase.materializeRequests.putObject,
+      materializeDelete: nativePersistentCase.materializeRequests.deleteObjects,
+      pullList: nativePersistentCase.pullRequests.listEntries,
+      pullGet: nativePersistentCase.pullRequests.getObject,
+      pullHead: nativePersistentCase.pullRequests.getObjectInfo,
+      pullPut: nativePersistentCase.pullRequests.putObject,
+      pullDelete: nativePersistentCase.pullRequests.deleteObjects
     }
   ]);
 
   console.log(
-    `Native delta: seed-plan ${Math.round(typescriptCase.seedPlanMs - nativeCase.seedPlanMs)}ms, push ${Math.round(
-      typescriptCase.pushMs - nativeCase.pushMs
-    )}ms, materialize ${Math.round(typescriptCase.materializeMs - nativeCase.materializeMs)}ms, pull ${Math.round(
-      typescriptCase.pullMs - nativeCase.pullMs
+    `Native oneshot delta vs ts: seed-plan ${Math.round(typescriptCase.seedPlanMs - nativeOneShotCase.seedPlanMs)}ms, push ${Math.round(
+      typescriptCase.pushMs - nativeOneShotCase.pushMs
+    )}ms, push-warm ${Math.round(typescriptCase.pushWarmMs - nativeOneShotCase.pushWarmMs)}ms, materialize ${Math.round(typescriptCase.materializeMs - nativeOneShotCase.materializeMs)}ms, pull ${Math.round(
+      typescriptCase.pullMs - nativeOneShotCase.pullMs
     )}ms`
   );
+  console.log(
+    `Native persistent delta vs ts: seed-plan ${Math.round(typescriptCase.seedPlanMs - nativePersistentCase.seedPlanMs)}ms, push ${Math.round(
+      typescriptCase.pushMs - nativePersistentCase.pushMs
+    )}ms, push-warm ${Math.round(typescriptCase.pushWarmMs - nativePersistentCase.pushWarmMs)}ms, materialize ${Math.round(typescriptCase.materializeMs - nativePersistentCase.materializeMs)}ms, pull ${Math.round(
+      typescriptCase.pullMs - nativePersistentCase.pullMs
+    )}ms`
+  );
+  console.log(
+    `Persistent gain vs oneshot: seed-plan ${Math.round(nativeOneShotCase.seedPlanMs - nativePersistentCase.seedPlanMs)}ms, push ${Math.round(
+      nativeOneShotCase.pushMs - nativePersistentCase.pushMs
+    )}ms, push-warm ${Math.round(nativeOneShotCase.pushWarmMs - nativePersistentCase.pushWarmMs)}ms, materialize ${Math.round(nativeOneShotCase.materializeMs - nativePersistentCase.materializeMs)}ms, pull ${Math.round(
+      nativeOneShotCase.pullMs - nativePersistentCase.pullMs
+    )}ms`
+  );
+
+  await shutdownNativeWorkspaceSyncWorkerPool();
 }
 
 void main().catch((error) => {

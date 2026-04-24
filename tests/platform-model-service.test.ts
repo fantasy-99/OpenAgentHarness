@@ -177,7 +177,7 @@ openrouter-main:
     }
   });
 
-  it("does not block startup when metadata discovery runs in background", async () => {
+  it("does not block startup and only starts background metadata discovery on first access", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-platform-model-service-background-"));
     tempDirs.push(tempDir);
 
@@ -214,6 +214,9 @@ openrouter-main:
       });
 
       expect(service.definitions["openrouter-main"]?.metadata).toBeUndefined();
+      expect(resolveFetch).toBeUndefined();
+
+      await service.listModels();
 
       for (let attempt = 0; attempt < 20 && !resolveFetch; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 5));

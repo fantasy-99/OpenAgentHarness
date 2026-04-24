@@ -137,10 +137,25 @@ export interface NativeWorkspaceSyncObjectStoreConfig {
   sessionToken?: string | undefined;
 }
 
+export interface NativeSyncBundleConfig {
+  mode?: "off" | "auto" | "force" | undefined;
+  minFileCount?: number | undefined;
+  minTotalBytes?: number | undefined;
+  layout?: "sidecar" | "primary" | undefined;
+}
+
 export interface NativeSandboxHttpConfig {
   baseUrl: string;
   sandboxId: string;
   headers?: Record<string, string> | undefined;
+}
+
+export interface NativeObjectStoreRequestCounts {
+  listRequests: number;
+  getRequests: number;
+  headRequests: number;
+  putRequests: number;
+  deleteRequests: number;
 }
 
 export interface NativeSyncLocalToRemoteResult extends NativeCommandSuccessResponse {
@@ -148,6 +163,7 @@ export interface NativeSyncLocalToRemoteResult extends NativeCommandSuccessRespo
   uploadedFileCount: number;
   deletedRemoteCount: number;
   createdEmptyDirectoryCount: number;
+  requestCounts?: NativeObjectStoreRequestCounts | undefined;
 }
 
 export interface NativeSyncRemoteToLocalResult extends NativeCommandSuccessResponse {
@@ -155,6 +171,7 @@ export interface NativeSyncRemoteToLocalResult extends NativeCommandSuccessRespo
   removedPathCount: number;
   createdDirectoryCount: number;
   downloadedFileCount: number;
+  requestCounts?: NativeObjectStoreRequestCounts | undefined;
 }
 
 export interface NativeSyncLocalToSandboxHttpResult extends NativeCommandSuccessResponse {
@@ -660,6 +677,8 @@ export async function syncNativeLocalToRemote(input: {
   remotePrefix: string;
   excludeRelativePaths?: string[] | undefined;
   maxConcurrency?: number | undefined;
+  inlineUploadThresholdBytes?: number | undefined;
+  syncBundle?: NativeSyncBundleConfig | undefined;
   objectStore: NativeWorkspaceSyncObjectStoreConfig;
 }): Promise<NativeSyncLocalToRemoteResult> {
   return runNativeWorkspaceSyncCommand<NativeSyncLocalToRemoteResult>(["sync-local-to-remote"], {
@@ -667,7 +686,9 @@ export async function syncNativeLocalToRemote(input: {
     remotePrefix: input.remotePrefix,
     objectStore: input.objectStore,
     ...(input.excludeRelativePaths ? { excludeRelativePaths: input.excludeRelativePaths } : {}),
-    ...(input.maxConcurrency ? { maxConcurrency: input.maxConcurrency } : {})
+    ...(input.maxConcurrency ? { maxConcurrency: input.maxConcurrency } : {}),
+    ...(input.inlineUploadThresholdBytes ? { inlineUploadThresholdBytes: input.inlineUploadThresholdBytes } : {}),
+    ...(input.syncBundle ? { syncBundle: input.syncBundle } : {})
   });
 }
 
@@ -677,6 +698,10 @@ export async function syncNativeRemoteToLocal(input: {
   excludeRelativePaths?: string[] | undefined;
   preserveTopLevelNames?: string[] | undefined;
   maxConcurrency?: number | undefined;
+  remoteEntries?: NativePlanRemoteEntry[] | undefined;
+  hasSyncManifest?: boolean | undefined;
+  bundleEntry?: NativePlanRemoteEntry | undefined;
+  syncBundle?: NativeSyncBundleConfig | undefined;
   objectStore: NativeWorkspaceSyncObjectStoreConfig;
 }): Promise<NativeSyncRemoteToLocalResult> {
   return runNativeWorkspaceSyncCommand<NativeSyncRemoteToLocalResult>(["sync-remote-to-local"], {
@@ -685,7 +710,11 @@ export async function syncNativeRemoteToLocal(input: {
     objectStore: input.objectStore,
     ...(input.excludeRelativePaths ? { excludeRelativePaths: input.excludeRelativePaths } : {}),
     ...(input.preserveTopLevelNames ? { preserveTopLevelNames: input.preserveTopLevelNames } : {}),
-    ...(input.maxConcurrency ? { maxConcurrency: input.maxConcurrency } : {})
+    ...(input.maxConcurrency ? { maxConcurrency: input.maxConcurrency } : {}),
+    ...(input.remoteEntries ? { remoteEntries: input.remoteEntries } : {}),
+    ...(typeof input.hasSyncManifest === "boolean" ? { hasSyncManifest: input.hasSyncManifest } : {}),
+    ...(input.bundleEntry ? { bundleEntry: input.bundleEntry } : {}),
+    ...(input.syncBundle ? { syncBundle: input.syncBundle } : {})
   });
 }
 

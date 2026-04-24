@@ -346,8 +346,6 @@ export async function createPlatformModelCatalogService(options: {
     return getSnapshot();
   }
 
-  startBackgroundHydration();
-
   return {
     definitions,
     async listModels() {

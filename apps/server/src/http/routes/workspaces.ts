@@ -35,6 +35,10 @@ import type { AppDependencies, AppRouteOptions } from "../types.js";
 
 type WorkspaceOwnership = Awaited<ReturnType<NonNullable<AppDependencies["resolveWorkspaceOwnership"]>>>;
 
+function readRegisteredRouteUrl(request: FastifyRequest): string {
+  return typeof request.routeOptions.url === "string" ? request.routeOptions.url : request.url.split("?")[0] ?? request.url;
+}
+
 function resolveWorkspaceOwnerBaseUrl(
   dependencies: Pick<AppDependencies, "sandboxOwnerFallbackBaseUrl">,
   ownership: NonNullable<WorkspaceOwnership>
@@ -353,79 +357,126 @@ async function handleDeleteWorkspace(
   return reply.status(204).send();
 }
 
-export function registerInternalWorkspaceRoutes(app: FastifyInstance, dependencies: AppDependencies): void {
-  app.delete("/internal/v1/workspaces/:workspaceId", async (request, reply) => {
-    const params = createParamsSchema("workspaceId").parse(request.params);
-    return handleDeleteWorkspace(dependencies, params.workspaceId, reply);
-  });
+export async function dispatchRegisteredInternalWorkspaceRoute(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  dependencies: AppDependencies
+) {
+  const routeUrl = readRegisteredRouteUrl(request);
 
-  app.get("/internal/v1/workspaces/:workspaceId/entries", async (request, reply) => {
-    const params = createParamsSchema("workspaceId").parse(request.params);
-    return handleListWorkspaceEntries(dependencies, params.workspaceId, request, reply);
-  });
-
-  app.get("/internal/v1/workspaces/:workspaceId/files/content", async (request, reply) => {
-    const params = createParamsSchema("workspaceId").parse(request.params);
-    return handleGetWorkspaceFileContent(dependencies, params.workspaceId, request, reply);
-  });
-
-  app.put("/internal/v1/workspaces/:workspaceId/files/content", async (request, reply) => {
-    const params = createParamsSchema("workspaceId").parse(request.params);
-    return handlePutWorkspaceFileContent(dependencies, params.workspaceId, request, reply);
-  });
-
-  app.put("/internal/v1/workspaces/:workspaceId/files/upload", async (request, reply) => {
-    const params = createParamsSchema("workspaceId").parse(request.params);
-    return handleUploadWorkspaceFile(dependencies, params.workspaceId, request, reply);
-  });
-
-  app.get("/internal/v1/workspaces/:workspaceId/files/download", async (request, reply) => {
-    const params = createParamsSchema("workspaceId").parse(request.params);
-    return handleDownloadWorkspaceFile(dependencies, params.workspaceId, request, reply);
-  });
-
-  app.post("/internal/v1/workspaces/:workspaceId/directories", async (request, reply) => {
-    const params = createParamsSchema("workspaceId").parse(request.params);
-    return handleCreateWorkspaceDirectory(dependencies, params.workspaceId, request, reply);
-  });
-
-  app.delete("/internal/v1/workspaces/:workspaceId/entries", async (request, reply) => {
-    const params = createParamsSchema("workspaceId").parse(request.params);
-    return handleDeleteWorkspaceEntry(dependencies, params.workspaceId, request, reply);
-  });
-
-  app.patch("/internal/v1/workspaces/:workspaceId/entries/move", async (request, reply) => {
-    const params = createParamsSchema("workspaceId").parse(request.params);
-    return handleMoveWorkspaceEntry(dependencies, params.workspaceId, request, reply);
-  });
+  switch (`${request.method} ${routeUrl}`) {
+    case "DELETE /internal/v1/workspaces/:workspaceId": {
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      return handleDeleteWorkspace(dependencies, params.workspaceId, reply);
+    }
+    case "GET /internal/v1/workspaces/:workspaceId/entries": {
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      return handleListWorkspaceEntries(dependencies, params.workspaceId, request, reply);
+    }
+    case "GET /internal/v1/workspaces/:workspaceId/files/content": {
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      return handleGetWorkspaceFileContent(dependencies, params.workspaceId, request, reply);
+    }
+    case "PUT /internal/v1/workspaces/:workspaceId/files/content": {
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      return handlePutWorkspaceFileContent(dependencies, params.workspaceId, request, reply);
+    }
+    case "PUT /internal/v1/workspaces/:workspaceId/files/upload": {
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      return handleUploadWorkspaceFile(dependencies, params.workspaceId, request, reply);
+    }
+    case "GET /internal/v1/workspaces/:workspaceId/files/download": {
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      return handleDownloadWorkspaceFile(dependencies, params.workspaceId, request, reply);
+    }
+    case "POST /internal/v1/workspaces/:workspaceId/directories": {
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      return handleCreateWorkspaceDirectory(dependencies, params.workspaceId, request, reply);
+    }
+    case "DELETE /internal/v1/workspaces/:workspaceId/entries": {
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      return handleDeleteWorkspaceEntry(dependencies, params.workspaceId, request, reply);
+    }
+    case "PATCH /internal/v1/workspaces/:workspaceId/entries/move": {
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      return handleMoveWorkspaceEntry(dependencies, params.workspaceId, request, reply);
+    }
+    default:
+      throw new AppError(404, "route_not_found", `Unsupported internal workspace route: ${request.method} ${routeUrl}`);
+  }
 }
 
-export function registerWorkspaceRoutes(
-  app: FastifyInstance,
+export async function dispatchRegisteredWorkspaceRoute(
+  request: FastifyRequest,
+  reply: FastifyReply,
   dependencies: AppDependencies,
   options: AppRouteOptions
-): void {
-  app.post("/api/v1/workspaces", async (request, reply) => {
-    if (options.workspaceMode === "single") {
-      throw new AppError(501, "workspace_creation_unavailable", "Workspace creation is not available in single-workspace mode.");
+) {
+  const routeUrl = readRegisteredRouteUrl(request);
+
+  switch (`${request.method} ${routeUrl}`) {
+    case "POST /api/v1/workspaces": {
+      if (options.workspaceMode === "single") {
+        throw new AppError(501, "workspace_creation_unavailable", "Workspace creation is not available in single-workspace mode.");
+      }
+
+      const input = createWorkspaceRequestSchema.parse(request.body);
+      const ownerId = resolveOwnerId(input);
+      const reservedPlacement = await reserveOwnerScopedWorkspacePlacement(
+        dependencies,
+        ownerId,
+        ownerId ? createId("ws") : undefined
+      );
+
+      try {
+        const workspace = await dependencies.runtimeService.createWorkspace({
+          input: {
+            ...input,
+            ...(reservedPlacement.workspaceId ? { workspaceId: reservedPlacement.workspaceId } : {})
+          } as typeof input & { workspaceId?: string | undefined }
+        });
+        if (ownerId && workspace.id !== reservedPlacement.workspaceId) {
+          await dependencies.assignWorkspacePlacementOwnerAffinity?.({
+            workspaceId: workspace.id,
+            ownerId,
+            overwrite: true
+          });
+        }
+        return reply.status(201).send(projectWorkspaceForPublicApi(dependencies, workspace));
+      } catch (error) {
+        await reservedPlacement.release();
+        throw error;
+      }
     }
+    case "POST /api/v1/workspaces/import": {
+      if (options.workspaceMode === "single" || !dependencies.importWorkspace) {
+        throw new AppError(501, "workspace_import_unavailable", "Workspace import is not available on this server.");
+      }
 
-    const input = createWorkspaceRequestSchema.parse(request.body);
-    const ownerId = resolveOwnerId(input);
-    const reservedPlacement = await reserveOwnerScopedWorkspacePlacement(
-      dependencies,
-      ownerId,
-      ownerId ? createId("ws") : undefined
-    );
+      const body = request.body as Record<string, unknown> | null;
+      const rootPath = typeof body?.rootPath === "string" ? body.rootPath : undefined;
+      if (!rootPath) {
+        throw new AppError(400, "invalid_request", "rootPath is required.");
+      }
 
-    try {
-      const workspace = await dependencies.runtimeService.createWorkspace({
-        input: {
-          ...input,
-          ...(reservedPlacement.workspaceId ? { workspaceId: reservedPlacement.workspaceId } : {})
-        } as typeof input & { workspaceId?: string | undefined }
+      const name = typeof body?.name === "string" ? body.name : undefined;
+      const externalRef = typeof body?.externalRef === "string" ? body.externalRef : undefined;
+      const ownerId = resolveOwnerId({
+        ownerId: typeof body?.ownerId === "string" ? body.ownerId : undefined
       });
-      if (ownerId && workspace.id !== reservedPlacement.workspaceId) {
+      const serviceName =
+        typeof body?.serviceName === "string" && body.serviceName.trim().length > 0
+          ? body.serviceName.trim().toLowerCase()
+          : undefined;
+      const workspace = await dependencies.importWorkspace({
+        rootPath,
+        kind: "project",
+        ...(name ? { name } : {}),
+        ...(externalRef ? { externalRef } : {}),
+        ...(ownerId ? { ownerId } : {}),
+        ...(serviceName ? { serviceName } : {})
+      });
+      if (ownerId) {
         await dependencies.assignWorkspacePlacementOwnerAffinity?.({
           workspaceId: workspace.id,
           ownerId,
@@ -433,196 +484,230 @@ export function registerWorkspaceRoutes(
         });
       }
       return reply.status(201).send(projectWorkspaceForPublicApi(dependencies, workspace));
-    } catch (error) {
-      await reservedPlacement.release();
-      throw error;
     }
-  });
-
-  app.post("/api/v1/workspaces/import", async (request, reply) => {
-    if (options.workspaceMode === "single" || !dependencies.importWorkspace) {
-      throw new AppError(501, "workspace_import_unavailable", "Workspace import is not available on this server.");
+    case "GET /api/v1/workspaces": {
+      const query = pageQuerySchema.parse(request.query);
+      const page = await dependencies.runtimeService.listWorkspaces(query.pageSize, query.cursor);
+      return reply.send(workspacePageSchema.parse(projectWorkspacePageForPublicApi(dependencies, page)));
     }
-
-    const body = request.body as Record<string, unknown> | null;
-    const rootPath = typeof body?.rootPath === "string" ? body.rootPath : undefined;
-    if (!rootPath) {
-      throw new AppError(400, "invalid_request", "rootPath is required.");
+    case "GET /api/v1/workspaces/:workspaceId": {
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
+      const workspace = await dependencies.runtimeService.getWorkspace(params.workspaceId);
+      return reply.send(projectWorkspaceForPublicApi(dependencies, workspace));
     }
+    case "DELETE /api/v1/workspaces/:workspaceId": {
+      if (options.workspaceMode === "single") {
+        throw new AppError(501, "workspace_deletion_unavailable", "Workspace deletion is not available in single-workspace mode.");
+      }
 
-    const name = typeof body?.name === "string" ? body.name : undefined;
-    const externalRef = typeof body?.externalRef === "string" ? body.externalRef : undefined;
-    const ownerId = resolveOwnerId({
-      ownerId: typeof body?.ownerId === "string" ? body.ownerId : undefined
-    });
-    const serviceName =
-      typeof body?.serviceName === "string" && body.serviceName.trim().length > 0
-        ? body.serviceName.trim().toLowerCase()
-        : undefined;
-    const workspace = await dependencies.importWorkspace({
-      rootPath,
-      kind: "project",
-      ...(name ? { name } : {}),
-      ...(externalRef ? { externalRef } : {}),
-      ...(ownerId ? { ownerId } : {}),
-      ...(serviceName ? { serviceName } : {})
-    });
-    if (ownerId) {
-      await dependencies.assignWorkspacePlacementOwnerAffinity?.({
-        workspaceId: workspace.id,
-        ownerId,
-        overwrite: true
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
+      if ((await guardWorkspaceOwnership(request, reply, dependencies, params.workspaceId)) !== "local") {
+        return reply;
+      }
+      return handleDeleteWorkspace(dependencies, params.workspaceId, reply);
+    }
+    case "GET /api/v1/workspaces/:workspaceId/catalog": {
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
+      const catalog = await dependencies.runtimeService.getWorkspaceCatalog(params.workspaceId);
+      return reply.send(catalog);
+    }
+    case "GET /api/v1/workspaces/:workspaceId/entries": {
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
+      if ((await guardWorkspaceOwnership(request, reply, dependencies, params.workspaceId)) !== "local") {
+        return reply;
+      }
+      return handleListWorkspaceEntries(dependencies, params.workspaceId, request, reply);
+    }
+    case "GET /api/v1/workspaces/:workspaceId/files/content": {
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
+      if ((await guardWorkspaceOwnership(request, reply, dependencies, params.workspaceId)) !== "local") {
+        return reply;
+      }
+      return handleGetWorkspaceFileContent(dependencies, params.workspaceId, request, reply);
+    }
+    case "PUT /api/v1/workspaces/:workspaceId/files/content": {
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
+      if ((await guardWorkspaceOwnership(request, reply, dependencies, params.workspaceId)) !== "local") {
+        return reply;
+      }
+      return handlePutWorkspaceFileContent(dependencies, params.workspaceId, request, reply);
+    }
+    case "PUT /api/v1/workspaces/:workspaceId/files/upload": {
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
+      if ((await guardWorkspaceOwnership(request, reply, dependencies, params.workspaceId)) !== "local") {
+        return reply;
+      }
+      return handleUploadWorkspaceFile(dependencies, params.workspaceId, request, reply);
+    }
+    case "GET /api/v1/workspaces/:workspaceId/files/download": {
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
+      if ((await guardWorkspaceOwnership(request, reply, dependencies, params.workspaceId)) !== "local") {
+        return reply;
+      }
+      return handleDownloadWorkspaceFile(dependencies, params.workspaceId, request, reply);
+    }
+    case "POST /api/v1/workspaces/:workspaceId/directories": {
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
+      if ((await guardWorkspaceOwnership(request, reply, dependencies, params.workspaceId)) !== "local") {
+        return reply;
+      }
+      return handleCreateWorkspaceDirectory(dependencies, params.workspaceId, request, reply);
+    }
+    case "DELETE /api/v1/workspaces/:workspaceId/entries": {
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
+      if ((await guardWorkspaceOwnership(request, reply, dependencies, params.workspaceId)) !== "local") {
+        return reply;
+      }
+      return handleDeleteWorkspaceEntry(dependencies, params.workspaceId, request, reply);
+    }
+    case "PATCH /api/v1/workspaces/:workspaceId/entries/move": {
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
+      if ((await guardWorkspaceOwnership(request, reply, dependencies, params.workspaceId)) !== "local") {
+        return reply;
+      }
+      return handleMoveWorkspaceEntry(dependencies, params.workspaceId, request, reply);
+    }
+    case "POST /api/v1/workspaces/:workspaceId/sessions": {
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      const caller = toCallerContext(request);
+      assertWorkspaceAccess(caller, params.workspaceId);
+      const input = createSessionRequestSchema.parse(request.body);
+      const session = await dependencies.runtimeService.createSession({
+        workspaceId: params.workspaceId,
+        caller,
+        input
       });
+
+      return reply.status(201).send(session);
     }
-    return reply.status(201).send(projectWorkspaceForPublicApi(dependencies, workspace));
-  });
-
-  app.get("/api/v1/workspaces", async (request, reply) => {
-    const query = pageQuerySchema.parse(request.query);
-    const page = await dependencies.runtimeService.listWorkspaces(query.pageSize, query.cursor);
-    return reply.send(workspacePageSchema.parse(projectWorkspacePageForPublicApi(dependencies, page)));
-  });
-
-  app.get("/api/v1/workspaces/:workspaceId", async (request, reply) => {
-    const params = createParamsSchema("workspaceId").parse(request.params);
-    assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
-    const workspace = await dependencies.runtimeService.getWorkspace(params.workspaceId);
-    return reply.send(projectWorkspaceForPublicApi(dependencies, workspace));
-  });
-
-  app.delete("/api/v1/workspaces/:workspaceId", async (request, reply) => {
-    if (options.workspaceMode === "single") {
-      throw new AppError(501, "workspace_deletion_unavailable", "Workspace deletion is not available in single-workspace mode.");
+    case "GET /api/v1/workspaces/:workspaceId/sessions": {
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
+      const query = pageQuerySchema.parse(request.query);
+      const page = await dependencies.runtimeService.listWorkspaceSessions(params.workspaceId, query.pageSize, query.cursor);
+      return reply.send(sessionPageSchema.parse(page));
     }
-
-    const params = createParamsSchema("workspaceId").parse(request.params);
-    assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
-    if ((await guardWorkspaceOwnership(request, reply, dependencies, params.workspaceId)) !== "local") {
-      return reply;
+    case "POST /api/v1/workspaces/:workspaceId/actions/:actionName/runs": {
+      const params = createParamsSchema("workspaceId", "actionName").parse(request.params);
+      const caller = toCallerContext(request);
+      assertWorkspaceAccess(caller, params.workspaceId);
+      const input = createActionRunRequestSchema.parse(request.body) as {
+        sessionId?: string;
+        agentName?: string;
+        input?: unknown;
+        triggerSource?: "api" | "user";
+      };
+      const accepted = await dependencies.runtimeService.triggerActionRun({
+        workspaceId: params.workspaceId,
+        actionName: params.actionName,
+        caller,
+        sessionId: input.sessionId,
+        agentName: input.agentName,
+        input: input.input,
+        triggerSource: input.triggerSource
+      });
+      return reply.status(202).send(accepted);
     }
-    return handleDeleteWorkspace(dependencies, params.workspaceId, reply);
-  });
+    default:
+      throw new AppError(404, "route_not_found", `Unsupported workspace route: ${request.method} ${routeUrl}`);
+  }
+}
 
-  app.get("/api/v1/workspaces/:workspaceId/catalog", async (request, reply) => {
-    const params = createParamsSchema("workspaceId").parse(request.params);
-    assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
-    const catalog = await dependencies.runtimeService.getWorkspaceCatalog(params.workspaceId);
-    return reply.send(catalog);
-  });
+export function registerInternalWorkspaceRoutes(app: FastifyInstance, dependencies: AppDependencies): void {
+  app.delete("/internal/v1/workspaces/:workspaceId", async (request, reply) =>
+    dispatchRegisteredInternalWorkspaceRoute(request, reply, dependencies)
+  );
+  app.get("/internal/v1/workspaces/:workspaceId/entries", async (request, reply) =>
+    dispatchRegisteredInternalWorkspaceRoute(request, reply, dependencies)
+  );
+  app.get("/internal/v1/workspaces/:workspaceId/files/content", async (request, reply) =>
+    dispatchRegisteredInternalWorkspaceRoute(request, reply, dependencies)
+  );
+  app.put("/internal/v1/workspaces/:workspaceId/files/content", async (request, reply) =>
+    dispatchRegisteredInternalWorkspaceRoute(request, reply, dependencies)
+  );
+  app.put("/internal/v1/workspaces/:workspaceId/files/upload", async (request, reply) =>
+    dispatchRegisteredInternalWorkspaceRoute(request, reply, dependencies)
+  );
+  app.get("/internal/v1/workspaces/:workspaceId/files/download", async (request, reply) =>
+    dispatchRegisteredInternalWorkspaceRoute(request, reply, dependencies)
+  );
+  app.post("/internal/v1/workspaces/:workspaceId/directories", async (request, reply) =>
+    dispatchRegisteredInternalWorkspaceRoute(request, reply, dependencies)
+  );
+  app.delete("/internal/v1/workspaces/:workspaceId/entries", async (request, reply) =>
+    dispatchRegisteredInternalWorkspaceRoute(request, reply, dependencies)
+  );
+  app.patch("/internal/v1/workspaces/:workspaceId/entries/move", async (request, reply) =>
+    dispatchRegisteredInternalWorkspaceRoute(request, reply, dependencies)
+  );
+}
 
-  app.get("/api/v1/workspaces/:workspaceId/entries", async (request, reply) => {
-    const params = createParamsSchema("workspaceId").parse(request.params);
-    assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
-    if ((await guardWorkspaceOwnership(request, reply, dependencies, params.workspaceId)) !== "local") {
-      return reply;
-    }
-    return handleListWorkspaceEntries(dependencies, params.workspaceId, request, reply);
-  });
-
-  app.get("/api/v1/workspaces/:workspaceId/files/content", async (request, reply) => {
-    const params = createParamsSchema("workspaceId").parse(request.params);
-    assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
-    if ((await guardWorkspaceOwnership(request, reply, dependencies, params.workspaceId)) !== "local") {
-      return reply;
-    }
-    return handleGetWorkspaceFileContent(dependencies, params.workspaceId, request, reply);
-  });
-
-  app.put("/api/v1/workspaces/:workspaceId/files/content", async (request, reply) => {
-    const params = createParamsSchema("workspaceId").parse(request.params);
-    assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
-    if ((await guardWorkspaceOwnership(request, reply, dependencies, params.workspaceId)) !== "local") {
-      return reply;
-    }
-    return handlePutWorkspaceFileContent(dependencies, params.workspaceId, request, reply);
-  });
-
-  app.put("/api/v1/workspaces/:workspaceId/files/upload", async (request, reply) => {
-    const params = createParamsSchema("workspaceId").parse(request.params);
-    assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
-    if ((await guardWorkspaceOwnership(request, reply, dependencies, params.workspaceId)) !== "local") {
-      return reply;
-    }
-    return handleUploadWorkspaceFile(dependencies, params.workspaceId, request, reply);
-  });
-
-  app.get("/api/v1/workspaces/:workspaceId/files/download", async (request, reply) => {
-    const params = createParamsSchema("workspaceId").parse(request.params);
-    assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
-    if ((await guardWorkspaceOwnership(request, reply, dependencies, params.workspaceId)) !== "local") {
-      return reply;
-    }
-    return handleDownloadWorkspaceFile(dependencies, params.workspaceId, request, reply);
-  });
-
-  app.post("/api/v1/workspaces/:workspaceId/directories", async (request, reply) => {
-    const params = createParamsSchema("workspaceId").parse(request.params);
-    assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
-    if ((await guardWorkspaceOwnership(request, reply, dependencies, params.workspaceId)) !== "local") {
-      return reply;
-    }
-    return handleCreateWorkspaceDirectory(dependencies, params.workspaceId, request, reply);
-  });
-
-  app.delete("/api/v1/workspaces/:workspaceId/entries", async (request, reply) => {
-    const params = createParamsSchema("workspaceId").parse(request.params);
-    assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
-    if ((await guardWorkspaceOwnership(request, reply, dependencies, params.workspaceId)) !== "local") {
-      return reply;
-    }
-    return handleDeleteWorkspaceEntry(dependencies, params.workspaceId, request, reply);
-  });
-
-  app.patch("/api/v1/workspaces/:workspaceId/entries/move", async (request, reply) => {
-    const params = createParamsSchema("workspaceId").parse(request.params);
-    assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
-    if ((await guardWorkspaceOwnership(request, reply, dependencies, params.workspaceId)) !== "local") {
-      return reply;
-    }
-    return handleMoveWorkspaceEntry(dependencies, params.workspaceId, request, reply);
-  });
-
-  app.post("/api/v1/workspaces/:workspaceId/sessions", async (request, reply) => {
-    const params = createParamsSchema("workspaceId").parse(request.params);
-    const caller = toCallerContext(request);
-    assertWorkspaceAccess(caller, params.workspaceId);
-    const input = createSessionRequestSchema.parse(request.body);
-    const session = await dependencies.runtimeService.createSession({
-      workspaceId: params.workspaceId,
-      caller,
-      input
-    });
-
-    return reply.status(201).send(session);
-  });
-
-  app.get("/api/v1/workspaces/:workspaceId/sessions", async (request, reply) => {
-    const params = createParamsSchema("workspaceId").parse(request.params);
-    assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
-    const query = pageQuerySchema.parse(request.query);
-    const page = await dependencies.runtimeService.listWorkspaceSessions(params.workspaceId, query.pageSize, query.cursor);
-    return reply.send(sessionPageSchema.parse(page));
-  });
-
-  app.post("/api/v1/workspaces/:workspaceId/actions/:actionName/runs", async (request, reply) => {
-    const params = createParamsSchema("workspaceId", "actionName").parse(request.params);
-    const caller = toCallerContext(request);
-    assertWorkspaceAccess(caller, params.workspaceId);
-    const input = createActionRunRequestSchema.parse(request.body) as {
-      sessionId?: string;
-      agentName?: string;
-      input?: unknown;
-      triggerSource?: "api" | "user";
-    };
-    const accepted = await dependencies.runtimeService.triggerActionRun({
-      workspaceId: params.workspaceId,
-      actionName: params.actionName,
-      caller,
-      sessionId: input.sessionId,
-      agentName: input.agentName,
-      input: input.input,
-      triggerSource: input.triggerSource
-    });
-    return reply.status(202).send(accepted);
-  });
+export function registerWorkspaceRoutes(
+  app: FastifyInstance,
+  dependencies: AppDependencies,
+  options: AppRouteOptions
+): void {
+  app.post("/api/v1/workspaces", async (request, reply) =>
+    dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
+  );
+  app.post("/api/v1/workspaces/import", async (request, reply) =>
+    dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
+  );
+  app.get("/api/v1/workspaces", async (request, reply) =>
+    dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
+  );
+  app.get("/api/v1/workspaces/:workspaceId", async (request, reply) =>
+    dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
+  );
+  app.delete("/api/v1/workspaces/:workspaceId", async (request, reply) =>
+    dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
+  );
+  app.get("/api/v1/workspaces/:workspaceId/catalog", async (request, reply) =>
+    dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
+  );
+  app.get("/api/v1/workspaces/:workspaceId/entries", async (request, reply) =>
+    dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
+  );
+  app.get("/api/v1/workspaces/:workspaceId/files/content", async (request, reply) =>
+    dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
+  );
+  app.put("/api/v1/workspaces/:workspaceId/files/content", async (request, reply) =>
+    dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
+  );
+  app.put("/api/v1/workspaces/:workspaceId/files/upload", async (request, reply) =>
+    dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
+  );
+  app.get("/api/v1/workspaces/:workspaceId/files/download", async (request, reply) =>
+    dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
+  );
+  app.post("/api/v1/workspaces/:workspaceId/directories", async (request, reply) =>
+    dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
+  );
+  app.delete("/api/v1/workspaces/:workspaceId/entries", async (request, reply) =>
+    dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
+  );
+  app.patch("/api/v1/workspaces/:workspaceId/entries/move", async (request, reply) =>
+    dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
+  );
+  app.post("/api/v1/workspaces/:workspaceId/sessions", async (request, reply) =>
+    dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
+  );
+  app.get("/api/v1/workspaces/:workspaceId/sessions", async (request, reply) =>
+    dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
+  );
+  app.post("/api/v1/workspaces/:workspaceId/actions/:actionName/runs", async (request, reply) =>
+    dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
+  );
 }

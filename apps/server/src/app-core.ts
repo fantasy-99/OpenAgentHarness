@@ -3,9 +3,8 @@ import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { isAppError } from "@oah/engine-core";
 
 import { createStandaloneCallerContext, isLoopbackAddress, isPrivateNetworkAddress, sendError } from "./http/context.js";
-import { registerInternalWorkspaceRoutes } from "./http/routes/internal-workspaces.js";
-import { registerInternalSandboxRoutes } from "./http/routes/internal-sandboxes.js";
-import { registerInternalModelRoutes } from "./http/routes/internal-models.js";
+import { registerInternalWorkspaceRoutes } from "./http/routes/internal-workspaces-lazy.js";
+import { registerInternalSandboxRoutes } from "./http/routes/internal-sandboxes-lazy.js";
 import type { AppDependencies } from "./http/types.js";
 import { renderNativeWorkspaceSyncMetrics } from "./observability/native-workspace-sync.js";
 import { describeSandboxTopology } from "./sandbox-topology.js";
@@ -116,7 +115,6 @@ export function createBaseApp(dependencies: AppDependencies) {
 export function registerInternalRoutes(app: ReturnType<typeof Fastify>, dependencies: AppDependencies): void {
   registerInternalWorkspaceRoutes(app, dependencies);
   registerInternalSandboxRoutes(app, dependencies);
-  registerInternalModelRoutes(app, dependencies);
 }
 
 export function registerInternalOnlySurface(app: ReturnType<typeof Fastify>, dependencies: AppDependencies): void {

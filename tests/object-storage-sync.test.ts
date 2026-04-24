@@ -17,11 +17,13 @@ import {
 class FakeDirectoryObjectStore implements DirectoryObjectStore {
   readonly bucket = "test-bucket";
   readonly objects = new Map<string, { body: Buffer; lastModified: Date; metadata?: Record<string, string> | undefined }>();
+  listEntriesCalls = 0;
   getObjectCalls = 0;
   getObjectInfoCalls = 0;
   putObjectCalls = 0;
 
   async listEntries(prefix: string) {
+    this.listEntriesCalls += 1;
     const normalizedPrefix = prefix ? `${prefix}/` : "";
     return [...this.objects.entries()]
       .filter(([key]) => (normalizedPrefix ? key.startsWith(normalizedPrefix) : true))
@@ -255,9 +257,38 @@ describe("object storage sync", () => {
     expect(store.objects.has("workspace/demo/.oah-sync-bundle.tar")).toBe(true);
   });
 
+  it("skips rewriting the object-storage sync bundle on no-op push", async () => {
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_BUNDLE", "1");
+
+    const directory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-bundle-noop-"));
+    tempDirs.push(directory);
+    const store = new FakeDirectoryObjectStore();
+
+    await mkdir(path.join(directory, "docs"), { recursive: true });
+    await writeFile(path.join(directory, "README.md"), "# synced\n", "utf8");
+    await writeFile(path.join(directory, "docs", "guide.md"), "hello\n", "utf8");
+
+    await syncLocalDirectoryToRemote(store, "workspace/demo", directory);
+    store.getObjectCalls = 0;
+    store.getObjectInfoCalls = 0;
+    store.putObjectCalls = 0;
+
+    const result = await syncLocalDirectoryToRemote(store, "workspace/demo", directory);
+
+    expect(result.uploadedFileCount).toBe(0);
+    expect(result.deletedRemoteCount).toBe(0);
+    expect(result.createdEmptyDirectoryCount).toBe(0);
+    expect(store.getObjectCalls).toBe(1);
+    expect(store.getObjectInfoCalls).toBe(0);
+    expect(store.putObjectCalls).toBe(0);
+  });
+
   it("passes configured sync concurrency into native object-storage sync execution", async () => {
     vi.stubEnv("OAH_NATIVE_WORKSPACE_SYNC", "1");
     vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_CONCURRENCY", "3");
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_BUNDLE", "1");
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT", "primary");
+    vi.stubEnv("OAH_NATIVE_WORKSPACE_SYNC_INLINE_UPLOAD_THRESHOLD_BYTES", "262144");
 
     const sourceDirectory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-native-push-"));
     const targetDirectory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-native-pull-"));
@@ -267,10 +298,20 @@ describe("object storage sync", () => {
 
     let pushedConcurrency: number | undefined;
     let pulledConcurrency: number | undefined;
+    let pushedInlineThreshold: number | undefined;
+    let pushedSyncBundle:
+      | {
+          mode?: string | undefined;
+          minFileCount?: number | undefined;
+          minTotalBytes?: number | undefined;
+        }
+      | undefined;
     const objectStorage = await importObjectStorageWithNativeBridgeOverrides({
       isNativeWorkspaceSyncEnabled: () => true,
       syncNativeLocalToRemote: vi.fn(async (input) => {
         pushedConcurrency = input.maxConcurrency;
+        pushedInlineThreshold = input.inlineUploadThresholdBytes;
+        pushedSyncBundle = input.syncBundle;
         return {
           ok: true as const,
           protocolVersion: 1,
@@ -307,6 +348,193 @@ describe("object storage sync", () => {
 
     expect(pushedConcurrency).toBe(3);
     expect(pulledConcurrency).toBe(3);
+    expect(pushedInlineThreshold).toBe(262144);
+    expect(pushedSyncBundle).toMatchObject({
+      mode: "force",
+      minFileCount: 16,
+      minTotalBytes: 128 * 1024,
+      layout: "primary"
+    });
+    expect(store.putObjectCalls).toBe(0);
+  });
+
+  it("skips JS remote prefetch when native remote-to-local sync succeeds", async () => {
+    vi.stubEnv("OAH_NATIVE_WORKSPACE_SYNC", "1");
+
+    const targetDirectory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-native-prefetch-"));
+    tempDirs.push(targetDirectory);
+
+    let remoteEntries:
+      | Array<{
+          relativePath: string;
+          key: string;
+          size: number;
+          lastModifiedMs?: number | undefined;
+          isDirectory: boolean;
+        }>
+      | undefined;
+    let hasSyncManifest: boolean | undefined;
+    const objectStorage = await importObjectStorageWithNativeBridgeOverrides({
+      isNativeWorkspaceSyncEnabled: () => true,
+      syncNativeRemoteToLocal: vi.fn(async (input) => {
+        remoteEntries = input.remoteEntries;
+        hasSyncManifest = input.hasSyncManifest;
+        return {
+          ok: true as const,
+          protocolVersion: 1,
+          localFingerprint: "native-materialized-fingerprint",
+          removedPathCount: 0,
+          createdDirectoryCount: 0,
+          downloadedFileCount: 1
+        };
+      })
+    });
+
+    const store = new FakeDirectoryObjectStore();
+    await store.putObject("workspace/demo/README.md", Buffer.from("# demo\n"));
+    await store.putObject("workspace/demo/.oah-sync-manifest.json", Buffer.from("{\"version\":1,\"files\":{}}"));
+    store.getNativeWorkspaceSyncConfig = () => ({
+      bucket: "test-bucket",
+      region: "us-east-1",
+      endpoint: "http://127.0.0.1:9000",
+      forcePathStyle: true,
+      accessKey: "test",
+      secretKey: "test"
+    });
+
+    await objectStorage.syncRemotePrefixToLocal(store, "workspace/demo", targetDirectory);
+
+    expect(store.listEntriesCalls).toBe(0);
+    expect(hasSyncManifest).toBeUndefined();
+    expect(remoteEntries).toBeUndefined();
+  });
+
+  it("falls back to JS remote prefetch when native remote-to-local sync is unavailable", async () => {
+    vi.stubEnv("OAH_NATIVE_WORKSPACE_SYNC", "1");
+
+    const targetDirectory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-native-prefetch-fallback-"));
+    tempDirs.push(targetDirectory);
+
+    const objectStorage = await importObjectStorageWithNativeBridgeOverrides({
+      isNativeWorkspaceSyncEnabled: () => true,
+      syncNativeRemoteToLocal: vi.fn(async () => {
+        throw new Error("native unavailable");
+      })
+    });
+
+    const store = new FakeDirectoryObjectStore();
+    await store.putObject("workspace/demo/README.md", Buffer.from("# demo\n"));
+    store.getNativeWorkspaceSyncConfig = () => ({
+      bucket: "test-bucket",
+      region: "us-east-1",
+      endpoint: "http://127.0.0.1:9000",
+      forcePathStyle: true,
+      accessKey: "test",
+      secretKey: "test"
+    });
+
+    await objectStorage.syncRemotePrefixToLocal(store, "workspace/demo", targetDirectory);
+
+    expect(store.listEntriesCalls).toBe(1);
+    await expect(readFile(path.join(targetDirectory, "README.md"), "utf8")).resolves.toBe("# demo\n");
+  });
+
+  it("hydrates bundle-primary prefixes during JS fallback cold pulls", async () => {
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_BUNDLE", "1");
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT", "primary");
+    vi.stubEnv("OAH_NATIVE_WORKSPACE_SYNC", "1");
+
+    const sourceDirectory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-bundle-primary-source-"));
+    const targetDirectory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-bundle-primary-target-"));
+    tempDirs.push(sourceDirectory, targetDirectory);
+
+    await mkdir(path.join(sourceDirectory, "docs"), { recursive: true });
+    await writeFile(path.join(sourceDirectory, "README.md"), "# bundled\n", "utf8");
+    await writeFile(path.join(sourceDirectory, "docs", "guide.md"), "hello\n", "utf8");
+
+    const store = new FakeDirectoryObjectStore();
+    await syncLocalDirectoryToRemote(store, "workspace/demo", sourceDirectory);
+    store.objects.delete("workspace/demo/README.md");
+    store.objects.delete("workspace/demo/docs/guide.md");
+    store.objects.set("workspace/demo/.oah-sync-manifest.json", {
+      body: Buffer.from(
+        JSON.stringify({
+          version: 1,
+          storageMode: "bundle",
+          files: {
+            "README.md": { size: "# bundled\n".length, mtimeMs: 1_712_000_000_000 },
+            "docs/guide.md": { size: "hello\n".length, mtimeMs: 1_712_000_000_001 }
+          }
+        }),
+        "utf8"
+      ),
+      lastModified: new Date()
+    });
+
+    const objectStorage = await importObjectStorageWithNativeBridgeOverrides({
+      isNativeWorkspaceSyncEnabled: () => true,
+      syncNativeRemoteToLocal: vi.fn(async () => {
+        throw new Error("native unavailable");
+      })
+    });
+
+    await expect(objectStorage.syncRemotePrefixToLocal(store, "workspace/demo", targetDirectory)).resolves.toMatchObject({
+      downloadedFileCount: 2
+    });
+    await expect(readFile(path.join(targetDirectory, "README.md"), "utf8")).resolves.toBe("# bundled\n");
+    await expect(readFile(path.join(targetDirectory, "docs", "guide.md"), "utf8")).resolves.toBe("hello\n");
+    expect(store.getObjectCalls).toBe(2);
+  });
+
+  it("hydrates bundle-primary prefixes during JS fallback incremental pulls", async () => {
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_BUNDLE", "1");
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT", "primary");
+    vi.stubEnv("OAH_NATIVE_WORKSPACE_SYNC", "1");
+
+    const sourceDirectory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-bundle-primary-incremental-source-"));
+    const targetDirectory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-bundle-primary-incremental-target-"));
+    tempDirs.push(sourceDirectory, targetDirectory);
+
+    await mkdir(path.join(sourceDirectory, "docs"), { recursive: true });
+    await writeFile(path.join(sourceDirectory, "README.md"), "# bundled\n", "utf8");
+    await writeFile(path.join(sourceDirectory, "docs", "guide.md"), "hello\n", "utf8");
+
+    const store = new FakeDirectoryObjectStore();
+    await syncLocalDirectoryToRemote(store, "workspace/demo", sourceDirectory);
+    store.objects.delete("workspace/demo/README.md");
+    store.objects.delete("workspace/demo/docs/guide.md");
+    store.objects.set("workspace/demo/.oah-sync-manifest.json", {
+      body: Buffer.from(
+        JSON.stringify({
+          version: 1,
+          storageMode: "bundle",
+          files: {
+            "README.md": { size: "# bundled\n".length, mtimeMs: 1_712_000_000_000 },
+            "docs/guide.md": { size: "hello\n".length, mtimeMs: 1_712_000_000_001 }
+          }
+        }),
+        "utf8"
+      ),
+      lastModified: new Date()
+    });
+
+    await writeFile(path.join(targetDirectory, "README.md"), "# stale\n", "utf8");
+    await writeFile(path.join(targetDirectory, "stale.txt"), "remove me\n", "utf8");
+
+    const objectStorage = await importObjectStorageWithNativeBridgeOverrides({
+      isNativeWorkspaceSyncEnabled: () => true,
+      syncNativeRemoteToLocal: vi.fn(async () => {
+        throw new Error("native unavailable");
+      })
+    });
+
+    await expect(objectStorage.syncRemotePrefixToLocal(store, "workspace/demo", targetDirectory)).resolves.toMatchObject({
+      downloadedFileCount: 2
+    });
+    await expect(readFile(path.join(targetDirectory, "README.md"), "utf8")).resolves.toBe("# bundled\n");
+    await expect(readFile(path.join(targetDirectory, "docs", "guide.md"), "utf8")).resolves.toBe("hello\n");
+    await expect(stat(path.join(targetDirectory, "stale.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(store.getObjectCalls).toBe(2);
   });
 
   it("returns the native local fingerprint during remote-to-local sync", async () => {
@@ -339,6 +567,80 @@ describe("object storage sync", () => {
 
     await expect(objectStorage.syncRemotePrefixToLocal(store, "workspace/demo", targetDirectory)).resolves.toMatchObject({
       localFingerprint: "native-materialized-fingerprint"
+    });
+  });
+
+  it("preserves native request counts in sync results", async () => {
+    vi.stubEnv("OAH_NATIVE_WORKSPACE_SYNC", "1");
+
+    const sourceDirectory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-native-request-push-"));
+    const targetDirectory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-native-request-pull-"));
+    tempDirs.push(sourceDirectory, targetDirectory);
+
+    await writeFile(path.join(sourceDirectory, "README.md"), "# native push\n", "utf8");
+
+    const objectStorage = await importObjectStorageWithNativeBridgeOverrides({
+      isNativeWorkspaceSyncEnabled: () => true,
+      syncNativeLocalToRemote: vi.fn(async () => ({
+        ok: true as const,
+        protocolVersion: 1,
+        localFingerprint: "native-push",
+        uploadedFileCount: 1,
+        deletedRemoteCount: 0,
+        createdEmptyDirectoryCount: 0,
+        requestCounts: {
+          listRequests: 1,
+          getRequests: 0,
+          headRequests: 0,
+          putRequests: 2,
+          deleteRequests: 0
+        }
+      })),
+      syncNativeRemoteToLocal: vi.fn(async () => ({
+        ok: true as const,
+        protocolVersion: 1,
+        localFingerprint: "native-pull",
+        removedPathCount: 0,
+        createdDirectoryCount: 0,
+        downloadedFileCount: 1,
+        requestCounts: {
+          listRequests: 0,
+          getRequests: 1,
+          headRequests: 0,
+          putRequests: 0,
+          deleteRequests: 0
+        }
+      }))
+    });
+
+    const store = new FakeDirectoryObjectStore();
+    store.getNativeWorkspaceSyncConfig = () => ({
+      bucket: "test-bucket",
+      region: "us-east-1",
+      endpoint: "http://127.0.0.1:9000",
+      forcePathStyle: true,
+      accessKey: "test",
+      secretKey: "test"
+    });
+
+    await expect(objectStorage.syncLocalDirectoryToRemote(store, "workspace/demo", sourceDirectory)).resolves.toMatchObject({
+      requestCounts: {
+        listRequests: 1,
+        getRequests: 0,
+        headRequests: 0,
+        putRequests: 2,
+        deleteRequests: 0
+      }
+    });
+
+    await expect(objectStorage.syncRemotePrefixToLocal(store, "workspace/demo", targetDirectory)).resolves.toMatchObject({
+      requestCounts: {
+        listRequests: 0,
+        getRequests: 1,
+        headRequests: 0,
+        putRequests: 0,
+        deleteRequests: 0
+      }
     });
   });
 
@@ -494,7 +796,7 @@ describe("object storage sync", () => {
 
     await expect(readFile(path.join(targetDirectory, "README.md"), "utf8")).resolves.toBe("# synced\n");
     await expect(readFile(path.join(targetDirectory, "docs", "guide.md"), "utf8")).resolves.toBe("hello\n");
-    expect(store.getObjectCalls).toBe(2);
+    expect(store.getObjectCalls).toBe(1);
     expect(store.getObjectInfoCalls).toBe(0);
   });
 

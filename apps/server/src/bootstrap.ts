@@ -661,7 +661,7 @@ export interface RuntimeAssemblyProfile {
   enableControlPlaneFacade: boolean;
 }
 
-type WorkspaceModelMetadataDiscoveryMode = "eager" | "background";
+export type WorkspaceModelMetadataDiscoveryMode = "eager" | "background" | "manual";
 
 export function resolveRuntimeAssemblyProfile(options: {
   processKind: "api" | "worker";
@@ -673,7 +673,7 @@ export function resolveRuntimeAssemblyProfile(options: {
   if (options.processKind === "worker") {
     return {
       id: "worker_executor",
-      executionServicesMode: "eager",
+      executionServicesMode: "lazy",
       enablePlatformModelLiveReload: false,
       enableWorkerRuntime: true,
       enableAdminCapabilities: false,
@@ -730,7 +730,7 @@ export function shouldManageWorkspaceRegistry(options: {
   return options.processKind !== "worker" && !options.hasSingleWorkspace && !options.remoteSandboxProvider;
 }
 
-function resolveWorkspaceModelMetadataDiscoveryMode(options: {
+export function resolveWorkspaceModelMetadataDiscoveryMode(options: {
   processKind: "api" | "worker";
   hasSingleWorkspace: boolean;
   managesWorkspaceRegistry: boolean;
@@ -743,9 +743,10 @@ function resolveWorkspaceModelMetadataDiscoveryMode(options: {
     return "eager";
   }
 
-  // Multi-workspace API boot favors a lighter control-plane start and hydrates
-  // workspace model metadata after readiness.
-  return "background";
+  // Multi-workspace API boot favors a lighter control-plane footprint. Keep
+  // workspace discovery live, but only enrich workspace model metadata when a
+  // refresh path explicitly needs it.
+  return "manual";
 }
 
 function resolveInternalBaseUrl(

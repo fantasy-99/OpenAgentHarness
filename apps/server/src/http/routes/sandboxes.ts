@@ -47,6 +47,10 @@ import type { AppDependencies, AppRouteOptions } from "../types.js";
 
 const DEFAULT_BACKGROUND_SESSION_PREFIX = "sandbox";
 
+function readRegisteredRouteUrl(request: FastifyRequest): string {
+  return typeof request.routeOptions.url === "string" ? request.routeOptions.url : request.url.split("?")[0] ?? request.url;
+}
+
 type WorkspaceOwnership = Awaited<ReturnType<NonNullable<AppDependencies["resolveWorkspaceOwnership"]>>>;
 
 async function reserveOwnerScopedWorkspacePlacement(
@@ -548,63 +552,131 @@ async function handleRunSandboxBackgroundCommand(
   return reply.send(sandboxBackgroundCommandResultSchema.parse(result));
 }
 
-function registerSandboxCoreRoutes(
-  app: FastifyInstance,
+export async function dispatchRegisteredSandboxRoute(
+  request: FastifyRequest,
+  reply: FastifyReply,
   dependencies: AppDependencies,
-  prefix: "/api/v1" | "/internal/v1",
-  options?: { workspaceMode?: AppRouteOptions["workspaceMode"]; publicApi?: boolean | undefined }
+  options: { workspaceMode?: AppRouteOptions["workspaceMode"]; publicApi?: boolean | undefined } = {}
 ) {
-  const isPublicApi = options?.publicApi ?? false;
-  const workspaceMode = options?.workspaceMode ?? "multi";
+  const routeUrl = readRegisteredRouteUrl(request);
+  const isPublicApi = options.publicApi ?? false;
+  const workspaceMode = options.workspaceMode ?? "multi";
 
-  app.post(`${prefix}/sandboxes`, async (request, reply) => {
-    const input = ensureSandboxForWorkspaceRequestSchema.parse(request.body);
-    const ownerId = resolveOwnerId(input);
+  switch (`${request.method} ${routeUrl}`) {
+    case "POST /api/v1/sandboxes":
+    case "POST /internal/v1/sandboxes": {
+      const input = ensureSandboxForWorkspaceRequestSchema.parse(request.body);
+      const ownerId = resolveOwnerId(input);
 
-    if (input.workspaceId) {
-      if (isPublicApi) {
-        assertWorkspaceAccess(toCallerContext(request), input.workspaceId);
-      }
-
-      try {
-        const existing = await dependencies.runtimeService.getWorkspace(input.workspaceId);
-        assertSandboxOwnerMatchesWorkspace(ownerId, existing);
-        if (ownerId) {
-          await dependencies.assignWorkspacePlacementOwnerAffinity?.({
-            workspaceId: input.workspaceId,
-            ownerId,
-            overwrite: false
-          });
+      if (input.workspaceId) {
+        if (isPublicApi) {
+          assertWorkspaceAccess(toCallerContext(request), input.workspaceId);
         }
-        return reply.status(200).send(await buildSandboxResponse(dependencies, existing.id));
-      } catch (error) {
-        if (!(error instanceof AppError) || error.code !== "workspace_not_found") {
+
+        try {
+          const existing = await dependencies.runtimeService.getWorkspace(input.workspaceId);
+          assertSandboxOwnerMatchesWorkspace(ownerId, existing);
+          if (ownerId) {
+            await dependencies.assignWorkspacePlacementOwnerAffinity?.({
+              workspaceId: input.workspaceId,
+              ownerId,
+              overwrite: false
+            });
+          }
+          return reply.status(200).send(await buildSandboxResponse(dependencies, existing.id));
+        } catch (error) {
+          if (!(error instanceof AppError) || error.code !== "workspace_not_found") {
+            throw error;
+          }
+        }
+
+        if (!input.name || !input.runtime) {
+          throw new AppError(404, "workspace_not_found", `Workspace ${input.workspaceId} was not found.`);
+        }
+
+        if (workspaceMode === "single") {
+          throw new AppError(501, "sandbox_creation_unavailable", "Sandbox creation is not available in single-workspace mode.");
+        }
+
+        const createWorkspaceInput = {
+          name: input.name,
+          runtime: input.runtime,
+          executionPolicy: input.executionPolicy,
+          ...(input.externalRef ? { externalRef: input.externalRef } : {}),
+          ...(ownerId ? { ownerId } : {}),
+          ...(input.serviceName ? { serviceName: input.serviceName } : {}),
+          workspaceId: input.workspaceId
+        };
+        const reservedPlacement = await reserveOwnerScopedWorkspacePlacement(dependencies, ownerId, input.workspaceId);
+        try {
+          const workspace = await dependencies.runtimeService.createWorkspace({
+            input: createWorkspaceInput as typeof createWorkspaceInput & {
+              workspaceId: string;
+            }
+          });
+          if (ownerId && workspace.id !== reservedPlacement.workspaceId) {
+            await dependencies.assignWorkspacePlacementOwnerAffinity?.({
+              workspaceId: workspace.id,
+              ownerId,
+              overwrite: true
+            });
+          }
+          return reply.status(201).send(await buildSandboxResponse(dependencies, workspace.id));
+        } catch (error) {
+          await reservedPlacement.release();
           throw error;
         }
       }
 
-      if (!input.name || !input.runtime) {
-        throw new AppError(404, "workspace_not_found", `Workspace ${input.workspaceId} was not found.`);
+      if (input.rootPath) {
+        if (workspaceMode === "single" || !dependencies.importWorkspace) {
+          throw new AppError(501, "sandbox_import_unavailable", "Sandbox import is not available on this server.");
+        }
+
+        const workspace = await dependencies.importWorkspace({
+          rootPath: input.rootPath,
+          ...(input.name ? { name: input.name } : {}),
+          ...(input.externalRef ? { externalRef: input.externalRef } : {}),
+          ...(ownerId ? { ownerId } : {}),
+          ...(input.serviceName ? { serviceName: input.serviceName } : {})
+        });
+        if (ownerId) {
+          await dependencies.assignWorkspacePlacementOwnerAffinity?.({
+            workspaceId: workspace.id,
+            ownerId,
+            overwrite: true
+          });
+        }
+        return reply.status(201).send(await buildSandboxResponse(dependencies, workspace.id));
       }
 
       if (workspaceMode === "single") {
         throw new AppError(501, "sandbox_creation_unavailable", "Sandbox creation is not available in single-workspace mode.");
       }
 
-      const createWorkspaceInput = {
-        name: input.name,
-        runtime: input.runtime,
-        executionPolicy: input.executionPolicy,
-        ...(input.externalRef ? { externalRef: input.externalRef } : {}),
-        ...(ownerId ? { ownerId } : {}),
-        ...(input.serviceName ? { serviceName: input.serviceName } : {}),
-        workspaceId: input.workspaceId
-      };
-      const reservedPlacement = await reserveOwnerScopedWorkspacePlacement(dependencies, ownerId, input.workspaceId);
+      const reservedPlacement = await reserveOwnerScopedWorkspacePlacement(
+        dependencies,
+        ownerId,
+        ownerId ? createId("ws") : undefined
+      );
       try {
         const workspace = await dependencies.runtimeService.createWorkspace({
-          input: createWorkspaceInput as typeof createWorkspaceInput & {
-            workspaceId: string;
+          input: {
+            name: input.name as string,
+            runtime: input.runtime as string,
+            executionPolicy: input.executionPolicy,
+            ...(input.externalRef ? { externalRef: input.externalRef } : {}),
+            ...(ownerId ? { ownerId } : {}),
+            ...(input.serviceName ? { serviceName: input.serviceName } : {}),
+            ...(reservedPlacement.workspaceId ? { workspaceId: reservedPlacement.workspaceId } : {})
+          } as {
+            name: string;
+            runtime: string;
+            executionPolicy: "local" | "container" | "remote_runner";
+            externalRef?: string | undefined;
+            ownerId?: string | undefined;
+            serviceName?: string | undefined;
+            workspaceId?: string | undefined;
           }
         });
         if (ownerId && workspace.id !== reservedPlacement.workspaceId) {
@@ -620,214 +692,215 @@ function registerSandboxCoreRoutes(
         throw error;
       }
     }
-
-    if (input.rootPath) {
-      if (workspaceMode === "single" || !dependencies.importWorkspace) {
-        throw new AppError(501, "sandbox_import_unavailable", "Sandbox import is not available on this server.");
-      }
-
-      const workspace = await dependencies.importWorkspace({
-        rootPath: input.rootPath,
-        ...(input.name ? { name: input.name } : {}),
-        ...(input.externalRef ? { externalRef: input.externalRef } : {}),
-        ...(ownerId ? { ownerId } : {}),
-        ...(input.serviceName ? { serviceName: input.serviceName } : {})
-      });
-      if (ownerId) {
-        await dependencies.assignWorkspacePlacementOwnerAffinity?.({
-          workspaceId: workspace.id,
-          ownerId,
-          overwrite: true
-        });
-      }
-      return reply.status(201).send(await buildSandboxResponse(dependencies, workspace.id));
-    }
-
-    if (workspaceMode === "single") {
-      throw new AppError(501, "sandbox_creation_unavailable", "Sandbox creation is not available in single-workspace mode.");
-    }
-
-    const reservedPlacement = await reserveOwnerScopedWorkspacePlacement(
-      dependencies,
-      ownerId,
-      ownerId ? createId("ws") : undefined
-    );
-    try {
-      const workspace = await dependencies.runtimeService.createWorkspace({
-        input: {
-          name: input.name as string,
-          runtime: input.runtime as string,
-          executionPolicy: input.executionPolicy,
-          ...(input.externalRef ? { externalRef: input.externalRef } : {}),
-          ...(ownerId ? { ownerId } : {}),
-          ...(input.serviceName ? { serviceName: input.serviceName } : {}),
-          ...(reservedPlacement.workspaceId ? { workspaceId: reservedPlacement.workspaceId } : {})
-        } as {
-          name: string;
-          runtime: string;
-          executionPolicy: "local" | "container" | "remote_runner";
-          externalRef?: string | undefined;
-          ownerId?: string | undefined;
-          serviceName?: string | undefined;
-          workspaceId?: string | undefined;
+    case "GET /api/v1/sandboxes/:sandboxId":
+    case "GET /internal/v1/sandboxes/:sandboxId": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      if (isPublicApi) {
+        assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
+        if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
+          return reply;
         }
-      });
-      if (ownerId && workspace.id !== reservedPlacement.workspaceId) {
-        await dependencies.assignWorkspacePlacementOwnerAffinity?.({
-          workspaceId: workspace.id,
-          ownerId,
-          overwrite: true
-        });
       }
-      return reply.status(201).send(await buildSandboxResponse(dependencies, workspace.id));
-    } catch (error) {
-      await reservedPlacement.release();
-      throw error;
+      return handleGetSandbox(dependencies, params.sandboxId, reply);
     }
-  });
+    case "GET /api/v1/sandboxes/:sandboxId/files/entries":
+    case "GET /internal/v1/sandboxes/:sandboxId/files/entries": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      if (isPublicApi) {
+        assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
+        if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
+          return reply;
+        }
+      }
+      return handleListSandboxEntries(dependencies, params.sandboxId, request, reply);
+    }
+    case "GET /api/v1/sandboxes/:sandboxId/files/stat":
+    case "GET /internal/v1/sandboxes/:sandboxId/files/stat": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      if (isPublicApi) {
+        assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
+        if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
+          return reply;
+        }
+      }
+      return handleGetSandboxFileStat(dependencies, params.sandboxId, request, reply);
+    }
+    case "GET /api/v1/sandboxes/:sandboxId/files/content":
+    case "GET /internal/v1/sandboxes/:sandboxId/files/content": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      if (isPublicApi) {
+        assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
+        if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
+          return reply;
+        }
+      }
+      return handleGetSandboxFileContent(dependencies, params.sandboxId, request, reply);
+    }
+    case "PUT /api/v1/sandboxes/:sandboxId/files/content":
+    case "PUT /internal/v1/sandboxes/:sandboxId/files/content": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      if (isPublicApi) {
+        assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
+        if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
+          return reply;
+        }
+      }
+      return handlePutSandboxFileContent(dependencies, params.sandboxId, request, reply);
+    }
+    case "PUT /api/v1/sandboxes/:sandboxId/files/upload":
+    case "PUT /internal/v1/sandboxes/:sandboxId/files/upload": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      if (isPublicApi) {
+        assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
+        if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
+          return reply;
+        }
+      }
+      return handleUploadSandboxFile(dependencies, params.sandboxId, request, reply);
+    }
+    case "GET /api/v1/sandboxes/:sandboxId/files/download":
+    case "GET /internal/v1/sandboxes/:sandboxId/files/download": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      if (isPublicApi) {
+        assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
+        if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
+          return reply;
+        }
+      }
+      return handleDownloadSandboxFile(dependencies, params.sandboxId, request, reply);
+    }
+    case "POST /api/v1/sandboxes/:sandboxId/directories":
+    case "POST /internal/v1/sandboxes/:sandboxId/directories": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      if (isPublicApi) {
+        assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
+        if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
+          return reply;
+        }
+      }
+      return handleCreateSandboxDirectory(dependencies, params.sandboxId, request, reply);
+    }
+    case "DELETE /api/v1/sandboxes/:sandboxId/files/entry":
+    case "DELETE /internal/v1/sandboxes/:sandboxId/files/entry": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      if (isPublicApi) {
+        assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
+        if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
+          return reply;
+        }
+      }
+      return handleDeleteSandboxEntry(dependencies, params.sandboxId, request, reply);
+    }
+    case "PATCH /api/v1/sandboxes/:sandboxId/files/move":
+    case "PATCH /internal/v1/sandboxes/:sandboxId/files/move": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      if (isPublicApi) {
+        assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
+        if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
+          return reply;
+        }
+      }
+      return handleMoveSandboxEntry(dependencies, params.sandboxId, request, reply);
+    }
+    case "POST /api/v1/sandboxes/:sandboxId/commands/foreground":
+    case "POST /internal/v1/sandboxes/:sandboxId/commands/foreground": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      if (isPublicApi) {
+        assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
+        if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
+          return reply;
+        }
+      }
+      return handleRunSandboxForegroundCommand(dependencies, params.sandboxId, request, reply);
+    }
+    case "POST /api/v1/sandboxes/:sandboxId/commands/process":
+    case "POST /internal/v1/sandboxes/:sandboxId/commands/process": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      if (isPublicApi) {
+        assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
+        if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
+          return reply;
+        }
+      }
+      return handleRunSandboxProcessCommand(dependencies, params.sandboxId, request, reply);
+    }
+    case "POST /api/v1/sandboxes/:sandboxId/commands/background":
+    case "POST /internal/v1/sandboxes/:sandboxId/commands/background": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      if (isPublicApi) {
+        assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
+        if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
+          return reply;
+        }
+      }
+      return handleRunSandboxBackgroundCommand(dependencies, params.sandboxId, request, reply);
+    }
+    default:
+      throw new AppError(404, "route_not_found", `Unsupported sandbox route: ${request.method} ${routeUrl}`);
+  }
+}
 
-  app.get(`${prefix}/sandboxes/:sandboxId`, async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    if (isPublicApi) {
-      assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
-      if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
-        return reply;
-      }
-    }
-    return handleGetSandbox(dependencies, params.sandboxId, reply);
-  });
+function registerSandboxCoreRoutes(
+  app: FastifyInstance,
+  dependencies: AppDependencies,
+  prefix: "/api/v1" | "/internal/v1",
+  options?: { workspaceMode?: AppRouteOptions["workspaceMode"]; publicApi?: boolean | undefined }
+) {
+  app.post(`${prefix}/sandboxes`, async (request, reply) =>
+    dispatchRegisteredSandboxRoute(request, reply, dependencies, options)
+  );
 
-  app.get(`${prefix}/sandboxes/:sandboxId/files/entries`, async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    if (isPublicApi) {
-      assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
-      if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
-        return reply;
-      }
-    }
-    return handleListSandboxEntries(dependencies, params.sandboxId, request, reply);
-  });
+  app.get(`${prefix}/sandboxes/:sandboxId`, async (request, reply) =>
+    dispatchRegisteredSandboxRoute(request, reply, dependencies, options)
+  );
 
-  app.get(`${prefix}/sandboxes/:sandboxId/files/stat`, async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    if (isPublicApi) {
-      assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
-      if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
-        return reply;
-      }
-    }
-    return handleGetSandboxFileStat(dependencies, params.sandboxId, request, reply);
-  });
+  app.get(`${prefix}/sandboxes/:sandboxId/files/entries`, async (request, reply) =>
+    dispatchRegisteredSandboxRoute(request, reply, dependencies, options)
+  );
 
-  app.get(`${prefix}/sandboxes/:sandboxId/files/content`, async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    if (isPublicApi) {
-      assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
-      if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
-        return reply;
-      }
-    }
-    return handleGetSandboxFileContent(dependencies, params.sandboxId, request, reply);
-  });
+  app.get(`${prefix}/sandboxes/:sandboxId/files/stat`, async (request, reply) =>
+    dispatchRegisteredSandboxRoute(request, reply, dependencies, options)
+  );
 
-  app.put(`${prefix}/sandboxes/:sandboxId/files/content`, async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    if (isPublicApi) {
-      assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
-      if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
-        return reply;
-      }
-    }
-    return handlePutSandboxFileContent(dependencies, params.sandboxId, request, reply);
-  });
+  app.get(`${prefix}/sandboxes/:sandboxId/files/content`, async (request, reply) =>
+    dispatchRegisteredSandboxRoute(request, reply, dependencies, options)
+  );
 
-  app.put(`${prefix}/sandboxes/:sandboxId/files/upload`, async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    if (isPublicApi) {
-      assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
-      if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
-        return reply;
-      }
-    }
-    return handleUploadSandboxFile(dependencies, params.sandboxId, request, reply);
-  });
+  app.put(`${prefix}/sandboxes/:sandboxId/files/content`, async (request, reply) =>
+    dispatchRegisteredSandboxRoute(request, reply, dependencies, options)
+  );
 
-  app.get(`${prefix}/sandboxes/:sandboxId/files/download`, async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    if (isPublicApi) {
-      assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
-      if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
-        return reply;
-      }
-    }
-    return handleDownloadSandboxFile(dependencies, params.sandboxId, request, reply);
-  });
+  app.put(`${prefix}/sandboxes/:sandboxId/files/upload`, async (request, reply) =>
+    dispatchRegisteredSandboxRoute(request, reply, dependencies, options)
+  );
 
-  app.post(`${prefix}/sandboxes/:sandboxId/directories`, async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    if (isPublicApi) {
-      assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
-      if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
-        return reply;
-      }
-    }
-    return handleCreateSandboxDirectory(dependencies, params.sandboxId, request, reply);
-  });
+  app.get(`${prefix}/sandboxes/:sandboxId/files/download`, async (request, reply) =>
+    dispatchRegisteredSandboxRoute(request, reply, dependencies, options)
+  );
 
-  app.delete(`${prefix}/sandboxes/:sandboxId/files/entry`, async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    if (isPublicApi) {
-      assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
-      if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
-        return reply;
-      }
-    }
-    return handleDeleteSandboxEntry(dependencies, params.sandboxId, request, reply);
-  });
+  app.post(`${prefix}/sandboxes/:sandboxId/directories`, async (request, reply) =>
+    dispatchRegisteredSandboxRoute(request, reply, dependencies, options)
+  );
 
-  app.patch(`${prefix}/sandboxes/:sandboxId/files/move`, async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    if (isPublicApi) {
-      assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
-      if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
-        return reply;
-      }
-    }
-    return handleMoveSandboxEntry(dependencies, params.sandboxId, request, reply);
-  });
+  app.delete(`${prefix}/sandboxes/:sandboxId/files/entry`, async (request, reply) =>
+    dispatchRegisteredSandboxRoute(request, reply, dependencies, options)
+  );
 
-  app.post(`${prefix}/sandboxes/:sandboxId/commands/foreground`, async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    if (isPublicApi) {
-      assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
-      if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
-        return reply;
-      }
-    }
-    return handleRunSandboxForegroundCommand(dependencies, params.sandboxId, request, reply);
-  });
+  app.patch(`${prefix}/sandboxes/:sandboxId/files/move`, async (request, reply) =>
+    dispatchRegisteredSandboxRoute(request, reply, dependencies, options)
+  );
 
-  app.post(`${prefix}/sandboxes/:sandboxId/commands/process`, async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    if (isPublicApi) {
-      assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
-      if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
-        return reply;
-      }
-    }
-    return handleRunSandboxProcessCommand(dependencies, params.sandboxId, request, reply);
-  });
+  app.post(`${prefix}/sandboxes/:sandboxId/commands/foreground`, async (request, reply) =>
+    dispatchRegisteredSandboxRoute(request, reply, dependencies, options)
+  );
 
-  app.post(`${prefix}/sandboxes/:sandboxId/commands/background`, async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    if (isPublicApi) {
-      assertWorkspaceAccess(toCallerContext(request), params.sandboxId);
-      if ((await guardSandboxOwnership(request, reply, dependencies, params.sandboxId)) !== "local") {
-        return reply;
-      }
-    }
-    return handleRunSandboxBackgroundCommand(dependencies, params.sandboxId, request, reply);
-  });
+  app.post(`${prefix}/sandboxes/:sandboxId/commands/process`, async (request, reply) =>
+    dispatchRegisteredSandboxRoute(request, reply, dependencies, options)
+  );
+
+  app.post(`${prefix}/sandboxes/:sandboxId/commands/background`, async (request, reply) =>
+    dispatchRegisteredSandboxRoute(request, reply, dependencies, options)
+  );
 }
 
 export function registerInternalSandboxRoutes(app: FastifyInstance, dependencies: AppDependencies): void {

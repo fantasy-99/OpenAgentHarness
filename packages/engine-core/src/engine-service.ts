@@ -8,37 +8,15 @@ import type {
 } from "@oah/api-contracts";
 
 import { AppError } from "./errors.js";
-import {
-  ModelInputService,
-  type ModelExecutionInput
-} from "./engine/model-input.js";
-import { ContextPreparationPipeline } from "./engine/context-modules.js";
-import {
-  collapseLeadingSystemMessages,
-  extractFailedToolResults,
-  previewValue,
-  serializeModelCallStepInput,
-  serializeModelCallStepOutput,
-  summarizeMessageRoles
-} from "./engine/model-call-serialization.js";
+import type { ModelExecutionInput } from "./engine/model-input.js";
 import { RunStateService } from "./engine/run-state.js";
 import { SessionHistoryService } from "./engine/session-history.js";
 import { RunStepService } from "./engine/run-steps.js";
-import { RunRecoveryService } from "./engine/run-recovery.js";
-import { RunProcessorService } from "./engine/run-processor.js";
-import { EngineMessageSyncService } from "./engine/engine-message-sync.js";
-import { EngineLifecycleService } from "./engine/engine-lifecycle.js";
-import { SessionEngineService } from "./engine/session-engine.js";
-import { createEngineExecutionServices, type EngineExecutionServices } from "./engine/execution-services.js";
-import { buildGeneratedMessageMetadata, normalizeJsonObject } from "./engine/execution-support.js";
-import { ContextCompactionService } from "./engine/context-compaction.js";
-import { ModelRunExecutor } from "./engine/model-run-executor.js";
-import { SessionMemoryService } from "./engine/session-memory.js";
-import { WorkspaceMemoryService } from "./engine/workspace-memory.js";
 import { WorkspaceEngineService } from "./engine/workspace-engine.js";
-import {
-  EngineMessageProjector
-} from "./engine/message-projections.js";
+import type {
+  CreateEngineExecutionServicesDependencies,
+  EngineExecutionServices
+} from "./engine/execution-services.js";
 import {
   type SortOrder,
   type WorkspaceDeleteResult,
@@ -49,9 +27,6 @@ import {
   type WorkspaceFileDownloadResult,
   WorkspaceFileService
 } from "./workspace/workspace-files.js";
-import {
-  buildEngineTools as createWorkspaceEngineTools,
-} from "./capabilities/engine-capabilities.js";
 import {
   type ActionRunAcceptedResult,
   type CancelRunResult,
@@ -87,6 +62,7 @@ import {
   type AutomaticRecoveryStrategy,
   type RunExecutionContext
 } from "./engine/internal-helpers.js";
+import type { EngineRuntimeKernel } from "./engine-runtime-kernel.js";
 
 export class EngineService {
   readonly #defaultModel: string;
@@ -105,12 +81,14 @@ export class EngineService {
   readonly #sessionEventStore: EngineServiceOptions["sessionEventStore"];
   readonly #sessionPendingRunQueueRepository: EngineServiceOptions["sessionPendingRunQueueRepository"];
   readonly #runQueue: EngineServiceOptions["runQueue"];
+  readonly #engineMessageRepository: EngineServiceOptions["engineMessageRepository"];
   readonly #toolCallAuditRepository: EngineServiceOptions["toolCallAuditRepository"];
   readonly #workspaceArchiveRepository: EngineServiceOptions["workspaceArchiveRepository"];
   readonly #workspaceDeletionHandler: EngineServiceOptions["workspaceDeletionHandler"];
   readonly #workspaceInitializer: EngineServiceOptions["workspaceInitializer"];
   readonly #workspaceExecutionProvider: EngineServiceOptions["workspaceExecutionProvider"];
   readonly #workspaceFileAccessProvider: EngineServiceOptions["workspaceFileAccessProvider"];
+  readonly #workspaceActivityTracker: EngineServiceOptions["workspaceActivityTracker"];
   readonly #hookRunAuditRepository: EngineServiceOptions["hookRunAuditRepository"];
   readonly #workspaceFileSystem: WorkspaceFileSystem;
   readonly #workspaceCommandExecutor: WorkspaceCommandExecutor;
@@ -119,18 +97,14 @@ export class EngineService {
   readonly #runSteps: RunStepService;
   readonly #runState: RunStateService;
   readonly #workspaceRuntime: WorkspaceEngineService;
-  readonly #sessionRuntime: SessionEngineService;
-  readonly #runRecovery: RunRecoveryService;
-  readonly #modelRunExecutor: ModelRunExecutor;
-  readonly #runProcessor: RunProcessorService;
-  readonly #engineMessageSync: EngineMessageSyncService;
-  readonly #engineLifecycle: EngineLifecycleService;
-  readonly #modelInputs: ModelInputService;
-  readonly #contextPreparation: ContextPreparationPipeline;
-  readonly #contextCompaction: ContextCompactionService;
-  readonly #sessionMemory: SessionMemoryService;
-  readonly #workspaceMemory: WorkspaceMemoryService;
-  readonly #engineMessageProjector: EngineMessageProjector;
+  #runtimeKernelModule:
+    | (typeof import("./engine-runtime-kernel.js"))
+    | undefined;
+  #runtimeKernelModulePromise:
+    | Promise<typeof import("./engine-runtime-kernel.js")>
+    | undefined;
+  #runtimeKernel: EngineRuntimeKernel | undefined;
+  #runtimeKernelPromise: Promise<EngineRuntimeKernel> | undefined;
   #executionServices: EngineExecutionServices | undefined;
   readonly #runAbortControllers = new Map<string, AbortController>();
   readonly #drainTimeoutRecoveredRuns = new Set<string>();
@@ -152,12 +126,14 @@ export class EngineService {
     this.#sessionEventStore = options.sessionEventStore;
     this.#sessionPendingRunQueueRepository = options.sessionPendingRunQueueRepository;
     this.#runQueue = options.runQueue;
+    this.#engineMessageRepository = options.engineMessageRepository;
     this.#toolCallAuditRepository = options.toolCallAuditRepository;
     this.#workspaceArchiveRepository = options.workspaceArchiveRepository;
     this.#workspaceDeletionHandler = options.workspaceDeletionHandler;
     this.#workspaceInitializer = options.workspaceInitializer;
     this.#workspaceExecutionProvider = options.workspaceExecutionProvider;
     this.#workspaceFileAccessProvider = options.workspaceFileAccessProvider;
+    this.#workspaceActivityTracker = options.workspaceActivityTracker;
     this.#hookRunAuditRepository = options.hookRunAuditRepository;
     this.#workspaceFileSystem = options.workspaceFileSystem ?? createLocalWorkspaceFileSystem();
     this.#workspaceCommandExecutor = options.workspaceCommandExecutor ?? createLocalWorkspaceCommandExecutor();
@@ -174,7 +150,7 @@ export class EngineService {
     this.#runState = new RunStateService({
       runRepository: this.#runRepository,
       getRun: (runId) => this.getRun(runId),
-      appendEvent: (input) => this.#engineLifecycle.appendEvent(input),
+      appendEvent: async (input) => (await this.#ensureRuntimeKernel()).engineLifecycle.appendEvent(input),
       recordSystemStep: (run, name, output) => this.#runSteps.recordSystemStep(run, name, output),
       nowIso
     });
@@ -188,242 +164,91 @@ export class EngineService {
       workspaceFileSystem: this.#workspaceFileSystem,
       workspaceCommandExecutor: this.#workspaceCommandExecutor
     });
-    this.#runRecovery = new RunRecoveryService({
-      getRun: (runId) => this.getRun(runId),
-      getSession: (sessionId) => this.getSession(sessionId),
-      runRepository: this.#runRepository,
-      ...(this.#runQueue ? { runQueue: this.#runQueue } : {}),
-      updateRun: (run, patch) => this.#runState.updateRun(run, patch),
-      appendEvent: (input) => this.#engineLifecycle.appendEvent(input),
-      recordSystemStep: (run, name, output) => this.#runSteps.recordSystemStep(run, name, output),
-      enqueueRun: (sessionId, runId) => this.#engineLifecycle.enqueueRun(sessionId, runId),
-      runAbortControllers: this.#runAbortControllers,
-      drainTimeoutRecoveredRuns: this.#drainTimeoutRecoveredRuns,
+    if (this.#executionServicesMode === "eager") {
+      this.#warmExecutionRuntime();
+    }
+  }
+
+  #warmExecutionRuntime(): void {
+    void this.#ensureRuntimeKernel().then((runtimeKernel) => {
+      this.#executionServices ??= this.#createExecutionServices(runtimeKernel);
+    });
+  }
+
+  async #loadRuntimeKernelModule(): Promise<typeof import("./engine-runtime-kernel.js")> {
+    this.#runtimeKernelModulePromise ??= import("./engine-runtime-kernel.js").then((module) => {
+      this.#runtimeKernelModule = module;
+      return module;
+    });
+    return this.#runtimeKernelModulePromise;
+  }
+
+  #getRuntimeKernelModule(): typeof import("./engine-runtime-kernel.js") {
+    if (!this.#runtimeKernelModule) {
+      throw new Error("Engine runtime kernel module has not been loaded yet.");
+    }
+
+    return this.#runtimeKernelModule;
+  }
+
+  async #createRuntimeKernel(): Promise<EngineRuntimeKernel> {
+    const runtimeKernelModule = await this.#loadRuntimeKernelModule();
+    return runtimeKernelModule.createEngineRuntimeKernel({
+      defaultModel: this.#defaultModel,
+      modelGateway: this.#modelGateway,
+      logger: this.#logger,
       runHeartbeatIntervalMs: this.#runHeartbeatIntervalMs,
       staleRunRecoveryStrategy: this.#staleRunRecoveryStrategy,
-      staleRunRecoveryMaxAttempts: this.#staleRunRecoveryMaxAttempts
-    });
-    this.#engineMessageSync = new EngineMessageSyncService({
-      messageRepository: this.#messageRepository,
-      sessionEventStore: this.#sessionEventStore,
-      ...(options.engineMessageRepository ? { engineMessageRepository: options.engineMessageRepository } : {})
-    });
-    this.#modelInputs = new ModelInputService({
-      defaultModel: this.#defaultModel,
+      staleRunRecoveryMaxAttempts: this.#staleRunRecoveryMaxAttempts,
       platformModels: this.#platformModels,
-      workspaceFileSystem: this.#workspaceFileSystem,
-      workspaceFileAccessProvider: this.#workspaceFileAccessProvider,
-      applyContextHooks: (workspace, session, run, eventName, messages) =>
-        this.#applyContextHooks(workspace, session, run, eventName, messages),
-      collapseLeadingSystemMessages: (messages) => collapseLeadingSystemMessages(messages)
-    });
-    this.#contextCompaction = new ContextCompactionService({
-      logger: this.#logger,
-      messageRepository: this.#messageRepository,
-      modelGateway: this.#modelGateway,
-      appendEvent: (input) => this.#engineLifecycle.appendEvent(input),
-      recordSystemStep: (run, name, output) => this.#runSteps.recordSystemStep(run, name, output),
-      scheduleEngineMessageSync: (sessionId) => this.#engineMessageSync.scheduleEngineMessageSync(sessionId),
-      createId,
-      nowIso,
-      resolveRunModel: (workspace, session, run, activeAgentName) =>
-        this.#modelInputs.resolveRunModel(workspace, session, run, activeAgentName),
-      buildModelContextMessages: (workspace, session, run, engineMessages, activeAgentName, options) =>
-        this.#modelInputs.buildModelContextMessages(
-          workspace,
-          session,
-          run,
-          engineMessages,
-          activeAgentName,
-          false,
-          options
-        ),
-      applyCompactionHooks: (workspace, session, run, eventName, context) =>
-        this.#applyCompactionHooks(workspace, session, run, eventName, context),
-      buildEngineMessagesForSession: (sessionId, persistedMessages) =>
-        this.#engineMessageSync.buildEngineMessagesForSession(sessionId, persistedMessages)
-    });
-    this.#sessionMemory = new SessionMemoryService({
-      logger: this.#logger,
-      messageRepository: this.#messageRepository,
-      modelGateway: this.#modelGateway,
-      scheduleEngineMessageSync: (sessionId) => this.#engineMessageSync.scheduleEngineMessageSync(sessionId),
-      resolveRunModel: (workspace, session, run, activeAgentName) =>
-        this.#modelInputs.resolveRunModel(workspace, session, run, activeAgentName),
-      recordSystemStep: (run, name, output) => this.#runSteps.recordSystemStep(run, name, output),
-      createId,
-      nowIso
-    });
-    this.#workspaceMemory = new WorkspaceMemoryService({
-      logger: this.#logger,
-      modelGateway: this.#modelGateway,
       messageRepository: this.#messageRepository,
       sessionRepository: this.#sessionRepository,
       runRepository: this.#runRepository,
       runStepRepository: this.#runStepRepository,
-      enqueueRun: (sessionId, runId, options) => this.#engineLifecycle.enqueueRun(sessionId, runId, options),
-      workspaceFileSystem: this.#workspaceFileSystem,
+      sessionEventStore: this.#sessionEventStore,
+      sessionPendingRunQueueRepository: this.#sessionPendingRunQueueRepository,
+      runQueue: this.#runQueue,
+      engineMessageRepository: this.#engineMessageRepository,
+      workspaceExecutionProvider: this.#workspaceExecutionProvider,
       workspaceFileAccessProvider: this.#workspaceFileAccessProvider,
-      resolveModelForRun: (workspace, modelRef) => this.#modelInputs.resolveModelForRun(workspace, modelRef),
-      recordSystemStep: (run, name, output) => this.#runSteps.recordSystemStep(run, name, output),
+      workspaceActivityTracker: this.#workspaceActivityTracker,
+      workspaceArchiveRepository: this.#workspaceArchiveRepository,
+      workspaceFileSystem: this.#workspaceFileSystem,
+      workspaceRuntime: this.#workspaceRuntime,
+      runSteps: this.#runSteps,
+      runState: this.#runState,
+      sessionHistory: this.#sessionHistory,
       createId,
-      nowIso
-    });
-    this.#contextPreparation = new ContextPreparationPipeline({
-      buildEngineMessagesForSession: (sessionId, persistedMessages) =>
-        this.#engineMessageSync.buildEngineMessagesForSession(sessionId, persistedMessages),
-      modules: [this.#sessionMemory, this.#workspaceMemory, this.#contextCompaction]
-    });
-    this.#modelRunExecutor = new ModelRunExecutor({
-      logger: this.#logger,
-      modelGateway: this.#modelGateway,
-      messageRepository: this.#messageRepository,
-      engineMessageSync: this.#engineMessageSync,
+      nowIso,
+      runAbortControllers: this.#runAbortControllers,
+      drainTimeoutRecoveredRuns: this.#drainTimeoutRecoveredRuns,
       ensureExecutionServices: () => this.#ensureExecutionServices(),
-      getRun: (runId) => this.getRun(runId),
-      repairSessionHistoryIfNeeded: (sessionId, messages) => this.#sessionHistory.repairSessionHistoryIfNeeded(sessionId, messages),
-      prepareMessagesForModelInput: (workspace, session, run, activeAgentName, allMessages) =>
-        this.#contextPreparation.prepareMessagesForModelInput({
-          workspace,
-          session,
-          run,
-          activeAgentName,
-          messages: allMessages
-        }),
-      buildModelInput: (workspace, session, run, engineMessages, activeAgentName, forceSystemReminder) =>
-        this.#modelInputs.buildModelInput(workspace, session, run, engineMessages, activeAgentName, forceSystemReminder),
+      buildEngineTools: (workspace, run, session, executionContext) =>
+        this.#buildEngineTools(workspace, run, session, executionContext),
       applyBeforeModelHooks: (workspace, session, run, modelInput) =>
         this.#applyBeforeModelHooks(workspace, session, run, modelInput),
       applyAfterModelHooks: (workspace, session, run, modelInput, response) =>
         this.#applyAfterModelHooks(workspace, session, run, modelInput, response),
-      buildEngineTools: (workspace, run, session, executionContext) =>
-        this.#buildEngineTools(workspace, run, session, executionContext),
-      startRunStep: (input) => this.#runSteps.startRunStep(input),
-      completeRunStep: (step, status, output) => this.#runSteps.completeRunStep(step, status, output),
-      setRunStatusIfPossible: (runId, nextStatus) => this.#runState.setRunStatusIfPossible(runId, nextStatus),
-      ensureAssistantMessage: (session, run, currentMessage, allMessages, content, metadata) =>
-        this.#ensureExecutionServices().toolMessages.ensureAssistantMessage(
-          session,
-          run,
-          currentMessage,
-          allMessages,
-          content,
-          metadata
-        ),
-      persistAssistantStepText: (session, run, step, currentMessage, allMessages, metadata) =>
-        this.#ensureExecutionServices().toolMessages.persistAssistantStepText(
-          session,
-          run,
-          step,
-          currentMessage,
-          allMessages,
-          metadata
-        ),
-      persistAssistantToolCalls: (session, run, step, allMessages, metadata, toolMetadataByCallId) =>
-        this.#ensureExecutionServices().toolMessages.persistAssistantToolCalls(
-          session,
-          run,
-          step,
-          allMessages,
-          metadata,
-          toolMetadataByCallId
-        ),
-      persistToolResults: (
-        session,
-        run,
-        step,
-        failedToolResults,
-        persistedToolCalls,
-        allMessages,
-        metadata,
-        toolMetadataByCallId
-      ) =>
-        this.#ensureExecutionServices().toolMessages.persistToolResults(
-          session,
-          run,
-          step,
-          failedToolResults,
-          persistedToolCalls,
-          allMessages,
-          metadata,
-          toolMetadataByCallId
-        ),
-      appendEvent: (input) => this.#engineLifecycle.appendEvent(input),
-      serializeModelCallStepInput: (modelInput, activeToolNames, toolServers, engineToolNames, engineTools) =>
-        serializeModelCallStepInput(modelInput, activeToolNames, toolServers, engineToolNames, engineTools),
-      serializeModelCallStepOutput: (step, failedToolResults) =>
-        serializeModelCallStepOutput(step, failedToolResults),
-      extractFailedToolResults: (step) => extractFailedToolResults(step),
-      buildGeneratedMessageMetadata: (workspace, agentName, modelInput, modelCallStep) =>
-        buildGeneratedMessageMetadata(workspace, agentName, modelInput, modelCallStep),
-      recordToolCallAuditFromStep: (step, toolName, status) =>
-        this.#ensureExecutionServices().toolAudit.recordToolCallAuditFromStep(step, toolName, status),
-      summarizeMessageRoles: (messages) => summarizeMessageRoles(messages),
-      previewValue: (value, maxLength) => previewValue(value, maxLength),
-      normalizeJsonObject: (value) => normalizeJsonObject(value),
-      finalizeSuccessfulRun: (workspace, session, run, assistantMessage, completed, finalAssistantStep, messageMetadata) =>
-        this.#ensureExecutionServices().runFinalization.finalizeSuccessfulRun({
-          workspace,
-          session,
-          run,
-          assistantMessage,
-          completed,
-          finalAssistantStep,
-          messageMetadata
-        })
-    });
-    this.#runProcessor = new RunProcessorService({
-      logger: this.#logger,
-      ...(this.#workspaceExecutionProvider ? { workspaceExecutionProvider: this.#workspaceExecutionProvider } : {}),
-      runAbortControllers: this.#runAbortControllers,
-      drainTimeoutRecoveredRuns: this.#drainTimeoutRecoveredRuns,
-      runHeartbeatIntervalMs: this.#runHeartbeatIntervalMs,
-      ensureExecutionServices: () => this.#ensureExecutionServices(),
+      applyContextHooks: (workspace, session, run, eventName, messages) =>
+        this.#applyContextHooks(workspace, session, run, eventName, messages),
+      applyCompactionHooks: (workspace, session, run, eventName, context) =>
+        this.#applyCompactionHooks(workspace, session, run, eventName, context),
       getRun: (runId) => this.getRun(runId),
       getSession: (sessionId) => this.getSession(sessionId),
-      getWorkspaceRecord: (workspaceId) => this.getWorkspaceRecord(workspaceId),
-      setRunStatus: (run, nextStatus, patch) => this.#runState.setRunStatus(run, nextStatus, patch),
-      markRunCancelled: (sessionId, run) => this.#runState.markRunCancelled(sessionId, run),
-      refreshRunHeartbeat: (runId) => this.#runState.refreshRunHeartbeat(runId),
-      recordSystemStep: (run, name, output) => this.#runSteps.recordSystemStep(run, name, output),
-      appendEvent: (input) => this.#engineLifecycle.appendEvent(input),
-      modelRunExecutor: this.#modelRunExecutor,
-      processActionRun: (workspace, run, session, signal) =>
-        this.#ensureExecutionServices().actions.processActionRun(workspace, run, session, signal)
-    });
-    this.#engineLifecycle = new EngineLifecycleService({
-      sessionEventStore: this.#sessionEventStore,
-      engineMessageSync: this.#engineMessageSync,
-      workspaceActivityTracker: options.workspaceActivityTracker,
-      runRepository: this.#runRepository,
-      sessionRepository: this.#sessionRepository,
-      ...(this.#runQueue ? { runQueue: this.#runQueue } : {}),
-      processRun: (runId) => this.#runProcessor.processRun(runId)
-    });
-    this.#engineMessageProjector = new EngineMessageProjector();
-    this.#sessionRuntime = new SessionEngineService({
-      sessionRepository: this.#sessionRepository,
-      messageRepository: this.#messageRepository,
-      runRepository: this.#runRepository,
-      runStepRepository: this.#runStepRepository,
-      sessionPendingRunQueueRepository: this.#sessionPendingRunQueueRepository,
-      workspaceArchiveRepository: this.#workspaceArchiveRepository,
-      modelInputs: this.#modelInputs,
-      engineMessageSync: this.#engineMessageSync,
-      engineMessageProjector: this.#engineMessageProjector,
-      getWorkspaceRecord: (workspaceId) => this.#workspaceRuntime.getWorkspaceRecord(workspaceId),
-      getRun: (runId) => this.getRun(runId),
-      appendEvent: (input) => this.#engineLifecycle.appendEvent(input),
-      enqueueRun: (sessionId, runId) => this.#engineLifecycle.enqueueRun(sessionId, runId),
       requestRunCancellation: (runId) => this.#requestRunCancellation(runId)
     });
-    if (this.#executionServicesMode === "eager") {
-      this.#executionServices = this.#createExecutionServices();
-    }
   }
 
-  #createExecutionServices(): EngineExecutionServices {
-    return createEngineExecutionServices({
+  async #ensureRuntimeKernel(): Promise<EngineRuntimeKernel> {
+    this.#runtimeKernelPromise ??= this.#createRuntimeKernel().then((runtimeKernel) => {
+      this.#runtimeKernel = runtimeKernel;
+      return runtimeKernel;
+    });
+    return this.#runtimeKernelPromise;
+  }
+
+  #buildExecutionServiceDependencies(runtimeKernel: EngineRuntimeKernel): CreateEngineExecutionServicesDependencies {
+    return {
       defaultModel: this.#defaultModel,
       modelGateway: this.#modelGateway,
       logger: this.#logger,
@@ -443,22 +268,31 @@ export class EngineService {
       updateRun: (run, patch) => this.#runState.updateRun(run, patch),
       markRunTimedOut: (run, runTimeoutMs) => this.#runState.markRunTimedOut(run, runTimeoutMs),
       markRunCancelled: (sessionId, run) => this.#runState.markRunCancelled(sessionId, run),
-      resolveModelForRun: (workspace, modelRef) => this.#modelInputs.resolveModelForRun(workspace, modelRef),
-      appendEvent: (input) => this.#engineLifecycle.appendEvent(input),
+      resolveModelForRun: (workspace, modelRef) => runtimeKernel.modelInputs.resolveModelForRun(workspace, modelRef),
+      appendEvent: (input) => runtimeKernel.engineLifecycle.appendEvent(input),
       getRun: (runId) => this.getRun(runId),
-      enqueueRun: (sessionId, runId, options) => this.#engineLifecycle.enqueueRun(sessionId, runId, options),
-      dispatchNextQueuedRun: (sessionId) => this.#sessionRuntime.dispatchNextQueuedRun(sessionId),
+      enqueueRun: (sessionId, runId, options) => runtimeKernel.engineLifecycle.enqueueRun(sessionId, runId, options),
+      dispatchNextQueuedRun: (sessionId) => runtimeKernel.sessionRuntime.dispatchNextQueuedRun(sessionId),
       afterSuccessfulRun: async ({ workspace, session, run }) => {
-        await this.#workspaceMemory.recordRecallForCompletedRun(run);
-        this.#sessionMemory.scheduleBackgroundUpdate({ workspace, session, run });
-        this.#workspaceMemory.scheduleBackgroundUpdate({ workspace, session, run });
+        await runtimeKernel.workspaceMemory.recordRecallForCompletedRun(run);
+        runtimeKernel.sessionMemory.scheduleBackgroundUpdate({ workspace, session, run });
+        runtimeKernel.workspaceMemory.scheduleBackgroundUpdate({ workspace, session, run });
       }
-    });
+    };
+  }
+
+  #createExecutionServices(runtimeKernel: EngineRuntimeKernel): EngineExecutionServices {
+    return this.#getRuntimeKernelModule().createRuntimeExecutionServices(
+      this.#buildExecutionServiceDependencies(runtimeKernel)
+    );
   }
 
   #ensureExecutionServices(): EngineExecutionServices {
     if (!this.#executionServices) {
-      this.#executionServices = this.#createExecutionServices();
+      if (!this.#runtimeKernel) {
+        throw new Error("Execution services requested before the runtime kernel was initialized.");
+      }
+      this.#executionServices = this.#createExecutionServices(this.#runtimeKernel);
     }
 
     return this.#executionServices;
@@ -614,23 +448,23 @@ export class EngineService {
   }
 
   async createSession({ workspaceId, caller, input }: CreateSessionParams): Promise<Session> {
-    return this.#sessionRuntime.createSession({ workspaceId, caller, input });
+    return (await this.#ensureRuntimeKernel()).sessionRuntime.createSession({ workspaceId, caller, input });
   }
 
   async getSession(sessionId: string): Promise<Session> {
-    return this.#sessionRuntime.getSession(sessionId);
+    return (await this.#ensureRuntimeKernel()).sessionRuntime.getSession(sessionId);
   }
 
   async updateSession({ sessionId, input }: UpdateSessionParams): Promise<Session> {
-    return this.#sessionRuntime.updateSession({ sessionId, input });
+    return (await this.#ensureRuntimeKernel()).sessionRuntime.updateSession({ sessionId, input });
   }
 
   async deleteSession(sessionId: string): Promise<void> {
-    await this.#sessionRuntime.deleteSession(sessionId);
+    await (await this.#ensureRuntimeKernel()).sessionRuntime.deleteSession(sessionId);
   }
 
   async listWorkspaceSessions(workspaceId: string, pageSize: number, cursor?: string): Promise<SessionListResult> {
-    return this.#sessionRuntime.listWorkspaceSessions(workspaceId, pageSize, cursor);
+    return (await this.#ensureRuntimeKernel()).sessionRuntime.listWorkspaceSessions(workspaceId, pageSize, cursor);
   }
 
   async listSessionMessages(
@@ -639,11 +473,11 @@ export class EngineService {
     cursor?: string,
     direction: MessagePageDirection = "forward"
   ): Promise<MessageListResult> {
-    return this.#sessionRuntime.listSessionMessages(sessionId, pageSize, cursor, direction);
+    return (await this.#ensureRuntimeKernel()).sessionRuntime.listSessionMessages(sessionId, pageSize, cursor, direction);
   }
 
   async getSessionMessage(sessionId: string, messageId: string): Promise<Message> {
-    return this.#sessionRuntime.getSessionMessage(sessionId, messageId);
+    return (await this.#ensureRuntimeKernel()).sessionRuntime.getSessionMessage(sessionId, messageId);
   }
 
   async getSessionMessageContext(
@@ -652,26 +486,27 @@ export class EngineService {
     before = 20,
     after = 20
   ): Promise<MessageContextResult> {
-    return this.#sessionRuntime.getSessionMessageContext(sessionId, messageId, before, after);
+    return (await this.#ensureRuntimeKernel()).sessionRuntime.getSessionMessageContext(sessionId, messageId, before, after);
   }
 
   async listSessionEngineMessages(sessionId: string, pageSize = 100, cursor?: string): Promise<EngineMessageListResult> {
-    return this.#sessionRuntime.listSessionEngineMessages(sessionId, pageSize, cursor);
+    return (await this.#ensureRuntimeKernel()).sessionRuntime.listSessionEngineMessages(sessionId, pageSize, cursor);
   }
 
   async listSessionTranscriptMessages(sessionId: string, pageSize = 100, cursor?: string): Promise<MessageListResult> {
-    return this.#sessionRuntime.listSessionTranscriptMessages(sessionId, pageSize, cursor);
+    return (await this.#ensureRuntimeKernel()).sessionRuntime.listSessionTranscriptMessages(sessionId, pageSize, cursor);
   }
 
   async listSessionRuns(sessionId: string, pageSize = 100, cursor?: string): Promise<RunListResult> {
-    return this.#sessionRuntime.listSessionRuns(sessionId, pageSize, cursor);
+    return (await this.#ensureRuntimeKernel()).sessionRuntime.listSessionRuns(sessionId, pageSize, cursor);
   }
 
   async listSessionQueuedRuns(sessionId: string): Promise<import("./types.js").SessionQueuedRunListResult> {
-    return this.#sessionRuntime.listSessionQueuedRuns(sessionId);
+    return (await this.#ensureRuntimeKernel()).sessionRuntime.listSessionQueuedRuns(sessionId);
   }
 
   async compactSession({ sessionId, caller, input }: CompactSessionParams): Promise<SessionCompactResult> {
+    const runtimeKernel = await this.#ensureRuntimeKernel();
     const session = await this.getSession(sessionId);
     const workspace = await this.getWorkspaceRecord(session.workspaceId);
     const instructions = input?.instructions?.trim() || undefined;
@@ -722,7 +557,7 @@ export class EngineService {
     await this.#runSteps.recordSystemStep(run, "run.started", {
       status: run.status
     });
-    await this.#engineLifecycle.appendEvent({
+    await runtimeKernel.engineLifecycle.appendEvent({
       sessionId: session.id,
       runId: run.id,
       event: "run.started",
@@ -735,8 +570,8 @@ export class EngineService {
 
     try {
       const messages = await this.#messageRepository.listBySessionId(session.id);
-      const engineMessages = await this.#engineMessageSync.buildEngineMessagesForSession(session.id, messages);
-      const compacted = await this.#contextCompaction.compactSessionContext({
+      const engineMessages = await runtimeKernel.engineMessageSync.buildEngineMessagesForSession(session.id, messages);
+      const compacted = await runtimeKernel.contextCompaction.compactSessionContext({
         workspace,
         session,
         run,
@@ -765,7 +600,7 @@ export class EngineService {
         lastRunAt: completedAt,
         updatedAt: completedAt
       });
-      await this.#engineLifecycle.appendEvent({
+      await runtimeKernel.engineLifecycle.appendEvent({
         sessionId: session.id,
         runId: completedRun.id,
         event: "run.completed",
@@ -806,7 +641,7 @@ export class EngineService {
         ...(failedRun.errorCode ? { errorCode: failedRun.errorCode } : {}),
         ...(failedRun.errorMessage ? { errorMessage: failedRun.errorMessage } : {})
       });
-      await this.#engineLifecycle.appendEvent({
+      await runtimeKernel.engineLifecycle.appendEvent({
         sessionId: session.id,
         runId: failedRun.id,
         event: "run.failed",
@@ -823,11 +658,11 @@ export class EngineService {
   }
 
   async listRunSteps(runId: string, pageSize = 100, cursor?: string): Promise<RunStepListResult> {
-    return this.#sessionRuntime.listRunSteps(runId, pageSize, cursor);
+    return (await this.#ensureRuntimeKernel()).sessionRuntime.listRunSteps(runId, pageSize, cursor);
   }
 
   async createSessionMessage({ sessionId, caller, input }: CreateSessionMessageParams): Promise<MessageAcceptedResult> {
-    return this.#sessionRuntime.createSessionMessage({ sessionId, caller, input });
+    return (await this.#ensureRuntimeKernel()).sessionRuntime.createSessionMessage({ sessionId, caller, input });
   }
 
   async triggerActionRun({
@@ -839,7 +674,7 @@ export class EngineService {
     input,
     triggerSource
   }: TriggerActionRunParams): Promise<ActionRunAcceptedResult> {
-    return this.#sessionRuntime.triggerActionRun({
+    return (await this.#ensureRuntimeKernel()).sessionRuntime.triggerActionRun({
       workspaceId,
       caller,
       actionName,
@@ -884,18 +719,18 @@ export class EngineService {
   }
 
   async requeueRun(runId: string, requestedBy?: string): Promise<RequeueRunResult> {
-    return this.#runRecovery.requeueRun(runId, requestedBy);
+    return (await this.#ensureRuntimeKernel()).runRecovery.requeueRun(runId, requestedBy);
   }
 
   async guideQueuedRun(runId: string): Promise<import("./types.js").GuideQueuedRunResult> {
-    return this.#sessionRuntime.guideQueuedRun(runId);
+    return (await this.#ensureRuntimeKernel()).sessionRuntime.guideQueuedRun(runId);
   }
 
   async recoverRunAfterDrainTimeout(
     runId: string,
     strategy: AutomaticRecoveryStrategy
   ): Promise<"failed" | "requeued" | "ignored"> {
-    return this.#runRecovery.recoverRunAfterDrainTimeout(runId, strategy);
+    return (await this.#ensureRuntimeKernel()).runRecovery.recoverRunAfterDrainTimeout(runId, strategy);
   }
 
   async listSessionEvents(sessionId: string, cursor?: string, runId?: string): Promise<SessionEvent[]> {
@@ -908,14 +743,14 @@ export class EngineService {
   }
 
   async processQueuedRun(runId: string): Promise<void> {
-    await this.#runProcessor.processRun(runId);
+    await (await this.#ensureRuntimeKernel()).runProcessor.processRun(runId);
   }
 
   async recoverStaleRuns(options?: {
     staleBefore?: string | undefined;
     limit?: number | undefined;
   }): Promise<{ recoveredRunIds: string[]; requeuedRunIds: string[] }> {
-    return this.#runRecovery.recoverStaleRuns(options);
+    return (await this.#ensureRuntimeKernel()).runRecovery.recoverStaleRuns(options);
   }
 
   #buildEngineTools(
@@ -924,16 +759,15 @@ export class EngineService {
     session: Session,
     executionContext: RunExecutionContext
   ): EngineToolSet {
-    return createWorkspaceEngineTools({
+    return this.#getRuntimeKernelModule().buildRuntimeEngineTools({
       workspace,
       run,
       session,
-      getCurrentAgentName: () => executionContext.currentAgentName,
+      executionContext,
       modelGateway: this.#modelGateway,
       defaultModel: this.#defaultModel,
       commandExecutor: this.#workspaceCommandExecutor,
-      executeAction: async (action, input, context) =>
-        this.#executeAction(workspace, action, run, context.abortSignal, input),
+      executeAction: async (action, input, context) => this.#executeAction(workspace, action, run, context.abortSignal, input),
       delegateAgent: async ({ targetAgentName, task, handoffSummary, taskId, notifyParentOnCompletion }, currentAgentName) => {
         const accepted = await this.#ensureExecutionServices().agentCoordination.delegateAgentRun({
           workspace,
@@ -949,7 +783,8 @@ export class EngineService {
         executionContext.delegatedRunIds.push(accepted.childRunId);
         return accepted;
       },
-      awaitDelegatedRuns: async ({ runIds, mode }) => this.#ensureExecutionServices().agentCoordination.awaitDelegatedRuns(runIds, mode),
+      awaitDelegatedRuns: async ({ runIds, mode }) =>
+        this.#ensureExecutionServices().agentCoordination.awaitDelegatedRuns(runIds, mode),
       switchAgent: async (targetAgentName, currentAgentName) => {
         await this.#ensureExecutionServices().agentCoordination.switchAgent({
           session,

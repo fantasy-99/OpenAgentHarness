@@ -101,6 +101,14 @@ Current judgment:
 - native object-store remote-to-local sync now also returns `localFingerprint`, so native-backed materialization can reuse the sync result instead of immediately rescanning the materialized tree
 - object-store sync now maintains a remote sync manifest for file `mtime` and size, letting both TS and native push/pull paths replace many per-file `HeadObject` probes with a single manifest read on repeated syncs
 - object-store sync now also supports an aggressive tar-bundle sidecar cache: push can write `.oah-sync-bundle.tar`, and cold pull/materialization can hydrate from that bundle before normal sync reconciliation
+- object-store sync now also supports a `bundle-primary` layout in the native path: for bundle-eligible prefixes, push can persist the workspace mainly as `manifest + bundle` instead of `manifest + per-file objects + optional bundle sidecar`
+- native object-store sync now tracks request counts all the way back into the TS benchmark/materialization harness, so request tables reflect real native `GET`/`PUT`/`LIST` behavior instead of only JS fallback traffic
+- native bundle upload/download now uses temp-file-backed streaming instead of full in-memory bundle buffers, lowering bundle-path peak memory pressure in Docker
+- Docker runtime images and `docker-compose.local.yml` now default `OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT=primary` on the API/sandbox execution path, so the object-store hot path uses the lower-request Rust layout by default in the main container workflow
+- current benchmark proof for the main object-store hot path is now materially stronger:
+  - `96 files x 4 KiB`: TS push `99` requests / `640ms`, native persistent push `3` requests / `143ms`
+  - `16 files x 1 KiB`: TS push `19` requests / `209ms`, native persistent push `3` requests / `139ms`
+  - native persistent materialize/pull on bundle-backed prefixes remains at `1 GET`
 
 ### 2. Archive Export
 

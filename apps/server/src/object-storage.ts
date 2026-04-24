@@ -4,14 +4,6 @@ import { mkdtemp, mkdir, readFile, readdir, rename, rm, stat, utimes, writeFile 
 import os from "node:os";
 import path from "node:path";
 
-import {
-  DeleteObjectsCommand,
-  GetObjectCommand,
-  HeadObjectCommand,
-  ListObjectsV2Command,
-  PutObjectCommand,
-  S3Client
-} from "@aws-sdk/client-s3";
 import type { ServerConfig } from "@oah/config";
 import {
   computeNativeDirectoryFingerprint,
@@ -22,6 +14,7 @@ import {
   scanNativeLocalTree,
   syncNativeLocalToRemote,
   syncNativeRemoteToLocal,
+  type NativeSyncBundleConfig,
   type NativeWorkspaceSyncObjectStoreConfig
 } from "@oah/native-bridge";
 
@@ -29,6 +22,12 @@ import {
   observeNativeWorkspaceSyncOperation,
   recordNativeWorkspaceSyncFallback
 } from "./observability/native-workspace-sync.js";
+
+type AwsS3Module = typeof import("@aws-sdk/client-s3");
+type AwsS3ClientLike = {
+  send(command: unknown): Promise<unknown>;
+  destroy(): void;
+};
 
 export type ManagedPathKey = "workspace" | "runtime" | "model" | "tool" | "skill";
 type ObjectStorageConfig = NonNullable<ServerConfig["object_storage"]> & {
@@ -58,6 +57,7 @@ export interface DirectorySyncResult {
   uploadedFileCount: number;
   deletedRemoteCount: number;
   createdEmptyDirectoryCount: number;
+  requestCounts?: ObjectStoreRequestCounts | undefined;
 }
 
 export interface RemoteToLocalDirectorySyncResult {
@@ -65,6 +65,15 @@ export interface RemoteToLocalDirectorySyncResult {
   removedPathCount: number;
   createdDirectoryCount: number;
   downloadedFileCount: number;
+  requestCounts?: ObjectStoreRequestCounts | undefined;
+}
+
+export interface ObjectStoreRequestCounts {
+  listRequests: number;
+  getRequests: number;
+  headRequests: number;
+  putRequests: number;
+  deleteRequests: number;
 }
 
 interface LocalDirectorySnapshot {
@@ -85,6 +94,8 @@ interface DirectorySyncManifestFileEntry {
 interface DirectorySyncManifestDocument {
   version: 1;
   files: Record<string, DirectorySyncManifestFileEntry>;
+  emptyDirectories?: string[] | undefined;
+  storageMode?: "objects" | "bundle" | undefined;
 }
 
 interface ManagedPathMapping {
@@ -108,8 +119,15 @@ const DEFAULT_OBJECT_STORAGE_BUNDLE_MODE = "auto";
 const DEFAULT_OBJECT_STORAGE_BUNDLE_MIN_FILE_COUNT = 16;
 const DEFAULT_OBJECT_STORAGE_BUNDLE_MIN_TOTAL_BYTES = 128 * 1024;
 const DEFAULT_OBJECT_STORAGE_BUNDLE_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_NATIVE_INLINE_UPLOAD_THRESHOLD_BYTES = 128 * 1024;
 
 const DEFAULT_MANAGED_PATHS = Object.keys(DEFAULT_KEY_PREFIXES) as ManagedPathKey[];
+let awsS3ModulePromise: Promise<AwsS3Module> | undefined;
+
+function loadAwsS3Module(): Promise<AwsS3Module> {
+  awsS3ModulePromise ??= import("@aws-sdk/client-s3");
+  return awsS3ModulePromise;
+}
 
 function isNotFoundError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
@@ -201,7 +219,11 @@ function isDirectorySyncManifestFileEntry(value: unknown): value is DirectorySyn
 }
 
 function buildDirectorySyncManifestFromFiles(
-  files: Iterable<{ relativePath: string; size: number; mtimeMs: number }>
+  files: Iterable<{ relativePath: string; size: number; mtimeMs: number }>,
+  options?: {
+    emptyDirectories?: Iterable<string> | undefined;
+    storageMode?: "objects" | "bundle" | undefined;
+  }
 ): DirectorySyncManifestDocument {
   const normalizedFiles = [...files]
     .map((file) => ({
@@ -222,8 +244,50 @@ function buildDirectorySyncManifestFromFiles(
           mtimeMs: file.mtimeMs
         } satisfies DirectorySyncManifestFileEntry
       ])
-    )
+    ),
+    ...(options?.emptyDirectories
+      ? {
+          emptyDirectories: [...options.emptyDirectories]
+            .map((relativePath) => normalizeRelativePath(relativePath))
+            .filter((relativePath) => relativePath.length > 0 && !shouldIgnoreRelativePath(relativePath))
+            .sort((left, right) => left.localeCompare(right))
+        }
+      : {}),
+    ...(options?.storageMode ? { storageMode: options.storageMode } : {})
   };
+}
+
+function isDirectorySyncManifestDocument(value: unknown): value is DirectorySyncManifestDocument {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "version" in value &&
+    value.version === 1 &&
+    "files" in value &&
+    typeof value.files === "object" &&
+    value.files !== null
+  );
+}
+
+async function loadRemoteDirectorySyncManifestDocument(
+  store: DirectoryObjectStore,
+  remotePrefix: string,
+  remoteEntries?: Iterable<ObjectStorageEntry>
+): Promise<DirectorySyncManifestDocument | undefined> {
+  try {
+    const manifestKey = buildRemoteKey(remotePrefix, INTERNAL_SYNC_MANIFEST_RELATIVE_PATH);
+    if (remoteEntries) {
+      const manifestPresent = [...remoteEntries].some((entry) => entry.key === manifestKey);
+      if (!manifestPresent) {
+        return undefined;
+      }
+    }
+    const manifestObject = await store.getObject(manifestKey);
+    const parsed = JSON.parse(manifestObject.body.toString("utf8")) as Partial<DirectorySyncManifestDocument>;
+    return isDirectorySyncManifestDocument(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function loadRemoteDirectorySyncManifest(
@@ -231,40 +295,34 @@ async function loadRemoteDirectorySyncManifest(
   remotePrefix: string,
   remoteEntries?: Iterable<ObjectStorageEntry>
 ): Promise<Map<string, DirectorySyncManifestFileEntry>> {
-  try {
-    const manifestKey = buildRemoteKey(remotePrefix, INTERNAL_SYNC_MANIFEST_RELATIVE_PATH);
-    if (remoteEntries) {
-      const manifestPresent = [...remoteEntries].some((entry) => entry.key === manifestKey);
-      if (!manifestPresent) {
-        return new Map();
-      }
-    }
-    const manifestObject = await store.getObject(manifestKey);
-    const parsed = JSON.parse(manifestObject.body.toString("utf8")) as Partial<DirectorySyncManifestDocument>;
-    if (parsed.version !== 1 || typeof parsed.files !== "object" || parsed.files === null) {
-      return new Map();
-    }
-
-    return new Map(
-      Object.entries(parsed.files)
-        .map(([relativePath, entry]) => [normalizeRelativePath(relativePath), entry] as const)
-        .filter(
-          (entry): entry is readonly [string, DirectorySyncManifestFileEntry] =>
-            entry[0].length > 0 && isDirectorySyncManifestFileEntry(entry[1])
-        )
-    );
-  } catch {
+  const document = await loadRemoteDirectorySyncManifestDocument(store, remotePrefix, remoteEntries);
+  if (!document) {
     return new Map();
   }
+
+  return new Map(
+    Object.entries(document.files)
+      .map(([relativePath, entry]) => [normalizeRelativePath(relativePath), entry] as const)
+      .filter(
+        (entry): entry is readonly [string, DirectorySyncManifestFileEntry] =>
+          entry[0].length > 0 && isDirectorySyncManifestFileEntry(entry[1])
+      )
+  );
 }
 
 async function writeRemoteDirectorySyncManifest(input: {
   store: DirectoryObjectStore;
   remotePrefix: string;
   files: Iterable<{ relativePath: string; size: number; mtimeMs: number }>;
+  emptyDirectories?: Iterable<string> | undefined;
+  storageMode?: "objects" | "bundle" | undefined;
   existingManifest?: Map<string, DirectorySyncManifestFileEntry> | undefined;
+  existingManifestDocument?: DirectorySyncManifestDocument | undefined;
 }): Promise<void> {
-  const manifest = buildDirectorySyncManifestFromFiles(input.files);
+  const manifest = buildDirectorySyncManifestFromFiles(input.files, {
+    emptyDirectories: input.emptyDirectories,
+    storageMode: input.storageMode
+  });
   const normalizedEntries = new Map(
     Object.entries(manifest.files).map(([relativePath, entry]) => [normalizeRelativePath(relativePath), entry] as const)
   );
@@ -276,12 +334,8 @@ async function writeRemoteDirectorySyncManifest(input: {
   }
 
   if (
-    input.existingManifest &&
-    input.existingManifest.size === normalizedEntries.size &&
-    [...normalizedEntries.entries()].every(([relativePath, entry]) => {
-      const existing = input.existingManifest?.get(relativePath);
-      return existing?.size === entry.size && existing.mtimeMs === entry.mtimeMs;
-    })
+    input.existingManifestDocument &&
+    isEquivalentDirectorySyncManifestDocument(input.existingManifestDocument, manifest)
   ) {
     return;
   }
@@ -292,10 +346,127 @@ async function writeRemoteDirectorySyncManifest(input: {
   );
 }
 
+function isEquivalentDirectorySyncManifestDocument(
+  left: DirectorySyncManifestDocument | undefined,
+  right: DirectorySyncManifestDocument | undefined
+): boolean {
+  if (!left || !right) {
+    return false;
+  }
+
+  const leftEntries = new Map(
+    Object.entries(left.files)
+      .map(([relativePath, entry]) => [normalizeRelativePath(relativePath), entry] as const)
+      .filter(
+        (entry): entry is readonly [string, DirectorySyncManifestFileEntry] =>
+          entry[0].length > 0 && isDirectorySyncManifestFileEntry(entry[1])
+      )
+  );
+  const rightEntries = new Map(
+    Object.entries(right.files)
+      .map(([relativePath, entry]) => [normalizeRelativePath(relativePath), entry] as const)
+      .filter(
+        (entry): entry is readonly [string, DirectorySyncManifestFileEntry] =>
+          entry[0].length > 0 && isDirectorySyncManifestFileEntry(entry[1])
+      )
+  );
+
+  if (leftEntries.size !== rightEntries.size) {
+    return false;
+  }
+
+  for (const [relativePath, entry] of rightEntries.entries()) {
+    const existing = leftEntries.get(relativePath);
+    if (existing?.size !== entry.size || existing.mtimeMs !== entry.mtimeMs) {
+      return false;
+    }
+  }
+
+  const normalizeEmptyDirectories = (document: DirectorySyncManifestDocument): string[] =>
+    (document.emptyDirectories ?? [])
+      .map((relativePath) => normalizeRelativePath(relativePath))
+      .filter((relativePath) => relativePath.length > 0 && !shouldIgnoreRelativePath(relativePath))
+      .sort((a, b) => a.localeCompare(b));
+
+  const leftEmptyDirectories = normalizeEmptyDirectories(left);
+  const rightEmptyDirectories = normalizeEmptyDirectories(right);
+  if (
+    leftEmptyDirectories.length !== rightEmptyDirectories.length ||
+    leftEmptyDirectories.some((relativePath, index) => relativePath !== rightEmptyDirectories[index])
+  ) {
+    return false;
+  }
+
+  return (left.storageMode ?? "objects") === (right.storageMode ?? "objects");
+}
+
+function countManifestFileMutations(
+  snapshot: LocalDirectorySnapshot,
+  existingManifestDocument?: DirectorySyncManifestDocument
+): number {
+  const existingEntries = existingManifestDocument
+    ? new Map(
+        Object.entries(existingManifestDocument.files)
+          .map(([relativePath, entry]) => [normalizeRelativePath(relativePath), entry] as const)
+          .filter(
+            (entry): entry is readonly [string, DirectorySyncManifestFileEntry] =>
+              entry[0].length > 0 && isDirectorySyncManifestFileEntry(entry[1])
+          )
+      )
+    : undefined;
+
+  let count = 0;
+  for (const [relativePath, file] of snapshot.files.entries()) {
+    const existing = existingEntries?.get(relativePath);
+    if (!existing || existing.size !== file.size || existing.mtimeMs !== Math.trunc(file.mtimeMs)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function countManifestDeletedFiles(
+  snapshot: LocalDirectorySnapshot,
+  existingManifestDocument?: DirectorySyncManifestDocument
+): number {
+  if (!existingManifestDocument) {
+    return 0;
+  }
+
+  const localPaths = new Set(snapshot.files.keys());
+  return Object.entries(existingManifestDocument.files)
+    .map(([relativePath]) => normalizeRelativePath(relativePath))
+    .filter((relativePath) => relativePath.length > 0 && !shouldIgnoreRelativePath(relativePath) && !localPaths.has(relativePath))
+    .length;
+}
+
+function countManifestCreatedEmptyDirectories(
+  snapshot: LocalDirectorySnapshot,
+  existingManifestDocument?: DirectorySyncManifestDocument
+): number {
+  if (!existingManifestDocument) {
+    return snapshot.emptyDirectories.size;
+  }
+
+  const existingDirectories = new Set(
+    (existingManifestDocument.emptyDirectories ?? [])
+      .map((relativePath) => normalizeRelativePath(relativePath))
+      .filter((relativePath) => relativePath.length > 0 && !shouldIgnoreRelativePath(relativePath))
+  );
+  let count = 0;
+  for (const relativePath of snapshot.emptyDirectories) {
+    if (!existingDirectories.has(relativePath)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
 function shouldAttemptObjectStorageBundle(input: {
   files: Iterable<{ size: number }>;
 }): boolean {
-  const mode = resolveObjectStorageBundleMode();
+  const config = resolveObjectStorageBundleConfig();
+  const mode = config.mode;
   if (mode === "off") {
     return false;
   }
@@ -314,7 +485,7 @@ function shouldAttemptObjectStorageBundle(input: {
     return true;
   }
 
-  return fileCount >= DEFAULT_OBJECT_STORAGE_BUNDLE_MIN_FILE_COUNT || totalBytes >= DEFAULT_OBJECT_STORAGE_BUNDLE_MIN_TOTAL_BYTES;
+  return fileCount >= config.minFileCount || totalBytes >= config.minTotalBytes;
 }
 
 async function isDirectoryEmpty(rootDir: string): Promise<boolean> {
@@ -366,7 +537,12 @@ async function maybeWriteObjectStorageBundle(input: {
   localDir: string;
   options?: DirectorySyncOptions | undefined;
   logger?: ((message: string) => void) | undefined;
+  skipWrite?: boolean | undefined;
 }): Promise<void> {
+  if (input.skipWrite) {
+    return;
+  }
+
   const nativeSnapshot = await collectNativeSnapshotIfAvailable(input.localDir, input.options);
   const snapshot = nativeSnapshot?.snapshot ?? (await collectLocalDirectorySnapshot(input.localDir, input.options));
   const files = [...snapshot.files.entries()].map(([relativePath, file]) => ({
@@ -394,6 +570,8 @@ async function maybeHydrateFromObjectStorageBundle(input: {
   remotePrefix: string;
   localDir: string;
   remoteEntries: ObjectStorageEntry[];
+  manifestDocument?: DirectorySyncManifestDocument | undefined;
+  requireEmptyLocalDir?: boolean | undefined;
   logger?: ((message: string) => void) | undefined;
 }): Promise<boolean> {
   const bundleEntry = input.remoteEntries.find(
@@ -402,10 +580,14 @@ async function maybeHydrateFromObjectStorageBundle(input: {
   if (!bundleEntry) {
     return false;
   }
-  if (!shouldAttemptObjectStorageBundle({ files: input.remoteEntries.filter((entry) => !entry.key.endsWith("/")) })) {
+  const shouldHydratePrimaryBundle = input.manifestDocument?.storageMode === "bundle";
+  if (
+    !shouldHydratePrimaryBundle &&
+    !shouldAttemptObjectStorageBundle({ files: input.remoteEntries.filter((entry) => !entry.key.endsWith("/")) })
+  ) {
     return false;
   }
-  if (!(await isDirectoryEmpty(input.localDir))) {
+  if ((input.requireEmptyLocalDir ?? true) && !(await isDirectoryEmpty(input.localDir))) {
     return false;
   }
 
@@ -434,6 +616,92 @@ async function maybeHydrateFromObjectStorageBundle(input: {
   }
 }
 
+function buildSyntheticRemoteEntriesFromManifestDocument(
+  remotePrefix: string,
+  manifestDocument: DirectorySyncManifestDocument,
+  options?: DirectorySyncOptions
+): ObjectStorageEntry[] {
+  const entries: ObjectStorageEntry[] = [];
+
+  for (const [relativePath, entry] of Object.entries(manifestDocument.files)) {
+    const normalized = normalizeRelativePath(relativePath);
+    if (!normalized || !isDirectorySyncManifestFileEntry(entry) || shouldIgnoreRelativePath(normalized)) {
+      continue;
+    }
+    if (options?.excludeRelativePath?.(normalized)) {
+      continue;
+    }
+
+    entries.push({
+      key: buildRemoteKey(remotePrefix, normalized),
+      size: entry.size,
+      lastModified: new Date(entry.mtimeMs)
+    });
+  }
+
+  for (const relativePath of manifestDocument.emptyDirectories ?? []) {
+    const normalized = normalizeRelativePath(relativePath);
+    if (!normalized || shouldIgnoreRelativePath(normalized)) {
+      continue;
+    }
+    if (options?.excludeRelativePath?.(normalized)) {
+      continue;
+    }
+
+    entries.push({
+      key: `${buildRemoteKey(remotePrefix, normalized)}/`,
+      size: 0
+    });
+  }
+
+  return entries.sort((left, right) => left.key.localeCompare(right.key));
+}
+
+function countRemoteMaterializedFiles(
+  remotePrefix: string,
+  remoteEntries: ObjectStorageEntry[],
+  options?: DirectorySyncOptions,
+  manifestDocument?: DirectorySyncManifestDocument | undefined
+): number {
+  if (manifestDocument?.storageMode === "bundle") {
+    return Object.entries(manifestDocument.files).filter(([relativePath, entry]) => {
+      return (
+        normalizeRelativePath(relativePath).length > 0 &&
+        isDirectorySyncManifestFileEntry(entry) &&
+        !shouldIgnoreRelativePath(relativePath) &&
+        !options?.excludeRelativePath?.(normalizeRelativePath(relativePath))
+      );
+    }).length;
+  }
+
+  let count = 0;
+  for (const entry of remoteEntries) {
+    if (entry.key.endsWith("/")) {
+      continue;
+    }
+
+    const relativePath = relativePathFromRemoteKey(remotePrefix, entry.key);
+    if (relativePath === undefined || shouldIgnoreRelativePath(relativePath)) {
+      continue;
+    }
+    if (options?.excludeRelativePath?.(relativePath)) {
+      continue;
+    }
+
+    count += 1;
+  }
+
+  return count;
+}
+
+function hasDirectorySyncMutations(input: {
+  uploadedFileCount: number;
+  deletedRemoteCount: number;
+  createdEmptyDirectoryCount: number;
+}): boolean {
+  return input.uploadedFileCount > 0 || input.deletedRemoteCount > 0 || input.createdEmptyDirectoryCount > 0;
+}
+
 function resolveDirectorySyncConcurrency(): number {
   const raw = process.env.OAH_OBJECT_STORAGE_SYNC_CONCURRENCY;
   if (!raw || raw.trim().length === 0) {
@@ -459,6 +727,38 @@ function resolveObjectStorageBundleMode(): "off" | "auto" | "force" {
   }
 
   return "auto";
+}
+
+function resolvePositiveIntegerEnv(name: string): number | undefined {
+  const raw = process.env[name]?.trim();
+  if (!raw) {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function resolveObjectStorageBundleConfig(): {
+  mode: "off" | "auto" | "force";
+  minFileCount: number;
+  minTotalBytes: number;
+  layout: "sidecar" | "primary";
+} {
+  const layout = process.env.OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT?.trim().toLowerCase() === "primary" ? "primary" : "sidecar";
+  return {
+    mode: resolveObjectStorageBundleMode(),
+    minFileCount: resolvePositiveIntegerEnv("OAH_OBJECT_STORAGE_SYNC_BUNDLE_MIN_FILE_COUNT") ?? DEFAULT_OBJECT_STORAGE_BUNDLE_MIN_FILE_COUNT,
+    minTotalBytes: resolvePositiveIntegerEnv("OAH_OBJECT_STORAGE_SYNC_BUNDLE_MIN_TOTAL_BYTES") ?? DEFAULT_OBJECT_STORAGE_BUNDLE_MIN_TOTAL_BYTES,
+    layout
+  };
+}
+
+function resolveNativeInlineUploadThresholdBytes(): number {
+  return (
+    resolvePositiveIntegerEnv("OAH_NATIVE_WORKSPACE_SYNC_INLINE_UPLOAD_THRESHOLD_BYTES") ??
+    DEFAULT_NATIVE_INLINE_UPLOAD_THRESHOLD_BYTES
+  );
 }
 
 function resolveObjectStorageBundleTimeoutMs(): number {
@@ -888,7 +1188,8 @@ async function syncNativeLocalDirectoryToRemoteIfAvailable(
 
   try {
     const concurrency = resolveDirectorySyncConcurrency();
-    return await observeNativeWorkspaceSyncOperation({
+    const syncBundle = resolveObjectStorageBundleConfig();
+    const result = await observeNativeWorkspaceSyncOperation({
       operation: "sync_local_to_remote",
       implementation: "rust",
       target: localDir,
@@ -903,9 +1204,18 @@ async function syncNativeLocalDirectoryToRemoteIfAvailable(
           remotePrefix,
           objectStore: nativeObjectStore,
           maxConcurrency: concurrency,
+          inlineUploadThresholdBytes: resolveNativeInlineUploadThresholdBytes(),
+          syncBundle,
           ...(nativeExcludes.length > 0 ? { excludeRelativePaths: nativeExcludes } : {})
         })
     });
+    return {
+      localFingerprint: result.localFingerprint,
+      uploadedFileCount: result.uploadedFileCount,
+      deletedRemoteCount: result.deletedRemoteCount,
+      createdEmptyDirectoryCount: result.createdEmptyDirectoryCount,
+      ...(result.requestCounts ? { requestCounts: result.requestCounts } : {})
+    };
   } catch (error) {
     recordNativeWorkspaceSyncFallback({
       operation: "sync_local_to_remote",
@@ -977,7 +1287,8 @@ async function syncNativeRemotePrefixToLocalIfAvailable(
   store: DirectoryObjectStore,
   remotePrefix: string,
   localDir: string,
-  options?: DirectorySyncOptions
+  options?: DirectorySyncOptions,
+  prefetchedEntries?: ObjectStorageEntry[]
 ): Promise<RemoteToLocalDirectorySyncResult | undefined> {
   const nativeExcludes = resolveNativeFingerprintExcludes(options);
   if (!isNativeWorkspaceSyncEnabled() || nativeExcludes === undefined) {
@@ -991,6 +1302,43 @@ async function syncNativeRemotePrefixToLocalIfAvailable(
 
   try {
     const concurrency = resolveDirectorySyncConcurrency();
+    const syncBundle = resolveObjectStorageBundleConfig();
+    const nativeRemoteEntries = prefetchedEntries
+      ?.map((entry) => {
+        const relativePath = relativePathFromRemoteKey(remotePrefix, entry.key);
+        if (relativePath === undefined || shouldIgnoreRelativePath(relativePath)) {
+          return undefined;
+        }
+        if (options?.excludeRelativePath?.(relativePath)) {
+          return undefined;
+        }
+        return {
+          relativePath: relativePath || "/",
+          key: entry.key,
+          size: entry.size,
+          ...(entry.lastModified ? { lastModifiedMs: entry.lastModified.getTime() } : {}),
+          isDirectory: entry.key.endsWith("/")
+        };
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== undefined);
+    const hasSyncManifest = prefetchedEntries?.some(
+      (entry) => entry.key === buildRemoteKey(remotePrefix, INTERNAL_SYNC_MANIFEST_RELATIVE_PATH)
+    );
+    const bundleEntry = prefetchedEntries
+      ?.map((entry) => {
+        const relativePath = relativePathFromRemoteKey(remotePrefix, entry.key);
+        if (relativePath !== INTERNAL_SYNC_BUNDLE_RELATIVE_PATH) {
+          return undefined;
+        }
+        return {
+          relativePath,
+          key: entry.key,
+          size: entry.size,
+          ...(entry.lastModified ? { lastModifiedMs: entry.lastModified.getTime() } : {}),
+          isDirectory: false
+        };
+      })
+      .find((entry): entry is NonNullable<typeof entry> => entry !== undefined);
     const result = await observeNativeWorkspaceSyncOperation({
       operation: "sync_remote_to_local",
       implementation: "rust",
@@ -1007,7 +1355,11 @@ async function syncNativeRemotePrefixToLocalIfAvailable(
           objectStore: nativeObjectStore,
           maxConcurrency: concurrency,
           ...(nativeExcludes.length > 0 ? { excludeRelativePaths: nativeExcludes } : {}),
-          ...(options?.preserveTopLevelNames ? { preserveTopLevelNames: options.preserveTopLevelNames } : {})
+          ...(options?.preserveTopLevelNames ? { preserveTopLevelNames: options.preserveTopLevelNames } : {}),
+          ...(nativeRemoteEntries ? { remoteEntries: nativeRemoteEntries } : {}),
+          ...(typeof hasSyncManifest === "boolean" ? { hasSyncManifest } : {}),
+          ...(bundleEntry ? { bundleEntry } : {}),
+          syncBundle
         })
     });
     return {
@@ -1016,7 +1368,8 @@ async function syncNativeRemotePrefixToLocalIfAvailable(
         : {}),
       removedPathCount: result.removedPathCount,
       createdDirectoryCount: result.createdDirectoryCount,
-      downloadedFileCount: result.downloadedFileCount
+      downloadedFileCount: result.downloadedFileCount,
+      ...(result.requestCounts ? { requestCounts: result.requestCounts } : {})
     };
   } catch (error) {
     recordNativeWorkspaceSyncFallback({
@@ -1214,30 +1567,44 @@ async function streamBodyToBuffer(body: unknown): Promise<Buffer> {
 
 class S3DirectoryStore implements DirectoryObjectStore {
   readonly #bucket: string;
-  readonly #client: S3Client;
   readonly #config: ObjectStorageConfig;
+  #clientPromise: Promise<AwsS3ClientLike> | undefined;
 
   constructor(config: ObjectStorageConfig) {
     this.#config = config;
     this.#bucket = config.bucket;
-    this.#client = new S3Client({
-      region: config.region,
-      ...(config.endpoint ? { endpoint: config.endpoint } : {}),
-      ...(config.force_path_style !== undefined ? { forcePathStyle: config.force_path_style } : {}),
-      ...(config.access_key || config.secret_key || config.session_token
-        ? {
-            credentials: {
-              accessKeyId: config.access_key ?? "",
-              secretAccessKey: config.secret_key ?? "",
-              ...(config.session_token ? { sessionToken: config.session_token } : {})
-            }
-          }
-        : {})
-    });
   }
 
   get bucket(): string {
     return this.#bucket;
+  }
+
+  async #getClient(): Promise<AwsS3ClientLike> {
+    if (!this.#clientPromise) {
+      this.#clientPromise = loadAwsS3Module()
+        .then(({ S3Client }) => {
+          return new S3Client({
+            region: this.#config.region,
+            ...(this.#config.endpoint ? { endpoint: this.#config.endpoint } : {}),
+            ...(this.#config.force_path_style !== undefined ? { forcePathStyle: this.#config.force_path_style } : {}),
+            ...(this.#config.access_key || this.#config.secret_key || this.#config.session_token
+              ? {
+                  credentials: {
+                    accessKeyId: this.#config.access_key ?? "",
+                    secretAccessKey: this.#config.secret_key ?? "",
+                    ...(this.#config.session_token ? { sessionToken: this.#config.session_token } : {})
+                  }
+                }
+              : {})
+          }) as AwsS3ClientLike;
+        })
+        .catch((error) => {
+          this.#clientPromise = undefined;
+          throw error;
+        });
+    }
+
+    return this.#clientPromise;
   }
 
   getNativeWorkspaceSyncConfig(): NativeWorkspaceSyncObjectStoreConfig {
@@ -1253,17 +1620,22 @@ class S3DirectoryStore implements DirectoryObjectStore {
   }
 
   async listEntries(prefix: string): Promise<ObjectStorageEntry[]> {
+    const [client, { ListObjectsV2Command }] = await Promise.all([this.#getClient(), loadAwsS3Module()]);
     const entries: ObjectStorageEntry[] = [];
     let continuationToken: string | undefined;
 
     do {
-      const response = await this.#client.send(
+      const response = (await client.send(
         new ListObjectsV2Command({
           Bucket: this.#bucket,
           ...(prefix ? { Prefix: `${prefix}/` } : {}),
           ...(continuationToken ? { ContinuationToken: continuationToken } : {})
         })
-      );
+      )) as {
+        Contents?: Array<{ Key?: string | undefined; Size?: number | undefined; LastModified?: Date | undefined }>;
+        IsTruncated?: boolean | undefined;
+        NextContinuationToken?: string | undefined;
+      };
 
       for (const item of response.Contents ?? []) {
         if (!item.Key) {
@@ -1284,12 +1656,16 @@ class S3DirectoryStore implements DirectoryObjectStore {
   }
 
   async getObject(key: string): Promise<{ body: Buffer; metadata?: Record<string, string> | undefined }> {
-    const response = await this.#client.send(
+    const [client, { GetObjectCommand }] = await Promise.all([this.#getClient(), loadAwsS3Module()]);
+    const response = (await client.send(
       new GetObjectCommand({
         Bucket: this.#bucket,
         Key: key
       })
-    );
+    )) as {
+      Body?: unknown;
+      Metadata?: Record<string, string> | undefined;
+    };
     return {
       body: await streamBodyToBuffer(response.Body),
       metadata: response.Metadata
@@ -1299,12 +1675,17 @@ class S3DirectoryStore implements DirectoryObjectStore {
   async getObjectInfo(
     key: string
   ): Promise<{ size?: number | undefined; lastModified?: Date | undefined; metadata?: Record<string, string> | undefined }> {
-    const response = await this.#client.send(
+    const [client, { HeadObjectCommand }] = await Promise.all([this.#getClient(), loadAwsS3Module()]);
+    const response = (await client.send(
       new HeadObjectCommand({
         Bucket: this.#bucket,
         Key: key
       })
-    );
+    )) as {
+      ContentLength?: number | undefined;
+      LastModified?: Date | undefined;
+      Metadata?: Record<string, string> | undefined;
+    };
 
     return {
       ...(typeof response.ContentLength === "number" ? { size: response.ContentLength } : {}),
@@ -1314,7 +1695,8 @@ class S3DirectoryStore implements DirectoryObjectStore {
   }
 
   async putObject(key: string, body: Buffer, options?: { mtimeMs?: number | undefined }): Promise<void> {
-    await this.#client.send(
+    const [client, { PutObjectCommand }] = await Promise.all([this.#getClient(), loadAwsS3Module()]);
+    await client.send(
       new PutObjectCommand({
         Bucket: this.#bucket,
         Key: key,
@@ -1335,9 +1717,10 @@ class S3DirectoryStore implements DirectoryObjectStore {
       return;
     }
 
+    const [client, { DeleteObjectsCommand }] = await Promise.all([this.#getClient(), loadAwsS3Module()]);
     for (let index = 0; index < keys.length; index += 1000) {
       const chunk = keys.slice(index, index + 1000);
-      await this.#client.send(
+      await client.send(
         new DeleteObjectsCommand({
           Bucket: this.#bucket,
           Delete: {
@@ -1350,7 +1733,8 @@ class S3DirectoryStore implements DirectoryObjectStore {
   }
 
   async close(): Promise<void> {
-    this.#client.destroy();
+    const client = await this.#clientPromise?.catch(() => undefined);
+    client?.destroy();
   }
 }
 
@@ -1735,17 +2119,40 @@ export async function syncRemotePrefixToLocal(
   options?: DirectorySyncOptions
 ): Promise<RemoteToLocalDirectorySyncResult> {
   logger?.(`syncing ${(label ?? remotePrefix) || "."} from object storage into ${localDir}`);
+  const nativeResult = await syncNativeRemotePrefixToLocalIfAvailable(store, remotePrefix, localDir, options);
+  if (nativeResult) {
+    return nativeResult;
+  }
+
   const prefetchedEntries = await store.listEntries(remotePrefix);
-  await maybeHydrateFromObjectStorageBundle({
+  const hasVisibleRemoteEntries = prefetchedEntries.some((entry) => {
+    if (entry.key.endsWith("/")) {
+      return true;
+    }
+    const relativePath = relativePathFromRemoteKey(remotePrefix, entry.key);
+    if (relativePath === undefined || shouldIgnoreRelativePath(relativePath)) {
+      return false;
+    }
+    return !options?.excludeRelativePath?.(relativePath);
+  });
+  const syncManifestDocument = hasVisibleRemoteEntries
+    ? undefined
+    : await loadRemoteDirectorySyncManifestDocument(store, remotePrefix, prefetchedEntries);
+  const hydratedFromBundle = await maybeHydrateFromObjectStorageBundle({
     store,
     remotePrefix,
     localDir,
     remoteEntries: prefetchedEntries,
+    manifestDocument: syncManifestDocument,
     logger
   });
-  const nativeResult = await syncNativeRemotePrefixToLocalIfAvailable(store, remotePrefix, localDir, options);
-  if (nativeResult) {
-    return nativeResult;
+  if (hydratedFromBundle) {
+    return {
+      localFingerprint: await computeLocalDirectoryFingerprint(localDir, options),
+      removedPathCount: 0,
+      createdDirectoryCount: 0,
+      downloadedFileCount: countRemoteMaterializedFiles(remotePrefix, prefetchedEntries, options, syncManifestDocument)
+    };
   }
 
   return observeNativeWorkspaceSyncOperation({
@@ -1759,14 +2166,27 @@ export async function syncRemotePrefixToLocal(
     },
     action: async (): Promise<RemoteToLocalDirectorySyncResult> => {
       const entries = prefetchedEntries;
-      const syncManifest = await loadRemoteDirectorySyncManifest(store, remotePrefix, entries);
+      const remoteEntriesForSync =
+        syncManifestDocument?.storageMode === "bundle"
+          ? buildSyntheticRemoteEntriesFromManifestDocument(remotePrefix, syncManifestDocument, options)
+          : entries;
+      const syncManifest = syncManifestDocument
+        ? new Map(
+            Object.entries(syncManifestDocument.files)
+              .map(([relativePath, entry]) => [normalizeRelativePath(relativePath), entry] as const)
+              .filter(
+                (entry): entry is readonly [string, DirectorySyncManifestFileEntry] =>
+                  entry[0].length > 0 && isDirectorySyncManifestFileEntry(entry[1])
+              )
+          )
+        : await loadRemoteDirectorySyncManifest(store, remotePrefix, entries);
       await mkdir(localDir, { recursive: true });
 
       const remoteDirectories = new Set<string>();
       const explicitRemoteDirectories = new Set<string>();
       const remoteFiles = new Map<string, ObjectStorageEntry>();
 
-      for (const entry of entries) {
+      for (const entry of remoteEntriesForSync) {
         const relativePath = relativePathFromRemoteKey(remotePrefix, entry.key);
         if (relativePath === undefined || shouldIgnoreRelativePath(relativePath)) {
           continue;
@@ -1793,7 +2213,7 @@ export async function syncRemotePrefixToLocal(
       }
 
       const concurrency = resolveDirectorySyncConcurrency();
-      const nativePlan = await collectNativeRemoteToLocalPlanIfAvailable(localDir, remotePrefix, entries, options);
+      const nativePlan = await collectNativeRemoteToLocalPlanIfAvailable(localDir, remotePrefix, remoteEntriesForSync, options);
       let removedPathCount = 0;
       if (nativePlan) {
         await runWithConcurrency(nativePlan.removePaths, concurrency, async (targetPath) => {
@@ -1820,6 +2240,28 @@ export async function syncRemotePrefixToLocal(
         }
         await mkdir(targetPath, { recursive: true });
       });
+
+      if (syncManifestDocument?.storageMode === "bundle") {
+        const hydratedFromPrimaryBundle = await maybeHydrateFromObjectStorageBundle({
+          store,
+          remotePrefix,
+          localDir,
+          remoteEntries: prefetchedEntries,
+          manifestDocument: syncManifestDocument,
+          requireEmptyLocalDir: false,
+          logger
+        });
+        if (!hydratedFromPrimaryBundle) {
+          throw new Error(`failed to hydrate bundle-primary prefix ${(remotePrefix || ".").trim() || "."} from sync bundle`);
+        }
+
+        return {
+          localFingerprint: await computeLocalDirectoryFingerprint(localDir, options),
+          removedPathCount,
+          createdDirectoryCount,
+          downloadedFileCount: countRemoteMaterializedFiles(remotePrefix, prefetchedEntries, options, syncManifestDocument)
+        };
+      }
 
       const fingerprintFiles: Array<{ relativePath: string; size: number; mtimeMs: number }> = [];
       let downloadedFileCount = 0;
@@ -1948,13 +2390,6 @@ export async function syncLocalDirectoryToRemote(
   logger?.(`syncing local changes in ${localDir} back to object storage (${(label ?? remotePrefix) || "."})`);
   const nativeSyncResult = await syncNativeLocalDirectoryToRemoteIfAvailable(store, remotePrefix, localDir, options);
   if (nativeSyncResult) {
-    await maybeWriteObjectStorageBundle({
-      store,
-      remotePrefix,
-      localDir,
-      options,
-      logger
-    });
     await pruneEmptyDirectories(localDir);
     return nativeSyncResult;
   }
@@ -2166,7 +2601,8 @@ export async function syncLocalDirectoryToRemote(
     remotePrefix,
     localDir,
     options,
-    logger
+    logger,
+    skipWrite: !hasDirectorySyncMutations(result)
   });
   await pruneEmptyDirectories(localDir);
   return result;

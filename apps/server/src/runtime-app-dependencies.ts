@@ -24,7 +24,6 @@ function buildSharedAppDependencies(runtime: BootstrappedRuntime): AppDependenci
 
   return {
     runtimeService: runtime.controlPlaneEngineService,
-    modelGateway: runtime.modelGateway,
     defaultModel: runtime.config.llm.default_model,
     workspaceMode: runtime.workspaceMode.kind,
     healthCheck: () => runtime.healthReport(),
@@ -47,6 +46,7 @@ function buildSharedAppDependencies(runtime: BootstrappedRuntime): AppDependenci
 export function buildApiAppDependencies(runtime: BootstrappedRuntime): AppDependencies {
   return {
     ...buildSharedAppDependencies(runtime),
+    modelGateway: runtime.modelGateway,
     ...(runtime.adminCapabilities?.storageAdmin ? { storageAdmin: runtime.adminCapabilities.storageAdmin } : {}),
     ...(runtime.listPlatformModels ? { listPlatformModels: runtime.listPlatformModels } : {}),
     ...(runtime.getPlatformModelSnapshot ? { getPlatformModelSnapshot: runtime.getPlatformModelSnapshot } : {}),

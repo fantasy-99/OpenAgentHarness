@@ -187,6 +187,13 @@ RUN apt-get update \
 
 FROM docker:cli AS docker-cli-build-lite
 
+RUN apk add --no-cache binutils \
+  && cp /usr/local/bin/docker /tmp/docker \
+  && cp /usr/local/libexec/docker/cli-plugins/docker-compose /tmp/docker-compose \
+  && strip /tmp/docker /tmp/docker-compose \
+  && mv /tmp/docker /usr/local/bin/docker \
+  && mv /tmp/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
+
 FROM docker/compose-bin:v${DOCKER_COMPOSE_VERSION} AS docker-compose-bin
 
 FROM ${BASE_RUNTIME_IMAGE} AS runtime-common
@@ -220,6 +227,7 @@ FROM runtime-common AS runtime-execution-base
 ENV OAH_DOCS_ROOT=/app
 ENV OAH_NATIVE_WORKSPACE_SYNC=1
 ENV OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT=1
+ENV OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT=primary
 ENV OAH_NATIVE_WORKSPACE_SYNC_BINARY=/app/native/oah-workspace-sync
 
 RUN mkdir -p /var/lib/oah/workspaces \
@@ -236,6 +244,7 @@ FROM runtime-common-lite AS runtime-execution-lite-base
 ENV OAH_DOCS_ROOT=/app
 ENV OAH_NATIVE_WORKSPACE_SYNC=1
 ENV OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT=1
+ENV OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT=primary
 ENV OAH_NATIVE_WORKSPACE_SYNC_BINARY=/app/native/oah-workspace-sync
 
 RUN mkdir -p /var/lib/oah/workspaces \

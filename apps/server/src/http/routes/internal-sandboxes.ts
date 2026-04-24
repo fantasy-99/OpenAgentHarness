@@ -41,6 +41,10 @@ import { describeSandboxTopology } from "../../sandbox-topology.js";
 
 const DEFAULT_BACKGROUND_SESSION_PREFIX = "sandbox";
 
+function readRegisteredRouteUrl(request: FastifyRequest): string {
+  return typeof request.routeOptions.url === "string" ? request.routeOptions.url : request.url.split("?")[0] ?? request.url;
+}
+
 async function touchWorkspaceActivity(dependencies: AppDependencies, workspaceId: string): Promise<void> {
   await dependencies.touchWorkspaceActivity?.(workspaceId);
 }
@@ -456,47 +460,115 @@ async function handleRunSandboxBackgroundCommand(
   return reply.send(sandboxBackgroundCommandResultSchema.parse(result));
 }
 
-export function registerInternalSandboxRoutes(app: FastifyInstance, dependencies: AppDependencies): void {
-  app.post("/internal/v1/sandboxes", async (request, reply) => {
-    const input = ensureSandboxForWorkspaceRequestSchema.parse(request.body);
-    const ownerId = resolveOwnerId(input);
+export async function dispatchRegisteredInternalSandboxRoute(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  dependencies: AppDependencies
+) {
+  const routeUrl = readRegisteredRouteUrl(request);
 
-    if (input.workspaceId) {
-      try {
-        const existing = await dependencies.runtimeService.getWorkspace(input.workspaceId);
-        assertSandboxOwnerMatchesWorkspace(ownerId, existing);
-        if (ownerId) {
-          await dependencies.assignWorkspacePlacementOwnerAffinity?.({
-            workspaceId: input.workspaceId,
-            ownerId,
-            overwrite: false
-          });
+  switch (`${request.method} ${routeUrl}`) {
+    case "POST /internal/v1/sandboxes": {
+      const input = ensureSandboxForWorkspaceRequestSchema.parse(request.body);
+      const ownerId = resolveOwnerId(input);
+
+      if (input.workspaceId) {
+        try {
+          const existing = await dependencies.runtimeService.getWorkspace(input.workspaceId);
+          assertSandboxOwnerMatchesWorkspace(ownerId, existing);
+          if (ownerId) {
+            await dependencies.assignWorkspacePlacementOwnerAffinity?.({
+              workspaceId: input.workspaceId,
+              ownerId,
+              overwrite: false
+            });
+          }
+          return reply.status(200).send(await buildSandboxResponse(dependencies, existing.id));
+        } catch (error) {
+          if (!(error instanceof AppError) || error.code !== "workspace_not_found") {
+            throw error;
+          }
         }
-        return reply.status(200).send(await buildSandboxResponse(dependencies, existing.id));
-      } catch (error) {
-        if (!(error instanceof AppError) || error.code !== "workspace_not_found") {
+
+        if (!input.name || !input.runtime) {
+          throw new AppError(404, "workspace_not_found", `Workspace ${input.workspaceId} was not found.`);
+        }
+
+        const createWorkspaceInput = {
+          name: input.name,
+          runtime: input.runtime,
+          executionPolicy: input.executionPolicy,
+          ...(input.externalRef ? { externalRef: input.externalRef } : {}),
+          ...(ownerId ? { ownerId } : {}),
+          ...(input.serviceName ? { serviceName: input.serviceName } : {}),
+          workspaceId: input.workspaceId
+        };
+        const reservedPlacement = await reserveOwnerScopedWorkspacePlacement(dependencies, ownerId, input.workspaceId);
+        try {
+          const workspace = await dependencies.runtimeService.createWorkspace({
+            input: createWorkspaceInput as typeof createWorkspaceInput & {
+              workspaceId: string;
+            }
+          });
+          if (ownerId && workspace.id !== reservedPlacement.workspaceId) {
+            await dependencies.assignWorkspacePlacementOwnerAffinity?.({
+              workspaceId: workspace.id,
+              ownerId,
+              overwrite: true
+            });
+          }
+          return reply.status(201).send(await buildSandboxResponse(dependencies, workspace.id));
+        } catch (error) {
+          await reservedPlacement.release();
           throw error;
         }
       }
 
-      if (!input.name || !input.runtime) {
-        throw new AppError(404, "workspace_not_found", `Workspace ${input.workspaceId} was not found.`);
+      if (input.rootPath) {
+        if (!dependencies.importWorkspace) {
+          throw new AppError(501, "sandbox_import_unavailable", "Sandbox import is not available on this server.");
+        }
+
+        const workspace = await dependencies.importWorkspace({
+          rootPath: input.rootPath,
+          ...(input.name ? { name: input.name } : {}),
+          ...(input.externalRef ? { externalRef: input.externalRef } : {}),
+          ...(ownerId ? { ownerId } : {}),
+          ...(input.serviceName ? { serviceName: input.serviceName } : {})
+        });
+        if (ownerId) {
+          await dependencies.assignWorkspacePlacementOwnerAffinity?.({
+            workspaceId: workspace.id,
+            ownerId,
+            overwrite: true
+          });
+        }
+        return reply.status(201).send(await buildSandboxResponse(dependencies, workspace.id));
       }
 
-      const createWorkspaceInput = {
-        name: input.name,
-        runtime: input.runtime,
-        executionPolicy: input.executionPolicy,
-        ...(input.externalRef ? { externalRef: input.externalRef } : {}),
-        ...(ownerId ? { ownerId } : {}),
-        ...(input.serviceName ? { serviceName: input.serviceName } : {}),
-        workspaceId: input.workspaceId
-      };
-      const reservedPlacement = await reserveOwnerScopedWorkspacePlacement(dependencies, ownerId, input.workspaceId);
+      const reservedPlacement = await reserveOwnerScopedWorkspacePlacement(
+        dependencies,
+        ownerId,
+        ownerId ? createId("ws") : undefined
+      );
       try {
         const workspace = await dependencies.runtimeService.createWorkspace({
-          input: createWorkspaceInput as typeof createWorkspaceInput & {
-            workspaceId: string;
+          input: {
+            name: input.name as string,
+            runtime: input.runtime as string,
+            executionPolicy: input.executionPolicy,
+            ...(input.externalRef ? { externalRef: input.externalRef } : {}),
+            ...(ownerId ? { ownerId } : {}),
+            ...(input.serviceName ? { serviceName: input.serviceName } : {}),
+            ...(reservedPlacement.workspaceId ? { workspaceId: reservedPlacement.workspaceId } : {})
+          } as {
+            name: string;
+            runtime: string;
+            executionPolicy: "local" | "container" | "remote_runner";
+            externalRef?: string | undefined;
+            ownerId?: string | undefined;
+            serviceName?: string | undefined;
+            workspaceId?: string | undefined;
           }
         });
         if (ownerId && workspace.id !== reservedPlacement.workspaceId) {
@@ -512,130 +584,104 @@ export function registerInternalSandboxRoutes(app: FastifyInstance, dependencies
         throw error;
       }
     }
-
-    if (input.rootPath) {
-      if (!dependencies.importWorkspace) {
-        throw new AppError(501, "sandbox_import_unavailable", "Sandbox import is not available on this server.");
-      }
-
-      const workspace = await dependencies.importWorkspace({
-        rootPath: input.rootPath,
-        ...(input.name ? { name: input.name } : {}),
-        ...(input.externalRef ? { externalRef: input.externalRef } : {}),
-        ...(ownerId ? { ownerId } : {}),
-        ...(input.serviceName ? { serviceName: input.serviceName } : {})
-      });
-      if (ownerId) {
-        await dependencies.assignWorkspacePlacementOwnerAffinity?.({
-          workspaceId: workspace.id,
-          ownerId,
-          overwrite: true
-        });
-      }
-      return reply.status(201).send(await buildSandboxResponse(dependencies, workspace.id));
+    case "GET /internal/v1/sandboxes/:sandboxId": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      return handleGetSandbox(dependencies, params.sandboxId, reply);
     }
-
-    const reservedPlacement = await reserveOwnerScopedWorkspacePlacement(
-      dependencies,
-      ownerId,
-      ownerId ? createId("ws") : undefined
-    );
-    try {
-      const workspace = await dependencies.runtimeService.createWorkspace({
-        input: {
-          name: input.name as string,
-          runtime: input.runtime as string,
-          executionPolicy: input.executionPolicy,
-          ...(input.externalRef ? { externalRef: input.externalRef } : {}),
-          ...(ownerId ? { ownerId } : {}),
-          ...(input.serviceName ? { serviceName: input.serviceName } : {}),
-          ...(reservedPlacement.workspaceId ? { workspaceId: reservedPlacement.workspaceId } : {})
-        } as {
-          name: string;
-          runtime: string;
-          executionPolicy: "local" | "container" | "remote_runner";
-          externalRef?: string | undefined;
-          ownerId?: string | undefined;
-          serviceName?: string | undefined;
-          workspaceId?: string | undefined;
-        }
-      });
-      if (ownerId && workspace.id !== reservedPlacement.workspaceId) {
-        await dependencies.assignWorkspacePlacementOwnerAffinity?.({
-          workspaceId: workspace.id,
-          ownerId,
-          overwrite: true
-        });
-      }
-      return reply.status(201).send(await buildSandboxResponse(dependencies, workspace.id));
-    } catch (error) {
-      await reservedPlacement.release();
-      throw error;
+    case "GET /internal/v1/sandboxes/:sandboxId/files/entries": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      return handleListSandboxEntries(dependencies, params.sandboxId, request, reply);
     }
-  });
+    case "GET /internal/v1/sandboxes/:sandboxId/files/stat": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      return handleGetSandboxFileStat(dependencies, params.sandboxId, request, reply);
+    }
+    case "GET /internal/v1/sandboxes/:sandboxId/files/content": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      return handleGetSandboxFileContent(dependencies, params.sandboxId, request, reply);
+    }
+    case "PUT /internal/v1/sandboxes/:sandboxId/files/content": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      return handlePutSandboxFileContent(dependencies, params.sandboxId, request, reply);
+    }
+    case "PUT /internal/v1/sandboxes/:sandboxId/files/upload": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      return handleUploadSandboxFile(dependencies, params.sandboxId, request, reply);
+    }
+    case "GET /internal/v1/sandboxes/:sandboxId/files/download": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      return handleDownloadSandboxFile(dependencies, params.sandboxId, request, reply);
+    }
+    case "POST /internal/v1/sandboxes/:sandboxId/directories": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      return handleCreateSandboxDirectory(dependencies, params.sandboxId, request, reply);
+    }
+    case "DELETE /internal/v1/sandboxes/:sandboxId/files/entry": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      return handleDeleteSandboxEntry(dependencies, params.sandboxId, request, reply);
+    }
+    case "PATCH /internal/v1/sandboxes/:sandboxId/files/move": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      return handleMoveSandboxEntry(dependencies, params.sandboxId, request, reply);
+    }
+    case "POST /internal/v1/sandboxes/:sandboxId/commands/foreground": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      return handleRunSandboxForegroundCommand(dependencies, params.sandboxId, request, reply);
+    }
+    case "POST /internal/v1/sandboxes/:sandboxId/commands/process": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      return handleRunSandboxProcessCommand(dependencies, params.sandboxId, request, reply);
+    }
+    case "POST /internal/v1/sandboxes/:sandboxId/commands/background": {
+      const params = createParamsSchema("sandboxId").parse(request.params);
+      return handleRunSandboxBackgroundCommand(dependencies, params.sandboxId, request, reply);
+    }
+    default:
+      throw new AppError(404, "route_not_found", `Unsupported internal sandbox route: ${request.method} ${routeUrl}`);
+  }
+}
 
-  app.get("/internal/v1/sandboxes/:sandboxId", async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    return handleGetSandbox(dependencies, params.sandboxId, reply);
-  });
-
-  app.get("/internal/v1/sandboxes/:sandboxId/files/entries", async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    return handleListSandboxEntries(dependencies, params.sandboxId, request, reply);
-  });
-
-  app.get("/internal/v1/sandboxes/:sandboxId/files/stat", async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    return handleGetSandboxFileStat(dependencies, params.sandboxId, request, reply);
-  });
-
-  app.get("/internal/v1/sandboxes/:sandboxId/files/content", async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    return handleGetSandboxFileContent(dependencies, params.sandboxId, request, reply);
-  });
-
-  app.put("/internal/v1/sandboxes/:sandboxId/files/content", async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    return handlePutSandboxFileContent(dependencies, params.sandboxId, request, reply);
-  });
-
-  app.put("/internal/v1/sandboxes/:sandboxId/files/upload", async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    return handleUploadSandboxFile(dependencies, params.sandboxId, request, reply);
-  });
-
-  app.get("/internal/v1/sandboxes/:sandboxId/files/download", async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    return handleDownloadSandboxFile(dependencies, params.sandboxId, request, reply);
-  });
-
-  app.post("/internal/v1/sandboxes/:sandboxId/directories", async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    return handleCreateSandboxDirectory(dependencies, params.sandboxId, request, reply);
-  });
-
-  app.delete("/internal/v1/sandboxes/:sandboxId/files/entry", async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    return handleDeleteSandboxEntry(dependencies, params.sandboxId, request, reply);
-  });
-
-  app.patch("/internal/v1/sandboxes/:sandboxId/files/move", async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    return handleMoveSandboxEntry(dependencies, params.sandboxId, request, reply);
-  });
-
-  app.post("/internal/v1/sandboxes/:sandboxId/commands/foreground", async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    return handleRunSandboxForegroundCommand(dependencies, params.sandboxId, request, reply);
-  });
-
-  app.post("/internal/v1/sandboxes/:sandboxId/commands/process", async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    return handleRunSandboxProcessCommand(dependencies, params.sandboxId, request, reply);
-  });
-
-  app.post("/internal/v1/sandboxes/:sandboxId/commands/background", async (request, reply) => {
-    const params = createParamsSchema("sandboxId").parse(request.params);
-    return handleRunSandboxBackgroundCommand(dependencies, params.sandboxId, request, reply);
-  });
+export function registerInternalSandboxRoutes(app: FastifyInstance, dependencies: AppDependencies): void {
+  app.post("/internal/v1/sandboxes", async (request, reply) =>
+    dispatchRegisteredInternalSandboxRoute(request, reply, dependencies)
+  );
+  app.get("/internal/v1/sandboxes/:sandboxId", async (request, reply) =>
+    dispatchRegisteredInternalSandboxRoute(request, reply, dependencies)
+  );
+  app.get("/internal/v1/sandboxes/:sandboxId/files/entries", async (request, reply) =>
+    dispatchRegisteredInternalSandboxRoute(request, reply, dependencies)
+  );
+  app.get("/internal/v1/sandboxes/:sandboxId/files/stat", async (request, reply) =>
+    dispatchRegisteredInternalSandboxRoute(request, reply, dependencies)
+  );
+  app.get("/internal/v1/sandboxes/:sandboxId/files/content", async (request, reply) =>
+    dispatchRegisteredInternalSandboxRoute(request, reply, dependencies)
+  );
+  app.put("/internal/v1/sandboxes/:sandboxId/files/content", async (request, reply) =>
+    dispatchRegisteredInternalSandboxRoute(request, reply, dependencies)
+  );
+  app.put("/internal/v1/sandboxes/:sandboxId/files/upload", async (request, reply) =>
+    dispatchRegisteredInternalSandboxRoute(request, reply, dependencies)
+  );
+  app.get("/internal/v1/sandboxes/:sandboxId/files/download", async (request, reply) =>
+    dispatchRegisteredInternalSandboxRoute(request, reply, dependencies)
+  );
+  app.post("/internal/v1/sandboxes/:sandboxId/directories", async (request, reply) =>
+    dispatchRegisteredInternalSandboxRoute(request, reply, dependencies)
+  );
+  app.delete("/internal/v1/sandboxes/:sandboxId/files/entry", async (request, reply) =>
+    dispatchRegisteredInternalSandboxRoute(request, reply, dependencies)
+  );
+  app.patch("/internal/v1/sandboxes/:sandboxId/files/move", async (request, reply) =>
+    dispatchRegisteredInternalSandboxRoute(request, reply, dependencies)
+  );
+  app.post("/internal/v1/sandboxes/:sandboxId/commands/foreground", async (request, reply) =>
+    dispatchRegisteredInternalSandboxRoute(request, reply, dependencies)
+  );
+  app.post("/internal/v1/sandboxes/:sandboxId/commands/process", async (request, reply) =>
+    dispatchRegisteredInternalSandboxRoute(request, reply, dependencies)
+  );
+  app.post("/internal/v1/sandboxes/:sandboxId/commands/background", async (request, reply) =>
+    dispatchRegisteredInternalSandboxRoute(request, reply, dependencies)
+  );
 }

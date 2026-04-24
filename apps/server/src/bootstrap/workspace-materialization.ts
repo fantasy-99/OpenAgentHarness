@@ -10,7 +10,8 @@ import {
   shouldExcludeWorkspaceBackingStoreRelativePath,
   syncWorkspaceRootToObjectStore,
   syncRemotePrefixToLocal,
-  type DirectoryObjectStore
+  type DirectoryObjectStore,
+  type ObjectStoreRequestCounts
 } from "../object-storage.js";
 
 type WorkspaceMaterializationSource =
@@ -37,7 +38,7 @@ interface WorkspaceMaterializationEntry {
   materializedAt?: string | undefined;
   lastSyncedLocalFingerprint?: string | undefined;
   lastActivityAt: string;
-  inFlight?: Promise<void> | undefined;
+  inFlight?: Promise<ObjectStoreRequestCounts | undefined> | undefined;
 }
 
 export class WorkspaceMaterializationDrainingError extends Error {
@@ -145,6 +146,7 @@ export interface WorkspaceMaterializationLease {
   localPath: string;
   sourceKind: "object_store" | "local_directory";
   remotePrefix?: string | undefined;
+  materializeRequestCounts?: ObjectStoreRequestCounts | undefined;
   markDirty(): void;
   touch(): void;
   release(options?: { dirty?: boolean | undefined }): Promise<void>;
@@ -283,7 +285,7 @@ export class WorkspaceMaterializationManager {
       this.#entries.set(cacheKey, entry);
     }
 
-    await this.#ensureMaterialized(entry);
+    const materializeRequestCounts = await this.#ensureMaterialized(entry);
     const baselineFingerprint =
       entry.source.kind === "object_store"
         ? (entry.lastSyncedLocalFingerprint ?? (await this.#readSyncMetadata(entry))?.localFingerprint) ??
@@ -306,6 +308,7 @@ export class WorkspaceMaterializationManager {
       localPath: entry.localPath,
       sourceKind: entry.source.kind,
       ...(entry.source.kind === "object_store" ? { remotePrefix: entry.source.remotePrefix } : {}),
+      ...(materializeRequestCounts ? { materializeRequestCounts } : {}),
       markDirty: () => {
         entry!.dirty = true;
         this.#touchEntry(entry!);
@@ -513,15 +516,15 @@ export class WorkspaceMaterializationManager {
     return true;
   }
 
-  async #ensureMaterialized(entry: WorkspaceMaterializationEntry): Promise<void> {
+  async #ensureMaterialized(entry: WorkspaceMaterializationEntry): Promise<ObjectStoreRequestCounts | undefined> {
     if (entry.source.kind !== "object_store") {
       entry.materializedAt ??= nowIso();
       this.#failures.delete(entry.cacheKey);
-      return;
+      return undefined;
     }
 
     if (entry.materializedAt) {
-      return;
+      return undefined;
     }
 
     const source = entry.source;
@@ -536,7 +539,7 @@ export class WorkspaceMaterializationManager {
             );
             entry.materializedAt = nowIso();
             this.#failures.delete(entry.cacheKey);
-            return;
+            return undefined;
           }
           this.#logger(
             `[workspace-materialization] materializing workspace ${entry.workspaceId} (${entry.version}) from ${source.remotePrefix} into ${entry.localPath}`
@@ -556,6 +559,7 @@ export class WorkspaceMaterializationManager {
           await this.#writeSyncMetadata(entry);
           entry.materializedAt = nowIso();
           this.#failures.delete(entry.cacheKey);
+          return syncResult.requestCounts;
         } catch (error) {
           throw this.#recordOperationFailure(entry, "materialize", "materialize", error);
         }
@@ -564,7 +568,7 @@ export class WorkspaceMaterializationManager {
       });
     }
 
-    await entry.inFlight;
+    return await entry.inFlight;
   }
 
   async #flushEntry(entry: WorkspaceMaterializationEntry, stage: WorkspaceMaterializationFailureStage): Promise<void> {

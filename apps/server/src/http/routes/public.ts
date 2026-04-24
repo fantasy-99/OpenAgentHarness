@@ -35,19 +35,14 @@ import { createParamsSchema, writeSseEvent } from "../context.js";
 import { describeSandboxTopology } from "../../sandbox-topology.js";
 import { resolveOwnerId } from "../proxy-utils.js";
 import type { AppDependencies, AppRouteOptions } from "../types.js";
+import { SUPPORTED_MODEL_PROVIDERS } from "../model-providers.js";
 import { renderNativeWorkspaceSyncMetrics } from "../../observability/native-workspace-sync.js";
 
 let developerDocsModulePromise: Promise<typeof import("../developer-docs.js")> | undefined;
-let modelGatewayProvidersModulePromise: Promise<typeof import("../../../../../packages/model-gateway/src/providers.js")> | undefined;
 
 function loadDeveloperDocsModule(): Promise<typeof import("../developer-docs.js")> {
   developerDocsModulePromise ??= import("../developer-docs.js");
   return developerDocsModulePromise;
-}
-
-function loadModelGatewayProvidersModule(): Promise<typeof import("../../../../../packages/model-gateway/src/providers.js")> {
-  modelGatewayProvidersModulePromise ??= import("../../../../../packages/model-gateway/src/providers.js");
-  return modelGatewayProvidersModulePromise;
 }
 
 export function registerPublicRoutes(app: FastifyInstance, dependencies: AppDependencies, options: AppRouteOptions): void {
@@ -217,7 +212,7 @@ export function registerPublicRoutes(app: FastifyInstance, dependencies: AppDepe
   app.get("/api/v1/model-providers", async (_request, reply) =>
     reply.send(
       modelProviderListSchema.parse({
-        items: (await loadModelGatewayProvidersModule()).SUPPORTED_MODEL_PROVIDERS
+        items: SUPPORTED_MODEL_PROVIDERS
       })
     )
   );

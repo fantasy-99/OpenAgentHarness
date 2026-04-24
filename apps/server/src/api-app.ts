@@ -1,7 +1,8 @@
 import { createBaseApp, registerInternalRoutes } from "./app-core.js";
 import { registerPublicRoutes } from "./http/routes/public.js";
-import { registerWorkspaceRoutes } from "./http/routes/workspaces.js";
-import { registerSandboxRoutes } from "./http/routes/sandboxes.js";
+import { registerInternalModelRoutes } from "./http/routes/internal-models.js";
+import { registerWorkspaceRoutes } from "./http/routes/workspaces-lazy.js";
+import { registerSandboxRoutes } from "./http/routes/sandboxes-lazy.js";
 import { registerSessionRoutes } from "./http/routes/sessions.js";
 import type { AppDependencies } from "./http/types.js";
 
@@ -14,6 +15,7 @@ export function createApiApp(dependencies: AppDependencies) {
   registerSandboxRoutes(app, dependencies, { workspaceMode });
   registerSessionRoutes(app, dependencies);
   registerInternalRoutes(app, dependencies);
+  registerInternalModelRoutes(app, dependencies);
 
   return app;
 }

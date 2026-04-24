@@ -108,7 +108,7 @@ export async function prepareControlPlaneRuntime(options: {
   redisWorkspaceLeaseRegistry?: WorkspaceLeaseRegistryLike | undefined;
   redisWorkspacePlacementRegistry?: WorkspacePlacementRegistryLike | undefined;
   pollingConfig: { enabled: boolean; intervalMs: number };
-  workspaceModelMetadataDiscovery: "eager" | "background";
+  workspaceModelMetadataDiscovery: "eager" | "background" | "manual";
   getPlatformAgents(): Promise<PlatformAgentRegistry>;
   logWorkspaceDiscoveryError(rootPath: string, kind: "project", error: unknown): void;
   discoverWorkspaceWithEnrichedModels(rootPath: string, kind: "project"): Promise<WorkspaceRecord>;
@@ -149,6 +149,7 @@ export async function prepareControlPlaneRuntime(options: {
   let workspaceRegistryPollTimer: NodeJS.Timeout | undefined;
   let workspaceMetadataHydrationTimer: NodeJS.Timeout | undefined;
   let workspaceMetadataHydrationPromise: Promise<void> | undefined;
+  let workspaceMetadataHydrationPending = false;
   let workspaceSyncTimer: NodeJS.Timeout | undefined;
   let watchedProjectRoots = new Map<string, FSWatcher>();
 
@@ -256,7 +257,12 @@ export async function prepareControlPlaneRuntime(options: {
       return;
     }
 
-    if (workspaceMetadataHydrationTimer || workspaceMetadataHydrationPromise) {
+    if (workspaceMetadataHydrationPromise) {
+      workspaceMetadataHydrationPending = true;
+      return;
+    }
+
+    if (workspaceMetadataHydrationTimer) {
       return;
     }
 
@@ -268,6 +274,10 @@ export async function prepareControlPlaneRuntime(options: {
         })
         .finally(() => {
           workspaceMetadataHydrationPromise = undefined;
+          if (workspaceMetadataHydrationPending) {
+            workspaceMetadataHydrationPending = false;
+            scheduleWorkspaceModelMetadataHydration();
+          }
         });
     }, Math.max(0, delayMs));
     workspaceMetadataHydrationTimer.unref?.();
@@ -506,7 +516,11 @@ export async function prepareControlPlaneRuntime(options: {
       updateWatchedProjectRoots(reconciledWorkspaces);
 
       if (options.managesWorkspaceRegistry) {
-        await syncWorkspaceRegistry();
+        if (options.workspaceModelMetadataDiscovery === "background") {
+          scheduleWorkspaceRegistrySync(0);
+        } else if (options.workspaceModelMetadataDiscovery === "eager") {
+          await syncWorkspaceRegistry();
+        }
         if (options.pollingConfig.enabled) {
           workspaceRegistryPollTimer = setInterval(() => {
             void syncWorkspaceRegistry().catch((error) => {

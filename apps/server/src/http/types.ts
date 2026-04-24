@@ -23,7 +23,7 @@ declare module "fastify" {
 
 export interface AppDependencies {
   runtimeService: ControlPlaneRuntimeOperations;
-  modelGateway: ModelGateway;
+  modelGateway?: ModelGateway;
   defaultModel: string;
   logger?: boolean;
   workspaceMode?: "multi" | "single";

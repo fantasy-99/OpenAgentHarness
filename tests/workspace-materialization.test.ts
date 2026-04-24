@@ -668,6 +668,80 @@ describe("workspace materialization", () => {
     await manager.close();
   });
 
+  it("surfaces materialization request counts on the first lease that performs the sync", async () => {
+    const cacheRoot = await mkdtemp(path.join(os.tmpdir(), "oah-materialization-cache-"));
+    tempDirs.push(cacheRoot);
+
+    const syncRemotePrefixToLocal = vi.fn(async (_store: DirectoryObjectStore, _remotePrefix: string, localDir: string) => {
+      await mkdir(localDir, { recursive: true });
+      await writeFile(path.join(localDir, "README.md"), "# demo\n", "utf8");
+      return {
+        localFingerprint: "materialized-sync-fingerprint",
+        removedPathCount: 0,
+        createdDirectoryCount: 0,
+        downloadedFileCount: 1,
+        requestCounts: {
+          listRequests: 0,
+          getRequests: 1,
+          headRequests: 0,
+          putRequests: 0,
+          deleteRequests: 0
+        }
+      };
+    });
+
+    vi.resetModules();
+    vi.doMock("../apps/server/src/object-storage.ts", async () => {
+      const actual = await vi.importActual<typeof import("../apps/server/src/object-storage.ts")>(
+        "../apps/server/src/object-storage.ts"
+      );
+      return {
+        ...actual,
+        syncRemotePrefixToLocal
+      };
+    });
+
+    const { WorkspaceMaterializationManager: TestWorkspaceMaterializationManager } = await import(
+      "../apps/server/src/bootstrap/workspace-materialization.ts"
+    );
+
+    const manager = new TestWorkspaceMaterializationManager({
+      cacheRoot,
+      workerId: "worker_1",
+      store: new FakeDirectoryObjectStore()
+    });
+
+    const firstLease = await manager.acquireWorkspace({
+      workspace: {
+        id: "ws_1",
+        rootPath: "/unused",
+        externalRef: "s3://test-bucket/workspace/demo"
+      } as never
+    });
+
+    expect(firstLease.materializeRequestCounts).toEqual({
+      listRequests: 0,
+      getRequests: 1,
+      headRequests: 0,
+      putRequests: 0,
+      deleteRequests: 0
+    });
+    await firstLease.release();
+
+    const secondLease = await manager.acquireWorkspace({
+      workspace: {
+        id: "ws_1",
+        rootPath: "/unused",
+        externalRef: "s3://test-bucket/workspace/demo"
+      } as never
+    });
+
+    expect(secondLease.materializeRequestCounts).toBeUndefined();
+    expect(syncRemotePrefixToLocal).toHaveBeenCalledTimes(1);
+    await secondLease.release();
+    await manager.close();
+  });
+
   it("reuses the sync fingerprint returned during flush instead of rescanning the local workspace", async () => {
     const cacheRoot = await mkdtemp(path.join(os.tmpdir(), "oah-materialization-cache-"));
     tempDirs.push(cacheRoot);

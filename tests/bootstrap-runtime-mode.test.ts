@@ -8,6 +8,7 @@ import {
   resolveObjectStorageMirrorBlockingInit,
   resolveRuntimeAssemblyProfile,
   resolveEmbeddedWorkerPoolConfig,
+  resolveWorkspaceModelMetadataDiscoveryMode,
   resolveWorkspacePrewarmConfig,
   resolveWorkspaceMaterializationConfig,
   resolveWorkerMode,
@@ -139,6 +140,32 @@ describe("server runtime process modes", () => {
     });
   });
 
+  it("keeps multi-workspace api control planes on manual workspace model metadata hydration", () => {
+    expect(
+      resolveWorkspaceModelMetadataDiscoveryMode({
+        processKind: "api",
+        hasSingleWorkspace: false,
+        managesWorkspaceRegistry: true
+      })
+    ).toBe("manual");
+
+    expect(
+      resolveWorkspaceModelMetadataDiscoveryMode({
+        processKind: "api",
+        hasSingleWorkspace: true,
+        managesWorkspaceRegistry: false
+      })
+    ).toBe("eager");
+
+    expect(
+      resolveWorkspaceModelMetadataDiscoveryMode({
+        processKind: "worker",
+        hasSingleWorkspace: false,
+        managesWorkspaceRegistry: false
+      })
+    ).toBe("eager");
+  });
+
   it("blocks on object storage mirror initialization by default", () => {
     expect(resolveObjectStorageMirrorBlockingInit()).toBe(true);
   });
@@ -253,7 +280,7 @@ describe("server runtime process modes", () => {
     expect(acquire).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps eager execution services for embedded api runtimes and workers", () => {
+  it("keeps eager execution services for embedded api runtimes while leaving standalone workers lazy", () => {
     expect(
       resolveRuntimeAssemblyProfile({
         processKind: "api",
@@ -277,7 +304,7 @@ describe("server runtime process modes", () => {
       })
     ).toEqual({
       id: "worker_executor",
-      executionServicesMode: "eager",
+      executionServicesMode: "lazy",
       enablePlatformModelLiveReload: false,
       enableWorkerRuntime: true,
       enableAdminCapabilities: false,

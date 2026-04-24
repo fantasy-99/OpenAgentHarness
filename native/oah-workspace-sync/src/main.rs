@@ -4,11 +4,13 @@ use std::future::Future;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aws_credential_types::Credentials;
 use aws_sdk_s3::config::Region;
+use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::{Delete, ObjectIdentifier};
 use aws_sdk_s3::Client as S3Client;
@@ -31,6 +33,10 @@ const BINARY_NAME: &str = "oah-workspace-sync";
 const BINARY_VERSION: &str = env!("CARGO_PKG_VERSION");
 const OBJECT_MTIME_METADATA_KEY: &str = "oah-mtime-ms";
 const INTERNAL_SYNC_MANIFEST_RELATIVE_PATH: &str = ".oah-sync-manifest.json";
+const INTERNAL_SYNC_BUNDLE_RELATIVE_PATH: &str = ".oah-sync-bundle.tar";
+const INLINE_UPLOAD_THRESHOLD_BYTES: u64 = 128 * 1024;
+const DEFAULT_SYNC_BUNDLE_MIN_FILE_COUNT: usize = 16;
+const DEFAULT_SYNC_BUNDLE_MIN_TOTAL_BYTES: u64 = 128 * 1024;
 
 #[derive(Parser)]
 #[command(name = BINARY_NAME, version = BINARY_VERSION, about = "Open Agent Harness native workspace sync utilities.")]
@@ -113,6 +119,10 @@ struct SyncLocalToRemoteRequest {
     exclude_relative_paths: Vec<String>,
     #[serde(default)]
     max_concurrency: Option<usize>,
+    #[serde(default)]
+    inline_upload_threshold_bytes: Option<u64>,
+    #[serde(default)]
+    sync_bundle: Option<NativeSyncBundleConfig>,
     object_store: NativeObjectStoreConfig,
 }
 
@@ -127,6 +137,14 @@ struct SyncRemoteToLocalRequest {
     preserve_top_level_names: Vec<String>,
     #[serde(default)]
     max_concurrency: Option<usize>,
+    #[serde(default)]
+    remote_entries: Option<Vec<PlanRemoteEntry>>,
+    #[serde(default)]
+    has_sync_manifest: Option<bool>,
+    #[serde(default)]
+    bundle_entry: Option<PlanRemoteEntry>,
+    #[serde(default)]
+    sync_bundle: Option<NativeSyncBundleConfig>,
     object_store: NativeObjectStoreConfig,
 }
 
@@ -152,6 +170,15 @@ struct NativeObjectStoreConfig {
     access_key: Option<String>,
     secret_key: Option<String>,
     session_token: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeSyncBundleConfig {
+    mode: Option<String>,
+    min_file_count: Option<usize>,
+    min_total_bytes: Option<u64>,
+    layout: Option<String>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -259,11 +286,88 @@ struct SyncManifestFileEntry {
 struct SyncManifestDocument {
     version: u32,
     files: BTreeMap<String, SyncManifestFileEntry>,
+    #[serde(default)]
+    empty_directories: Vec<String>,
+    #[serde(default)]
+    storage_mode: Option<String>,
 }
 
 struct RemoteEntryListing {
     entries: Vec<PlanRemoteEntry>,
     has_sync_manifest: bool,
+    bundle_entry: Option<PlanRemoteEntry>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SyncBundleMode {
+    Off,
+    Auto,
+    Force,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SyncBundleLayout {
+    Sidecar,
+    Primary,
+}
+
+#[derive(Clone, Copy)]
+struct ResolvedSyncBundleConfig {
+    mode: SyncBundleMode,
+    min_file_count: usize,
+    min_total_bytes: u64,
+    layout: SyncBundleLayout,
+}
+
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ObjectStoreRequestCounts {
+    list_requests: usize,
+    get_requests: usize,
+    head_requests: usize,
+    put_requests: usize,
+    delete_requests: usize,
+}
+
+#[derive(Default)]
+struct NativeObjectStoreRequestCounter {
+    list_requests: AtomicUsize,
+    get_requests: AtomicUsize,
+    head_requests: AtomicUsize,
+    put_requests: AtomicUsize,
+    delete_requests: AtomicUsize,
+}
+
+impl NativeObjectStoreRequestCounter {
+    fn increment_list(&self) {
+        self.list_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn increment_get(&self) {
+        self.get_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn increment_head(&self) {
+        self.head_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn increment_put(&self) {
+        self.put_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn increment_delete(&self) {
+        self.delete_requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn snapshot(&self) -> ObjectStoreRequestCounts {
+        ObjectStoreRequestCounts {
+            list_requests: self.list_requests.load(Ordering::Relaxed),
+            get_requests: self.get_requests.load(Ordering::Relaxed),
+            head_requests: self.head_requests.load(Ordering::Relaxed),
+            put_requests: self.put_requests.load(Ordering::Relaxed),
+            delete_requests: self.delete_requests.load(Ordering::Relaxed),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -337,6 +441,7 @@ struct SyncLocalToRemoteResponse {
     uploaded_file_count: usize,
     deleted_remote_count: usize,
     created_empty_directory_count: usize,
+    request_counts: ObjectStoreRequestCounts,
 }
 
 #[derive(Serialize)]
@@ -348,6 +453,7 @@ struct SyncRemoteToLocalResponse {
     removed_path_count: usize,
     created_directory_count: usize,
     downloaded_file_count: usize,
+    request_counts: ObjectStoreRequestCounts,
 }
 
 #[derive(Serialize)]
@@ -772,6 +878,43 @@ fn file_time_from_mtime_ms(value: u128) -> FileTime {
 
 fn resolve_max_concurrency(value: Option<usize>) -> usize {
     value.filter(|value| *value > 0).unwrap_or(1)
+}
+
+fn resolve_inline_upload_threshold_bytes(value: Option<u64>) -> u64 {
+    value.filter(|value| *value > 0).unwrap_or(INLINE_UPLOAD_THRESHOLD_BYTES)
+}
+
+fn resolve_sync_bundle_config(value: Option<&NativeSyncBundleConfig>) -> ResolvedSyncBundleConfig {
+    let mode = match value
+        .and_then(|config| config.mode.as_deref())
+        .map(|mode| mode.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("0" | "false" | "off" | "no" | "disabled") => SyncBundleMode::Off,
+        Some("1" | "true" | "on" | "yes" | "enabled" | "force") => SyncBundleMode::Force,
+        _ => SyncBundleMode::Auto,
+    };
+    let layout = match value
+        .and_then(|config| config.layout.as_deref())
+        .map(|layout| layout.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("primary" | "bundle" | "bundle-only") => SyncBundleLayout::Primary,
+        _ => SyncBundleLayout::Sidecar,
+    };
+
+    ResolvedSyncBundleConfig {
+        mode,
+        min_file_count: value
+            .and_then(|config| config.min_file_count)
+            .filter(|count| *count > 0)
+            .unwrap_or(DEFAULT_SYNC_BUNDLE_MIN_FILE_COUNT),
+        min_total_bytes: value
+            .and_then(|config| config.min_total_bytes)
+            .filter(|bytes| *bytes > 0)
+            .unwrap_or(DEFAULT_SYNC_BUNDLE_MIN_TOTAL_BYTES),
+        layout,
+    }
 }
 
 #[derive(Clone)]
@@ -1225,7 +1368,12 @@ fn should_ignore_relative_path(relative_path: &str) -> bool {
         return false;
     }
 
-    if normalize_relative_path(relative_path) == INTERNAL_SYNC_MANIFEST_RELATIVE_PATH {
+    let normalized_relative_path = normalize_relative_path(relative_path);
+    if normalized_relative_path == INTERNAL_SYNC_MANIFEST_RELATIVE_PATH {
+        return true;
+    }
+
+    if normalized_relative_path == INTERNAL_SYNC_BUNDLE_RELATIVE_PATH {
         return true;
     }
 
@@ -1435,7 +1583,11 @@ fn resolve_empty_remote_directories(
         .collect()
 }
 
-fn build_sync_manifest(files: &[(String, u64, u128)]) -> SyncManifestDocument {
+fn build_sync_manifest(
+    files: &[(String, u64, u128)],
+    empty_directories: &[String],
+    storage_mode: Option<&str>,
+) -> SyncManifestDocument {
     let mut entries = files
         .iter()
         .filter_map(|(relative_path, size, mtime_ms)| {
@@ -1454,10 +1606,183 @@ fn build_sync_manifest(files: &[(String, u64, u128)]) -> SyncManifestDocument {
         .collect::<Vec<_>>();
     entries.sort_by(|left, right| left.0.cmp(&right.0));
 
+    let mut normalized_empty_directories = empty_directories
+        .iter()
+        .map(|relative_path| normalize_relative_path(relative_path))
+        .filter(|relative_path| {
+            !relative_path.is_empty() && !should_ignore_relative_path(relative_path)
+        })
+        .collect::<Vec<_>>();
+    normalized_empty_directories.sort();
+    normalized_empty_directories.dedup();
+
     SyncManifestDocument {
         version: 1,
         files: entries.into_iter().collect(),
+        empty_directories: normalized_empty_directories,
+        storage_mode: storage_mode.map(|value| value.to_string()),
     }
+}
+
+fn is_primary_bundle_manifest(document: &SyncManifestDocument) -> bool {
+    matches!(
+        document
+            .storage_mode
+            .as_deref()
+            .map(|value| value.trim().to_ascii_lowercase()),
+        Some(value) if value == "bundle" || value == "primary" || value == "bundle-only"
+    )
+}
+
+fn create_remote_entries_from_manifest_document(
+    document: &SyncManifestDocument,
+    remote_prefix: &str,
+    excludes: &[String],
+) -> Vec<PlanRemoteEntry> {
+    let mut entries = document
+        .files
+        .iter()
+        .filter_map(|(relative_path, entry)| {
+            let normalized = normalize_relative_path(relative_path);
+            if normalized.is_empty()
+                || should_ignore_relative_path(&normalized)
+                || should_exclude_relative_path(&normalized, excludes)
+            {
+                return None;
+            }
+
+            Some(PlanRemoteEntry {
+                relative_path: normalized.clone(),
+                key: build_remote_path(remote_prefix, &normalized),
+                size: entry.size,
+                last_modified_ms: Some(entry.mtime_ms),
+                is_directory: false,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    entries.extend(document.empty_directories.iter().filter_map(|relative_path| {
+        let normalized = normalize_relative_path(relative_path);
+        if normalized.is_empty()
+            || should_ignore_relative_path(&normalized)
+            || should_exclude_relative_path(&normalized, excludes)
+        {
+            return None;
+        }
+
+        Some(PlanRemoteEntry {
+            relative_path: normalized.clone(),
+            key: format!("{}/", build_remote_path(remote_prefix, &normalized)),
+            size: 0,
+            last_modified_ms: None,
+            is_directory: true,
+        })
+    }));
+    entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    entries
+}
+
+fn count_snapshot_file_mutations(
+    snapshot: &Snapshot,
+    existing_manifest: Option<&SyncManifestDocument>,
+) -> usize {
+    let Some(existing_manifest) = existing_manifest else {
+        return snapshot.files.len();
+    };
+
+    snapshot
+        .files
+        .iter()
+        .filter(|file| {
+            existing_manifest
+                .files
+                .get(&file.relative_path)
+                .map(|entry| entry.size != file.size || entry.mtime_ms != file.mtime_ms)
+                .unwrap_or(true)
+        })
+        .count()
+}
+
+fn count_snapshot_deleted_files(
+    snapshot: &Snapshot,
+    existing_manifest: Option<&SyncManifestDocument>,
+) -> usize {
+    let Some(existing_manifest) = existing_manifest else {
+        return 0;
+    };
+    let local_paths = snapshot
+        .files
+        .iter()
+        .map(|file| file.relative_path.as_str())
+        .collect::<BTreeSet<_>>();
+    existing_manifest
+        .files
+        .keys()
+        .filter(|relative_path| !local_paths.contains(relative_path.as_str()))
+        .count()
+}
+
+fn count_snapshot_created_empty_directories(
+    snapshot: &Snapshot,
+    existing_manifest: Option<&SyncManifestDocument>,
+) -> usize {
+    let Some(existing_manifest) = existing_manifest else {
+        return snapshot.empty_directories.len();
+    };
+    let existing = existing_manifest
+        .empty_directories
+        .iter()
+        .map(|relative_path| normalize_relative_path(relative_path))
+        .collect::<BTreeSet<_>>();
+    snapshot
+        .empty_directories
+        .iter()
+        .filter(|relative_path| !existing.contains(*relative_path))
+        .count()
+}
+
+fn should_attempt_sync_bundle(
+    file_count: usize,
+    total_bytes: u64,
+    config: ResolvedSyncBundleConfig,
+) -> bool {
+    if file_count == 0 {
+        return false;
+    }
+
+    match config.mode {
+        SyncBundleMode::Off => false,
+        SyncBundleMode::Force => true,
+        SyncBundleMode::Auto => {
+            file_count >= config.min_file_count || total_bytes >= config.min_total_bytes
+        }
+    }
+}
+
+fn should_attempt_sync_bundle_for_snapshot(
+    snapshot: &Snapshot,
+    config: ResolvedSyncBundleConfig,
+) -> bool {
+    let file_count = snapshot.files.len();
+    let total_bytes = snapshot.files.iter().map(|file| file.size).sum::<u64>();
+    should_attempt_sync_bundle(file_count, total_bytes, config)
+}
+
+fn should_attempt_sync_bundle_for_remote_entries(
+    remote_entries: &[PlanRemoteEntry],
+    config: ResolvedSyncBundleConfig,
+) -> bool {
+    let file_count = remote_entries.iter().filter(|entry| !entry.is_directory).count();
+    let total_bytes = remote_entries
+        .iter()
+        .filter(|entry| !entry.is_directory)
+        .map(|entry| entry.size)
+        .sum::<u64>();
+    should_attempt_sync_bundle(file_count, total_bytes, config)
+}
+
+fn count_remote_file_entries(remote_entries: &[PlanRemoteEntry]) -> usize {
+    remote_entries.iter().filter(|entry| !entry.is_directory).count()
 }
 
 fn create_local_to_remote_plan(
@@ -1704,11 +2029,13 @@ async fn list_remote_entries(
     client: &S3Client,
     config: &NativeObjectStoreConfig,
     remote_prefix: &str,
+    request_counter: &NativeObjectStoreRequestCounter,
 ) -> Result<RemoteEntryListing, String> {
     let normalized_prefix = normalize_relative_path(remote_prefix);
     let mut continuation_token = None;
     let mut entries = Vec::new();
     let mut has_sync_manifest = false;
+    let mut bundle_entry = None;
 
     loop {
         let mut request = client
@@ -1719,6 +2046,7 @@ async fn list_remote_entries(
             request = request.prefix(format!("{normalized_prefix}/"));
         }
 
+        request_counter.increment_list();
         let response = request
             .send()
             .await
@@ -1731,8 +2059,22 @@ async fn list_remote_entries(
             let Some(relative_path) = relative_path_from_remote_key(&normalized_prefix, key) else {
                 continue;
             };
-            if normalize_relative_path(&relative_path) == INTERNAL_SYNC_MANIFEST_RELATIVE_PATH {
+            let normalized_relative_path = normalize_relative_path(&relative_path);
+            if normalized_relative_path == INTERNAL_SYNC_MANIFEST_RELATIVE_PATH {
                 has_sync_manifest = true;
+                continue;
+            }
+            if normalized_relative_path == INTERNAL_SYNC_BUNDLE_RELATIVE_PATH {
+                bundle_entry = Some(PlanRemoteEntry {
+                    relative_path,
+                    key: key.to_string(),
+                    size: item.size().unwrap_or_default().max(0) as u64,
+                    last_modified_ms: item
+                        .last_modified()
+                        .and_then(|value| value.to_millis().ok())
+                        .map(|value| value.max(0) as u128),
+                    is_directory: false,
+                });
                 continue;
             }
             if should_ignore_relative_path(&relative_path) {
@@ -1763,20 +2105,18 @@ async fn list_remote_entries(
     Ok(RemoteEntryListing {
         entries,
         has_sync_manifest,
+        bundle_entry,
     })
 }
 
-async fn load_remote_sync_manifest(
+async fn load_remote_sync_manifest_document(
     client: &S3Client,
     config: &NativeObjectStoreConfig,
     remote_prefix: &str,
-    has_sync_manifest: bool,
-) -> Result<BTreeMap<String, SyncManifestFileEntry>, String> {
-    if !has_sync_manifest {
-        return Ok(BTreeMap::new());
-    }
-
+    request_counter: &NativeObjectStoreRequestCounter,
+) -> Result<Option<SyncManifestDocument>, String> {
     let key = build_remote_path(remote_prefix, INTERNAL_SYNC_MANIFEST_RELATIVE_PATH);
+    request_counter.increment_get();
     let response = match client
         .get_object()
         .bucket(&config.bucket)
@@ -1785,7 +2125,7 @@ async fn load_remote_sync_manifest(
         .await
     {
         Ok(response) => response,
-        Err(_) => return Ok(BTreeMap::new()),
+        Err(_) => return Ok(None),
     };
 
     let mut body = response.body.into_async_read();
@@ -1796,8 +2136,28 @@ async fn load_remote_sync_manifest(
     let document = serde_json::from_slice::<SyncManifestDocument>(&bytes)
         .map_err(|error| format!("Failed to parse sync manifest {key}: {error}"))?;
     if document.version != 1 {
+        return Ok(None);
+    }
+
+    Ok(Some(document))
+}
+
+async fn load_remote_sync_manifest(
+    client: &S3Client,
+    config: &NativeObjectStoreConfig,
+    remote_prefix: &str,
+    has_sync_manifest: bool,
+    request_counter: &NativeObjectStoreRequestCounter,
+) -> Result<BTreeMap<String, SyncManifestFileEntry>, String> {
+    if !has_sync_manifest {
         return Ok(BTreeMap::new());
     }
+
+    let Some(document) =
+        load_remote_sync_manifest_document(client, config, remote_prefix, request_counter).await?
+    else {
+        return Ok(BTreeMap::new());
+    };
 
     Ok(document
         .files
@@ -1817,10 +2177,32 @@ async fn write_remote_sync_manifest(
     config: &NativeObjectStoreConfig,
     remote_prefix: &str,
     files: &[(String, u64, u128)],
+    empty_directories: &[String],
+    storage_mode: Option<&str>,
+    existing_manifest: Option<&SyncManifestDocument>,
+    request_counter: &NativeObjectStoreRequestCounter,
 ) -> Result<(), String> {
+    let manifest = build_sync_manifest(files, empty_directories, storage_mode);
+    if let Some(existing_manifest) = existing_manifest {
+        if existing_manifest.files.len() == manifest.files.len()
+            && existing_manifest.empty_directories == manifest.empty_directories
+            && existing_manifest.storage_mode == manifest.storage_mode
+            && manifest.files.iter().all(|(relative_path, entry)| {
+                existing_manifest
+                    .files
+                    .get(relative_path)
+                    .map(|existing| existing.size == entry.size && existing.mtime_ms == entry.mtime_ms)
+                    .unwrap_or(false)
+            })
+        {
+            return Ok(());
+        }
+    }
+
     let key = build_remote_path(remote_prefix, INTERNAL_SYNC_MANIFEST_RELATIVE_PATH);
-    let body = serde_json::to_vec(&build_sync_manifest(files))
+    let body = serde_json::to_vec(&manifest)
         .map_err(|error| format!("Failed to serialize sync manifest {key}: {error}"))?;
+    request_counter.increment_put();
     client
         .put_object()
         .bucket(&config.bucket)
@@ -1832,29 +2214,295 @@ async fn write_remote_sync_manifest(
     Ok(())
 }
 
+fn build_local_sync_bundle_blocking(
+    file_entries: Vec<(String, String)>,
+    empty_directories: Vec<(String, String)>,
+) -> Result<tempfile::TempPath, String> {
+    let mut bundle_file = tempfile::NamedTempFile::new()
+        .map_err(|error| format!("Failed to create temporary sync bundle file: {error}"))?;
+    let mut builder = tar::Builder::new(bundle_file.as_file_mut());
+    builder.mode(tar::HeaderMode::Deterministic);
+
+    for (relative_path, absolute_path) in file_entries {
+        builder
+            .append_path_with_name(&absolute_path, Path::new(&relative_path))
+            .map_err(|error| {
+                format!(
+                    "Failed to append {absolute_path} to sync bundle as {relative_path}: {error}"
+                )
+            })?;
+    }
+
+    for (relative_path, absolute_path) in empty_directories {
+        builder
+            .append_dir(Path::new(&relative_path), &absolute_path)
+            .map_err(|error| {
+                format!(
+                    "Failed to append empty directory {absolute_path} to sync bundle as {relative_path}: {error}"
+                )
+            })?;
+    }
+
+    builder
+        .into_inner()
+        .map_err(|error| format!("Failed to finalize sync bundle archive: {error}"))?
+        .flush()
+        .map_err(|error| format!("Failed to flush sync bundle archive: {error}"))?;
+    Ok(bundle_file.into_temp_path())
+}
+
+async fn build_local_sync_bundle(root_dir: &Path, snapshot: &Snapshot) -> Result<tempfile::TempPath, String> {
+    let mut file_entries = snapshot
+        .files
+        .iter()
+        .map(|file| (file.relative_path.clone(), file.absolute_path.clone()))
+        .collect::<Vec<_>>();
+    file_entries.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut empty_directories = snapshot
+        .empty_directories
+        .iter()
+        .map(|relative_path| {
+            (
+                relative_path.clone(),
+                normalize_path(&root_dir.join(relative_path)),
+            )
+        })
+        .collect::<Vec<_>>();
+    empty_directories.sort_by(|left, right| left.0.cmp(&right.0));
+
+    tokio::task::spawn_blocking(move || {
+        let empty_directories = empty_directories
+            .into_iter()
+            .map(|(relative_path, absolute_path)| (relative_path, absolute_path))
+            .collect::<Vec<_>>();
+        build_local_sync_bundle_blocking(file_entries, empty_directories)
+    })
+    .await
+    .map_err(|error| format!("Sync bundle worker task failed: {error}"))?
+}
+
+async fn upload_sync_bundle(
+    client: &S3Client,
+    config: &NativeObjectStoreConfig,
+    remote_prefix: &str,
+    root_dir: &Path,
+    snapshot: &Snapshot,
+    request_counter: &NativeObjectStoreRequestCounter,
+) -> Result<(), String> {
+    let key = build_remote_path(remote_prefix, INTERNAL_SYNC_BUNDLE_RELATIVE_PATH);
+    let bundle_path = build_local_sync_bundle(root_dir, snapshot).await?;
+    let body = ByteStream::read_from()
+        .path(bundle_path.as_ref() as &Path)
+        .build()
+        .await
+        .map_err(|error| format!("Failed to stream sync bundle file for upload: {error}"))?;
+    request_counter.increment_put();
+    client
+        .put_object()
+        .bucket(&config.bucket)
+        .key(key)
+        .body(ByteStream::from(body))
+        .send()
+        .await
+        .map_err(|error| format!("Failed to write sync bundle object: {error}"))?;
+    Ok(())
+}
+
+async fn delete_remote_object_if_present(
+    client: &S3Client,
+    config: &NativeObjectStoreConfig,
+    key: &str,
+    request_counter: &NativeObjectStoreRequestCounter,
+) -> Result<(), String> {
+    let delete = Delete::builder()
+        .objects(
+            ObjectIdentifier::builder()
+                .key(key)
+                .build()
+                .map_err(|error| {
+                    format!("Failed to prepare S3 delete object identifier: {error}")
+                })?,
+        )
+        .build()
+        .map_err(|error| format!("Failed to prepare S3 delete request: {error}"))?;
+    request_counter.increment_delete();
+    client
+        .delete_objects()
+        .bucket(&config.bucket)
+        .delete(delete)
+        .send()
+        .await
+        .map_err(|error| format!("Failed to delete S3 object {key}: {error}"))?;
+    Ok(())
+}
+
+async fn is_local_directory_empty(target_path: &Path) -> Result<bool, String> {
+    match tokio::fs::metadata(target_path).await {
+        Ok(metadata) if !metadata.is_dir() => Ok(false),
+        Ok(_) => {
+            let mut entries = tokio::fs::read_dir(target_path).await.map_err(|error| {
+                format!(
+                    "Failed to read local directory {}: {error}",
+                    target_path.display()
+                )
+            })?;
+            Ok(entries.next_entry().await.map_err(|error| {
+                format!(
+                    "Failed to inspect local directory {}: {error}",
+                    target_path.display()
+                )
+            })?.is_none())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(format!(
+            "Failed to stat local directory {}: {error}",
+            target_path.display()
+        )),
+    }
+}
+
+fn unpack_sync_bundle_blocking(root_dir: PathBuf, bundle_path: PathBuf) -> Result<(), String> {
+    fs::create_dir_all(&root_dir).map_err(|error| {
+        format!(
+            "Failed to create local bundle root {}: {error}",
+            root_dir.display()
+        )
+    })?;
+    let bundle_file = fs::File::open(&bundle_path).map_err(|error| {
+        format!(
+            "Failed to open sync bundle archive {}: {error}",
+            bundle_path.display()
+        )
+    })?;
+    let mut archive = tar::Archive::new(bundle_file);
+    archive.unpack(&root_dir).map_err(|error| {
+        format!(
+            "Failed to unpack sync bundle into {}: {error}",
+            root_dir.display()
+        )
+    })
+}
+
+async fn maybe_hydrate_from_remote_sync_bundle(
+    client: &S3Client,
+    config: &NativeObjectStoreConfig,
+    root_dir: &Path,
+    bundle_key: &str,
+    require_empty_root: bool,
+    request_counter: &NativeObjectStoreRequestCounter,
+) -> Result<bool, String> {
+    if require_empty_root && !is_local_directory_empty(root_dir).await? {
+        return Ok(false);
+    }
+
+    let hydrated = async {
+        let bundle_path = tempfile::NamedTempFile::new()
+            .map_err(|error| format!("Failed to create temporary sync bundle file: {error}"))?
+            .into_temp_path();
+        request_counter.increment_get();
+        let response = match client
+            .get_object()
+            .bucket(&config.bucket)
+            .key(bundle_key)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                if error.code() == Some("NoSuchKey") {
+                    return Ok(false);
+                }
+                return Err(format!(
+                    "Failed to download sync bundle {bundle_key}: {error}"
+                ));
+            }
+        };
+
+        let mut body = response.body.into_async_read();
+        let mut bundle_file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(bundle_path.as_ref() as &Path)
+            .await
+            .map_err(|error| {
+                format!(
+                    "Failed to open temporary sync bundle file {}: {error}",
+                    bundle_path.display()
+                )
+            })?;
+        tokio::io::copy(&mut body, &mut bundle_file)
+            .await
+            .map_err(|error| format!("Failed to read sync bundle {}: {error}", bundle_key))?;
+        bundle_file.flush().await.map_err(|error| {
+            format!(
+                "Failed to flush temporary sync bundle file {}: {error}",
+                bundle_path.display()
+            )
+        })?;
+        drop(bundle_file);
+
+        let root_dir = root_dir.to_path_buf();
+        let bundle_path_buf = bundle_path.to_path_buf();
+        tokio::task::spawn_blocking(move || unpack_sync_bundle_blocking(root_dir, bundle_path_buf))
+            .await
+            .map_err(|error| format!("Sync bundle extraction worker task failed: {error}"))??;
+        Ok(true)
+    }
+    .await;
+
+    match hydrated {
+        Ok(found) => Ok(found),
+        Err(_) => {
+            let _ = tokio::fs::remove_dir_all(root_dir).await;
+            let _ = tokio::fs::create_dir_all(root_dir).await;
+            Ok(false)
+        }
+    }
+}
+
 async fn upload_local_file(
     client: &S3Client,
     config: &NativeObjectStoreConfig,
     key: &str,
     absolute_path: &str,
+    size: u64,
+    inline_upload_threshold_bytes: u64,
     mtime_ms: u128,
+    request_counter: &NativeObjectStoreRequestCounter,
 ) -> Result<bool, String> {
-    match tokio::fs::metadata(absolute_path).await {
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => {
-            return Err(format!(
-                "Failed to stat local file {absolute_path} before upload: {error}"
-            ))
+    let body = if size <= inline_upload_threshold_bytes {
+        match tokio::fs::read(absolute_path).await {
+            Ok(bytes) => ByteStream::from(bytes),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(format!(
+                    "Failed to read local file {absolute_path} for upload: {error}"
+                ))
+            }
         }
-    }
+    } else {
+        match tokio::fs::try_exists(absolute_path).await {
+            Ok(true) => {}
+            Ok(false) => return Ok(false),
+            Err(error) => {
+                return Err(format!(
+                    "Failed to stat local file {absolute_path} before upload: {error}"
+                ))
+            }
+        }
 
-    let body = ByteStream::from_path(PathBuf::from(absolute_path))
-        .await
-        .map_err(|error| {
-            format!("Failed to read local file {absolute_path} for upload: {error}")
-        })?;
+        match ByteStream::from_path(PathBuf::from(absolute_path)).await {
+            Ok(body) => body,
+            Err(error) => {
+                return Err(format!(
+                    "Failed to stream local file {absolute_path} for upload: {error}"
+                ))
+            }
+        }
+    };
 
+    request_counter.increment_put();
     client
         .put_object()
         .bucket(&config.bucket)
@@ -1953,7 +2601,9 @@ async fn download_remote_file(
     config: &NativeObjectStoreConfig,
     key: &str,
     target_path: &Path,
+    request_counter: &NativeObjectStoreRequestCounter,
 ) -> Result<u128, String> {
+    request_counter.increment_get();
     let response = client
         .get_object()
         .bucket(&config.bucket)
@@ -2028,23 +2678,214 @@ async fn sync_remote_to_local(
     let excludes = normalize_exclude_paths(request.exclude_relative_paths);
     let preserve_top_level_names = normalize_exclude_paths(request.preserve_top_level_names);
     let max_concurrency = resolve_max_concurrency(request.max_concurrency);
+    let sync_bundle_config = resolve_sync_bundle_config(request.sync_bundle.as_ref());
     let root_dir = PathBuf::from(&request.root_dir);
     let snapshot = collect_snapshot(&root_dir, &excludes)?;
 
     let client = create_s3_client(&request.object_store);
-    let remote_listing =
-        list_remote_entries(&client, &request.object_store, &request.remote_prefix).await?;
-    let remote_entries = remote_listing.entries;
-    let sync_manifest =
-        Arc::new(
-            load_remote_sync_manifest(
+    let request_counts = Arc::new(NativeObjectStoreRequestCounter::default());
+    if request.remote_entries.is_none() && sync_bundle_config.mode != SyncBundleMode::Off {
+        let bundle_key = build_remote_path(&request.remote_prefix, INTERNAL_SYNC_BUNDLE_RELATIVE_PATH);
+        if maybe_hydrate_from_remote_sync_bundle(
+            &client,
+            &request.object_store,
+            &root_dir,
+            &bundle_key,
+            true,
+            request_counts.as_ref(),
+        )
+        .await?
+        {
+            let hydrated_snapshot = collect_snapshot(&root_dir, &excludes)?;
+            return Ok(SyncRemoteToLocalResponse {
+                ok: true,
+                protocol_version: PROTOCOL_VERSION,
+                local_fingerprint: create_fingerprint(&hydrated_snapshot),
+                removed_path_count: 0,
+                created_directory_count: 0,
+                downloaded_file_count: hydrated_snapshot.files.len(),
+                request_counts: request_counts.snapshot(),
+            });
+        }
+    }
+
+    if request.remote_entries.is_none() && sync_bundle_config.layout == SyncBundleLayout::Primary {
+        if let Some(manifest_document) = load_remote_sync_manifest_document(
+            &client,
+            &request.object_store,
+            &request.remote_prefix,
+            request_counts.as_ref(),
+        )
+        .await?
+        {
+            if is_primary_bundle_manifest(&manifest_document) {
+                let remote_entries = create_remote_entries_from_manifest_document(
+                    &manifest_document,
+                    &request.remote_prefix,
+                    &excludes,
+                );
+                let plan = create_remote_to_local_plan(
+                    &root_dir,
+                    &snapshot,
+                    remote_entries.clone(),
+                    preserve_top_level_names.clone(),
+                );
+
+                let removed_path_count = process_with_concurrency(
+                    plan.remove_paths.clone(),
+                    max_concurrency,
+                    |target_path| async move { remove_local_path(Path::new(&target_path)).await },
+                )
+                .await?
+                .into_iter()
+                .filter(|removed| *removed)
+                .count();
+
+                tokio::fs::create_dir_all(&root_dir)
+                    .await
+                    .map_err(|error| {
+                        format!(
+                            "Failed to create local root directory {}: {error}",
+                            root_dir.display()
+                        )
+                    })?;
+
+                let root_dir_for_directories = root_dir.clone();
+                let created_directory_count = process_with_concurrency(
+                    plan.directories_to_create.clone(),
+                    max_concurrency,
+                    move |relative_path| {
+                        let root_dir = root_dir_for_directories.clone();
+                        async move {
+                            let target_path = root_dir.join(relative_path);
+                            ensure_local_directory(&target_path).await
+                        }
+                    },
+                )
+                .await?
+                .into_iter()
+                .filter(|created| *created)
+                .count();
+
+                let bundle_key =
+                    build_remote_path(&request.remote_prefix, INTERNAL_SYNC_BUNDLE_RELATIVE_PATH);
+                if maybe_hydrate_from_remote_sync_bundle(
+                    &client,
+                    &request.object_store,
+                    &root_dir,
+                    &bundle_key,
+                    false,
+                    request_counts.as_ref(),
+                )
+                .await?
+                {
+                    let manifest_files = manifest_document
+                        .files
+                        .iter()
+                        .filter_map(|(relative_path, entry)| {
+                            let normalized = normalize_relative_path(relative_path);
+                            if normalized.is_empty()
+                                || should_ignore_relative_path(&normalized)
+                                || should_exclude_relative_path(&normalized, &excludes)
+                            {
+                                return None;
+                            }
+                            Some((normalized, entry.size, entry.mtime_ms))
+                        })
+                        .collect::<Vec<_>>();
+                    let explicit_remote_directories = manifest_document
+                        .empty_directories
+                        .iter()
+                        .map(|relative_path| normalize_relative_path(relative_path))
+                        .filter(|relative_path| {
+                            !relative_path.is_empty()
+                                && !should_ignore_relative_path(relative_path)
+                                && !should_exclude_relative_path(relative_path, &excludes)
+                        })
+                        .collect::<BTreeSet<_>>();
+                    let remote_file_paths = manifest_files
+                        .iter()
+                        .map(|(relative_path, _, _)| relative_path.clone())
+                        .collect::<BTreeSet<_>>();
+
+                    return Ok(SyncRemoteToLocalResponse {
+                        ok: true,
+                        protocol_version: PROTOCOL_VERSION,
+                        local_fingerprint: create_fingerprint_from_entries(
+                            &manifest_files,
+                            &resolve_empty_remote_directories(
+                                &explicit_remote_directories,
+                                &remote_file_paths,
+                            ),
+                        ),
+                        removed_path_count,
+                        created_directory_count,
+                        downloaded_file_count: manifest_files.len(),
+                        request_counts: request_counts.snapshot(),
+                    });
+                }
+            }
+        }
+    }
+
+    let (remote_entries, has_sync_manifest, bundle_entry) = match request.remote_entries {
+        Some(prefetched_remote_entries) => (
+            prefetched_remote_entries,
+            request.has_sync_manifest.unwrap_or(false),
+            request.bundle_entry,
+        ),
+        None => {
+            let remote_listing =
+                list_remote_entries(
+                    &client,
+                    &request.object_store,
+                    &request.remote_prefix,
+                    request_counts.as_ref(),
+                )
+                .await?;
+            (
+                remote_listing.entries,
+                remote_listing.has_sync_manifest,
+                remote_listing.bundle_entry,
+            )
+        }
+    };
+
+    if let Some(bundle_entry) = bundle_entry.as_ref() {
+        if should_attempt_sync_bundle_for_remote_entries(&remote_entries, sync_bundle_config)
+            && maybe_hydrate_from_remote_sync_bundle(
                 &client,
                 &request.object_store,
-                &request.remote_prefix,
-                remote_listing.has_sync_manifest,
+                &root_dir,
+                &bundle_entry.key,
+                true,
+                request_counts.as_ref(),
             )
-            .await?,
-        );
+            .await?
+        {
+            let hydrated_snapshot = collect_snapshot(&root_dir, &excludes)?;
+            return Ok(SyncRemoteToLocalResponse {
+                ok: true,
+                protocol_version: PROTOCOL_VERSION,
+                local_fingerprint: create_fingerprint(&hydrated_snapshot),
+                removed_path_count: 0,
+                created_directory_count: 0,
+                downloaded_file_count: count_remote_file_entries(&remote_entries),
+                request_counts: request_counts.snapshot(),
+            });
+        }
+    }
+
+    let sync_manifest = Arc::new(
+        load_remote_sync_manifest(
+            &client,
+            &request.object_store,
+            &request.remote_prefix,
+            has_sync_manifest,
+            request_counts.as_ref(),
+        )
+        .await?,
+    );
     let explicit_remote_directories = remote_entries
         .iter()
         .filter(|entry| entry.is_directory)
@@ -2102,18 +2943,26 @@ async fn sync_remote_to_local(
 
     let client_for_downloads = client.clone();
     let object_store_for_downloads = request.object_store.clone();
+    let request_counts_for_downloads = Arc::clone(&request_counts);
     let downloaded_candidates = process_with_concurrency(
         plan.download_candidates.clone(),
         max_concurrency,
         move |candidate| {
             let client = client_for_downloads.clone();
             let object_store = object_store_for_downloads.clone();
+            let request_counts = Arc::clone(&request_counts_for_downloads);
             async move {
                 let target_path = PathBuf::from(&candidate.target_path);
                 prepare_local_file_target(&target_path).await?;
                 let mtime_ms =
-                    download_remote_file(&client, &object_store, &candidate.remote_key, &target_path)
-                        .await?;
+                    download_remote_file(
+                        &client,
+                        &object_store,
+                        &candidate.remote_key,
+                        &target_path,
+                        request_counts.as_ref(),
+                    )
+                    .await?;
                 Ok((candidate.relative_path, candidate.size, mtime_ms, true))
             }
         },
@@ -2123,6 +2972,7 @@ async fn sync_remote_to_local(
     let client_for_info_checks = client.clone();
     let object_store_for_info_checks = request.object_store.clone();
     let sync_manifest_for_info_checks = Arc::clone(&sync_manifest);
+    let request_counts_for_info_checks = Arc::clone(&request_counts);
     let info_checked_candidates = process_with_concurrency(
         plan.info_check_candidates.clone(),
         max_concurrency,
@@ -2130,6 +2980,7 @@ async fn sync_remote_to_local(
             let client = client_for_info_checks.clone();
             let object_store = object_store_for_info_checks.clone();
             let sync_manifest = Arc::clone(&sync_manifest_for_info_checks);
+            let request_counts = Arc::clone(&request_counts_for_info_checks);
             async move {
                 let target_path = PathBuf::from(&candidate.target_path);
                 let existing = prepare_local_file_target(&target_path).await?;
@@ -2151,6 +3002,7 @@ async fn sync_remote_to_local(
                             }
                         }
 
+                        request_counts.increment_head();
                         let head = client
                             .head_object()
                             .bucket(&object_store.bucket)
@@ -2196,8 +3048,14 @@ async fn sync_remote_to_local(
                 }
 
                 let mtime_ms =
-                    download_remote_file(&client, &object_store, &candidate.remote_key, &target_path)
-                        .await?;
+                    download_remote_file(
+                        &client,
+                        &object_store,
+                        &candidate.remote_key,
+                        &target_path,
+                        request_counts.as_ref(),
+                    )
+                    .await?;
                 Ok((candidate.relative_path, candidate.size, mtime_ms, true))
             }
         },
@@ -2226,6 +3084,7 @@ async fn sync_remote_to_local(
         removed_path_count,
         created_directory_count,
         downloaded_file_count,
+        request_counts: request_counts.snapshot(),
     })
 }
 
@@ -2236,23 +3095,200 @@ async fn sync_local_to_remote(
 
     let excludes = normalize_exclude_paths(request.exclude_relative_paths);
     let max_concurrency = resolve_max_concurrency(request.max_concurrency);
-    let snapshot = collect_snapshot(&PathBuf::from(&request.root_dir), &excludes)?;
+    let inline_upload_threshold_bytes =
+        resolve_inline_upload_threshold_bytes(request.inline_upload_threshold_bytes);
+    let sync_bundle_config = resolve_sync_bundle_config(request.sync_bundle.as_ref());
+    let root_dir = PathBuf::from(&request.root_dir);
+    let snapshot = collect_snapshot(&root_dir, &excludes)?;
     let local_fingerprint = create_fingerprint(&snapshot);
 
     let client = create_s3_client(&request.object_store);
-    let remote_listing =
-        list_remote_entries(&client, &request.object_store, &request.remote_prefix).await?;
-    let remote_entries = remote_listing.entries;
-    let sync_manifest =
-        Arc::new(
-            load_remote_sync_manifest(
+    let request_counts = Arc::new(NativeObjectStoreRequestCounter::default());
+    let snapshot_manifest_files = snapshot
+        .files
+        .iter()
+        .map(|file| (file.relative_path.clone(), file.size, file.mtime_ms))
+        .collect::<Vec<_>>();
+
+    if sync_bundle_config.layout == SyncBundleLayout::Primary
+        && should_attempt_sync_bundle_for_snapshot(&snapshot, sync_bundle_config)
+    {
+        let existing_manifest_document = load_remote_sync_manifest_document(
+            &client,
+            &request.object_store,
+            &request.remote_prefix,
+            request_counts.as_ref(),
+        )
+        .await?;
+        let uploaded_file_count =
+            count_snapshot_file_mutations(&snapshot, existing_manifest_document.as_ref());
+        let deleted_remote_count =
+            count_snapshot_deleted_files(&snapshot, existing_manifest_document.as_ref());
+        let created_empty_directory_count =
+            count_snapshot_created_empty_directories(&snapshot, existing_manifest_document.as_ref());
+        let has_mutations = uploaded_file_count > 0
+            || deleted_remote_count > 0
+            || created_empty_directory_count > 0
+            || !existing_manifest_document
+                .as_ref()
+                .map(is_primary_bundle_manifest)
+                .unwrap_or(false);
+
+        if has_mutations {
+            upload_sync_bundle(
                 &client,
                 &request.object_store,
                 &request.remote_prefix,
-                remote_listing.has_sync_manifest,
+                &root_dir,
+                &snapshot,
+                request_counts.as_ref(),
             )
-            .await?,
-        );
+            .await?;
+
+            let snapshot_file_paths = snapshot
+                .files
+                .iter()
+                .map(|file| file.relative_path.as_str())
+                .collect::<BTreeSet<_>>();
+            let snapshot_empty_directories = snapshot
+                .empty_directories
+                .iter()
+                .map(|relative_path| relative_path.as_str())
+                .collect::<BTreeSet<_>>();
+
+            let mut keys_to_delete = existing_manifest_document
+                .as_ref()
+                .map(|document| {
+                    let remove_all_tracked_entries = !is_primary_bundle_manifest(document);
+                    let mut keys = document
+                        .files
+                        .keys()
+                        .filter(|relative_path| {
+                            remove_all_tracked_entries
+                                || !snapshot_file_paths.contains(relative_path.as_str())
+                        })
+                        .map(|relative_path| {
+                            build_remote_path(&request.remote_prefix, relative_path)
+                        })
+                        .collect::<Vec<_>>();
+                    keys.extend(document.empty_directories.iter().filter_map(|relative_path| {
+                        let normalized = normalize_relative_path(relative_path);
+                        if normalized.is_empty()
+                            || (!remove_all_tracked_entries
+                                && snapshot_empty_directories.contains(normalized.as_str()))
+                        {
+                            return None;
+                        }
+                        Some(format!(
+                            "{}/",
+                            build_remote_path(&request.remote_prefix, &normalized)
+                        ))
+                    }));
+                    keys
+                })
+                .unwrap_or_default();
+            keys_to_delete.sort();
+            keys_to_delete.dedup();
+
+            for chunk in keys_to_delete.chunks(1000) {
+                if chunk.is_empty() {
+                    continue;
+                }
+
+                let delete = Delete::builder()
+                    .set_objects(Some(
+                        chunk
+                            .iter()
+                            .map(|key| {
+                                ObjectIdentifier::builder()
+                                    .key(key)
+                                    .build()
+                                    .map_err(|error| {
+                                        format!(
+                                            "Failed to prepare S3 delete object identifier: {error}"
+                                        )
+                                    })
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
+                    ))
+                    .build()
+                    .map_err(|error| {
+                        format!("Failed to prepare S3 delete request: {error}")
+                    })?;
+
+                request_counts.increment_delete();
+                client
+                    .delete_objects()
+                    .bucket(&request.object_store.bucket)
+                    .delete(delete)
+                    .send()
+                    .await
+                    .map_err(|error| format!("Failed to delete S3 objects: {error}"))?;
+            }
+
+            write_remote_sync_manifest(
+                &client,
+                &request.object_store,
+                &request.remote_prefix,
+                &snapshot_manifest_files,
+                &snapshot.empty_directories.iter().cloned().collect::<Vec<_>>(),
+                Some("bundle"),
+                existing_manifest_document.as_ref(),
+                request_counts.as_ref(),
+            )
+            .await?;
+        }
+
+        return Ok(SyncLocalToRemoteResponse {
+            ok: true,
+            protocol_version: PROTOCOL_VERSION,
+            local_fingerprint,
+            uploaded_file_count,
+            deleted_remote_count,
+            created_empty_directory_count,
+            request_counts: request_counts.snapshot(),
+        });
+    }
+
+    let remote_listing =
+        list_remote_entries(
+            &client,
+            &request.object_store,
+            &request.remote_prefix,
+            request_counts.as_ref(),
+        )
+        .await?;
+    let remote_entries = remote_listing.entries;
+    let bundle_entry = remote_listing.bundle_entry;
+    let existing_manifest_document = if remote_listing.has_sync_manifest {
+        load_remote_sync_manifest_document(
+            &client,
+            &request.object_store,
+            &request.remote_prefix,
+            request_counts.as_ref(),
+        )
+        .await?
+    } else {
+        None
+    };
+    let sync_manifest = Arc::new(
+        existing_manifest_document
+            .as_ref()
+            .map(|document| {
+                document
+                    .files
+                    .iter()
+                    .filter_map(|(relative_path, entry)| {
+                        let normalized = normalize_relative_path(relative_path);
+                        if normalized.is_empty() || should_ignore_relative_path(&normalized) {
+                            return None;
+                        }
+                        Some((normalized, entry.clone()))
+                    })
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default(),
+    );
     let remote_entries_by_relative_path = remote_entries
         .iter()
         .cloned()
@@ -2265,6 +3301,8 @@ async fn sync_local_to_remote(
     let client_for_uploads = client.clone();
     let object_store_for_uploads = request.object_store.clone();
     let remote_prefix_for_uploads = request.remote_prefix.clone();
+    let request_counts_for_uploads = Arc::clone(&request_counts);
+    let inline_upload_threshold_bytes_for_uploads = inline_upload_threshold_bytes;
     let uploaded_candidates = process_with_concurrency(
         plan.upload_candidates.clone(),
         max_concurrency,
@@ -2272,6 +3310,8 @@ async fn sync_local_to_remote(
             let client = client_for_uploads.clone();
             let object_store = object_store_for_uploads.clone();
             let remote_prefix = remote_prefix_for_uploads.clone();
+            let request_counts = Arc::clone(&request_counts_for_uploads);
+            let inline_upload_threshold_bytes = inline_upload_threshold_bytes_for_uploads;
             async move {
                 let key = build_remote_path(&remote_prefix, &candidate.relative_path);
                 upload_local_file(
@@ -2279,7 +3319,10 @@ async fn sync_local_to_remote(
                     &object_store,
                     &key,
                     &candidate.absolute_path,
+                    candidate.size,
+                    inline_upload_threshold_bytes,
                     candidate.mtime_ms,
+                    request_counts.as_ref(),
                 )
                 .await
             }
@@ -2292,6 +3335,8 @@ async fn sync_local_to_remote(
     let remote_prefix_for_info_checks = request.remote_prefix.clone();
     let remote_entries_for_info_checks = Arc::clone(&remote_entries_by_relative_path);
     let sync_manifest_for_info_checks = Arc::clone(&sync_manifest);
+    let request_counts_for_info_checks = Arc::clone(&request_counts);
+    let inline_upload_threshold_bytes_for_info_checks = inline_upload_threshold_bytes;
     let info_checked_candidates = process_with_concurrency(
         plan.info_check_candidates.clone(),
         max_concurrency,
@@ -2301,6 +3346,8 @@ async fn sync_local_to_remote(
             let remote_prefix = remote_prefix_for_info_checks.clone();
             let remote_entries = Arc::clone(&remote_entries_for_info_checks);
             let sync_manifest = Arc::clone(&sync_manifest_for_info_checks);
+            let request_counts = Arc::clone(&request_counts_for_info_checks);
+            let inline_upload_threshold_bytes = inline_upload_threshold_bytes_for_info_checks;
             async move {
                 let remote_entry = remote_entries.get(&candidate.relative_path).cloned();
                 let should_upload = match remote_entry {
@@ -2315,6 +3362,7 @@ async fn sync_local_to_remote(
                             }
                         }
 
+                        request_counts.increment_head();
                         let head = client
                             .head_object()
                             .bucket(&object_store.bucket)
@@ -2347,7 +3395,10 @@ async fn sync_local_to_remote(
                     &object_store,
                     &key,
                     &candidate.absolute_path,
+                    candidate.size,
+                    inline_upload_threshold_bytes,
                     candidate.mtime_ms,
+                    request_counts.as_ref(),
                 )
                 .await
             }
@@ -2355,6 +3406,7 @@ async fn sync_local_to_remote(
     )
     .await?;
 
+    let deleted_remote_count = plan.keys_to_delete.len();
     let uploaded_file_count = uploaded_candidates
         .into_iter()
         .filter(|uploaded| *uploaded)
@@ -2367,6 +3419,7 @@ async fn sync_local_to_remote(
     let client_for_empty_directories = client.clone();
     let object_store_for_empty_directories = request.object_store.clone();
     let remote_prefix_for_empty_directories = request.remote_prefix.clone();
+    let request_counts_for_empty_directories = Arc::clone(&request_counts);
     let created_empty_directory_count = process_with_concurrency(
         plan.empty_directories_to_create.clone(),
         max_concurrency,
@@ -2374,8 +3427,10 @@ async fn sync_local_to_remote(
             let client = client_for_empty_directories.clone();
             let object_store = object_store_for_empty_directories.clone();
             let remote_prefix = remote_prefix_for_empty_directories.clone();
+            let request_counts = Arc::clone(&request_counts_for_empty_directories);
             async move {
                 let key = format!("{}/", build_remote_path(&remote_prefix, &relative_path));
+                request_counts.increment_put();
                 client
                     .put_object()
                     .bucket(&object_store.bucket)
@@ -2392,6 +3447,9 @@ async fn sync_local_to_remote(
     )
     .await?
     .len();
+
+    let has_mutations =
+        uploaded_file_count > 0 || deleted_remote_count > 0 || created_empty_directory_count > 0;
 
     for chunk in plan.keys_to_delete.chunks(1000) {
         if chunk.is_empty() {
@@ -2415,6 +3473,7 @@ async fn sync_local_to_remote(
             .build()
             .map_err(|error| format!("Failed to prepare S3 delete request: {error}"))?;
 
+        request_counts.increment_delete();
         client
             .delete_objects()
             .bucket(&request.object_store.bucket)
@@ -2428,28 +3487,44 @@ async fn sync_local_to_remote(
         &client,
         &request.object_store,
         &request.remote_prefix,
-        &plan
-            .upload_candidates
-            .iter()
-            .chain(plan.info_check_candidates.iter())
-            .map(|candidate| {
-                (
-                    candidate.relative_path.clone(),
-                    candidate.size,
-                    candidate.mtime_ms,
-                )
-            })
-            .collect::<Vec<_>>(),
+        &snapshot_manifest_files,
+        &snapshot.empty_directories.iter().cloned().collect::<Vec<_>>(),
+        Some("objects"),
+        existing_manifest_document.as_ref(),
+        request_counts.as_ref(),
     )
     .await?;
+
+    if has_mutations {
+        if should_attempt_sync_bundle_for_snapshot(&snapshot, sync_bundle_config) {
+            upload_sync_bundle(
+                &client,
+                &request.object_store,
+                &request.remote_prefix,
+                &root_dir,
+                &snapshot,
+                request_counts.as_ref(),
+            )
+            .await?;
+        } else if let Some(bundle_entry) = bundle_entry {
+            delete_remote_object_if_present(
+                &client,
+                &request.object_store,
+                &bundle_entry.key,
+                request_counts.as_ref(),
+            )
+            .await?;
+        }
+    }
 
     Ok(SyncLocalToRemoteResponse {
         ok: true,
         protocol_version: PROTOCOL_VERSION,
         local_fingerprint,
         uploaded_file_count,
-        deleted_remote_count: plan.keys_to_delete.len(),
+        deleted_remote_count,
         created_empty_directory_count,
+        request_counts: request_counts.snapshot(),
     })
 }
 
@@ -2731,6 +3806,13 @@ mod tests {
         );
         assert_eq!(build_remote_path("", "/nested/file.txt"), "nested/file.txt");
         assert_eq!(build_remote_path("/seed/workspace/", ""), "/seed/workspace");
+    }
+
+    #[test]
+    fn ignore_internal_sync_sidecars() {
+        assert!(should_ignore_relative_path(".oah-sync-manifest.json"));
+        assert!(should_ignore_relative_path(".oah-sync-bundle.tar"));
+        assert!(!should_ignore_relative_path("README.md"));
     }
 
     #[test]
