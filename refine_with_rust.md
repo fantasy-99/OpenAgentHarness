@@ -76,7 +76,8 @@ Current judgment:
 
 - functionally correct
 - valuable for reducing Node-side RSS in larger filesystem-heavy cases
-- not yet good enough to become the default execution path
+- native persistent is now the preferred Docker/runtime path for steady-state object-store materialization and pull
+- TS fallback has also been pushed much closer to the native shape on `bundle-primary`, so non-native execution is no longer stuck on the old high-request path
 - persistent-worker groundwork now exists in the native bridge and Rust binary; it is now enabled by default in the Docker runtime images and `docker-compose.local.yml`, while non-Docker usage still remains opt-in
 - the default TS materialization path now reuses the sync-produced local fingerprint when available, which removes one extra full local directory scan after remote-to-local materialization
 - sandbox-backed workspace initialization now uploads directly from the cached prepared seed root instead of copying each seed into a per-request staging directory first
@@ -102,13 +103,19 @@ Current judgment:
 - object-store sync now maintains a remote sync manifest for file `mtime` and size, letting both TS and native push/pull paths replace many per-file `HeadObject` probes with a single manifest read on repeated syncs
 - object-store sync now also supports an aggressive tar-bundle sidecar cache: push can write `.oah-sync-bundle.tar`, and cold pull/materialization can hydrate from that bundle before normal sync reconciliation
 - object-store sync now also supports a `bundle-primary` layout in the native path: for bundle-eligible prefixes, push can persist the workspace mainly as `manifest + bundle` instead of `manifest + per-file objects + optional bundle sidecar`
+- the TS fallback object-store push path now also supports `bundle-primary`, so non-native execution can keep bundle-backed prefixes in `manifest + bundle` form instead of regressing to per-file object uploads
 - native object-store sync now tracks request counts all the way back into the TS benchmark/materialization harness, so request tables reflect real native `GET`/`PUT`/`LIST` behavior instead of only JS fallback traffic
 - native bundle upload/download now uses temp-file-backed streaming instead of full in-memory bundle buffers, lowering bundle-path peak memory pressure in Docker
 - Docker runtime images and `docker-compose.local.yml` now default `OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT=primary` on the API/sandbox execution path, so the object-store hot path uses the lower-request Rust layout by default in the main container workflow
 - current benchmark proof for the main object-store hot path is now materially stronger:
-  - `96 files x 4 KiB`: TS push `99` requests / `640ms`, native persistent push `3` requests / `143ms`
-  - `16 files x 1 KiB`: TS push `19` requests / `209ms`, native persistent push `3` requests / `139ms`
-  - native persistent materialize/pull on bundle-backed prefixes remains at `1 GET`
+  - `96 files x 4 KiB`:
+    TS sidecar push `99` requests / `325ms`, warm push `2` requests / `14ms`, materialize `2` requests / `46ms`, pull `2` requests / `40ms`, push RSS peak `36.61 MiB`
+  - `96 files x 4 KiB`:
+    TS `bundle-primary` push `4` requests / `66ms`, warm push `1` request / `6ms`, materialize `2 GET` / `41ms`, pull `2 GET` / `38ms`, push RSS peak `0.14 MiB`
+  - `96 files x 4 KiB`:
+    native persistent push `3` requests / `123ms`, warm push `1` request / `3ms`, materialize `1 GET` / `13ms`, pull `1 GET` / `13ms`
+  - current interpretation:
+    TS `bundle-primary` is now a very efficient fallback even on first push, while native persistent remains the strongest steady-state path for Docker-style restore/materialize workloads
 
 ### 2. Archive Export
 
@@ -231,7 +238,8 @@ Practical conclusion:
 The biggest remaining problems are now on the workspace side:
 
 - sidecar overhead is still too visible in sync/materialization
-- general sync/materialization still pays too much per-file upload cost once we leave the self-hosted initializer archive fast path
+- TS `bundle-primary` first push is much cheaper now, but still pays one unmanaged-prefix safety probe when no manifest exists
+- native persistent wins clearly on warm push and restore/materialize, but native cold push is not yet the latency leader in the current benchmark
 - seed upload cold-start still pays for the first archive build, even though warm repeated initialization now reuses the archive
 - prepared workspace reuse can be pushed harder
 - Docker-heavy cases still need broader benchmark proof before we call the rollout universally proven, even though the main Docker runtime path now defaults to native persistent mode
@@ -250,6 +258,7 @@ Focus on the most frequently exercised hot path.
 Next work:
 
 - reduce sidecar startup overhead for sync operations
+- decide whether TS `bundle-primary` cold push can safely skip the unmanaged-prefix fallback list path for trusted prefixes, or whether that safety trade should remain
 - keep more scan / diff / execute work inside Rust once invoked
 - reduce repeated JSON bridge overhead on large directory trees
 - improve batching and concurrency for Docker workloads
@@ -260,7 +269,8 @@ Next work:
 Success bar:
 
 - native sync must match or beat TS on meaningful end-to-end Docker workloads
-- RSS savings must come without obvious latency regression
+- the steady-state native path should stay best on request count, materialize/pull latency, and Node RSS
+- cold-push latency should improve enough that turning on native by default no longer feels like a trade on first sync
 
 ### Priority 2. Deepen Materialization And Seed Upload
 
@@ -305,7 +315,8 @@ Success bar:
 Current recommendation:
 
 - workspace sync:
-  - keep opt-in only
+  - prefer `OAH_NATIVE_WORKSPACE_SYNC=1` with `OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT=1` on Docker/self-hosted runtime paths
+  - keep TS `bundle-primary` fallback enabled as the safety net and compatibility path
 - archive export:
   - `OAH_NATIVE_ARCHIVE_EXPORT=auto` is a reasonable selective mode
 - all native paths:
@@ -330,8 +341,8 @@ Rust is already useful in this repository, but the optimization strategy is now 
 Current truth:
 
 - `native/` is established
-- archive export is the clearest proven Rust win so far
-- the more important path is still workspace sync / materialization / seed upload
+- the mainline Rust win is now workspace sync / materialization on the object-store path, especially with native persistent mode
+- archive export is still useful, but it is no longer the strategy-defining path
 - that is where the next round of deep optimization work should go
 
 From here, the right move is not to widen Rust usage blindly.

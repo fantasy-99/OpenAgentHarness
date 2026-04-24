@@ -7,24 +7,6 @@ import {
   platformModelListSchema,
   platformModelSnapshotSchema,
   readinessReportSchema,
-  storageOverviewSchema,
-  storageOverviewQuerySchema,
-  storagePostgresTableNameSchema,
-  storagePostgresTablePageSchema,
-  storageRedisDeleteKeyResponseSchema,
-  storageRedisDeleteKeysRequestSchema,
-  storageRedisDeleteKeysResponseSchema,
-  storageRedisKeyDetailSchema,
-  storageRedisKeyPageSchema,
-  storageRedisKeyQuerySchema,
-  storageRedisKeysQuerySchema,
-  storageRedisWorkerAffinityQuerySchema,
-  storageRedisWorkerAffinitySchema,
-  storageRedisWorkspacePlacementPageSchema,
-  storageRedisWorkspacePlacementQuerySchema,
-  storageRedisMaintenanceRequestSchema,
-  storageRedisMaintenanceResponseSchema,
-  storageTableQuerySchema,
   uploadWorkspaceRuntimeRequestSchema,
   uploadWorkspaceRuntimeResponseSchema,
   workspaceRuntimeListSchema
@@ -33,10 +15,10 @@ import { AppError } from "@oah/engine-core";
 
 import { createParamsSchema, writeSseEvent } from "../context.js";
 import { describeSandboxTopology } from "../../sandbox-topology.js";
-import { resolveOwnerId } from "../proxy-utils.js";
 import type { AppDependencies, AppRouteOptions } from "../types.js";
 import { SUPPORTED_MODEL_PROVIDERS } from "../model-providers.js";
 import { renderNativeWorkspaceSyncMetrics } from "../../observability/native-workspace-sync.js";
+import { registerPublicStorageRoutes } from "./public-storage-lazy.js";
 
 let developerDocsModulePromise: Promise<typeof import("../developer-docs.js")> | undefined;
 
@@ -289,145 +271,5 @@ export function registerPublicRoutes(app: FastifyInstance, dependencies: AppDepe
     }
   );
 
-  app.get("/api/v1/storage/overview", async (request, reply) => {
-    if (!dependencies.storageAdmin) {
-      throw new AppError(501, "storage_admin_unavailable", "Storage admin is unavailable on this server.");
-    }
-
-    const query = storageOverviewQuerySchema.parse(request.query);
-    return reply.send(
-      storageOverviewSchema.parse(
-        await dependencies.storageAdmin.overview(query.serviceName ? { serviceName: query.serviceName } : undefined)
-      )
-    );
-  });
-
-  app.get("/api/v1/storage/postgres/tables/:table", async (request, reply) => {
-    if (!dependencies.storageAdmin) {
-      throw new AppError(501, "storage_admin_unavailable", "Storage admin is unavailable on this server.");
-    }
-
-    const params = createParamsSchema("table").parse(request.params);
-    const rawQuery = request.query as Record<string, unknown>;
-    const parsedQuery = storageTableQuerySchema.parse(request.query);
-    const query = {
-      ...parsedQuery,
-      ...(typeof rawQuery.status === "string" ? { status: rawQuery.status } : {}),
-      ...(typeof rawQuery.errorCode === "string" ? { errorCode: rawQuery.errorCode } : {}),
-      ...(typeof rawQuery.recoveryState === "string" ? { recoveryState: rawQuery.recoveryState } : {})
-    };
-    const table = storagePostgresTableNameSchema.parse(params.table);
-    return reply.send(
-      storagePostgresTablePageSchema.parse(
-        await dependencies.storageAdmin.postgresTable(table, {
-          limit: query.limit,
-          offset: query.offset,
-          ...(query.serviceName ? { serviceName: query.serviceName } : {}),
-          ...(query.q ? { q: query.q } : {}),
-          ...(query.workspaceId ? { workspaceId: query.workspaceId } : {}),
-          ...(query.sessionId ? { sessionId: query.sessionId } : {}),
-          ...(query.runId ? { runId: query.runId } : {}),
-          ...(query.status ? { status: query.status } : {}),
-          ...(query.errorCode ? { errorCode: query.errorCode } : {}),
-          ...(query.recoveryState ? { recoveryState: query.recoveryState } : {})
-        })
-      )
-    );
-  });
-
-  app.get("/api/v1/storage/redis/keys", async (request, reply) => {
-    if (!dependencies.storageAdmin) {
-      throw new AppError(501, "storage_admin_unavailable", "Storage admin is unavailable on this server.");
-    }
-
-    const query = storageRedisKeysQuerySchema.parse(request.query);
-    return reply.send(
-      storageRedisKeyPageSchema.parse(await dependencies.storageAdmin.redisKeys(query.pattern, query.cursor, query.pageSize))
-    );
-  });
-
-  app.get("/api/v1/storage/redis/key", async (request, reply) => {
-    if (!dependencies.storageAdmin) {
-      throw new AppError(501, "storage_admin_unavailable", "Storage admin is unavailable on this server.");
-    }
-
-    const query = storageRedisKeyQuerySchema.parse(request.query);
-    return reply.send(storageRedisKeyDetailSchema.parse(await dependencies.storageAdmin.redisKeyDetail(query.key)));
-  });
-
-  app.get("/api/v1/storage/redis/worker-affinity", async (request, reply) => {
-    if (!dependencies.storageAdmin) {
-      throw new AppError(501, "storage_admin_unavailable", "Storage admin is unavailable on this server.");
-    }
-
-    const rawQuery = request.query as Record<string, unknown>;
-    const query = storageRedisWorkerAffinityQuerySchema.parse({
-      ...rawQuery,
-      ownerId: resolveOwnerId({
-        ownerId: typeof rawQuery.ownerId === "string" ? rawQuery.ownerId : undefined
-      })
-    });
-    return reply.send(
-      storageRedisWorkerAffinitySchema.parse(await dependencies.storageAdmin.redisWorkerAffinity(query))
-    );
-  });
-
-  app.get("/api/v1/storage/redis/workspace-placements", async (request, reply) => {
-    if (!dependencies.storageAdmin) {
-      throw new AppError(501, "storage_admin_unavailable", "Storage admin is unavailable on this server.");
-    }
-
-    const rawQuery = request.query as Record<string, unknown>;
-    const query = storageRedisWorkspacePlacementQuerySchema.parse({
-      ...rawQuery,
-      ownerId: resolveOwnerId({
-        ownerId: typeof rawQuery.ownerId === "string" ? rawQuery.ownerId : undefined
-      })
-    });
-    return reply.send(
-      storageRedisWorkspacePlacementPageSchema.parse(
-        await dependencies.storageAdmin.redisWorkspacePlacements(query)
-      )
-    );
-  });
-
-  app.delete("/api/v1/storage/redis/key", async (request, reply) => {
-    if (!dependencies.storageAdmin) {
-      throw new AppError(501, "storage_admin_unavailable", "Storage admin is unavailable on this server.");
-    }
-
-    const query = storageRedisKeyQuerySchema.parse(request.query);
-    return reply.send(storageRedisDeleteKeyResponseSchema.parse(await dependencies.storageAdmin.deleteRedisKey(query.key)));
-  });
-
-  app.post("/api/v1/storage/redis/keys/delete", async (request, reply) => {
-    if (!dependencies.storageAdmin) {
-      throw new AppError(501, "storage_admin_unavailable", "Storage admin is unavailable on this server.");
-    }
-
-    const body = storageRedisDeleteKeysRequestSchema.parse(request.body);
-    return reply.send(storageRedisDeleteKeysResponseSchema.parse(await dependencies.storageAdmin.deleteRedisKeys(body.keys)));
-  });
-
-  app.post("/api/v1/storage/redis/session-queue/clear", async (request, reply) => {
-    if (!dependencies.storageAdmin) {
-      throw new AppError(501, "storage_admin_unavailable", "Storage admin is unavailable on this server.");
-    }
-
-    const body = storageRedisMaintenanceRequestSchema.parse(request.body);
-    return reply.send(
-      storageRedisMaintenanceResponseSchema.parse(await dependencies.storageAdmin.clearRedisSessionQueue(body.key))
-    );
-  });
-
-  app.post("/api/v1/storage/redis/session-lock/release", async (request, reply) => {
-    if (!dependencies.storageAdmin) {
-      throw new AppError(501, "storage_admin_unavailable", "Storage admin is unavailable on this server.");
-    }
-
-    const body = storageRedisMaintenanceRequestSchema.parse(request.body);
-    return reply.send(
-      storageRedisMaintenanceResponseSchema.parse(await dependencies.storageAdmin.releaseRedisSessionLock(body.key))
-    );
-  });
+  registerPublicStorageRoutes(app, dependencies);
 }

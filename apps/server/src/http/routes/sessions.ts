@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import {
   batchRequeueRunsRequestSchema,
@@ -35,89 +35,86 @@ function parseEventCursor(value: string | undefined): number {
   return Number.isFinite(parsed) ? parsed : -1;
 }
 
-export function registerSessionRoutes(app: FastifyInstance, dependencies: AppDependencies): void {
-  app.get("/api/v1/sessions/:sessionId", async (request, reply) => {
-    const params = createParamsSchema("sessionId").parse(request.params);
-    const session = await dependencies.runtimeService.getSession(params.sessionId);
-    return reply.send(session);
-  });
+function readRegisteredRouteUrl(request: FastifyRequest): string {
+  return typeof request.routeOptions.url === "string" ? request.routeOptions.url : request.url.split("?")[0] ?? request.url;
+}
 
-  app.patch("/api/v1/sessions/:sessionId", async (request, reply) => {
-    const params = createParamsSchema("sessionId").parse(request.params);
-    const input = updateSessionRequestSchema.parse(request.body);
-    const session = await dependencies.runtimeService.updateSession({
-      sessionId: params.sessionId,
-      input
-    });
-    return reply.send(session);
-  });
+export async function dispatchRegisteredSessionRoute(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  dependencies: AppDependencies
+) {
+  const routeUrl = readRegisteredRouteUrl(request);
 
-  app.delete("/api/v1/sessions/:sessionId", async (request, reply) => {
-    const params = createParamsSchema("sessionId").parse(request.params);
-    await dependencies.runtimeService.deleteSession(params.sessionId);
-    return reply.status(204).send();
-  });
-
-  app.get("/api/v1/sessions/:sessionId/messages", async (request, reply) => {
-    const params = createParamsSchema("sessionId").parse(request.params);
-    const query = messageListQuerySchema.parse(request.query);
-    const page = await dependencies.runtimeService.listSessionMessages(
-      params.sessionId,
-      query.pageSize,
-      query.cursor,
-      query.direction
-    );
-    return reply.send(messagePageSchema.parse(page));
-  });
-
-  app.get("/api/v1/sessions/:sessionId/messages/:messageId", async (request, reply) => {
-    const params = createParamsSchema("sessionId", "messageId").parse(request.params);
-    const message = await dependencies.runtimeService.getSessionMessage(params.sessionId, params.messageId);
-    return reply.send(messageSchema.parse(message));
-  });
-
-  app.get("/api/v1/sessions/:sessionId/messages/:messageId/context", async (request, reply) => {
-    const params = createParamsSchema("sessionId", "messageId").parse(request.params);
-    const query = messageContextQuerySchema.parse(request.query);
-    const context = await dependencies.runtimeService.getSessionMessageContext(
-      params.sessionId,
-      params.messageId,
-      query.before,
-      query.after
-    );
-    return reply.send(messageContextSchema.parse(context));
-  });
-
-  app.get("/api/v1/sessions/:sessionId/runs", async (request, reply) => {
-    const params = createParamsSchema("sessionId").parse(request.params);
-    const query = pageQuerySchema.parse(request.query);
-    const page = await dependencies.runtimeService.listSessionRuns(params.sessionId, query.pageSize, query.cursor);
-    return reply.send(runPageSchema.parse(page));
-  });
-
-  app.get("/api/v1/sessions/:sessionId/queue", async (request, reply) => {
-    const params = createParamsSchema("sessionId").parse(request.params);
-    const queue = await dependencies.runtimeService.listSessionQueuedRuns(params.sessionId);
-    return reply.send(sessionQueueSchema.parse(queue));
-  });
-
-  app.post("/api/v1/sessions/:sessionId/compact", async (request, reply) => {
-    const params = createParamsSchema("sessionId").parse(request.params);
-    const input = compactSessionRequestSchema.parse(request.body ?? {});
-    const result = await dependencies.runtimeService.compactSession({
-      sessionId: params.sessionId,
-      caller: toCallerContext(request),
-      input
-    });
-    return reply.send(result);
-  });
-
-  app.post(
-    "/api/v1/sessions/:sessionId/messages",
-    {
-      bodyLimit: 16 * 1024 * 1024
-    },
-    async (request, reply) => {
+  switch (`${request.method} ${routeUrl}`) {
+    case "GET /api/v1/sessions/:sessionId": {
+      const params = createParamsSchema("sessionId").parse(request.params);
+      const session = await dependencies.runtimeService.getSession(params.sessionId);
+      return reply.send(session);
+    }
+    case "PATCH /api/v1/sessions/:sessionId": {
+      const params = createParamsSchema("sessionId").parse(request.params);
+      const input = updateSessionRequestSchema.parse(request.body);
+      const session = await dependencies.runtimeService.updateSession({
+        sessionId: params.sessionId,
+        input
+      });
+      return reply.send(session);
+    }
+    case "DELETE /api/v1/sessions/:sessionId": {
+      const params = createParamsSchema("sessionId").parse(request.params);
+      await dependencies.runtimeService.deleteSession(params.sessionId);
+      return reply.status(204).send();
+    }
+    case "GET /api/v1/sessions/:sessionId/messages": {
+      const params = createParamsSchema("sessionId").parse(request.params);
+      const query = messageListQuerySchema.parse(request.query);
+      const page = await dependencies.runtimeService.listSessionMessages(
+        params.sessionId,
+        query.pageSize,
+        query.cursor,
+        query.direction
+      );
+      return reply.send(messagePageSchema.parse(page));
+    }
+    case "GET /api/v1/sessions/:sessionId/messages/:messageId": {
+      const params = createParamsSchema("sessionId", "messageId").parse(request.params);
+      const message = await dependencies.runtimeService.getSessionMessage(params.sessionId, params.messageId);
+      return reply.send(messageSchema.parse(message));
+    }
+    case "GET /api/v1/sessions/:sessionId/messages/:messageId/context": {
+      const params = createParamsSchema("sessionId", "messageId").parse(request.params);
+      const query = messageContextQuerySchema.parse(request.query);
+      const context = await dependencies.runtimeService.getSessionMessageContext(
+        params.sessionId,
+        params.messageId,
+        query.before,
+        query.after
+      );
+      return reply.send(messageContextSchema.parse(context));
+    }
+    case "GET /api/v1/sessions/:sessionId/runs": {
+      const params = createParamsSchema("sessionId").parse(request.params);
+      const query = pageQuerySchema.parse(request.query);
+      const page = await dependencies.runtimeService.listSessionRuns(params.sessionId, query.pageSize, query.cursor);
+      return reply.send(runPageSchema.parse(page));
+    }
+    case "GET /api/v1/sessions/:sessionId/queue": {
+      const params = createParamsSchema("sessionId").parse(request.params);
+      const queue = await dependencies.runtimeService.listSessionQueuedRuns(params.sessionId);
+      return reply.send(sessionQueueSchema.parse(queue));
+    }
+    case "POST /api/v1/sessions/:sessionId/compact": {
+      const params = createParamsSchema("sessionId").parse(request.params);
+      const input = compactSessionRequestSchema.parse(request.body ?? {});
+      const result = await dependencies.runtimeService.compactSession({
+        sessionId: params.sessionId,
+        caller: toCallerContext(request),
+        input
+      });
+      return reply.send(result);
+    }
+    case "POST /api/v1/sessions/:sessionId/messages": {
       const params = createParamsSchema("sessionId").parse(request.params);
       const input = createMessageRequestSchema.parse(request.body);
       const accepted = await dependencies.runtimeService.createSessionMessage({
@@ -128,14 +125,7 @@ export function registerSessionRoutes(app: FastifyInstance, dependencies: AppDep
 
       return reply.status(202).send(messageAcceptedSchema.parse(accepted));
     }
-  );
-
-  app.get(
-    "/api/v1/sessions/:sessionId/events",
-    {
-      logLevel: "warn"
-    },
-    async (request, reply) => {
+    case "GET /api/v1/sessions/:sessionId/events": {
       const params = createParamsSchema("sessionId").parse(request.params);
       const query = runEventsQuerySchema.parse(request.query);
       await dependencies.runtimeService.getSession(params.sessionId);
@@ -213,75 +203,134 @@ export function registerSessionRoutes(app: FastifyInstance, dependencies: AppDep
         unsubscribe();
         reply.raw.end();
       });
+      return reply;
     }
-  );
+    case "GET /api/v1/runs/:runId": {
+      const params = createParamsSchema("runId").parse(request.params);
+      const run = await dependencies.runtimeService.getRun(params.runId);
+      return reply.send(run);
+    }
+    case "GET /api/v1/runs/:runId/steps": {
+      const params = createParamsSchema("runId").parse(request.params);
+      const query = pageQuerySchema.parse(request.query);
+      const page = await dependencies.runtimeService.listRunSteps(params.runId, query.pageSize, query.cursor);
+      return reply.send(runStepPageSchema.parse(page));
+    }
+    case "POST /api/v1/runs/:runId/cancel": {
+      const params = createParamsSchema("runId").parse(request.params);
+      const result = await dependencies.runtimeService.cancelRun(params.runId);
+      return reply.status(202).send(cancelRunAcceptedSchema.parse(result));
+    }
+    case "POST /api/v1/runs/:runId/guide": {
+      const params = createParamsSchema("runId").parse(request.params);
+      const caller = toCallerContext(request);
+      const run = await dependencies.runtimeService.getRun(params.runId);
+      assertWorkspaceAccess(caller, run.workspaceId);
+      const result = await dependencies.runtimeService.guideQueuedRun(params.runId);
+      return reply.status(202).send(guideQueuedRunAcceptedSchema.parse(result));
+    }
+    case "POST /api/v1/runs/:runId/requeue": {
+      const params = createParamsSchema("runId").parse(request.params);
+      const caller = toCallerContext(request);
+      const run = await dependencies.runtimeService.getRun(params.runId);
+      assertWorkspaceAccess(caller, run.workspaceId);
+      const result = await dependencies.runtimeService.requeueRun(params.runId, caller.subjectRef);
+      return reply.status(202).send(requeueRunAcceptedSchema.parse(result));
+    }
+    case "POST /api/v1/runs/requeue": {
+      const caller = toCallerContext(request);
+      const input = batchRequeueRunsRequestSchema.parse(request.body);
+      const items = await Promise.all(
+        input.runIds.map(async (runId) => {
+          try {
+            const run = await dependencies.runtimeService.getRun(runId);
+            assertWorkspaceAccess(caller, run.workspaceId);
+            return await dependencies.runtimeService.requeueRun(runId, caller.subjectRef);
+          } catch (error) {
+            if (error instanceof Error && "code" in error && typeof (error as { code?: unknown }).code === "string") {
+              return {
+                runId,
+                status: "error" as const,
+                errorCode: (error as { code: string }).code,
+                errorMessage: error.message
+              };
+            }
 
-  app.get("/api/v1/runs/:runId", async (request, reply) => {
-    const params = createParamsSchema("runId").parse(request.params);
-    const run = await dependencies.runtimeService.getRun(params.runId);
-    return reply.send(run);
-  });
-
-  app.get("/api/v1/runs/:runId/steps", async (request, reply) => {
-    const params = createParamsSchema("runId").parse(request.params);
-    const query = pageQuerySchema.parse(request.query);
-    const page = await dependencies.runtimeService.listRunSteps(params.runId, query.pageSize, query.cursor);
-    return reply.send(runStepPageSchema.parse(page));
-  });
-
-  app.post("/api/v1/runs/:runId/cancel", async (request, reply) => {
-    const params = createParamsSchema("runId").parse(request.params);
-    const result = await dependencies.runtimeService.cancelRun(params.runId);
-    return reply.status(202).send(cancelRunAcceptedSchema.parse(result));
-  });
-
-  app.post("/api/v1/runs/:runId/guide", async (request, reply) => {
-    const params = createParamsSchema("runId").parse(request.params);
-    const caller = toCallerContext(request);
-    const run = await dependencies.runtimeService.getRun(params.runId);
-    assertWorkspaceAccess(caller, run.workspaceId);
-    const result = await dependencies.runtimeService.guideQueuedRun(params.runId);
-    return reply.status(202).send(guideQueuedRunAcceptedSchema.parse(result));
-  });
-
-  app.post("/api/v1/runs/:runId/requeue", async (request, reply) => {
-    const params = createParamsSchema("runId").parse(request.params);
-    const caller = toCallerContext(request);
-    const run = await dependencies.runtimeService.getRun(params.runId);
-    assertWorkspaceAccess(caller, run.workspaceId);
-    const result = await dependencies.runtimeService.requeueRun(params.runId, caller.subjectRef);
-    return reply.status(202).send(requeueRunAcceptedSchema.parse(result));
-  });
-
-  app.post("/api/v1/runs/requeue", async (request, reply) => {
-    const caller = toCallerContext(request);
-    const input = batchRequeueRunsRequestSchema.parse(request.body);
-    const items = await Promise.all(
-      input.runIds.map(async (runId) => {
-        try {
-          const run = await dependencies.runtimeService.getRun(runId);
-          assertWorkspaceAccess(caller, run.workspaceId);
-          return await dependencies.runtimeService.requeueRun(runId, caller.subjectRef);
-        } catch (error) {
-          if (error instanceof Error && "code" in error && typeof (error as { code?: unknown }).code === "string") {
             return {
               runId,
               status: "error" as const,
-              errorCode: (error as { code: string }).code,
-              errorMessage: error.message
+              errorCode: "run_requeue_failed",
+              errorMessage: error instanceof Error ? error.message : String(error)
             };
           }
+        })
+      );
 
-          return {
-            runId,
-            status: "error" as const,
-            errorCode: "run_requeue_failed",
-            errorMessage: error instanceof Error ? error.message : String(error)
-          };
-        }
-      })
-    );
+      return reply.status(200).send(batchRequeueRunsResponseSchema.parse({ items }));
+    }
+    default:
+      throw new Error(`Unsupported session route: ${request.method} ${routeUrl}`);
+  }
+}
 
-    return reply.status(200).send(batchRequeueRunsResponseSchema.parse({ items }));
-  });
+export function registerSessionRoutes(app: FastifyInstance, dependencies: AppDependencies): void {
+  app.get("/api/v1/sessions/:sessionId", async (request, reply) =>
+    dispatchRegisteredSessionRoute(request, reply, dependencies)
+  );
+  app.patch("/api/v1/sessions/:sessionId", async (request, reply) =>
+    dispatchRegisteredSessionRoute(request, reply, dependencies)
+  );
+  app.delete("/api/v1/sessions/:sessionId", async (request, reply) =>
+    dispatchRegisteredSessionRoute(request, reply, dependencies)
+  );
+  app.get("/api/v1/sessions/:sessionId/messages", async (request, reply) =>
+    dispatchRegisteredSessionRoute(request, reply, dependencies)
+  );
+  app.get("/api/v1/sessions/:sessionId/messages/:messageId", async (request, reply) =>
+    dispatchRegisteredSessionRoute(request, reply, dependencies)
+  );
+  app.get("/api/v1/sessions/:sessionId/messages/:messageId/context", async (request, reply) =>
+    dispatchRegisteredSessionRoute(request, reply, dependencies)
+  );
+  app.get("/api/v1/sessions/:sessionId/runs", async (request, reply) =>
+    dispatchRegisteredSessionRoute(request, reply, dependencies)
+  );
+  app.get("/api/v1/sessions/:sessionId/queue", async (request, reply) =>
+    dispatchRegisteredSessionRoute(request, reply, dependencies)
+  );
+  app.post("/api/v1/sessions/:sessionId/compact", async (request, reply) =>
+    dispatchRegisteredSessionRoute(request, reply, dependencies)
+  );
+  app.post(
+    "/api/v1/sessions/:sessionId/messages",
+    {
+      bodyLimit: 16 * 1024 * 1024
+    },
+    async (request, reply) => dispatchRegisteredSessionRoute(request, reply, dependencies)
+  );
+  app.get(
+    "/api/v1/sessions/:sessionId/events",
+    {
+      logLevel: "warn"
+    },
+    async (request, reply) => dispatchRegisteredSessionRoute(request, reply, dependencies)
+  );
+  app.get("/api/v1/runs/:runId", async (request, reply) =>
+    dispatchRegisteredSessionRoute(request, reply, dependencies)
+  );
+  app.get("/api/v1/runs/:runId/steps", async (request, reply) =>
+    dispatchRegisteredSessionRoute(request, reply, dependencies)
+  );
+  app.post("/api/v1/runs/:runId/cancel", async (request, reply) =>
+    dispatchRegisteredSessionRoute(request, reply, dependencies)
+  );
+  app.post("/api/v1/runs/:runId/guide", async (request, reply) =>
+    dispatchRegisteredSessionRoute(request, reply, dependencies)
+  );
+  app.post("/api/v1/runs/:runId/requeue", async (request, reply) =>
+    dispatchRegisteredSessionRoute(request, reply, dependencies)
+  );
+  app.post("/api/v1/runs/requeue", async (request, reply) =>
+    dispatchRegisteredSessionRoute(request, reply, dependencies)
+  );
 }

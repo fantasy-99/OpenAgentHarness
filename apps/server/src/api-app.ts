@@ -1,9 +1,9 @@
 import { createBaseApp, registerInternalRoutes } from "./app-core.js";
 import { registerPublicRoutes } from "./http/routes/public.js";
-import { registerInternalModelRoutes } from "./http/routes/internal-models.js";
+import { registerInternalModelRoutes } from "./http/routes/internal-models-lazy.js";
 import { registerWorkspaceRoutes } from "./http/routes/workspaces-lazy.js";
 import { registerSandboxRoutes } from "./http/routes/sandboxes-lazy.js";
-import { registerSessionRoutes } from "./http/routes/sessions.js";
+import { registerSessionRoutes } from "./http/routes/sessions-lazy.js";
 import type { AppDependencies } from "./http/types.js";
 
 export function createApiApp(dependencies: AppDependencies) {

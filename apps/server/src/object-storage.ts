@@ -619,7 +619,8 @@ async function maybeHydrateFromObjectStorageBundle(input: {
 function buildSyntheticRemoteEntriesFromManifestDocument(
   remotePrefix: string,
   manifestDocument: DirectorySyncManifestDocument,
-  options?: DirectorySyncOptions
+  options?: DirectorySyncOptions,
+  includeBundleMarker?: boolean | undefined
 ): ObjectStorageEntry[] {
   const entries: ObjectStorageEntry[] = [];
 
@@ -654,7 +655,28 @@ function buildSyntheticRemoteEntriesFromManifestDocument(
     });
   }
 
+  if (includeBundleMarker && manifestDocument.storageMode === "bundle") {
+    entries.push({
+      key: buildRemoteKey(remotePrefix, INTERNAL_SYNC_BUNDLE_RELATIVE_PATH),
+      size: 0
+    });
+  }
+
   return entries.sort((left, right) => left.key.localeCompare(right.key));
+}
+
+function buildManagedRemoteKeysFromManifestDocument(
+  remotePrefix: string,
+  manifestDocument: DirectorySyncManifestDocument,
+  options?: DirectorySyncOptions
+): string[] {
+  const keys = new Set(
+    buildSyntheticRemoteEntriesFromManifestDocument(remotePrefix, manifestDocument, options, true).map((entry) => entry.key)
+  );
+  if (manifestDocument.storageMode === "bundle") {
+    keys.add(buildRemoteKey(remotePrefix, INTERNAL_SYNC_BUNDLE_RELATIVE_PATH));
+  }
+  return [...keys].sort((left, right) => left.localeCompare(right));
 }
 
 function countRemoteMaterializedFiles(
@@ -2124,20 +2146,33 @@ export async function syncRemotePrefixToLocal(
     return nativeResult;
   }
 
-  const prefetchedEntries = await store.listEntries(remotePrefix);
-  const hasVisibleRemoteEntries = prefetchedEntries.some((entry) => {
-    if (entry.key.endsWith("/")) {
-      return true;
+  const bundleConfig = resolveObjectStorageBundleConfig();
+  let prefetchedEntries: ObjectStorageEntry[] | undefined;
+  let syncManifestDocument: DirectorySyncManifestDocument | undefined;
+
+  if (bundleConfig.layout === "primary") {
+    syncManifestDocument = await loadRemoteDirectorySyncManifestDocument(store, remotePrefix);
+    if (syncManifestDocument?.storageMode === "bundle") {
+      prefetchedEntries = buildSyntheticRemoteEntriesFromManifestDocument(remotePrefix, syncManifestDocument, options, true);
     }
-    const relativePath = relativePathFromRemoteKey(remotePrefix, entry.key);
-    if (relativePath === undefined || shouldIgnoreRelativePath(relativePath)) {
-      return false;
-    }
-    return !options?.excludeRelativePath?.(relativePath);
-  });
-  const syncManifestDocument = hasVisibleRemoteEntries
-    ? undefined
-    : await loadRemoteDirectorySyncManifestDocument(store, remotePrefix, prefetchedEntries);
+  }
+
+  if (!prefetchedEntries) {
+    prefetchedEntries = await store.listEntries(remotePrefix);
+    const hasVisibleRemoteEntries = prefetchedEntries.some((entry) => {
+      if (entry.key.endsWith("/")) {
+        return true;
+      }
+      const relativePath = relativePathFromRemoteKey(remotePrefix, entry.key);
+      if (relativePath === undefined || shouldIgnoreRelativePath(relativePath)) {
+        return false;
+      }
+      return !options?.excludeRelativePath?.(relativePath);
+    });
+    syncManifestDocument = hasVisibleRemoteEntries
+      ? undefined
+      : await loadRemoteDirectorySyncManifestDocument(store, remotePrefix, prefetchedEntries);
+  }
   const hydratedFromBundle = await maybeHydrateFromObjectStorageBundle({
     store,
     remotePrefix,
@@ -2394,6 +2429,7 @@ export async function syncLocalDirectoryToRemote(
     return nativeSyncResult;
   }
 
+  let bundleWriteHandledInPrimaryPath = false;
   const result = await observeNativeWorkspaceSyncOperation({
     operation: "sync_local_to_remote",
     implementation: "ts",
@@ -2404,12 +2440,110 @@ export async function syncLocalDirectoryToRemote(
       remotePrefix
     },
     action: async () => {
-      const remoteEntries = await store.listEntries(remotePrefix);
-      const syncManifest = await loadRemoteDirectorySyncManifest(store, remotePrefix, remoteEntries);
-      const remoteByRelativePath = buildNormalizedRemoteEntryMap(remotePrefix, remoteEntries, options);
       let uploadedFileCount = 0;
       let createdEmptyDirectoryCount = 0;
       const concurrency = resolveDirectorySyncConcurrency();
+      const nativeSnapshot = await collectNativeSnapshotIfAvailable(localDir, options);
+      const snapshot = nativeSnapshot?.snapshot ?? (await collectLocalDirectorySnapshot(localDir, options));
+      const localFingerprint = nativeSnapshot?.fingerprint ?? createDirectoryFingerprint(snapshot);
+      const snapshotFiles = [...snapshot.files.entries()].map(([relativePath, file]) => ({
+        relativePath,
+        size: file.size,
+        mtimeMs: Math.trunc(file.mtimeMs)
+      }));
+      const bundleConfig = resolveObjectStorageBundleConfig();
+      const bundlePrimaryEnabled = bundleConfig.layout === "primary" && shouldAttemptObjectStorageBundle({ files: snapshotFiles });
+      const desiredPrimaryManifest = bundlePrimaryEnabled
+        ? buildDirectorySyncManifestFromFiles(snapshotFiles, {
+            emptyDirectories: snapshot.emptyDirectories,
+            storageMode: "bundle"
+          })
+        : undefined;
+
+      if (bundlePrimaryEnabled) {
+        bundleWriteHandledInPrimaryPath = true;
+        const existingManifestDocument = await loadRemoteDirectorySyncManifestDocument(store, remotePrefix);
+        const syncManifest = existingManifestDocument
+          ? new Map(
+              Object.entries(existingManifestDocument.files)
+                .map(([relativePath, entry]) => [normalizeRelativePath(relativePath), entry] as const)
+                .filter(
+                  (entry): entry is readonly [string, DirectorySyncManifestFileEntry] =>
+                    entry[0].length > 0 && isDirectorySyncManifestFileEntry(entry[1])
+                )
+            )
+          : new Map<string, DirectorySyncManifestFileEntry>();
+        uploadedFileCount = countManifestFileMutations(snapshot, existingManifestDocument);
+        const manifestDeletedRemoteCount = countManifestDeletedFiles(snapshot, existingManifestDocument);
+        createdEmptyDirectoryCount = countManifestCreatedEmptyDirectories(snapshot, existingManifestDocument);
+        const manifestChanged = !isEquivalentDirectorySyncManifestDocument(existingManifestDocument, desiredPrimaryManifest);
+        let deletedRemoteCount = manifestDeletedRemoteCount;
+
+        if (manifestChanged) {
+          await maybeWriteObjectStorageBundle({
+            store,
+            remotePrefix,
+            localDir,
+            options,
+            logger
+          });
+
+          let keysToDelete: string[] = [];
+          if (existingManifestDocument && existingManifestDocument.storageMode !== "bundle") {
+            keysToDelete = buildManagedRemoteKeysFromManifestDocument(remotePrefix, existingManifestDocument, options).filter(
+              (key) => key !== buildRemoteKey(remotePrefix, INTERNAL_SYNC_MANIFEST_RELATIVE_PATH)
+            );
+          } else if (!existingManifestDocument) {
+            const remoteEntries = await store.listEntries(remotePrefix);
+            keysToDelete = remoteEntries
+              .map((entry) => {
+                const relativePath = relativePathFromRemoteKey(remotePrefix, entry.key);
+                if (relativePath === undefined || shouldIgnoreRelativePath(relativePath)) {
+                  return undefined;
+                }
+                return entry.key;
+              })
+              .filter((key): key is string => key !== undefined);
+          }
+
+          if (keysToDelete.length > 0) {
+            await store.deleteObjects(keysToDelete);
+            deletedRemoteCount = keysToDelete.length;
+          }
+
+          await writeRemoteDirectorySyncManifest({
+            store,
+            remotePrefix,
+            existingManifest: syncManifest,
+            existingManifestDocument,
+            files: snapshotFiles,
+            emptyDirectories: snapshot.emptyDirectories,
+            storageMode: "bundle"
+          });
+        }
+
+        return {
+          localFingerprint,
+          uploadedFileCount,
+          deletedRemoteCount,
+          createdEmptyDirectoryCount
+        };
+      }
+
+      const remoteEntries = await store.listEntries(remotePrefix);
+      const existingManifestDocument = await loadRemoteDirectorySyncManifestDocument(store, remotePrefix, remoteEntries);
+      const syncManifest = existingManifestDocument
+        ? new Map(
+            Object.entries(existingManifestDocument.files)
+              .map(([relativePath, entry]) => [normalizeRelativePath(relativePath), entry] as const)
+              .filter(
+                (entry): entry is readonly [string, DirectorySyncManifestFileEntry] =>
+                  entry[0].length > 0 && isDirectorySyncManifestFileEntry(entry[1])
+              )
+          )
+        : await loadRemoteDirectorySyncManifest(store, remotePrefix, remoteEntries);
+      const remoteByRelativePath = buildNormalizedRemoteEntryMap(remotePrefix, remoteEntries, options);
+
       const nativePlan = await collectNativeLocalToRemotePlanIfAvailable(localDir, remotePrefix, remoteEntries, options);
 
       if (nativePlan) {
@@ -2494,11 +2628,10 @@ export async function syncLocalDirectoryToRemote(
           store,
           remotePrefix,
           existingManifest: syncManifest,
-          files: [...nativePlan.uploadCandidates, ...nativePlan.infoCheckCandidates].map((candidate) => ({
-            relativePath: candidate.relativePath,
-            size: candidate.size,
-            mtimeMs: candidate.mtimeMs
-          }))
+          existingManifestDocument,
+          files: snapshotFiles,
+          emptyDirectories: snapshot.emptyDirectories,
+          storageMode: "objects"
         });
         return {
           localFingerprint: nativePlan.fingerprint,
@@ -2507,10 +2640,6 @@ export async function syncLocalDirectoryToRemote(
           createdEmptyDirectoryCount
         };
       }
-
-      const nativeSnapshot = await collectNativeSnapshotIfAvailable(localDir, options);
-      const snapshot = nativeSnapshot?.snapshot ?? (await collectLocalDirectorySnapshot(localDir, options));
-      const localFingerprint = nativeSnapshot?.fingerprint ?? createDirectoryFingerprint(snapshot);
 
       const seenRemoteRelativePaths = new Set<string>();
 
@@ -2582,11 +2711,10 @@ export async function syncLocalDirectoryToRemote(
         store,
         remotePrefix,
         existingManifest: syncManifest,
-        files: [...snapshot.files.entries()].map(([relativePath, file]) => ({
-          relativePath,
-          size: file.size,
-          mtimeMs: file.mtimeMs
-        }))
+        existingManifestDocument,
+        files: snapshotFiles,
+        emptyDirectories: snapshot.emptyDirectories,
+        storageMode: "objects"
       });
       return {
         localFingerprint,
@@ -2596,14 +2724,16 @@ export async function syncLocalDirectoryToRemote(
       };
     }
   });
-  await maybeWriteObjectStorageBundle({
-    store,
-    remotePrefix,
-    localDir,
-    options,
-    logger,
-    skipWrite: !hasDirectorySyncMutations(result)
-  });
+  if (!bundleWriteHandledInPrimaryPath) {
+    await maybeWriteObjectStorageBundle({
+      store,
+      remotePrefix,
+      localDir,
+      options,
+      logger,
+      skipWrite: !hasDirectorySyncMutations(result)
+    });
+  }
   await pruneEmptyDirectories(localDir);
   return result;
 }

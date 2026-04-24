@@ -25,7 +25,7 @@ interface BenchmarkOptions {
   memoryPollIntervalMs: number;
 }
 
-type BenchmarkMode = "typescript" | "native-oneshot" | "native-persistent";
+type BenchmarkMode = "typescript" | "typescript-primary" | "native-oneshot" | "native-persistent";
 
 interface SeedUploadPlan {
   directories: string[];
@@ -424,6 +424,7 @@ async function runCase(options: {
   label: BenchmarkMode;
   nativeEnabled: boolean;
   persistentNative: boolean;
+  bundleLayout: "sidecar" | "primary";
   remotePrefix: string;
   benchmark: BenchmarkOptions;
 }): Promise<BenchmarkCaseResult> {
@@ -442,7 +443,7 @@ async function runCase(options: {
 
   process.env.OAH_NATIVE_WORKSPACE_SYNC = options.nativeEnabled ? "1" : "0";
   process.env.OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT = options.persistentNative ? "1" : "0";
-  process.env.OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT = options.nativeEnabled ? "primary" : "sidecar";
+  process.env.OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT = options.bundleLayout;
   await shutdownNativeWorkspaceSyncWorkerPool();
 
   try {
@@ -599,13 +600,23 @@ async function main(): Promise<void> {
     label: "typescript",
     nativeEnabled: false,
     persistentNative: false,
+    bundleLayout: "sidecar",
     remotePrefix: `${sharedPrefix}/typescript`,
+    benchmark: options
+  });
+  const typescriptPrimaryCase = await runCase({
+    label: "typescript-primary",
+    nativeEnabled: false,
+    persistentNative: false,
+    bundleLayout: "primary",
+    remotePrefix: `${sharedPrefix}/typescript-primary`,
     benchmark: options
   });
   const nativeOneShotCase = await runCase({
     label: "native-oneshot",
     nativeEnabled: true,
     persistentNative: false,
+    bundleLayout: "primary",
     remotePrefix: `${sharedPrefix}/native-oneshot`,
     benchmark: options
   });
@@ -613,6 +624,7 @@ async function main(): Promise<void> {
     label: "native-persistent",
     nativeEnabled: true,
     persistentNative: true,
+    bundleLayout: "primary",
     remotePrefix: `${sharedPrefix}/native-persistent`,
     benchmark: options
   });
@@ -629,6 +641,18 @@ async function main(): Promise<void> {
       uploadedFiles: typescriptCase.uploadedFileCount,
       materializedFiles: typescriptCase.materializedFileCount,
       pulledFiles: typescriptCase.pulledFileCount
+    },
+    {
+      mode: "typescript-primary",
+      seedPlanMs: Math.round(typescriptPrimaryCase.seedPlanMs),
+      pushMs: Math.round(typescriptPrimaryCase.pushMs),
+      pushWarmMs: Math.round(typescriptPrimaryCase.pushWarmMs),
+      materializeMs: Math.round(typescriptPrimaryCase.materializeMs),
+      pullMs: Math.round(typescriptPrimaryCase.pullMs),
+      plannedSeedFiles: typescriptPrimaryCase.plannedSeedFileCount,
+      uploadedFiles: typescriptPrimaryCase.uploadedFileCount,
+      materializedFiles: typescriptPrimaryCase.materializedFileCount,
+      pulledFiles: typescriptPrimaryCase.pulledFileCount
     },
     {
       mode: "native-oneshot",
@@ -669,6 +693,19 @@ async function main(): Promise<void> {
       pushWarmHeapPeakMiB: typescriptCase.pushWarmMemory.heapPeakDeltaMiB,
       materializeHeapPeakMiB: typescriptCase.materializeMemory.heapPeakDeltaMiB,
       pullHeapPeakMiB: typescriptCase.pullMemory.heapPeakDeltaMiB
+    },
+    {
+      mode: "typescript-primary",
+      seedPlanRssPeakMiB: typescriptPrimaryCase.seedPlanMemory.rssPeakDeltaMiB,
+      pushRssPeakMiB: typescriptPrimaryCase.pushMemory.rssPeakDeltaMiB,
+      pushWarmRssPeakMiB: typescriptPrimaryCase.pushWarmMemory.rssPeakDeltaMiB,
+      materializeRssPeakMiB: typescriptPrimaryCase.materializeMemory.rssPeakDeltaMiB,
+      pullRssPeakMiB: typescriptPrimaryCase.pullMemory.rssPeakDeltaMiB,
+      seedPlanHeapPeakMiB: typescriptPrimaryCase.seedPlanMemory.heapPeakDeltaMiB,
+      pushHeapPeakMiB: typescriptPrimaryCase.pushMemory.heapPeakDeltaMiB,
+      pushWarmHeapPeakMiB: typescriptPrimaryCase.pushWarmMemory.heapPeakDeltaMiB,
+      materializeHeapPeakMiB: typescriptPrimaryCase.materializeMemory.heapPeakDeltaMiB,
+      pullHeapPeakMiB: typescriptPrimaryCase.pullMemory.heapPeakDeltaMiB
     },
     {
       mode: "native-oneshot",
@@ -712,6 +749,18 @@ async function main(): Promise<void> {
       pullRequests: sumStoreOperationCounts(typescriptCase.pullRequests)
     },
     {
+      mode: "typescript-primary",
+      pushRequests: sumStoreOperationCounts(typescriptPrimaryCase.pushRequests),
+      pushWarmRequests: sumStoreOperationCounts(typescriptPrimaryCase.pushWarmRequests),
+      pushList: typescriptPrimaryCase.pushRequests.listEntries,
+      pushGet: typescriptPrimaryCase.pushRequests.getObject,
+      pushHead: typescriptPrimaryCase.pushRequests.getObjectInfo,
+      pushPut: typescriptPrimaryCase.pushRequests.putObject,
+      pushDelete: typescriptPrimaryCase.pushRequests.deleteObjects,
+      materializeRequests: sumStoreOperationCounts(typescriptPrimaryCase.materializeRequests),
+      pullRequests: sumStoreOperationCounts(typescriptPrimaryCase.pullRequests)
+    },
+    {
       mode: "native-oneshot",
       pushRequests: sumStoreOperationCounts(nativeOneShotCase.pushRequests),
       pushWarmRequests: sumStoreOperationCounts(nativeOneShotCase.pushWarmRequests),
@@ -752,6 +801,19 @@ async function main(): Promise<void> {
       pullDelete: typescriptCase.pullRequests.deleteObjects
     },
     {
+      mode: "typescript-primary",
+      materializeList: typescriptPrimaryCase.materializeRequests.listEntries,
+      materializeGet: typescriptPrimaryCase.materializeRequests.getObject,
+      materializeHead: typescriptPrimaryCase.materializeRequests.getObjectInfo,
+      materializePut: typescriptPrimaryCase.materializeRequests.putObject,
+      materializeDelete: typescriptPrimaryCase.materializeRequests.deleteObjects,
+      pullList: typescriptPrimaryCase.pullRequests.listEntries,
+      pullGet: typescriptPrimaryCase.pullRequests.getObject,
+      pullHead: typescriptPrimaryCase.pullRequests.getObjectInfo,
+      pullPut: typescriptPrimaryCase.pullRequests.putObject,
+      pullDelete: typescriptPrimaryCase.pullRequests.deleteObjects
+    },
+    {
       mode: "native-oneshot",
       materializeList: nativeOneShotCase.materializeRequests.listEntries,
       materializeGet: nativeOneShotCase.materializeRequests.getObject,
@@ -779,6 +841,13 @@ async function main(): Promise<void> {
     }
   ]);
 
+  console.log(
+    `TypeScript primary delta vs ts: seed-plan ${Math.round(typescriptCase.seedPlanMs - typescriptPrimaryCase.seedPlanMs)}ms, push ${Math.round(
+      typescriptCase.pushMs - typescriptPrimaryCase.pushMs
+    )}ms, push-warm ${Math.round(typescriptCase.pushWarmMs - typescriptPrimaryCase.pushWarmMs)}ms, materialize ${Math.round(
+      typescriptCase.materializeMs - typescriptPrimaryCase.materializeMs
+    )}ms, pull ${Math.round(typescriptCase.pullMs - typescriptPrimaryCase.pullMs)}ms`
+  );
   console.log(
     `Native oneshot delta vs ts: seed-plan ${Math.round(typescriptCase.seedPlanMs - nativeOneShotCase.seedPlanMs)}ms, push ${Math.round(
       typescriptCase.pushMs - nativeOneShotCase.pushMs

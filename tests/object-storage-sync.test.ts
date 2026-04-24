@@ -283,6 +283,108 @@ describe("object storage sync", () => {
     expect(store.putObjectCalls).toBe(0);
   });
 
+  it("stores bundle-primary prefixes as manifest plus bundle in the TS fallback push path", async () => {
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_BUNDLE", "1");
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT", "primary");
+
+    const directory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-bundle-primary-push-"));
+    tempDirs.push(directory);
+    const store = new FakeDirectoryObjectStore();
+
+    await mkdir(path.join(directory, "docs"), { recursive: true });
+    await writeFile(path.join(directory, "README.md"), "# synced\n", "utf8");
+    await writeFile(path.join(directory, "docs", "guide.md"), "hello\n", "utf8");
+    await store.putObject("workspace/demo/old.txt", Buffer.from("stale\n"));
+    store.putObjectCalls = 0;
+
+    const result = await syncLocalDirectoryToRemote(store, "workspace/demo", directory);
+
+    expect(result.uploadedFileCount).toBe(2);
+    expect(store.putObjectCalls).toBe(2);
+    expect([...store.objects.keys()].sort()).toEqual([
+      "workspace/demo/.oah-sync-bundle.tar",
+      "workspace/demo/.oah-sync-manifest.json"
+    ]);
+  });
+
+  it("skips rewriting bundle-primary prefixes on no-op TS fallback pushes", async () => {
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_BUNDLE", "1");
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT", "primary");
+
+    const directory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-bundle-primary-noop-"));
+    tempDirs.push(directory);
+    const store = new FakeDirectoryObjectStore();
+
+    await mkdir(path.join(directory, "docs"), { recursive: true });
+    await writeFile(path.join(directory, "README.md"), "# synced\n", "utf8");
+    await writeFile(path.join(directory, "docs", "guide.md"), "hello\n", "utf8");
+
+    await syncLocalDirectoryToRemote(store, "workspace/demo", directory);
+    store.listEntriesCalls = 0;
+    store.getObjectCalls = 0;
+    store.getObjectInfoCalls = 0;
+    store.putObjectCalls = 0;
+
+    const result = await syncLocalDirectoryToRemote(store, "workspace/demo", directory);
+
+    expect(result.uploadedFileCount).toBe(0);
+    expect(result.deletedRemoteCount).toBe(0);
+    expect(result.createdEmptyDirectoryCount).toBe(0);
+    expect(store.listEntriesCalls).toBe(0);
+    expect(store.getObjectCalls).toBe(1);
+    expect(store.getObjectInfoCalls).toBe(0);
+    expect(store.putObjectCalls).toBe(0);
+    expect([...store.objects.keys()].sort()).toEqual([
+      "workspace/demo/.oah-sync-bundle.tar",
+      "workspace/demo/.oah-sync-manifest.json"
+    ]);
+  });
+
+  it("migrates manifest-managed object prefixes to bundle-primary without listing remote entries", async () => {
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_BUNDLE", "1");
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT", "primary");
+
+    const directory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-bundle-primary-migrate-"));
+    tempDirs.push(directory);
+    const store = new FakeDirectoryObjectStore();
+
+    await mkdir(path.join(directory, "docs"), { recursive: true });
+    await writeFile(path.join(directory, "README.md"), "# synced\n", "utf8");
+    await writeFile(path.join(directory, "docs", "guide.md"), "hello\n", "utf8");
+
+    await store.putObject("workspace/demo/README.md", Buffer.from("stale\n"));
+    await store.putObject(
+      "workspace/demo/.oah-sync-manifest.json",
+      Buffer.from(
+        `${JSON.stringify({
+          version: 1,
+          storageMode: "objects",
+          files: {
+            "README.md": {
+              size: 6,
+              mtimeMs: 1
+            }
+          }
+        })}\n`,
+        "utf8"
+      )
+    );
+
+    store.listEntriesCalls = 0;
+    store.getObjectCalls = 0;
+
+    const result = await syncLocalDirectoryToRemote(store, "workspace/demo", directory);
+
+    expect(result.uploadedFileCount).toBe(2);
+    expect(result.deletedRemoteCount).toBe(1);
+    expect(store.listEntriesCalls).toBe(0);
+    expect(store.getObjectCalls).toBe(1);
+    expect([...store.objects.keys()].sort()).toEqual([
+      "workspace/demo/.oah-sync-bundle.tar",
+      "workspace/demo/.oah-sync-manifest.json"
+    ]);
+  });
+
   it("passes configured sync concurrency into native object-storage sync execution", async () => {
     vi.stubEnv("OAH_NATIVE_WORKSPACE_SYNC", "1");
     vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_CONCURRENCY", "3");
@@ -478,11 +580,14 @@ describe("object storage sync", () => {
       })
     });
 
+    store.listEntriesCalls = 0;
+    store.getObjectCalls = 0;
     await expect(objectStorage.syncRemotePrefixToLocal(store, "workspace/demo", targetDirectory)).resolves.toMatchObject({
       downloadedFileCount: 2
     });
     await expect(readFile(path.join(targetDirectory, "README.md"), "utf8")).resolves.toBe("# bundled\n");
     await expect(readFile(path.join(targetDirectory, "docs", "guide.md"), "utf8")).resolves.toBe("hello\n");
+    expect(store.listEntriesCalls).toBe(0);
     expect(store.getObjectCalls).toBe(2);
   });
 
@@ -528,12 +633,15 @@ describe("object storage sync", () => {
       })
     });
 
+    store.listEntriesCalls = 0;
+    store.getObjectCalls = 0;
     await expect(objectStorage.syncRemotePrefixToLocal(store, "workspace/demo", targetDirectory)).resolves.toMatchObject({
       downloadedFileCount: 2
     });
     await expect(readFile(path.join(targetDirectory, "README.md"), "utf8")).resolves.toBe("# bundled\n");
     await expect(readFile(path.join(targetDirectory, "docs", "guide.md"), "utf8")).resolves.toBe("hello\n");
     await expect(stat(path.join(targetDirectory, "stale.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(store.listEntriesCalls).toBe(0);
     expect(store.getObjectCalls).toBe(2);
   });
 
