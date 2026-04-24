@@ -58,6 +58,7 @@ export interface DirectorySyncResult {
   deletedRemoteCount: number;
   createdEmptyDirectoryCount: number;
   requestCounts?: ObjectStoreRequestCounts | undefined;
+  phaseTimings?: DirectorySyncPhaseTimings | undefined;
 }
 
 export interface RemoteToLocalDirectorySyncResult {
@@ -74,6 +75,17 @@ export interface ObjectStoreRequestCounts {
   headRequests: number;
   putRequests: number;
   deleteRequests: number;
+}
+
+export interface DirectorySyncPhaseTimings {
+  scanMs: number;
+  fingerprintMs: number;
+  manifestReadMs: number;
+  bundleBuildMs: number;
+  bundleUploadMs: number;
+  manifestWriteMs: number;
+  deleteMs: number;
+  totalPrimaryPathMs: number;
 }
 
 interface LocalDirectorySnapshot {
@@ -1260,7 +1272,8 @@ async function syncNativeLocalDirectoryToRemoteIfAvailable(
       uploadedFileCount: result.uploadedFileCount,
       deletedRemoteCount: result.deletedRemoteCount,
       createdEmptyDirectoryCount: result.createdEmptyDirectoryCount,
-      ...(result.requestCounts ? { requestCounts: result.requestCounts } : {})
+      ...(result.requestCounts ? { requestCounts: result.requestCounts } : {}),
+      ...(result.phaseTimings ? { phaseTimings: result.phaseTimings } : {})
     };
   } catch (error) {
     recordNativeWorkspaceSyncFallback({

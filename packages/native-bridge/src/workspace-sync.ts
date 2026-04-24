@@ -159,12 +159,24 @@ export interface NativeObjectStoreRequestCounts {
   deleteRequests: number;
 }
 
+export interface NativeSyncLocalToRemotePhaseTimings {
+  scanMs: number;
+  fingerprintMs: number;
+  manifestReadMs: number;
+  bundleBuildMs: number;
+  bundleUploadMs: number;
+  manifestWriteMs: number;
+  deleteMs: number;
+  totalPrimaryPathMs: number;
+}
+
 export interface NativeSyncLocalToRemoteResult extends NativeCommandSuccessResponse {
   localFingerprint: string;
   uploadedFileCount: number;
   deletedRemoteCount: number;
   createdEmptyDirectoryCount: number;
   requestCounts?: NativeObjectStoreRequestCounts | undefined;
+  phaseTimings?: NativeSyncLocalToRemotePhaseTimings | undefined;
 }
 
 export interface NativeSyncRemoteToLocalResult extends NativeCommandSuccessResponse {

@@ -463,9 +463,18 @@ fn run(command: Command) -> Result<(), String> {
             let file_name = file_path
                 .file_name()
                 .and_then(|value| value.to_str())
-                .ok_or_else(|| format!("Failed to derive archive file name from {}.", file_path.display()))?;
-            fs::write(&output_path, format!("{checksum}  {file_name}\n"))
-                .map_err(|error| format!("Failed to write checksum file {}: {error}", output_path.display()))?;
+                .ok_or_else(|| {
+                    format!(
+                        "Failed to derive archive file name from {}.",
+                        file_path.display()
+                    )
+                })?;
+            fs::write(&output_path, format!("{checksum}  {file_name}\n")).map_err(|error| {
+                format!(
+                    "Failed to write checksum file {}: {error}",
+                    output_path.display()
+                )
+            })?;
 
             write_json(&WriteChecksumResponse {
                 ok: true,
@@ -503,7 +512,8 @@ fn read_stdin_json<T: for<'de> Deserialize<'de>>() -> Result<T, String> {
 }
 
 fn write_json<T: Serialize>(value: &T) -> Result<(), String> {
-    serde_json::to_writer(io::stdout(), value).map_err(|error| format!("Failed to write stdout JSON: {error}"))?;
+    serde_json::to_writer(io::stdout(), value)
+        .map_err(|error| format!("Failed to write stdout JSON: {error}"))?;
     println!();
     Ok(())
 }
@@ -543,11 +553,12 @@ fn inspect_export_root(export_root: &Path) -> Result<ArchiveDirectoryInspection,
     let mut checksum_names = Vec::new();
 
     for entry in entries {
-        let entry = entry.map_err(|error| format!("Failed to read archive export directory entry: {error}"))?;
+        let entry = entry
+            .map_err(|error| format!("Failed to read archive export directory entry: {error}"))?;
         let name = entry.file_name().to_string_lossy().to_string();
-        let file_type = entry
-            .file_type()
-            .map_err(|error| format!("Failed to inspect archive export entry type for {name}: {error}"))?;
+        let file_type = entry.file_type().map_err(|error| {
+            format!("Failed to inspect archive export entry type for {name}: {error}")
+        })?;
 
         if file_type.is_dir() {
             unexpected_directories.push(name);
@@ -577,15 +588,23 @@ fn inspect_export_root(export_root: &Path) -> Result<ArchiveDirectoryInspection,
     let mut missing_checksums = Vec::new();
     for bundle_name in &bundle_names {
         let checksum_name = format!("{bundle_name}.sha256");
-        if !checksum_names.iter().any(|candidate| candidate == &checksum_name) {
+        if !checksum_names
+            .iter()
+            .any(|candidate| candidate == &checksum_name)
+        {
             missing_checksums.push(bundle_name.clone());
         }
     }
 
     let mut orphan_checksums = Vec::new();
     for checksum_name in &checksum_names {
-        let bundle_name = checksum_name.strip_suffix(".sha256").unwrap_or(checksum_name);
-        if !bundle_names.iter().any(|candidate| candidate == bundle_name) {
+        let bundle_name = checksum_name
+            .strip_suffix(".sha256")
+            .unwrap_or(checksum_name);
+        if !bundle_names
+            .iter()
+            .any(|candidate| candidate == bundle_name)
+        {
             orphan_checksums.push(checksum_name.clone());
         }
     }
@@ -606,8 +625,12 @@ fn inspect_export_root(export_root: &Path) -> Result<ArchiveDirectoryInspection,
 fn write_bundle(request: &WriteBundleRequest) -> Result<(), String> {
     let output_path = PathBuf::from(&request.output_path);
     if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("Failed to create archive export directory {}: {error}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Failed to create archive export directory {}: {error}",
+                parent.display()
+            )
+        })?;
     }
 
     match fs::remove_file(&output_path) {
@@ -621,8 +644,12 @@ fn write_bundle(request: &WriteBundleRequest) -> Result<(), String> {
         }
     }
 
-    let mut connection = Connection::open(&output_path)
-        .map_err(|error| format!("Failed to open archive sqlite bundle {}: {error}", output_path.display()))?;
+    let mut connection = Connection::open(&output_path).map_err(|error| {
+        format!(
+            "Failed to open archive sqlite bundle {}: {error}",
+            output_path.display()
+        )
+    })?;
     apply_archive_write_pragmas(&connection)?;
     apply_archive_schema(&connection)?;
 
@@ -666,17 +693,26 @@ fn serve_write_bundle_stream() -> Result<(), String> {
     serve_write_bundle_stream_from_reader(stdin.lock(), stdout.lock())
 }
 
-fn serve_write_bundle_stream_from_reader<R: BufRead, W: Write>(reader: R, mut writer: W) -> Result<(), String> {
+fn serve_write_bundle_stream_from_reader<R: BufRead, W: Write>(
+    reader: R,
+    mut writer: W,
+) -> Result<(), String> {
     let mut current_request: Option<ActiveServeWriteBundleRequest> = None;
 
     for (index, line_result) in reader.lines().enumerate() {
-        let line = line_result.map_err(|error| format!("Failed to read stdin line {}: {error}", index + 1))?;
+        let line = line_result
+            .map_err(|error| format!("Failed to read stdin line {}: {error}", index + 1))?;
         if line.trim().is_empty() {
             continue;
         }
 
-        let record: ServeWriteBundleStreamRecord = serde_json::from_str(&line)
-            .map_err(|error| format!("Failed to parse archive export worker record on line {}: {error}", index + 1))?;
+        let record: ServeWriteBundleStreamRecord =
+            serde_json::from_str(&line).map_err(|error| {
+                format!(
+                    "Failed to parse archive export worker record on line {}: {error}",
+                    index + 1
+                )
+            })?;
 
         match record {
             ServeWriteBundleStreamRecord::RequestStart {
@@ -695,7 +731,11 @@ fn serve_write_bundle_stream_from_reader<R: BufRead, W: Write>(reader: R, mut wr
                 let connection = open_archive_bundle_connection(&output_path)?;
                 connection
                     .execute_batch("begin immediate")
-                    .map_err(|error| format!("Failed to begin archive sqlite transaction for {request_id}: {error}"))?;
+                    .map_err(|error| {
+                        format!(
+                            "Failed to begin archive sqlite transaction for {request_id}: {error}"
+                        )
+                    })?;
 
                 current_request = Some(ActiveServeWriteBundleRequest {
                     request_id,
@@ -745,7 +785,12 @@ fn serve_write_bundle_stream_from_reader<R: BufRead, W: Write>(reader: R, mut wr
                         request
                             .connection
                             .execute_batch("commit")
-                            .map_err(|error| format!("Failed to commit archive sqlite transaction for {}: {error}", request.request_id))?;
+                            .map_err(|error| {
+                                format!(
+                                    "Failed to commit archive sqlite transaction for {}: {error}",
+                                    request.request_id
+                                )
+                            })?;
                         ServeWriteBundleStreamResponse {
                             ok: true,
                             protocol_version: PROTOCOL_VERSION,
@@ -759,17 +804,20 @@ fn serve_write_bundle_stream_from_reader<R: BufRead, W: Write>(reader: R, mut wr
                     }
                 };
 
-                serde_json::to_writer(&mut writer, &response)
-                    .map_err(|error| format!("Failed to write archive export worker response: {error}"))?;
-                writeln!(&mut writer).map_err(|error| format!("Failed to write archive export worker newline: {error}"))?;
-                writer
-                    .flush()
-                    .map_err(|error| format!("Failed to flush archive export worker response: {error}"))?;
+                serde_json::to_writer(&mut writer, &response).map_err(|error| {
+                    format!("Failed to write archive export worker response: {error}")
+                })?;
+                writeln!(&mut writer).map_err(|error| {
+                    format!("Failed to write archive export worker newline: {error}")
+                })?;
+                writer.flush().map_err(|error| {
+                    format!("Failed to flush archive export worker response: {error}")
+                })?;
             }
             other => {
-                let request = current_request
-                    .as_mut()
-                    .ok_or_else(|| "Received archive export row data without an active request.".to_string())?;
+                let request = current_request.as_mut().ok_or_else(|| {
+                    "Received archive export row data without an active request.".to_string()
+                })?;
                 if request.failed.is_some() {
                     continue;
                 }
@@ -797,13 +845,19 @@ fn write_bundle_stream_from_reader<R: BufRead>(reader: R) -> Result<WriteBundleR
 
     let header = match lines.next() {
         None => return Err("Missing archive export stream header.".to_string()),
-        Some(line) => parse_write_bundle_stream_header(&line.map_err(|error| format!("Failed to read stdin: {error}"))?)?,
+        Some(line) => parse_write_bundle_stream_header(
+            &line.map_err(|error| format!("Failed to read stdin: {error}"))?,
+        )?,
     };
 
     let output_path = PathBuf::from(&header.output_path);
     if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("Failed to create archive export directory {}: {error}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Failed to create archive export directory {}: {error}",
+                parent.display()
+            )
+        })?;
     }
 
     match fs::remove_file(&output_path) {
@@ -817,8 +871,12 @@ fn write_bundle_stream_from_reader<R: BufRead>(reader: R) -> Result<WriteBundleR
         }
     }
 
-    let mut connection = Connection::open(&output_path)
-        .map_err(|error| format!("Failed to open archive sqlite bundle {}: {error}", output_path.display()))?;
+    let mut connection = Connection::open(&output_path).map_err(|error| {
+        format!(
+            "Failed to open archive sqlite bundle {}: {error}",
+            output_path.display()
+        )
+    })?;
     apply_archive_write_pragmas(&connection)?;
     apply_archive_schema(&connection)?;
 
@@ -830,14 +888,18 @@ fn write_bundle_stream_from_reader<R: BufRead>(reader: R) -> Result<WriteBundleR
     let mut timezone: Option<String> = None;
 
     for (index, line_result) in lines.enumerate() {
-        let line = line_result.map_err(|error| format!("Failed to read stdin line {}: {error}", index + 2))?;
+        let line = line_result
+            .map_err(|error| format!("Failed to read stdin line {}: {error}", index + 2))?;
         if line.trim().is_empty() {
             continue;
         }
 
         match parse_write_bundle_stream_record(&line, index + 2)? {
             WriteBundleStreamRecord::Header { .. } => {
-                return Err(format!("Unexpected stream header record at line {}.", index + 2));
+                return Err(format!(
+                    "Unexpected stream header record at line {}.",
+                    index + 2
+                ));
             }
             WriteBundleStreamRecord::Archive { archive } => {
                 if timezone.is_none() {
@@ -902,8 +964,12 @@ fn write_bundle_stream_from_reader<R: BufRead>(reader: R) -> Result<WriteBundleR
 fn open_archive_bundle_connection(output_path: &str) -> Result<Connection, String> {
     let output_path = PathBuf::from(output_path);
     if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("Failed to create archive export directory {}: {error}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Failed to create archive export directory {}: {error}",
+                parent.display()
+            )
+        })?;
     }
 
     match fs::remove_file(&output_path) {
@@ -917,8 +983,12 @@ fn open_archive_bundle_connection(output_path: &str) -> Result<Connection, Strin
         }
     }
 
-    let connection = Connection::open(&output_path)
-        .map_err(|error| format!("Failed to open archive sqlite bundle {}: {error}", output_path.display()))?;
+    let connection = Connection::open(&output_path).map_err(|error| {
+        format!(
+            "Failed to open archive sqlite bundle {}: {error}",
+            output_path.display()
+        )
+    })?;
     connection.set_prepared_statement_cache_capacity(16);
     apply_archive_write_pragmas(&connection)?;
     apply_archive_schema(&connection)?;
@@ -930,9 +1000,10 @@ fn apply_serve_write_bundle_record(
     record: ServeWriteBundleStreamRecord,
 ) -> Result<(), String> {
     match record {
-        ServeWriteBundleStreamRecord::RequestStart { .. } | ServeWriteBundleStreamRecord::RequestEnd { .. } => {
-            Err("Received worker request boundary inside active archive export request.".to_string())
-        }
+        ServeWriteBundleStreamRecord::RequestStart { .. }
+        | ServeWriteBundleStreamRecord::RequestEnd { .. } => Err(
+            "Received worker request boundary inside active archive export request.".to_string(),
+        ),
         ServeWriteBundleStreamRecord::Archive { archive } => {
             if request.timezone.is_none() {
                 request.timezone = optional_str_field(&archive, "timezone")?;
@@ -947,8 +1018,12 @@ fn apply_serve_write_bundle_record(
             request.archive_count += 1;
             Ok(())
         }
-        ServeWriteBundleStreamRecord::Session { archive_id, row } => insert_session_row(&request.connection, &archive_id, &row),
-        ServeWriteBundleStreamRecord::Run { archive_id, row } => insert_run_row(&request.connection, &archive_id, &row),
+        ServeWriteBundleStreamRecord::Session { archive_id, row } => {
+            insert_session_row(&request.connection, &archive_id, &row)
+        }
+        ServeWriteBundleStreamRecord::Run { archive_id, row } => {
+            insert_run_row(&request.connection, &archive_id, &row)
+        }
         ServeWriteBundleStreamRecord::Message { archive_id, row } => {
             insert_message_row(&request.connection, &archive_id, &row)
         }
@@ -987,9 +1062,13 @@ fn parse_write_bundle_stream_header(line: &str) -> Result<WriteBundleStreamHeade
     }
 }
 
-fn parse_write_bundle_stream_record(line: &str, line_number: usize) -> Result<WriteBundleStreamRecord, String> {
-    serde_json::from_str(line)
-        .map_err(|error| format!("Failed to parse archive export stream record on line {line_number}: {error}"))
+fn parse_write_bundle_stream_record(
+    line: &str,
+    line_number: usize,
+) -> Result<WriteBundleStreamRecord, String> {
+    serde_json::from_str(line).map_err(|error| {
+        format!("Failed to parse archive export stream record on line {line_number}: {error}")
+    })
 }
 
 fn apply_archive_schema(connection: &Connection) -> Result<(), String> {
@@ -1005,13 +1084,19 @@ fn apply_archive_schema(connection: &Connection) -> Result<(), String> {
 fn apply_archive_write_pragmas(connection: &Connection) -> Result<(), String> {
     connection
         .pragma_update(None, "journal_mode", "MEMORY")
-        .map_err(|error| format!("Failed to configure archive sqlite journal_mode pragma: {error}"))?;
+        .map_err(|error| {
+            format!("Failed to configure archive sqlite journal_mode pragma: {error}")
+        })?;
     connection
         .pragma_update(None, "synchronous", "OFF")
-        .map_err(|error| format!("Failed to configure archive sqlite synchronous pragma: {error}"))?;
+        .map_err(|error| {
+            format!("Failed to configure archive sqlite synchronous pragma: {error}")
+        })?;
     connection
         .pragma_update(None, "temp_store", "MEMORY")
-        .map_err(|error| format!("Failed to configure archive sqlite temp_store pragma: {error}"))?;
+        .map_err(|error| {
+            format!("Failed to configure archive sqlite temp_store pragma: {error}")
+        })?;
     Ok(())
 }
 
@@ -1028,7 +1113,13 @@ fn insert_archive_rows(
         .and_then(|value| value.as_str())
         .unwrap_or("UTC");
 
-    insert_archive_manifest_row(connection, archive_date, timezone, exported_at, archives.len())?;
+    insert_archive_manifest_row(
+        connection,
+        archive_date,
+        timezone,
+        exported_at,
+        archives.len(),
+    )?;
 
     for archive in archives {
         let archive_id = required_str_field(archive, "id", "archive")?.to_string();
@@ -1080,7 +1171,12 @@ fn insert_archive_manifest_row(
     connection
         .prepare_cached(INSERT_ARCHIVE_MANIFEST_SQL)
         .map_err(|error| format!("Failed to prepare archive manifest statement: {error}"))?
-        .execute(params![archive_date, timezone, exported_at, archive_count as i64])
+        .execute(params![
+            archive_date,
+            timezone,
+            exported_at,
+            archive_count as i64
+        ])
         .map_err(|error| format!("Failed to write archive manifest row: {error}"))?;
     Ok(())
 }
@@ -1126,7 +1222,11 @@ fn insert_archive_row(
     Ok(())
 }
 
-fn insert_session_row(connection: &Connection, archive_id: &str, session: &Value) -> Result<(), String> {
+fn insert_session_row(
+    connection: &Connection,
+    archive_id: &str,
+    session: &Value,
+) -> Result<(), String> {
     connection
         .prepare_cached(INSERT_SESSION_SQL)
         .map_err(|error| format!("Failed to prepare session row statement: {error}"))?
@@ -1145,7 +1245,9 @@ fn insert_session_row(connection: &Connection, archive_id: &str, session: &Value
             required_str_field(session, "updatedAt", "session")?,
             json_text(session)?
         ])
-        .map_err(|error| format!("Failed to write session row for archive {archive_id}: {error}"))?;
+        .map_err(|error| {
+            format!("Failed to write session row for archive {archive_id}: {error}")
+        })?;
     Ok(())
 }
 
@@ -1174,7 +1276,11 @@ fn insert_run_row(connection: &Connection, archive_id: &str, run: &Value) -> Res
     Ok(())
 }
 
-fn insert_message_row(connection: &Connection, archive_id: &str, message: &Value) -> Result<(), String> {
+fn insert_message_row(
+    connection: &Connection,
+    archive_id: &str,
+    message: &Value,
+) -> Result<(), String> {
     connection
         .prepare_cached(INSERT_MESSAGE_SQL)
         .map_err(|error| format!("Failed to prepare message row statement: {error}"))?
@@ -1188,7 +1294,9 @@ fn insert_message_row(connection: &Connection, archive_id: &str, message: &Value
             json_text(required_value_field(message, "content", "message")?)?,
             optional_json_text_non_null(message.get("metadata"))?
         ])
-        .map_err(|error| format!("Failed to write message row for archive {archive_id}: {error}"))?;
+        .map_err(|error| {
+            format!("Failed to write message row for archive {archive_id}: {error}")
+        })?;
     Ok(())
 }
 
@@ -1208,14 +1316,24 @@ fn insert_runtime_message_row(
             required_str_field(engine_message, "role", "engineMessage")?,
             required_str_field(engine_message, "kind", "engineMessage")?,
             required_str_field(engine_message, "createdAt", "engineMessage")?,
-            json_text(required_value_field(engine_message, "content", "engineMessage")?)?,
+            json_text(required_value_field(
+                engine_message,
+                "content",
+                "engineMessage"
+            )?)?,
             optional_json_text_non_null(engine_message.get("metadata"))?
         ])
-        .map_err(|error| format!("Failed to write runtime message row for archive {archive_id}: {error}"))?;
+        .map_err(|error| {
+            format!("Failed to write runtime message row for archive {archive_id}: {error}")
+        })?;
     Ok(())
 }
 
-fn insert_run_step_row(connection: &Connection, archive_id: &str, run_step: &Value) -> Result<(), String> {
+fn insert_run_step_row(
+    connection: &Connection,
+    archive_id: &str,
+    run_step: &Value,
+) -> Result<(), String> {
     connection
         .prepare_cached(INSERT_RUN_STEP_SQL)
         .map_err(|error| format!("Failed to prepare run step row statement: {error}"))?
@@ -1233,11 +1351,17 @@ fn insert_run_step_row(connection: &Connection, archive_id: &str, run_step: &Val
             optional_json_text_present(run_step.get("input"))?,
             optional_json_text_present(run_step.get("output"))?
         ])
-        .map_err(|error| format!("Failed to write run step row for archive {archive_id}: {error}"))?;
+        .map_err(|error| {
+            format!("Failed to write run step row for archive {archive_id}: {error}")
+        })?;
     Ok(())
 }
 
-fn insert_tool_call_row(connection: &Connection, archive_id: &str, tool_call: &Value) -> Result<(), String> {
+fn insert_tool_call_row(
+    connection: &Connection,
+    archive_id: &str,
+    tool_call: &Value,
+) -> Result<(), String> {
     connection
         .prepare_cached(INSERT_TOOL_CALL_SQL)
         .map_err(|error| format!("Failed to prepare tool call row statement: {error}"))?
@@ -1255,11 +1379,17 @@ fn insert_tool_call_row(connection: &Connection, archive_id: &str, tool_call: &V
             optional_json_text_non_null(tool_call.get("request"))?,
             optional_json_text_non_null(tool_call.get("response"))?
         ])
-        .map_err(|error| format!("Failed to write tool call row for archive {archive_id}: {error}"))?;
+        .map_err(|error| {
+            format!("Failed to write tool call row for archive {archive_id}: {error}")
+        })?;
     Ok(())
 }
 
-fn insert_hook_run_row(connection: &Connection, archive_id: &str, hook_run: &Value) -> Result<(), String> {
+fn insert_hook_run_row(
+    connection: &Connection,
+    archive_id: &str,
+    hook_run: &Value,
+) -> Result<(), String> {
     connection
         .prepare_cached(INSERT_HOOK_RUN_SQL)
         .map_err(|error| format!("Failed to prepare hook run row statement: {error}"))?
@@ -1276,11 +1406,17 @@ fn insert_hook_run_row(connection: &Connection, archive_id: &str, hook_run: &Val
             optional_json_text_non_null(hook_run.get("patch"))?,
             optional_str_field(hook_run, "errorMessage")?
         ])
-        .map_err(|error| format!("Failed to write hook run row for archive {archive_id}: {error}"))?;
+        .map_err(|error| {
+            format!("Failed to write hook run row for archive {archive_id}: {error}")
+        })?;
     Ok(())
 }
 
-fn insert_artifact_row(connection: &Connection, archive_id: &str, artifact: &Value) -> Result<(), String> {
+fn insert_artifact_row(
+    connection: &Connection,
+    archive_id: &str,
+    artifact: &Value,
+) -> Result<(), String> {
     connection
         .prepare_cached(INSERT_ARTIFACT_SQL)
         .map_err(|error| format!("Failed to prepare artifact row statement: {error}"))?
@@ -1294,17 +1430,27 @@ fn insert_artifact_row(connection: &Connection, archive_id: &str, artifact: &Val
             required_str_field(artifact, "createdAt", "artifact")?,
             optional_json_text_non_null(artifact.get("metadata"))?
         ])
-        .map_err(|error| format!("Failed to write artifact row for archive {archive_id}: {error}"))?;
+        .map_err(|error| {
+            format!("Failed to write artifact row for archive {archive_id}: {error}")
+        })?;
     Ok(())
 }
 
-fn required_value_field<'a>(value: &'a Value, key: &str, context: &str) -> Result<&'a Value, String> {
+fn required_value_field<'a>(
+    value: &'a Value,
+    key: &str,
+    context: &str,
+) -> Result<&'a Value, String> {
     value
         .get(key)
         .ok_or_else(|| format!("Missing required field {context}.{key}."))
 }
 
-fn required_array_field<'a>(value: &'a Value, key: &str, context: &str) -> Result<&'a Vec<Value>, String> {
+fn required_array_field<'a>(
+    value: &'a Value,
+    key: &str,
+    context: &str,
+) -> Result<&'a Vec<Value>, String> {
     required_value_field(value, key, context)?
         .as_array()
         .ok_or_else(|| format!("Expected {context}.{key} to be an array."))
@@ -1320,7 +1466,9 @@ fn optional_str_field(value: &Value, key: &str) -> Result<Option<String>, String
     match value.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(result)) => Ok(Some(result.clone())),
-        Some(_) => Err(format!("Expected optional field {key} to be a string when present.")),
+        Some(_) => Err(format!(
+            "Expected optional field {key} to be a string when present."
+        )),
     }
 }
 
@@ -1344,7 +1492,8 @@ fn optional_i64_field(value: &Value, key: &str) -> Result<Option<i64>, String> {
 }
 
 fn json_text(value: &Value) -> Result<String, String> {
-    serde_json::to_string(value).map_err(|error| format!("Failed to serialize JSON payload: {error}"))
+    serde_json::to_string(value)
+        .map_err(|error| format!("Failed to serialize JSON payload: {error}"))
 }
 
 fn optional_json_text_present(value: Option<&Value>) -> Result<Option<String>, String> {
@@ -1386,8 +1535,12 @@ fn is_archive_date_prefix(file_name: &str, suffix: &str) -> bool {
 }
 
 fn sha256_file(file_path: &Path) -> Result<String, String> {
-    let bytes = fs::read(file_path)
-        .map_err(|error| format!("Failed to read archive file {}: {error}", file_path.display()))?;
+    let bytes = fs::read(file_path).map_err(|error| {
+        format!(
+            "Failed to read archive file {}: {error}",
+            file_path.display()
+        )
+    })?;
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     Ok(format!("{:x}", hasher.finalize()))
@@ -1396,8 +1549,8 @@ fn sha256_file(file_path: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
     use serde_json::json;
+    use std::io::Cursor;
     use tempfile::tempdir;
 
     fn sample_archive() -> Value {
@@ -1497,10 +1650,16 @@ mod tests {
             )
             .expect("manifest row");
         let message_content: String = connection
-            .query_row("select content from messages where id = ?", ["msg_1"], |row| row.get(0))
+            .query_row(
+                "select content from messages where id = ?",
+                ["msg_1"],
+                |row| row.get(0),
+            )
             .expect("message row");
         let runtime_message_count: i64 = connection
-            .query_row("select count(*) from runtime_messages", [], |row| row.get(0))
+            .query_row("select count(*) from runtime_messages", [], |row| {
+                row.get(0)
+            })
             .expect("runtime message count");
         let artifact_count: i64 = connection
             .query_row("select count(*) from artifacts", [], |row| row.get(0))
@@ -1513,7 +1672,10 @@ mod tests {
     }
 
     fn append_archive_rows_to_stream(stream: &mut String, archive: &Value) {
-        stream.push_str(&format!("{}\n", json!({ "type": "archive", "archive": archive })));
+        stream.push_str(&format!(
+            "{}\n",
+            json!({ "type": "archive", "archive": archive })
+        ));
         stream.push_str(&format!(
             "{}\n",
             json!({
@@ -1602,21 +1764,20 @@ mod tests {
         let output_path = temp.path().join("2026-04-08-stream.sqlite");
         let archive = sample_archive();
         let mut stream = String::new();
-        stream.push_str(
-            &format!(
-                "{}\n",
-                json!({
-                    "type": "header",
-                    "outputPath": output_path.to_string_lossy(),
-                    "archiveDate": "2026-04-08",
-                    "exportPath": "/exports/2026-04-08-stream.sqlite",
-                    "exportedAt": "2026-04-09T00:00:00.000Z"
-                })
-            ),
-        );
+        stream.push_str(&format!(
+            "{}\n",
+            json!({
+                "type": "header",
+                "outputPath": output_path.to_string_lossy(),
+                "archiveDate": "2026-04-08",
+                "exportPath": "/exports/2026-04-08-stream.sqlite",
+                "exportedAt": "2026-04-09T00:00:00.000Z"
+            })
+        ));
         append_archive_rows_to_stream(&mut stream, &archive);
 
-        let response = write_bundle_stream_from_reader(Cursor::new(stream)).expect("write bundle stream");
+        let response =
+            write_bundle_stream_from_reader(Cursor::new(stream)).expect("write bundle stream");
         assert_eq!(response.archive_count, 1);
         assert_expected_bundle_rows(&output_path);
     }
@@ -1639,14 +1800,21 @@ mod tests {
             })
         ));
         append_archive_rows_to_stream(&mut input, &archive);
-        input.push_str(&format!("{}\n", json!({ "type": "request_end", "requestId": "req_1" })));
+        input.push_str(&format!(
+            "{}\n",
+            json!({ "type": "request_end", "requestId": "req_1" })
+        ));
 
         let mut output = Vec::new();
-        serve_write_bundle_stream_from_reader(Cursor::new(input), &mut output).expect("serve worker request");
+        serve_write_bundle_stream_from_reader(Cursor::new(input), &mut output)
+            .expect("serve worker request");
 
         let response: Value = serde_json::from_slice(&output).expect("parse worker response");
         assert_eq!(response.get("ok"), Some(&Value::Bool(true)));
-        assert_eq!(response.get("requestId"), Some(&Value::String("req_1".to_string())));
+        assert_eq!(
+            response.get("requestId"),
+            Some(&Value::String("req_1".to_string()))
+        );
         assert_eq!(response.get("archiveCount"), Some(&Value::Number(1.into())));
         assert_expected_bundle_rows(&output_path);
     }
@@ -1679,9 +1847,15 @@ mod tests {
 
         let inspection = inspect_export_root(temp.path()).expect("inspect");
         assert_eq!(inspection.unexpected_directories, vec!["manual"]);
-        assert_eq!(inspection.leftover_temp_files, vec!["2026-04-08.sqlite.tmp"]);
+        assert_eq!(
+            inspection.leftover_temp_files,
+            vec!["2026-04-08.sqlite.tmp"]
+        );
         assert_eq!(inspection.unexpected_files, vec!["notes.txt"]);
         assert_eq!(inspection.missing_checksums, vec!["2026-04-08.sqlite"]);
-        assert_eq!(inspection.orphan_checksums, vec!["2026-04-09.sqlite.sha256"]);
+        assert_eq!(
+            inspection.orphan_checksums,
+            vec!["2026-04-09.sqlite.sha256"]
+        );
     }
 }

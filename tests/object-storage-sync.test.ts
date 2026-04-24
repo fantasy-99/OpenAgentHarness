@@ -728,6 +728,16 @@ describe("object storage sync", () => {
           headRequests: 0,
           putRequests: 2,
           deleteRequests: 0
+        },
+        phaseTimings: {
+          scanMs: 3,
+          fingerprintMs: 1,
+          manifestReadMs: 4,
+          bundleBuildMs: 18,
+          bundleUploadMs: 11,
+          manifestWriteMs: 2,
+          deleteMs: 0,
+          totalPrimaryPathMs: 35
         }
       })),
       syncNativeRemoteToLocal: vi.fn(async () => ({
@@ -758,6 +768,16 @@ describe("object storage sync", () => {
     });
 
     await expect(objectStorage.syncLocalDirectoryToRemote(store, "workspace/demo", sourceDirectory)).resolves.toMatchObject({
+      phaseTimings: {
+        scanMs: 3,
+        fingerprintMs: 1,
+        manifestReadMs: 4,
+        bundleBuildMs: 18,
+        bundleUploadMs: 11,
+        manifestWriteMs: 2,
+        deleteMs: 0,
+        totalPrimaryPathMs: 35
+      },
       requestCounts: {
         listRequests: 1,
         getRequests: 0,

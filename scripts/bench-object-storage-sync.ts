@@ -71,6 +71,8 @@ interface BenchmarkCaseResult {
   uploadedFileCount: number;
   materializedFileCount: number;
   pulledFileCount: number;
+  pushPhaseTimings?: NativeSyncLocalToRemotePhaseTimingsLike | undefined;
+  pushWarmPhaseTimings?: NativeSyncLocalToRemotePhaseTimingsLike | undefined;
   pushRequests: StoreOperationCounts;
   pushWarmRequests: StoreOperationCounts;
   materializeRequests: StoreOperationCounts;
@@ -88,6 +90,17 @@ interface NativeRequestCountsLike {
   headRequests: number;
   putRequests: number;
   deleteRequests: number;
+}
+
+interface NativeSyncLocalToRemotePhaseTimingsLike {
+  scanMs: number;
+  fingerprintMs: number;
+  manifestReadMs: number;
+  bundleBuildMs: number;
+  bundleUploadMs: number;
+  manifestWriteMs: number;
+  deleteMs: number;
+  totalPrimaryPathMs: number;
 }
 
 const WORKSPACE_SYNC_BINARY_BASENAME = process.platform === "win32" ? "oah-workspace-sync.exe" : "oah-workspace-sync";
@@ -358,6 +371,23 @@ function createCountingStore(store: DirectoryObjectStore & { close?: (() => Prom
   };
 }
 
+function formatPhaseTimings(timings: NativeSyncLocalToRemotePhaseTimingsLike | undefined): string {
+  if (!timings) {
+    return "n/a";
+  }
+
+  return [
+    `scan=${timings.scanMs}ms`,
+    `fingerprint=${timings.fingerprintMs}ms`,
+    `manifest=${timings.manifestReadMs}ms`,
+    `bundle-build=${timings.bundleBuildMs}ms`,
+    `bundle-upload=${timings.bundleUploadMs}ms`,
+    `manifest-write=${timings.manifestWriteMs}ms`,
+    `delete=${timings.deleteMs}ms`,
+    `primary-total=${timings.totalPrimaryPathMs}ms`
+  ].join(" ");
+}
+
 async function measureOperation<T>(pollIntervalMs: number, action: () => Promise<T>): Promise<TimedMeasurement<T>> {
   const before = process.memoryUsage();
   let peakRss = before.rss;
@@ -477,7 +507,7 @@ async function runCase(options: {
       convertNativeRequestCounts(pushMeasurement.result.requestCounts) ?? createEmptyStoreOperationCounts()
     );
     console.log(
-      `[bench-object-storage] case=${options.label} stage=push done ms=${Math.round(pushMeasurement.durationMs)} uploaded=${pushMeasurement.result.uploadedFileCount} requests=${sumStoreOperationCounts(pushRequests)}`
+      `[bench-object-storage] case=${options.label} stage=push done ms=${Math.round(pushMeasurement.durationMs)} uploaded=${pushMeasurement.result.uploadedFileCount} requests=${sumStoreOperationCounts(pushRequests)} phases="${formatPhaseTimings(pushMeasurement.result.phaseTimings)}"`
     );
 
     console.log(`[bench-object-storage] case=${options.label} stage=push-warm start prefix=${options.remotePrefix}`);
@@ -491,7 +521,7 @@ async function runCase(options: {
       convertNativeRequestCounts(pushWarmMeasurement.result.requestCounts) ?? createEmptyStoreOperationCounts()
     );
     console.log(
-      `[bench-object-storage] case=${options.label} stage=push-warm done ms=${Math.round(pushWarmMeasurement.durationMs)} uploaded=${pushWarmMeasurement.result.uploadedFileCount} requests=${sumStoreOperationCounts(pushWarmRequests)}`
+      `[bench-object-storage] case=${options.label} stage=push-warm done ms=${Math.round(pushWarmMeasurement.durationMs)} uploaded=${pushWarmMeasurement.result.uploadedFileCount} requests=${sumStoreOperationCounts(pushWarmRequests)} phases="${formatPhaseTimings(pushWarmMeasurement.result.phaseTimings)}"`
     );
 
     const materializationManager = new WorkspaceMaterializationManager({
@@ -560,6 +590,8 @@ async function runCase(options: {
       uploadedFileCount: pushMeasurement.result.uploadedFileCount,
       materializedFileCount,
       pulledFileCount,
+      pushPhaseTimings: pushMeasurement.result.phaseTimings,
+      pushWarmPhaseTimings: pushWarmMeasurement.result.phaseTimings,
       pushRequests,
       pushWarmRequests,
       materializeRequests,
@@ -839,6 +871,29 @@ async function main(): Promise<void> {
       pullHead: nativePersistentCase.pullRequests.getObjectInfo,
       pullPut: nativePersistentCase.pullRequests.putObject,
       pullDelete: nativePersistentCase.pullRequests.deleteObjects
+    }
+  ]);
+
+  console.table([
+    {
+      mode: "typescript",
+      pushPhases: formatPhaseTimings(typescriptCase.pushPhaseTimings),
+      pushWarmPhases: formatPhaseTimings(typescriptCase.pushWarmPhaseTimings)
+    },
+    {
+      mode: "typescript-primary",
+      pushPhases: formatPhaseTimings(typescriptPrimaryCase.pushPhaseTimings),
+      pushWarmPhases: formatPhaseTimings(typescriptPrimaryCase.pushWarmPhaseTimings)
+    },
+    {
+      mode: "native-oneshot",
+      pushPhases: formatPhaseTimings(nativeOneShotCase.pushPhaseTimings),
+      pushWarmPhases: formatPhaseTimings(nativeOneShotCase.pushWarmPhaseTimings)
+    },
+    {
+      mode: "native-persistent",
+      pushPhases: formatPhaseTimings(nativePersistentCase.pushPhaseTimings),
+      pushWarmPhases: formatPhaseTimings(nativePersistentCase.pushWarmPhaseTimings)
     }
   ]);
 

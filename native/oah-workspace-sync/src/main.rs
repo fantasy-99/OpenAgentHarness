@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, ExitCode};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use aws_credential_types::Credentials;
 use aws_sdk_s3::config::Region;
@@ -438,6 +438,19 @@ struct PlanSeedUploadFile {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct SyncLocalToRemotePhaseTimings {
+    scan_ms: u64,
+    fingerprint_ms: u64,
+    manifest_read_ms: u64,
+    bundle_build_ms: u64,
+    bundle_upload_ms: u64,
+    manifest_write_ms: u64,
+    delete_ms: u64,
+    total_primary_path_ms: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SyncLocalToRemoteResponse {
     ok: bool,
     protocol_version: u32,
@@ -446,6 +459,8 @@ struct SyncLocalToRemoteResponse {
     deleted_remote_count: usize,
     created_empty_directory_count: usize,
     request_counts: ObjectStoreRequestCounts,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    phase_timings: Option<SyncLocalToRemotePhaseTimings>,
 }
 
 #[derive(Serialize)]
@@ -527,18 +542,26 @@ fn run() -> Result<(), String> {
     match cli.command {
         Command::Version => write_json_value(&handle_command("version", None, None)?),
         Command::Serve => serve(),
-        Command::Fingerprint => {
-            write_json_value(&handle_command("fingerprint", Some(read_json_stdin_value()?), None)?)
-        }
-        Command::FingerprintBatch => {
-            write_json_value(&handle_command("fingerprint-batch", Some(read_json_stdin_value()?), None)?)
-        }
-        Command::ScanLocalTree => {
-            write_json_value(&handle_command("scan-local-tree", Some(read_json_stdin_value()?), None)?)
-        }
-        Command::PlanLocalToRemote => {
-            write_json_value(&handle_command("plan-local-to-remote", Some(read_json_stdin_value()?), None)?)
-        }
+        Command::Fingerprint => write_json_value(&handle_command(
+            "fingerprint",
+            Some(read_json_stdin_value()?),
+            None,
+        )?),
+        Command::FingerprintBatch => write_json_value(&handle_command(
+            "fingerprint-batch",
+            Some(read_json_stdin_value()?),
+            None,
+        )?),
+        Command::ScanLocalTree => write_json_value(&handle_command(
+            "scan-local-tree",
+            Some(read_json_stdin_value()?),
+            None,
+        )?),
+        Command::PlanLocalToRemote => write_json_value(&handle_command(
+            "plan-local-to-remote",
+            Some(read_json_stdin_value()?),
+            None,
+        )?),
         Command::SyncLocalToRemote => {
             let runtime = build_runtime()?;
             write_json_value(&handle_command(
@@ -547,9 +570,11 @@ fn run() -> Result<(), String> {
                 Some(&runtime),
             )?)
         }
-        Command::PlanRemoteToLocal => {
-            write_json_value(&handle_command("plan-remote-to-local", Some(read_json_stdin_value()?), None)?)
-        }
+        Command::PlanRemoteToLocal => write_json_value(&handle_command(
+            "plan-remote-to-local",
+            Some(read_json_stdin_value()?),
+            None,
+        )?),
         Command::SyncRemoteToLocal => {
             let runtime = build_runtime()?;
             write_json_value(&handle_command(
@@ -558,9 +583,11 @@ fn run() -> Result<(), String> {
                 Some(&runtime),
             )?)
         }
-        Command::PlanSeedUpload => {
-            write_json_value(&handle_command("plan-seed-upload", Some(read_json_stdin_value()?), None)?)
-        }
+        Command::PlanSeedUpload => write_json_value(&handle_command(
+            "plan-seed-upload",
+            Some(read_json_stdin_value()?),
+            None,
+        )?),
         Command::SyncLocalToSandboxHttp => {
             let runtime = build_runtime()?;
             write_json_value(&handle_command(
@@ -762,8 +789,9 @@ fn handle_command(
         }
         "sync-local-to-sandbox-http" => {
             let request: SyncLocalToSandboxHttpRequest = parse_payload(payload, command)?;
-            let runtime = runtime
-                .ok_or_else(|| "Async runtime is required for sync-local-to-sandbox-http.".to_string())?;
+            let runtime = runtime.ok_or_else(|| {
+                "Async runtime is required for sync-local-to-sandbox-http.".to_string()
+            })?;
             serialize_json_value(&runtime.block_on(sync_local_to_sandbox_http(request))?)
         }
         _ => Err(format!("Unknown command: {command}")),
@@ -885,7 +913,9 @@ fn resolve_max_concurrency(value: Option<usize>) -> usize {
 }
 
 fn resolve_inline_upload_threshold_bytes(value: Option<u64>) -> u64 {
-    value.filter(|value| *value > 0).unwrap_or(INLINE_UPLOAD_THRESHOLD_BYTES)
+    value
+        .filter(|value| *value > 0)
+        .unwrap_or(INLINE_UPLOAD_THRESHOLD_BYTES)
 }
 
 fn resolve_sync_bundle_config(value: Option<&NativeSyncBundleConfig>) -> ResolvedSyncBundleConfig {
@@ -972,7 +1002,9 @@ fn parse_sandbox_http_base_url(input: &str) -> (String, String) {
         let normalized_path = if route_prefix.is_empty() {
             path
         } else {
-            path.trim_end_matches(route_prefix).trim_end_matches('/').to_string()
+            path.trim_end_matches(route_prefix)
+                .trim_end_matches('/')
+                .to_string()
         };
         url.set_path(if normalized_path.is_empty() {
             "/"
@@ -989,10 +1021,16 @@ fn parse_sandbox_http_base_url(input: &str) -> (String, String) {
 
     let trimmed = trimmed.trim_end_matches('/').to_string();
     if let Some(base_url) = trimmed.strip_suffix("/internal/v1") {
-        return (base_url.trim_end_matches('/').to_string(), "/internal/v1".to_string());
+        return (
+            base_url.trim_end_matches('/').to_string(),
+            "/internal/v1".to_string(),
+        );
     }
     if let Some(base_url) = trimmed.strip_suffix("/api/v1") {
-        return (base_url.trim_end_matches('/').to_string(), "/api/v1".to_string());
+        return (
+            base_url.trim_end_matches('/').to_string(),
+            "/api/v1".to_string(),
+        );
     }
     (trimmed, String::new())
 }
@@ -1003,8 +1041,9 @@ impl NativeSandboxHttpClient {
         for (key, value) in &config.headers {
             let name = HeaderName::from_bytes(key.as_bytes())
                 .map_err(|error| format!("Invalid sandbox HTTP header name {key:?}: {error}"))?;
-            let header_value = HeaderValue::from_str(value)
-                .map_err(|error| format!("Invalid sandbox HTTP header value for {key:?}: {error}"))?;
+            let header_value = HeaderValue::from_str(value).map_err(|error| {
+                format!("Invalid sandbox HTTP header value for {key:?}: {error}")
+            })?;
             headers.insert(name, header_value);
         }
 
@@ -1065,12 +1104,7 @@ impl NativeSandboxHttpClient {
         ))
     }
 
-    async fn upload_file(
-        &self,
-        path: &str,
-        data: Vec<u8>,
-        mtime_ms: u128,
-    ) -> Result<(), String> {
+    async fn upload_file(&self, path: &str, data: Vec<u8>, mtime_ms: u128) -> Result<(), String> {
         let url = self.build_url(
             &format!("/api/v1/sandboxes/{}/files/upload", self.sandbox_id),
             &[
@@ -1116,9 +1150,12 @@ impl NativeSandboxHttpClient {
             return Ok(None);
         }
         if response.status().is_success() {
-            let payload = response.json::<NativeSandboxHttpFileStat>().await.map_err(|error| {
-                format!("Failed to decode sandbox file stat response for {path}: {error}")
-            })?;
+            let payload = response
+                .json::<NativeSandboxHttpFileStat>()
+                .await
+                .map_err(|error| {
+                    format!("Failed to decode sandbox file stat response for {path}: {error}")
+                })?;
             return Ok(Some(payload));
         }
 
@@ -1217,7 +1254,11 @@ fn sandbox_mtime_matches(local_mtime_ms: u128, remote_mtime_ms: f64) -> bool {
     (remote_mtime_ms - local_mtime_ms as f64).abs() < 1.0
 }
 
-fn sandbox_file_matches(local_size: u64, local_mtime_ms: u128, remote: &NativeSandboxHttpFileStat) -> bool {
+fn sandbox_file_matches(
+    local_size: u64,
+    local_mtime_ms: u128,
+    remote: &NativeSandboxHttpFileStat,
+) -> bool {
     remote.kind == "file"
         && remote.size == local_size
         && sandbox_mtime_matches(local_mtime_ms, remote.mtime_ms)
@@ -1289,7 +1330,10 @@ where
 }
 
 fn build_remote_path(base_path: &str, relative_path: &str) -> String {
-    let normalized_base = base_path.replace('\\', "/").trim_end_matches('/').to_string();
+    let normalized_base = base_path
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_string();
     let normalized_relative = normalize_relative_path(relative_path);
 
     if normalized_base.is_empty() {
@@ -1351,11 +1395,7 @@ async fn prune_unexpected_remote_sandbox_entries(
     };
 
     for entry in remote_entries {
-        if should_keep_remote_sandbox_entry(
-            &entry,
-            &keep_directories,
-            expected_files,
-        ) {
+        if should_keep_remote_sandbox_entry(&entry, &keep_directories, expected_files) {
             if entry.entry_type == "directory" {
                 remote_state.existing_directories.insert(entry.path.clone());
             } else if let Some(file_stat) = sandbox_entry_file_stat(&entry) {
@@ -1610,7 +1650,9 @@ fn resolve_empty_remote_directories(
             !explicit_directories
                 .iter()
                 .any(|directory| directory.starts_with(&child_prefix))
-                && !file_paths.iter().any(|file_path| file_path.starts_with(&child_prefix))
+                && !file_paths
+                    .iter()
+                    .any(|file_path| file_path.starts_with(&child_prefix))
         })
         .cloned()
         .collect()
@@ -1694,23 +1736,28 @@ fn create_remote_entries_from_manifest_document(
         })
         .collect::<Vec<_>>();
 
-    entries.extend(document.empty_directories.iter().filter_map(|relative_path| {
-        let normalized = normalize_relative_path(relative_path);
-        if normalized.is_empty()
-            || should_ignore_relative_path(&normalized)
-            || should_exclude_relative_path(&normalized, excludes)
-        {
-            return None;
-        }
+    entries.extend(
+        document
+            .empty_directories
+            .iter()
+            .filter_map(|relative_path| {
+                let normalized = normalize_relative_path(relative_path);
+                if normalized.is_empty()
+                    || should_ignore_relative_path(&normalized)
+                    || should_exclude_relative_path(&normalized, excludes)
+                {
+                    return None;
+                }
 
-        Some(PlanRemoteEntry {
-            relative_path: normalized.clone(),
-            key: format!("{}/", build_remote_path(remote_prefix, &normalized)),
-            size: 0,
-            last_modified_ms: None,
-            is_directory: true,
-        })
-    }));
+                Some(PlanRemoteEntry {
+                    relative_path: normalized.clone(),
+                    key: format!("{}/", build_remote_path(remote_prefix, &normalized)),
+                    size: 0,
+                    last_modified_ms: None,
+                    is_directory: true,
+                })
+            }),
+    );
     entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     entries
 }
@@ -1805,7 +1852,10 @@ fn should_attempt_sync_bundle_for_remote_entries(
     remote_entries: &[PlanRemoteEntry],
     config: ResolvedSyncBundleConfig,
 ) -> bool {
-    let file_count = remote_entries.iter().filter(|entry| !entry.is_directory).count();
+    let file_count = remote_entries
+        .iter()
+        .filter(|entry| !entry.is_directory)
+        .count();
     let total_bytes = remote_entries
         .iter()
         .filter(|entry| !entry.is_directory)
@@ -1815,7 +1865,10 @@ fn should_attempt_sync_bundle_for_remote_entries(
 }
 
 fn count_remote_file_entries(remote_entries: &[PlanRemoteEntry]) -> usize {
-    remote_entries.iter().filter(|entry| !entry.is_directory).count()
+    remote_entries
+        .iter()
+        .filter(|entry| !entry.is_directory)
+        .count()
 }
 
 fn create_local_to_remote_plan(
@@ -2224,7 +2277,9 @@ async fn write_remote_sync_manifest(
                 existing_manifest
                     .files
                     .get(relative_path)
-                    .map(|existing| existing.size == entry.size && existing.mtime_ms == entry.mtime_ms)
+                    .map(|existing| {
+                        existing.size == entry.size && existing.mtime_ms == entry.mtime_ms
+                    })
                     .unwrap_or(false)
             })
         {
@@ -2297,9 +2352,7 @@ fn try_build_local_sync_bundle_with_tar_blocking(
         list_file
             .write_all(relative_path.as_bytes())
             .map_err(|error| {
-                format!(
-                    "Failed to write sync bundle file list entry {relative_path}: {error}"
-                )
+                format!("Failed to write sync bundle file list entry {relative_path}: {error}")
             })?;
         if index + 1 < relative_paths.len() {
             list_file.write_all(&[0]).map_err(|error| {
@@ -2432,6 +2485,11 @@ async fn build_local_sync_bundle(
     .map_err(|error| format!("Sync bundle worker task failed: {error}"))?
 }
 
+struct UploadSyncBundleResult {
+    bundle_build_ms: u64,
+    bundle_upload_ms: u64,
+}
+
 async fn upload_sync_bundle(
     client: &S3Client,
     config: &NativeObjectStoreConfig,
@@ -2440,9 +2498,12 @@ async fn upload_sync_bundle(
     snapshot: &Snapshot,
     excludes: &[String],
     request_counter: &NativeObjectStoreRequestCounter,
-) -> Result<(), String> {
+) -> Result<UploadSyncBundleResult, String> {
     let key = build_remote_path(remote_prefix, INTERNAL_SYNC_BUNDLE_RELATIVE_PATH);
+    let bundle_build_started_at = Instant::now();
     let bundle_path = build_local_sync_bundle(root_dir, snapshot, excludes).await?;
+    let bundle_build_ms = elapsed_millis_u64(bundle_build_started_at);
+    let bundle_upload_started_at = Instant::now();
     let body = ByteStream::read_from()
         .path(bundle_path.as_ref() as &Path)
         .build()
@@ -2457,7 +2518,10 @@ async fn upload_sync_bundle(
         .send()
         .await
         .map_err(|error| format!("Failed to write sync bundle object: {error}"))?;
-    Ok(())
+    Ok(UploadSyncBundleResult {
+        bundle_build_ms,
+        bundle_upload_ms: elapsed_millis_u64(bundle_upload_started_at),
+    })
 }
 
 async fn delete_remote_object_if_present(
@@ -2498,12 +2562,16 @@ async fn is_local_directory_empty(target_path: &Path) -> Result<bool, String> {
                     target_path.display()
                 )
             })?;
-            Ok(entries.next_entry().await.map_err(|error| {
-                format!(
-                    "Failed to inspect local directory {}: {error}",
-                    target_path.display()
-                )
-            })?.is_none())
+            Ok(entries
+                .next_entry()
+                .await
+                .map_err(|error| {
+                    format!(
+                        "Failed to inspect local directory {}: {error}",
+                        target_path.display()
+                    )
+                })?
+                .is_none())
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
         Err(error) => Err(format!(
@@ -2836,7 +2904,8 @@ async fn sync_remote_to_local(
     let client = create_s3_client(&request.object_store);
     let request_counts = Arc::new(NativeObjectStoreRequestCounter::default());
     if request.remote_entries.is_none() && sync_bundle_config.mode != SyncBundleMode::Off {
-        let bundle_key = build_remote_path(&request.remote_prefix, INTERNAL_SYNC_BUNDLE_RELATIVE_PATH);
+        let bundle_key =
+            build_remote_path(&request.remote_prefix, INTERNAL_SYNC_BUNDLE_RELATIVE_PATH);
         if maybe_hydrate_from_remote_sync_bundle(
             &client,
             &request.object_store,
@@ -2986,14 +3055,13 @@ async fn sync_remote_to_local(
             request.bundle_entry,
         ),
         None => {
-            let remote_listing =
-                list_remote_entries(
-                    &client,
-                    &request.object_store,
-                    &request.remote_prefix,
-                    request_counts.as_ref(),
-                )
-                .await?;
+            let remote_listing = list_remote_entries(
+                &client,
+                &request.object_store,
+                &request.remote_prefix,
+                request_counts.as_ref(),
+            )
+            .await?;
             (
                 remote_listing.entries,
                 remote_listing.has_sync_manifest,
@@ -3105,15 +3173,14 @@ async fn sync_remote_to_local(
             async move {
                 let target_path = PathBuf::from(&candidate.target_path);
                 prepare_local_file_target(&target_path).await?;
-                let mtime_ms =
-                    download_remote_file(
-                        &client,
-                        &object_store,
-                        &candidate.remote_key,
-                        &target_path,
-                        request_counts.as_ref(),
-                    )
-                    .await?;
+                let mtime_ms = download_remote_file(
+                    &client,
+                    &object_store,
+                    &candidate.remote_key,
+                    &target_path,
+                    request_counts.as_ref(),
+                )
+                .await?;
                 Ok((candidate.relative_path, candidate.size, mtime_ms, true))
             }
         },
@@ -3198,15 +3265,14 @@ async fn sync_remote_to_local(
                     ));
                 }
 
-                let mtime_ms =
-                    download_remote_file(
-                        &client,
-                        &object_store,
-                        &candidate.remote_key,
-                        &target_path,
-                        request_counts.as_ref(),
-                    )
-                    .await?;
+                let mtime_ms = download_remote_file(
+                    &client,
+                    &object_store,
+                    &candidate.remote_key,
+                    &target_path,
+                    request_counts.as_ref(),
+                )
+                .await?;
                 Ok((candidate.relative_path, candidate.size, mtime_ms, true))
             }
         },
@@ -3221,9 +3287,7 @@ async fn sync_remote_to_local(
         &downloaded_candidates
             .into_iter()
             .chain(info_checked_candidates.into_iter())
-            .map(|(relative_path, size, mtime_ms, _downloaded)| {
-                (relative_path, size, mtime_ms)
-            })
+            .map(|(relative_path, size, mtime_ms, _downloaded)| (relative_path, size, mtime_ms))
             .collect::<Vec<_>>(),
         &resolve_empty_remote_directories(&explicit_remote_directories, &remote_file_paths),
     );
@@ -3250,8 +3314,21 @@ async fn sync_local_to_remote(
         resolve_inline_upload_threshold_bytes(request.inline_upload_threshold_bytes);
     let sync_bundle_config = resolve_sync_bundle_config(request.sync_bundle.as_ref());
     let root_dir = PathBuf::from(&request.root_dir);
+    let scan_started_at = Instant::now();
     let snapshot = collect_snapshot(&root_dir, &excludes)?;
+    let mut phase_timings = SyncLocalToRemotePhaseTimings {
+        scan_ms: elapsed_millis_u64(scan_started_at),
+        fingerprint_ms: 0,
+        manifest_read_ms: 0,
+        bundle_build_ms: 0,
+        bundle_upload_ms: 0,
+        manifest_write_ms: 0,
+        delete_ms: 0,
+        total_primary_path_ms: 0,
+    };
+    let fingerprint_started_at = Instant::now();
     let local_fingerprint = create_fingerprint(&snapshot);
+    phase_timings.fingerprint_ms = elapsed_millis_u64(fingerprint_started_at);
 
     let client = create_s3_client(&request.object_store);
     let request_counts = Arc::new(NativeObjectStoreRequestCounter::default());
@@ -3264,25 +3341,31 @@ async fn sync_local_to_remote(
     if sync_bundle_config.layout == SyncBundleLayout::Primary
         && should_attempt_sync_bundle_for_snapshot(&snapshot, sync_bundle_config)
     {
+        let primary_path_started_at = Instant::now();
         let assume_empty_trusted_prefix =
             should_assume_empty_trusted_managed_prefix(&request.remote_prefix, sync_bundle_config);
         let existing_manifest_document = if assume_empty_trusted_prefix {
             None
         } else {
-            load_remote_sync_manifest_document(
+            let manifest_read_started_at = Instant::now();
+            let document = load_remote_sync_manifest_document(
                 &client,
                 &request.object_store,
                 &request.remote_prefix,
                 request_counts.as_ref(),
             )
-            .await?
+            .await?;
+            phase_timings.manifest_read_ms = elapsed_millis_u64(manifest_read_started_at);
+            document
         };
         let uploaded_file_count =
             count_snapshot_file_mutations(&snapshot, existing_manifest_document.as_ref());
         let deleted_remote_count =
             count_snapshot_deleted_files(&snapshot, existing_manifest_document.as_ref());
-        let created_empty_directory_count =
-            count_snapshot_created_empty_directories(&snapshot, existing_manifest_document.as_ref());
+        let created_empty_directory_count = count_snapshot_created_empty_directories(
+            &snapshot,
+            existing_manifest_document.as_ref(),
+        );
         let has_mutations = uploaded_file_count > 0
             || deleted_remote_count > 0
             || created_empty_directory_count > 0
@@ -3292,7 +3375,7 @@ async fn sync_local_to_remote(
                 .unwrap_or(false);
 
         if has_mutations {
-            upload_sync_bundle(
+            let upload_result = upload_sync_bundle(
                 &client,
                 &request.object_store,
                 &request.remote_prefix,
@@ -3302,6 +3385,8 @@ async fn sync_local_to_remote(
                 request_counts.as_ref(),
             )
             .await?;
+            phase_timings.bundle_build_ms = upload_result.bundle_build_ms;
+            phase_timings.bundle_upload_ms = upload_result.bundle_upload_ms;
 
             let snapshot_file_paths = snapshot
                 .files
@@ -3314,90 +3399,104 @@ async fn sync_local_to_remote(
                 .map(|relative_path| relative_path.as_str())
                 .collect::<BTreeSet<_>>();
 
-            let mut keys_to_delete = existing_manifest_document
-                .as_ref()
-                .map(|document| {
-                    let remove_all_tracked_entries = !is_primary_bundle_manifest(document);
-                    let mut keys = document
-                        .files
-                        .keys()
-                        .filter(|relative_path| {
-                            remove_all_tracked_entries
-                                || !snapshot_file_paths.contains(relative_path.as_str())
-                        })
-                        .map(|relative_path| {
-                            build_remote_path(&request.remote_prefix, relative_path)
-                        })
-                        .collect::<Vec<_>>();
-                    keys.extend(document.empty_directories.iter().filter_map(|relative_path| {
-                        let normalized = normalize_relative_path(relative_path);
-                        if normalized.is_empty()
-                            || (!remove_all_tracked_entries
-                                && snapshot_empty_directories.contains(normalized.as_str()))
-                        {
-                            return None;
-                        }
-                        Some(format!(
-                            "{}/",
-                            build_remote_path(&request.remote_prefix, &normalized)
-                        ))
-                    }));
-                    keys
-                })
-                .unwrap_or_default();
+            let mut keys_to_delete =
+                existing_manifest_document
+                    .as_ref()
+                    .map(|document| {
+                        let remove_all_tracked_entries = !is_primary_bundle_manifest(document);
+                        let mut keys = document
+                            .files
+                            .keys()
+                            .filter(|relative_path| {
+                                remove_all_tracked_entries
+                                    || !snapshot_file_paths.contains(relative_path.as_str())
+                            })
+                            .map(|relative_path| {
+                                build_remote_path(&request.remote_prefix, relative_path)
+                            })
+                            .collect::<Vec<_>>();
+                        keys.extend(document.empty_directories.iter().filter_map(
+                            |relative_path| {
+                                let normalized = normalize_relative_path(relative_path);
+                                if normalized.is_empty()
+                                    || (!remove_all_tracked_entries
+                                        && snapshot_empty_directories.contains(normalized.as_str()))
+                                {
+                                    return None;
+                                }
+                                Some(format!(
+                                    "{}/",
+                                    build_remote_path(&request.remote_prefix, &normalized)
+                                ))
+                            },
+                        ));
+                        keys
+                    })
+                    .unwrap_or_default();
             keys_to_delete.sort();
             keys_to_delete.dedup();
 
-            for chunk in keys_to_delete.chunks(1000) {
-                if chunk.is_empty() {
-                    continue;
+            if !keys_to_delete.is_empty() {
+                let delete_started_at = Instant::now();
+                for chunk in keys_to_delete.chunks(1000) {
+                    if chunk.is_empty() {
+                        continue;
+                    }
+
+                    let delete = Delete::builder()
+                        .set_objects(Some(
+                            chunk
+                                .iter()
+                                .map(|key| {
+                                    ObjectIdentifier::builder()
+                                        .key(key)
+                                        .build()
+                                        .map_err(|error| {
+                                            format!(
+                                                "Failed to prepare S3 delete object identifier: {error}"
+                                            )
+                                        })
+                                })
+                                .collect::<Result<Vec<_>, _>>()?,
+                        ))
+                        .build()
+                        .map_err(|error| {
+                            format!("Failed to prepare S3 delete request: {error}")
+                        })?;
+
+                    request_counts.increment_delete();
+                    client
+                        .delete_objects()
+                        .bucket(&request.object_store.bucket)
+                        .delete(delete)
+                        .send()
+                        .await
+                        .map_err(|error| format!("Failed to delete S3 objects: {error}"))?;
                 }
-
-                let delete = Delete::builder()
-                    .set_objects(Some(
-                        chunk
-                            .iter()
-                            .map(|key| {
-                                ObjectIdentifier::builder()
-                                    .key(key)
-                                    .build()
-                                    .map_err(|error| {
-                                        format!(
-                                            "Failed to prepare S3 delete object identifier: {error}"
-                                        )
-                                    })
-                            })
-                            .collect::<Result<Vec<_>, _>>()?,
-                    ))
-                    .build()
-                    .map_err(|error| {
-                        format!("Failed to prepare S3 delete request: {error}")
-                    })?;
-
-                request_counts.increment_delete();
-                client
-                    .delete_objects()
-                    .bucket(&request.object_store.bucket)
-                    .delete(delete)
-                    .send()
-                    .await
-                    .map_err(|error| format!("Failed to delete S3 objects: {error}"))?;
+                phase_timings.delete_ms = elapsed_millis_u64(delete_started_at);
             }
 
+            let manifest_write_started_at = Instant::now();
             write_remote_sync_manifest(
                 &client,
                 &request.object_store,
                 &request.remote_prefix,
                 &snapshot_manifest_files,
-                &snapshot.empty_directories.iter().cloned().collect::<Vec<_>>(),
+                &snapshot
+                    .empty_directories
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>(),
                 Some("bundle"),
                 existing_manifest_document.as_ref(),
                 request_counts.as_ref(),
             )
             .await?;
+            phase_timings.manifest_write_ms = elapsed_millis_u64(manifest_write_started_at);
         }
 
         mark_trusted_managed_prefix_seen(&request.remote_prefix);
+        phase_timings.total_primary_path_ms = elapsed_millis_u64(primary_path_started_at);
 
         return Ok(SyncLocalToRemoteResponse {
             ok: true,
@@ -3407,17 +3506,17 @@ async fn sync_local_to_remote(
             deleted_remote_count,
             created_empty_directory_count,
             request_counts: request_counts.snapshot(),
+            phase_timings: Some(phase_timings),
         });
     }
 
-    let remote_listing =
-        list_remote_entries(
-            &client,
-            &request.object_store,
-            &request.remote_prefix,
-            request_counts.as_ref(),
-        )
-        .await?;
+    let remote_listing = list_remote_entries(
+        &client,
+        &request.object_store,
+        &request.remote_prefix,
+        request_counts.as_ref(),
+    )
+    .await?;
     let remote_entries = remote_listing.entries;
     let bundle_entry = remote_listing.bundle_entry;
     let existing_manifest_document = if remote_listing.has_sync_manifest {
@@ -3648,7 +3747,11 @@ async fn sync_local_to_remote(
         &request.object_store,
         &request.remote_prefix,
         &snapshot_manifest_files,
-        &snapshot.empty_directories.iter().cloned().collect::<Vec<_>>(),
+        &snapshot
+            .empty_directories
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>(),
         Some("objects"),
         existing_manifest_document.as_ref(),
         request_counts.as_ref(),
@@ -3686,7 +3789,12 @@ async fn sync_local_to_remote(
         deleted_remote_count,
         created_empty_directory_count,
         request_counts: request_counts.snapshot(),
+        phase_timings: None,
     })
+}
+
+fn elapsed_millis_u64(started_at: Instant) -> u64 {
+    started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 async fn sync_local_to_sandbox_http(
@@ -3705,16 +3813,17 @@ async fn sync_local_to_sandbox_http(
     let sandbox_client = NativeSandboxHttpClient::new(&request.sandbox)?;
 
     let root_path = request.remote_root_path.clone();
-    let root_directory_exists = if let Some(existing_root) = sandbox_client.stat_path(&root_path).await? {
-        if existing_root.kind != "directory" {
-            sandbox_client.delete_entry(&root_path, true).await?;
-            false
+    let root_directory_exists =
+        if let Some(existing_root) = sandbox_client.stat_path(&root_path).await? {
+            if existing_root.kind != "directory" {
+                sandbox_client.delete_entry(&root_path, true).await?;
+                false
+            } else {
+                true
+            }
         } else {
-            true
-        }
-    } else {
-        false
-    };
+            false
+        };
     if !root_directory_exists {
         sandbox_client.create_directory(&root_path).await?;
     }
@@ -3738,27 +3847,22 @@ async fn sync_local_to_sandbox_http(
         .collect::<Vec<_>>();
 
     let sandbox_client_for_directories = sandbox_client.clone();
-    let created_directory_count = process_with_concurrency(
-        directories_to_create,
-        max_concurrency,
-        move |remote_path| {
+    let created_directory_count =
+        process_with_concurrency(directories_to_create, max_concurrency, move |remote_path| {
             let sandbox_client = sandbox_client_for_directories.clone();
             async move {
                 sandbox_client.create_directory(&remote_path).await?;
                 Ok(true)
             }
-        },
-    )
-    .await?
-    .len()
-        + if root_directory_exists { 0 } else { 1 };
+        })
+        .await?
+        .len()
+            + if root_directory_exists { 0 } else { 1 };
 
     let sandbox_client_for_uploads = sandbox_client.clone();
     let remote_file_stats = Arc::new(remote_state.existing_file_stats);
-    let uploaded_file_count = process_with_concurrency(
-        plan.files.clone(),
-        max_concurrency,
-        move |file| {
+    let uploaded_file_count =
+        process_with_concurrency(plan.files.clone(), max_concurrency, move |file| {
             let sandbox_client = sandbox_client_for_uploads.clone();
             let remote_file_stats = Arc::clone(&remote_file_stats);
             async move {
@@ -3767,23 +3871,24 @@ async fn sync_local_to_sandbox_http(
                         return Ok(false);
                     }
                 }
-                let data = tokio::fs::read(&file.absolute_path).await.map_err(|error| {
-                    format!(
-                        "Failed to read local file {} for sandbox upload: {error}",
-                        file.absolute_path
-                    )
-                })?;
+                let data = tokio::fs::read(&file.absolute_path)
+                    .await
+                    .map_err(|error| {
+                        format!(
+                            "Failed to read local file {} for sandbox upload: {error}",
+                            file.absolute_path
+                        )
+                    })?;
                 sandbox_client
                     .upload_file(&file.remote_path, data, file.mtime_ms)
                     .await?;
                 Ok(true)
             }
-        },
-    )
-    .await?
-    .into_iter()
-    .filter(|uploaded| *uploaded)
-    .count();
+        })
+        .await?
+        .into_iter()
+        .filter(|uploaded| *uploaded)
+        .count();
 
     Ok(SyncLocalToSandboxHttpResponse {
         ok: true,
@@ -4069,7 +4174,10 @@ mod tests {
             response.get("requestId").and_then(Value::as_str),
             Some("req_1")
         );
-        assert_eq!(response.get("name").and_then(Value::as_str), Some(BINARY_NAME));
+        assert_eq!(
+            response.get("name").and_then(Value::as_str),
+            Some(BINARY_NAME)
+        );
     }
 
     #[test]

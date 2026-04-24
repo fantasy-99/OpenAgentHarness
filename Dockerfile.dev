@@ -16,7 +16,14 @@ WORKDIR /app
 
 RUN npm install -g tsx@4.21.0 typescript@6.0.2
 
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json tsconfig.base.json ./
+COPY pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json tsconfig.base.json ./
+RUN printf '%s\n' \
+  '{' \
+  '  "name": "open-agent-harness-dev",' \
+  '  "private": true,' \
+  '  "packageManager": "pnpm@10.30.2",' \
+  '  "type": "module"' \
+  '}' > package.json
 COPY apps/server/package.json ./apps/server/package.json
 COPY packages/api-contracts/package.json ./packages/api-contracts/package.json
 COPY packages/config/package.json ./packages/config/package.json
@@ -45,7 +52,7 @@ COPY assets/logo-readme.png ./assets/logo-readme.png
 
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
   pnpm config set store-dir /pnpm/store \
-  && pnpm install --filter @oah/server... --frozen-lockfile
+  && pnpm install --filter @oah/server... --no-frozen-lockfile
 
 EXPOSE 8787
 
