@@ -250,6 +250,35 @@ export interface ControllerPlacementExecutionReport {
   operations: ControllerPlacementExecutionResult[];
 }
 
+interface ControllerLoggedState {
+  reason: ControllerRebalanceReason;
+  desiredReplicas: number;
+  suggestedReplicas: number;
+  activeReplicas: number;
+  activeSlots: number;
+  busySlots: number;
+  effectiveCapacityPerReplica: number;
+  readySessionCount?: number | undefined;
+  scaleDownAllowed?: boolean | undefined;
+  scaleDownBlockedReplicas: number;
+  sandboxProvider: SandboxFleetConfig["providerKind"];
+  sandboxDesired: number;
+  sandboxLogical: number;
+  sandboxOwnerGroups: number;
+  placementMissingOwners: number;
+  placementLateOwners: number;
+  placementOwnersSpanningWorkers: number;
+  placementSandboxesAboveWorkspaceCapacity: number;
+  placementRecommendations: number;
+  placementActionItems: number;
+  placementExecutionAttempted: number;
+  placementExecutionApplied: number;
+  placementExecutionSkipped: number;
+  placementExecutionFailed: number;
+  targetKind: string;
+  targetOutcome: string;
+}
+
 export interface ControllerLogger {
   info?(message: string): void;
   warn(message: string, error?: unknown): void;
@@ -375,6 +404,113 @@ function appendDecision(decisions: ControllerDecision[], nextDecision: Controlle
 
   const next = [...decisions, nextDecision];
   return next.length > maxEntries ? next.slice(next.length - maxEntries) : next;
+}
+
+function buildControllerLoggedState(input: {
+  reason: ControllerRebalanceReason;
+  desiredReplicas: number;
+  suggestedReplicas: number;
+  activeReplicas: number;
+  activeSlots: number;
+  busySlots: number;
+  effectiveCapacityPerReplica: number;
+  schedulingPressure?: SessionRunQueuePressure | undefined;
+  scaleDownGate?: ControllerScaleDownGate | undefined;
+  sandboxFleet: ControllerSandboxFleetSummary;
+  placementSummary?: ControllerPlacementSummary | undefined;
+  placementPolicy?: ControllerPlacementPolicySummary | undefined;
+  placementRecommendations?: ControllerPlacementRecommendation[] | undefined;
+  placementActionPlan?: ControllerPlacementActionPlan | undefined;
+  placementExecution?: ControllerPlacementExecutionReport | undefined;
+  scaleTarget?: WorkerReplicaTargetResult | undefined;
+}): ControllerLoggedState {
+  return {
+    reason: input.reason,
+    desiredReplicas: input.desiredReplicas,
+    suggestedReplicas: input.suggestedReplicas,
+    activeReplicas: input.activeReplicas,
+    activeSlots: input.activeSlots,
+    busySlots: input.busySlots,
+    effectiveCapacityPerReplica: input.effectiveCapacityPerReplica,
+    ...(typeof input.schedulingPressure?.readySessionCount === "number"
+      ? { readySessionCount: input.schedulingPressure.readySessionCount }
+      : {}),
+    ...(input.scaleDownGate ? { scaleDownAllowed: input.scaleDownGate.allowed } : {}),
+    scaleDownBlockedReplicas: input.scaleDownGate?.blockedReplicas ?? 0,
+    sandboxProvider: input.sandboxFleet.providerKind,
+    sandboxDesired: input.sandboxFleet.desiredSandboxes,
+    sandboxLogical: input.sandboxFleet.logicalSandboxes,
+    sandboxOwnerGroups: input.sandboxFleet.ownerGroups,
+    placementMissingOwners: input.placementSummary?.ownedByMissingWorkers ?? 0,
+    placementLateOwners: input.placementSummary?.ownedByLateWorkers ?? 0,
+    placementOwnersSpanningWorkers: input.placementPolicy?.ownersSpanningWorkers ?? 0,
+    placementSandboxesAboveWorkspaceCapacity: input.placementPolicy?.sandboxesAboveWorkspaceCapacity ?? 0,
+    placementRecommendations: input.placementRecommendations?.length ?? 0,
+    placementActionItems: input.placementActionPlan?.totalItems ?? 0,
+    placementExecutionAttempted: input.placementExecution?.attempted ?? 0,
+    placementExecutionApplied: input.placementExecution?.applied ?? 0,
+    placementExecutionSkipped: input.placementExecution?.skipped ?? 0,
+    placementExecutionFailed: input.placementExecution?.failed ?? 0,
+    targetKind: input.scaleTarget?.kind ?? "none",
+    targetOutcome: input.scaleTarget?.outcome ?? "n/a"
+  };
+}
+
+function areControllerLoggedStatesEquivalent(left: ControllerLoggedState, right: ControllerLoggedState): boolean {
+  return (
+    left.reason === right.reason &&
+    left.desiredReplicas === right.desiredReplicas &&
+    left.suggestedReplicas === right.suggestedReplicas &&
+    left.activeReplicas === right.activeReplicas &&
+    left.activeSlots === right.activeSlots &&
+    left.busySlots === right.busySlots &&
+    left.effectiveCapacityPerReplica === right.effectiveCapacityPerReplica &&
+    left.readySessionCount === right.readySessionCount &&
+    left.scaleDownAllowed === right.scaleDownAllowed &&
+    left.scaleDownBlockedReplicas === right.scaleDownBlockedReplicas &&
+    left.sandboxProvider === right.sandboxProvider &&
+    left.sandboxDesired === right.sandboxDesired &&
+    left.sandboxLogical === right.sandboxLogical &&
+    left.sandboxOwnerGroups === right.sandboxOwnerGroups &&
+    left.placementMissingOwners === right.placementMissingOwners &&
+    left.placementLateOwners === right.placementLateOwners &&
+    left.placementOwnersSpanningWorkers === right.placementOwnersSpanningWorkers &&
+    left.placementSandboxesAboveWorkspaceCapacity === right.placementSandboxesAboveWorkspaceCapacity &&
+    left.placementRecommendations === right.placementRecommendations &&
+    left.placementActionItems === right.placementActionItems &&
+    left.placementExecutionAttempted === right.placementExecutionAttempted &&
+    left.placementExecutionApplied === right.placementExecutionApplied &&
+    left.placementExecutionSkipped === right.placementExecutionSkipped &&
+    left.placementExecutionFailed === right.placementExecutionFailed &&
+    left.targetKind === right.targetKind &&
+    left.targetOutcome === right.targetOutcome
+  );
+}
+
+function controllerRebalanceLogHeartbeatMs(reason: ControllerRebalanceReason, scaleIntervalMs: number): number {
+  return Math.max(scaleIntervalMs, reason === "steady" ? 60_000 : 15_000);
+}
+
+function shouldLogControllerRebalance(
+  lastLoggedState: ControllerLoggedState | undefined,
+  lastLoggedAtMs: number | undefined,
+  nextLoggedState: ControllerLoggedState,
+  nowMs: number,
+  scaleIntervalMs: number
+): boolean {
+  if (!lastLoggedState || typeof lastLoggedAtMs !== "number") {
+    return true;
+  }
+
+  if (!areControllerLoggedStatesEquivalent(lastLoggedState, nextLoggedState)) {
+    return true;
+  }
+
+  return nowMs - lastLoggedAtMs >= controllerRebalanceLogHeartbeatMs(nextLoggedState.reason, scaleIntervalMs);
+}
+
+function formatControllerRebalanceLog(input: ControllerLoggedState): string {
+  return `[controller] rebalance=${input.reason} activeReplicas=${input.activeReplicas} desiredReplicas=${input.desiredReplicas} suggestedReplicas=${input.suggestedReplicas} activeSlots=${input.activeSlots} busySlots=${input.busySlots} effectiveCapacityPerReplica=${input.effectiveCapacityPerReplica} readySessions=${input.readySessionCount ?? "n/a"} scaleDownAllowed=${typeof input.scaleDownAllowed === "boolean" ? (input.scaleDownAllowed ? "yes" : "no") : "n/a"} scaleDownBlockedReplicas=${input.scaleDownBlockedReplicas} sandboxProvider=${input.sandboxProvider} sandboxDesired=${input.sandboxDesired} sandboxLogical=${input.sandboxLogical} sandboxOwnerGroups=${input.sandboxOwnerGroups} placementMissingOwners=${input.placementMissingOwners} placementLateOwners=${input.placementLateOwners} placementOwnersSpanningWorkers=${input.placementOwnersSpanningWorkers} placementSandboxesAboveWorkspaceCapacity=${input.placementSandboxesAboveWorkspaceCapacity} placementRecommendations=${input.placementRecommendations} placementActionItems=${input.placementActionItems} placementExecutionAttempted=${input.placementExecutionAttempted} placementExecutionApplied=${input.placementExecutionApplied} placementExecutionSkipped=${input.placementExecutionSkipped} placementExecutionFailed=${input.placementExecutionFailed} target=${input.targetKind} targetOutcome=${input.targetOutcome}`;
 }
 
 function cooldownRemainingMs(lastChangeAtMs: number | undefined, cooldownMs: number, nowMs: number): number {
@@ -1337,6 +1473,8 @@ export class RedisController {
   #timer: NodeJS.Timeout | undefined;
   #lastScaleUpAtMs: number | undefined;
   #lastScaleDownAtMs: number | undefined;
+  #lastLoggedAtMs: number | undefined;
+  #lastLoggedState: ControllerLoggedState | undefined;
   #scaleUpPressureStreak = 0;
   #scaleDownPressureStreak = 0;
   #snapshot: ControllerSnapshot;
@@ -1445,17 +1583,19 @@ export class RedisController {
       activeWorkers,
       maxWorkspacesPerSandbox: this.#sandboxConfig.maxWorkspacesPerSandbox
     });
-    let placementRecommendations = summarizePlacementRecommendations({
-      placementSummary,
-      placementPolicy,
-      placements: workspacePlacements,
-      activeWorkers,
-      maxWorkspacesPerSandbox: this.#sandboxConfig.maxWorkspacesPerSandbox
-    });
-    let placementActionPlan = summarizePlacementActionPlan(placementRecommendations);
+    let placementRecommendations = placementPolicy?.attentionRequired
+      ? summarizePlacementRecommendations({
+          placementSummary,
+          placementPolicy,
+          placements: workspacePlacements,
+          activeWorkers,
+          maxWorkspacesPerSandbox: this.#sandboxConfig.maxWorkspacesPerSandbox
+        })
+      : undefined;
+    let placementActionPlan = placementRecommendations ? summarizePlacementActionPlan(placementRecommendations) : undefined;
     const timestamp = new Date().toISOString();
     const placementExecution =
-      this.#placementExecutor && workspacePlacements
+      this.#placementExecutor && workspacePlacements && placementPolicy?.attentionRequired
         ? await this.#placementExecutor.execute({
             timestamp,
             placements: workspacePlacements,
@@ -1470,14 +1610,16 @@ export class RedisController {
         activeWorkers,
         maxWorkspacesPerSandbox: this.#sandboxConfig.maxWorkspacesPerSandbox
       });
-      placementRecommendations = summarizePlacementRecommendations({
-        placementSummary,
-        placementPolicy,
-        placements: workspacePlacements,
-        activeWorkers,
-        maxWorkspacesPerSandbox: this.#sandboxConfig.maxWorkspacesPerSandbox
-      });
-      placementActionPlan = summarizePlacementActionPlan(placementRecommendations);
+      placementRecommendations = placementPolicy?.attentionRequired
+        ? summarizePlacementRecommendations({
+            placementSummary,
+            placementPolicy,
+            placements: workspacePlacements,
+            activeWorkers,
+            maxWorkspacesPerSandbox: this.#sandboxConfig.maxWorkspacesPerSandbox
+          })
+        : undefined;
+      placementActionPlan = placementRecommendations ? summarizePlacementActionPlan(placementRecommendations) : undefined;
     }
     const sandboxFleet = summarizeSandboxFleet({
       placements: workspacePlacements,
@@ -1582,9 +1724,29 @@ export class RedisController {
       })
     };
 
-    this.#logger?.info?.(
-      `[controller] rebalance=${rebalanceReason} activeReplicas=${fleet.activeReplicas} desiredReplicas=${desiredReplicas} suggestedReplicas=${suggestedReplicas} activeSlots=${fleet.activeSlots} busySlots=${fleet.busySlots} effectiveCapacityPerReplica=${fleet.effectiveCapacityPerReplica} readySessions=${schedulingPressure?.readySessionCount ?? "n/a"} scaleDownAllowed=${scaleDownGate ? (scaleDownGate.allowed ? "yes" : "no") : "n/a"} scaleDownBlockedReplicas=${scaleDownGate?.blockedReplicas ?? 0} sandboxProvider=${sandboxFleet.providerKind} sandboxDesired=${sandboxFleet.desiredSandboxes} sandboxLogical=${sandboxFleet.logicalSandboxes} sandboxOwnerGroups=${sandboxFleet.ownerGroups} placementMissingOwners=${placementSummary?.ownedByMissingWorkers ?? 0} placementLateOwners=${placementSummary?.ownedByLateWorkers ?? 0} placementOwnersSpanningWorkers=${placementPolicy?.ownersSpanningWorkers ?? 0} placementSandboxesAboveWorkspaceCapacity=${placementPolicy?.sandboxesAboveWorkspaceCapacity ?? 0} placementRecommendations=${placementRecommendations?.length ?? 0} placementActionItems=${placementActionPlan?.totalItems ?? 0} target=${scaleTarget?.kind ?? "none"} targetOutcome=${scaleTarget?.outcome ?? "n/a"}`
-    );
+    const loggedState = buildControllerLoggedState({
+      reason: rebalanceReason,
+      desiredReplicas,
+      suggestedReplicas,
+      activeReplicas: fleet.activeReplicas,
+      activeSlots: fleet.activeSlots,
+      busySlots: fleet.busySlots,
+      effectiveCapacityPerReplica: fleet.effectiveCapacityPerReplica,
+      schedulingPressure,
+      scaleDownGate,
+      sandboxFleet,
+      placementSummary,
+      placementPolicy,
+      placementRecommendations,
+      placementActionPlan,
+      placementExecution,
+      scaleTarget
+    });
+    if (shouldLogControllerRebalance(this.#lastLoggedState, this.#lastLoggedAtMs, loggedState, nowMs, this.#config.scaleIntervalMs)) {
+      this.#logger?.info?.(formatControllerRebalanceLog(loggedState));
+      this.#lastLoggedState = loggedState;
+      this.#lastLoggedAtMs = nowMs;
+    }
 
     return this.snapshot();
   }

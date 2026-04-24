@@ -37,6 +37,7 @@ import {
 const tempDirs: string[] = [];
 
 afterEach(async () => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
@@ -1218,6 +1219,150 @@ describe("controller", () => {
       outcome: "scaled",
       at: snapshot.lastRebalanceAt
     });
+    await controller.close();
+  });
+
+  it("logs steady controller snapshots only when the observable state changes", async () => {
+    let readySessions = 0;
+    const infoLogs: string[] = [];
+    const queue = {
+      async getSchedulingPressure() {
+        return {
+          readySessionCount: readySessions
+        };
+      }
+    };
+    const registry = {
+      async heartbeat() {},
+      async remove() {},
+      async listActive() {
+        return [
+          {
+            workerId: "worker_1",
+            runtimeInstanceId: "pod-a",
+            processKind: "standalone",
+            state: "idle",
+            lastSeenAt: "2026-04-14T00:00:00.000Z",
+            leaseTtlMs: 5_000,
+            expiresAt: "2026-04-14T00:00:05.000Z",
+            lastSeenAgeMs: 0,
+            health: "healthy"
+          }
+        ] satisfies RedisWorkerRegistryEntry[];
+      }
+    };
+    const controller = new RedisController({
+      queue: queue as never,
+      registry,
+      config: {
+        minReplicas: 1,
+        maxReplicas: 3,
+        readySessionsPerCapacityUnit: 1,
+        reservedSubagentCapacity: 0,
+        scaleIntervalMs: 5_000,
+        scaleUpCooldownMs: 1,
+        scaleDownCooldownMs: 60_000,
+        scaleUpSampleSize: 1,
+        scaleDownSampleSize: 1,
+        scaleUpBusyRatioThreshold: 0.75,
+        scaleUpMaxReadyAgeMs: 2_000
+      },
+      logger: {
+        info(message) {
+          infoLogs.push(message);
+        },
+        warn() {}
+      }
+    });
+
+    await controller.evaluateNow("interval");
+    await controller.evaluateNow("interval");
+    expect(infoLogs).toHaveLength(1);
+    expect(infoLogs[0]).toContain("rebalance=steady");
+    expect(infoLogs[0]).toContain("readySessions=0");
+
+    readySessions = 1;
+    await controller.evaluateNow("interval");
+    expect(infoLogs).toHaveLength(2);
+    expect(infoLogs[1]).toContain("readySessions=1");
+
+    await controller.close();
+  });
+
+  it("skips placement execution work when placement policy does not require attention", async () => {
+    let placementExecutionCalls = 0;
+    const queue = {
+      async getSchedulingPressure() {
+        return {
+          readySessionCount: 0
+        };
+      }
+    };
+    const registry = {
+      async heartbeat() {},
+      async remove() {},
+      async listActive() {
+        return [
+          {
+            workerId: "worker_1",
+            runtimeInstanceId: "pod-a",
+            processKind: "standalone",
+            state: "idle",
+            lastSeenAt: "2026-04-14T00:00:00.000Z",
+            leaseTtlMs: 5_000,
+            expiresAt: "2026-04-14T00:00:05.000Z",
+            lastSeenAgeMs: 0,
+            health: "healthy"
+          }
+        ] satisfies RedisWorkerRegistryEntry[];
+      }
+    };
+    const placementRegistry = {
+      async listAll() {
+        return [
+          {
+            workspaceId: "ws_1",
+            ownerId: "owner-a",
+            ownerWorkerId: "pod-a",
+            state: "idle",
+            refCount: 1,
+            updatedAt: "2026-04-14T00:00:00.000Z"
+          }
+        ] satisfies RedisWorkspacePlacementEntry[];
+      }
+    };
+    const controller = new RedisController({
+      queue: queue as never,
+      registry,
+      placementRegistry: placementRegistry as never,
+      placementExecutor: {
+        async execute() {
+          placementExecutionCalls += 1;
+          return undefined;
+        }
+      },
+      config: {
+        minReplicas: 1,
+        maxReplicas: 3,
+        readySessionsPerCapacityUnit: 1,
+        reservedSubagentCapacity: 0,
+        scaleIntervalMs: 5_000,
+        scaleUpCooldownMs: 1,
+        scaleDownCooldownMs: 60_000,
+        scaleUpSampleSize: 1,
+        scaleDownSampleSize: 1,
+        scaleUpBusyRatioThreshold: 0.75,
+        scaleUpMaxReadyAgeMs: 2_000
+      }
+    });
+
+    const snapshot = await controller.evaluateNow("interval");
+    expect(snapshot.placementPolicy?.attentionRequired).toBe(false);
+    expect(snapshot.placementRecommendations).toBeUndefined();
+    expect(snapshot.placementActionPlan).toBeUndefined();
+    expect(snapshot.placementExecution).toBeUndefined();
+    expect(placementExecutionCalls).toBe(0);
+
     await controller.close();
   });
 

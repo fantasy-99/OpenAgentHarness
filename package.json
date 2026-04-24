@@ -9,6 +9,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -b && pnpm --filter @oah/web build",
+    "bench:object-storage-sync": "pnpm exec tsx ./scripts/bench-object-storage-sync.ts",
     "build:runtime": "tsc -b tsconfig.json",
     "clean": "tsc -b --clean && pnpm -r exec rm -rf dist .vite",
     "dev:server": "pnpm --filter @oah/server dev:api-only",

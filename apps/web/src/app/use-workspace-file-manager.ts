@@ -35,6 +35,19 @@ import {
 
 type AppRequest = <T>(path: string, init?: RequestInit, options?: { auth?: boolean }) => Promise<T>;
 
+export type WorkspaceUploadItem = WorkspaceUploadFileItem | WorkspaceUploadDirectoryItem;
+
+export interface WorkspaceUploadFileItem {
+  type: "file";
+  file: File;
+  relativePath?: string;
+}
+
+export interface WorkspaceUploadDirectoryItem {
+  type: "directory";
+  relativePath: string;
+}
+
 const LARGE_TEXT_FILE_BYTES = 256 * 1024;
 const BINARY_PREVIEW_BYTES = 192 * 1024;
 
@@ -465,20 +478,39 @@ export function useWorkspaceFileManager(params: {
     }
   }
 
-  async function uploadFiles(files: FileList | File[]): Promise<void> {
+  async function uploadFiles(files: FileList | File[] | WorkspaceUploadItem[]): Promise<void> {
     if (!workspaceIdValue || workspaceReadOnly) {
       return;
     }
 
-    const normalizedFiles = Array.from(files);
-    if (normalizedFiles.length === 0) {
+    const uploadItems = Array.from(files as Iterable<File | WorkspaceUploadItem> | ArrayLike<File | WorkspaceUploadItem>).map((item) => {
+      if (item instanceof File) {
+        return { type: "file", file: item, relativePath: item.webkitRelativePath || item.name } satisfies WorkspaceUploadItem;
+      }
+
+      return item;
+    });
+    if (uploadItems.length === 0) {
       return;
     }
 
     try {
       setMutationBusy(true);
-      for (const file of normalizedFiles) {
-        const targetPath = joinWorkspaceRelativePath(currentPath, file.name);
+      for (const item of uploadItems) {
+        if (item.type === "directory") {
+          const uploadPath = normalizeWorkspaceRelativePath(item.relativePath);
+          if (uploadPath !== ".") {
+            await sandboxClient.createDirectory(workspaceIdValue, {
+              path: workspaceRelativePathToSandboxPath(joinWorkspaceRelativePath(currentPath, uploadPath)),
+              createParents: true
+            } satisfies CreateWorkspaceDirectoryRequest);
+          }
+          continue;
+        }
+
+        const file = item.file;
+        const uploadPath = normalizeWorkspaceRelativePath(item.relativePath || file.webkitRelativePath || file.name);
+        const targetPath = joinWorkspaceRelativePath(currentPath, uploadPath);
         await sandboxClient.uploadFile(workspaceIdValue, {
           path: workspaceRelativePathToSandboxPath(targetPath),
           overwrite: true,
@@ -488,8 +520,12 @@ export function useWorkspaceFileManager(params: {
         } satisfies WorkspaceFileUploadQuery & { data: SandboxHttpBody; contentType: string });
       }
       await refreshEntries({ path: currentPath, quiet: true });
+      const fileCount = uploadItems.filter((item) => item.type === "file").length;
+      const directoryCount = uploadItems.length - fileCount;
       params.setActivity(
-        normalizedFiles.length === 1 ? `已上传 ${normalizedFiles[0]?.name ?? "1 个文件"}` : `已上传 ${normalizedFiles.length} 个文件`
+        fileCount === 1 && directoryCount === 0
+          ? `已上传 ${uploadItems[0]?.type === "file" ? uploadItems[0].file.name : "1 个文件"}`
+          : `已上传 ${fileCount} 个文件${directoryCount > 0 ? ` / ${directoryCount} 个目录` : ""}`
       );
       params.setErrorMessage("");
     } catch (error) {
@@ -590,7 +626,7 @@ export function useWorkspaceFileManager(params: {
       saveSelectedFile: () => void saveSelectedFile(),
       moveEntry: (sourcePath: string, targetPath: string) => void moveEntry(sourcePath, targetPath),
       deleteEntry: (entry: WorkspaceEntry) => void deleteEntry(entry),
-      uploadFiles: (files: FileList | File[]) => void uploadFiles(files),
+      uploadFiles: (files: FileList | File[] | WorkspaceUploadItem[]) => void uploadFiles(files),
       downloadEntry: (entry: WorkspaceEntry) => void downloadEntry(entry)
     }
   };

@@ -9,7 +9,6 @@ import {
   type ReadinessReport
 } from "@oah/api-contracts";
 import type { ServerConfig } from "@oah/config";
-import { loadServerConfig } from "@oah/config/server-config";
 import {
   AppError,
   ControlPlaneEngineService,
@@ -35,25 +34,15 @@ import {
   createRedisSessionEventBus,
   createRedisSessionRunQueue
 } from "@oah/storage-redis";
-import {
-  WorkspaceMaterializationManager
-} from "./bootstrap/workspace-materialization.js";
+import type { WorkspaceMaterializationManager } from "./bootstrap/workspace-materialization.js";
 import type { SandboxHost } from "./bootstrap/sandbox-host.js";
-import { createConfiguredSandboxHost } from "./bootstrap/configured-sandbox-host.js";
 import { describeSandboxTopology } from "./sandbox-topology.js";
 import {
   createWorkerRuntimeControl,
   summarizeWorkerRuntimeStatus,
   type WorkerRuntimeStatus
 } from "./bootstrap/worker-runtime.js";
-import {
-  createDirectoryObjectStore,
-  deleteWorkspaceExternalRefFromObjectStore,
-  ObjectStorageMirrorController,
-  seedWorkspaceRootToExternalRef
-} from "./object-storage.js";
 import { appendEngineLogEvent, buildRuntimeConsoleLogger } from "./engine-console.js";
-import { createSandboxBackedWorkspaceInitializer } from "./bootstrap/sandbox-backed-workspace-initializer.js";
 import {
   describeObjectStoragePolicy,
   objectStorageBacksManagedWorkspaces,
@@ -95,8 +84,6 @@ import {
   reconcileDiscoveredWorkspaces,
   type PlatformAgentRegistry
 } from "./bootstrap/workspace-registry.js";
-import { createBuiltInPlatformAgents } from "./platform-agents.js";
-import { createServiceRoutedPostgresRuntimePersistence } from "./bootstrap/service-routed-postgres.js";
 import {
   cleanupWorkspaceLocalArtifacts,
   resolveArchiveExportRoot,
@@ -111,21 +98,67 @@ export type { WorkspaceLocalArtifactCleanupStatus } from "./bootstrap/engine-sta
 
 let configWorkspaceModulePromise: Promise<typeof import("@oah/config/workspace")> | undefined;
 let configRuntimesModulePromise: Promise<typeof import("@oah/config/runtimes")> | undefined;
+let configServerConfigModulePromise: Promise<{ loadServerConfig: (configPath: string) => Promise<ServerConfig> }> | undefined;
 let workspaceDefinitionHelpersPromise: Promise<typeof import("./bootstrap/workspace-definition-helpers.js")> | undefined;
+let configuredSandboxHostModulePromise: Promise<typeof import("./bootstrap/configured-sandbox-host.js")> | undefined;
+let objectStorageModulePromise: Promise<typeof import("./object-storage.js")> | undefined;
+let sandboxBackedWorkspaceInitializerModulePromise:
+  | Promise<typeof import("./bootstrap/sandbox-backed-workspace-initializer.js")>
+  | undefined;
+let platformAgentsModulePromise: Promise<typeof import("./platform-agents.js")> | undefined;
+let serviceRoutedPostgresModulePromise: Promise<typeof import("./bootstrap/service-routed-postgres.js")> | undefined;
 
 function loadConfigWorkspaceModule(): Promise<typeof import("@oah/config/workspace")> {
-  configWorkspaceModulePromise ??= import("@oah/config/workspace");
+  configWorkspaceModulePromise ??= import("@oah/config/workspace").catch(async () => {
+    return import("../../../packages/config/dist/workspace.js");
+  });
   return configWorkspaceModulePromise;
 }
 
 function loadConfigRuntimesModule(): Promise<typeof import("@oah/config/runtimes")> {
-  configRuntimesModulePromise ??= import("@oah/config/runtimes");
+  configRuntimesModulePromise ??= import("@oah/config/runtimes").catch(async () => {
+    return import("../../../packages/config/dist/runtimes.js");
+  });
   return configRuntimesModulePromise;
+}
+
+function loadConfigServerConfigModule(): Promise<{ loadServerConfig: (configPath: string) => Promise<ServerConfig> }> {
+  configServerConfigModulePromise ??= import("@oah/config/server-config").catch(async () => {
+    return import("../../../packages/config/dist/server-config.js");
+  });
+  return configServerConfigModulePromise;
 }
 
 function loadWorkspaceDefinitionHelpersModule(): Promise<typeof import("./bootstrap/workspace-definition-helpers.js")> {
   workspaceDefinitionHelpersPromise ??= import("./bootstrap/workspace-definition-helpers.js");
   return workspaceDefinitionHelpersPromise;
+}
+
+function loadConfiguredSandboxHostModule(): Promise<typeof import("./bootstrap/configured-sandbox-host.js")> {
+  configuredSandboxHostModulePromise ??= import("./bootstrap/configured-sandbox-host.js");
+  return configuredSandboxHostModulePromise;
+}
+
+function loadObjectStorageModule(): Promise<typeof import("./object-storage.js")> {
+  objectStorageModulePromise ??= import("./object-storage.js");
+  return objectStorageModulePromise;
+}
+
+function loadSandboxBackedWorkspaceInitializerModule(): Promise<
+  typeof import("./bootstrap/sandbox-backed-workspace-initializer.js")
+> {
+  sandboxBackedWorkspaceInitializerModulePromise ??= import("./bootstrap/sandbox-backed-workspace-initializer.js");
+  return sandboxBackedWorkspaceInitializerModulePromise;
+}
+
+function loadPlatformAgentsModule(): Promise<typeof import("./platform-agents.js")> {
+  platformAgentsModulePromise ??= import("./platform-agents.js");
+  return platformAgentsModulePromise;
+}
+
+function loadServiceRoutedPostgresModule(): Promise<typeof import("./bootstrap/service-routed-postgres.js")> {
+  serviceRoutedPostgresModulePromise ??= import("./bootstrap/service-routed-postgres.js");
+  return serviceRoutedPostgresModulePromise;
 }
 
 function hasRemoteErrorCode(error: unknown, code: string): boolean {
@@ -350,9 +383,9 @@ export interface BootstrapOptions {
   startWorker?: boolean | undefined;
   processKind?: "api" | "worker" | undefined;
   platformAgents?: PlatformAgentRegistry | undefined;
-  sandboxHostFactory?:
+      sandboxHostFactory?:
     | ((input: {
-        config: Awaited<ReturnType<typeof loadServerConfig>>;
+        config: ServerConfig;
         processKind: "api" | "worker";
         workerId: string;
         ownerBaseUrl?: string | undefined;
@@ -453,8 +486,8 @@ function parseStaleRunRecoveryStrategyEnv(
 
 function withManagedWorkspaceExternalRef(
   workspace: WorkspaceRecord,
-  config: Awaited<ReturnType<typeof loadServerConfig>>,
-  objectStorageMirror: ObjectStorageMirrorController | undefined
+  config: ServerConfig,
+  objectStorageMirror: import("./object-storage.js").ObjectStorageMirrorController | undefined
 ): WorkspaceRecord {
   if (workspace.externalRef) {
     return workspace;
@@ -467,7 +500,7 @@ function withManagedWorkspaceExternalRef(
 }
 
 export interface BootstrappedRuntime {
-  config: Awaited<ReturnType<typeof loadServerConfig>>;
+  config: ServerConfig;
   controlPlaneEngineService: ControlPlaneRuntimeOperations;
   executionEngineService: ExecutionRuntimeOperations;
   runtimeService: EngineService;
@@ -710,6 +743,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   const currentWorkerId = runtimeInstanceId;
   const singleWorkspace = parseSingleWorkspaceOptions(argv);
   const requestedConfig = parseConfigPath(argv);
+  const { loadServerConfig } = await loadConfigServerConfigModule();
   const config =
     singleWorkspace !== undefined
       ? buildSingleWorkspaceConfig(
@@ -754,11 +788,13 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       );
     }
   }
+  const objectStorageModule =
+    config.object_storage || objectStorageMirrorConfig ? await loadObjectStorageModule() : undefined;
   const objectStorageMirror = objectStorageMirrorConfig
     ? (objectStorageMirrorConfig.managed_paths?.length ?? 0) > 0
-      ? new ObjectStorageMirrorController(objectStorageMirrorConfig, config.paths, (message) => {
-        console.info(`[oah-object-storage] ${message}`);
-      })
+      ? new objectStorageModule!.ObjectStorageMirrorController(objectStorageMirrorConfig, config.paths, (message) => {
+          console.info(`[oah-object-storage] ${message}`);
+        })
       : undefined
     : undefined;
   const ownerBaseUrl = resolveInternalBaseUrl(config);
@@ -799,9 +835,9 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   });
   const models = platformModelService.definitions;
   let platformAgents: PlatformAgentRegistry | undefined;
-  function getPlatformAgents(): PlatformAgentRegistry {
+  async function getPlatformAgents(): Promise<PlatformAgentRegistry> {
     platformAgents ??= {
-      ...createBuiltInPlatformAgents(),
+      ...(await loadPlatformAgentsModule()).createBuiltInPlatformAgents(),
       ...(options.platformAgents ?? {})
     };
     return platformAgents;
@@ -811,7 +847,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     return enrichWorkspaceModelsWithDiscoveredMetadata(
       await discoverWorkspace(rootPath, kind, {
         platformModels: models,
-        platformAgents: getPlatformAgents(),
+        platformAgents: await getPlatformAgents(),
         platformSkillDir: config.paths.skill_dir,
         platformToolDir: toolDir
       } as Parameters<typeof discoverWorkspace>[2])
@@ -951,7 +987,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
             return discoverWorkspaces({
             paths: config.paths,
             platformModels: models,
-            platformAgents: getPlatformAgents(),
+            platformAgents: await getPlatformAgents(),
             onError: ({ rootPath, kind, error }: { rootPath: string; kind: "project"; error: unknown }) => {
               logWorkspaceDiscoveryError(rootPath, kind, error);
             }
@@ -965,7 +1001,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   const postgresConfigured = Boolean(config.storage.postgres_url && config.storage.postgres_url.trim().length > 0);
   const sqliteShadowRoot = resolveSqliteShadowRoot(config.paths);
   const persistence = postgresConfigured
-    ? await createServiceRoutedPostgresRuntimePersistence({
+    ? await (await loadServiceRoutedPostgresModule()).createServiceRoutedPostgresRuntimePersistence({
         connectionString: config.storage.postgres_url!
       }).catch((error) => {
         throw new Error(
@@ -1040,12 +1076,12 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         })
       : redisRawRunQueue;
   workspaceMaterializationManager = !remoteSandboxProvider && config.object_storage
-    ? new WorkspaceMaterializationManager({
+    ? new (await import("./bootstrap/workspace-materialization.js")).WorkspaceMaterializationManager({
         cacheRoot: resolveWorkspaceMaterializationCacheRoot(config.paths),
         workspaceRoot: config.paths.workspace_dir,
         workerId: currentWorkerId,
         ...(ownerBaseUrl ? { ownerBaseUrl } : {}),
-        store: createDirectoryObjectStore(config.object_storage),
+        store: objectStorageModule!.createDirectoryObjectStore(config.object_storage),
         leaseRegistry: redisWorkspaceLeaseRegistry,
         placementRegistry: redisWorkspacePlacementRegistry,
         logger: (message) => {
@@ -1063,7 +1099,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       })
     : undefined;
   if (!sandboxHost) {
-    sandboxHost = await createConfiguredSandboxHost({
+    sandboxHost = await (await loadConfiguredSandboxHostModule()).createConfiguredSandboxHost({
       config,
       ...(workspaceMaterializationManager ? { workspaceMaterializationManager } : {}),
       ...(redisWorkspacePlacementRegistry ? { workspacePlacementRegistry: redisWorkspacePlacementRegistry } : {}),
@@ -1223,7 +1259,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
               await discoverProjectWorkspaces({
                 workspaceDir: config.paths.workspace_dir,
                 models,
-                platformAgents: getPlatformAgents(),
+                platformAgents: await getPlatformAgents(),
                 platformSkillDir: config.paths.skill_dir,
                 platformToolDir: toolDir,
                 onError: ({ rootPath, error }: { rootPath: string; kind: "project"; error: unknown }) => {
@@ -1464,7 +1500,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
                 console.info(
                   `[oah-object-storage] Deleting workspace backing store for ${workspace.id} using ${workspaceExternalRef}`
                 );
-                await deleteWorkspaceExternalRefFromObjectStore(config.object_storage, workspaceExternalRef, (message) => {
+                await objectStorageModule!.deleteWorkspaceExternalRefFromObjectStore(config.object_storage, workspaceExternalRef, (message) => {
                   console.info(`[oah-object-storage] ${message}`);
                 });
                 console.info(`[oah-object-storage] Deleted workspace backing store for ${workspace.id}`);
@@ -1496,13 +1532,13 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       ? {
           workspaceInitializer: {
             initialize: useSandboxBackedWorkspaceInitializer
-              ? createSandboxBackedWorkspaceInitializer({
+              ? (await loadSandboxBackedWorkspaceInitializerModule()).createSandboxBackedWorkspaceInitializer({
                   runtimeDir: config.paths.runtime_dir,
                   platformToolDir: config.paths.tool_dir,
                   platformSkillDir: config.paths.skill_dir,
                   toolDir,
                   platformModels: models,
-                  platformAgents: getPlatformAgents(),
+                  platformAgents: await getPlatformAgents(),
                   sandboxHost: sandboxHost!,
                   ...(sandboxHost?.providerKind === "self_hosted" && config.sandbox?.self_hosted?.base_url?.trim()
                     ? {
@@ -1543,7 +1579,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
 
                   const inferredExternalRef = resolveManagedWorkspaceExternalRef(workspaceRoot, "project", config);
                   if (config.object_storage && inferredExternalRef) {
-                    await seedWorkspaceRootToExternalRef(
+                    await objectStorageModule!.seedWorkspaceRootToExternalRef(
                       config.object_storage,
                       inferredExternalRef,
                       workspaceRoot,

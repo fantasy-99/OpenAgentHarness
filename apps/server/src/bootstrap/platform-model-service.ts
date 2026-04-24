@@ -1,11 +1,30 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { loadPlatformModels } from "@oah/config/platform-models";
+import type { PlatformModelRegistry } from "@oah/config";
 import { enrichModelRegistryWithDiscoveredMetadata } from "./model-metadata-discovery.js";
 import { normalizeModelMetadata, normalizePlatformModelRegistry, readContextWindowTokens } from "./platform-model-metadata.js";
 
-export type PlatformModelRegistry = Awaited<ReturnType<typeof loadPlatformModels>>;
+let platformModelsModulePromise:
+  | Promise<{
+      loadPlatformModels: (
+        modelDir: string,
+        options?: { onError?: ((input: { filePath: string; error: unknown }) => void) | undefined }
+      ) => Promise<PlatformModelRegistry>;
+    }>
+  | undefined;
+
+function loadPlatformModelsModule(): Promise<{
+  loadPlatformModels: (
+    modelDir: string,
+    options?: { onError?: ((input: { filePath: string; error: unknown }) => void) | undefined }
+  ) => Promise<PlatformModelRegistry>;
+}> {
+  platformModelsModulePromise ??= import("@oah/config/platform-models").catch(async () => {
+    return import("../../../../packages/config/dist/platform-models.js");
+  });
+  return platformModelsModulePromise;
+}
 const PERSISTED_MODEL_METADATA_FILENAME = ".oah-platform-model-metadata.json";
 
 export interface PlatformModelItem {
@@ -221,6 +240,7 @@ export async function createPlatformModelCatalogService(options: {
   onModelsChanged?: ((models: PlatformModelRegistry) => Promise<void> | void) | undefined;
 }): Promise<PlatformModelCatalogService> {
   async function loadDefinitions(): Promise<PlatformModelRegistry> {
+    const { loadPlatformModels } = await loadPlatformModelsModule();
     const loadedModels = normalizePlatformModelRegistry(
       await loadPlatformModels(options.modelDir, {
         onError: options.onLoadError

@@ -642,6 +642,43 @@ Those changes would be much higher cost and are not justified by the expected pe
 
 ## 24. Recommendation
 
+## 24. Current Measured Findings
+
+The first native `oah-workspace-sync` rollout is now functional against real MinIO and remains worth keeping behind a feature flag.
+
+However, the current sidecar CLI implementation does not yet justify becoming the default execution path for object-storage sync.
+
+Measured results from local MinIO benchmark runs:
+
+- `8 x 4 KiB`: TS push/pull `52ms / 22ms`, native `172ms / 139ms`
+- `128 x 64 KiB`: TS push/pull `305ms / 68ms`, native `401ms / 141ms`
+- `256 x 64 KiB`: TS push/pull `580ms / 114ms`, native `593ms / 173ms`
+- `512 x 64 KiB`: TS push/pull `571ms / 190ms`, native `586ms / 207ms`
+- `128 x 1 MiB`: TS push/pull `474ms / 212ms`, native `588ms / 322ms`
+
+What this means:
+
+- native sync is operational and semantically correct on real MinIO
+- the current bottleneck is not TS logic correctness
+- the current sidecar model still pays too much process startup and request-stack overhead
+- enabling native execute by default in Docker is not evidence-based yet
+
+For now, the native path should stay:
+
+- available
+- benchmarked
+- covered by regression tests
+- opt-in rather than default for object-storage execute
+
+The next performance stage should focus on one of these directions:
+
+- persistent native worker process to remove per-sync CLI startup cost
+- in-process N-API bridge if the protocol stabilizes and startup overhead dominates
+- keeping Rust for local scan/fingerprint/plan while leaving remote execute on TS
+- larger-scale benchmark matrices to identify a real crossover point before changing defaults
+
+## 25. Recommendation
+
 The recommended approach for Open Agent Harness is:
 
 - use `native/` as the home for Rust code

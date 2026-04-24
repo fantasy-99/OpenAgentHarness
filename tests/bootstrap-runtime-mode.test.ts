@@ -118,7 +118,9 @@ describe("server runtime process modes", () => {
       id: "api_control_plane",
       executionServicesMode: "lazy",
       enablePlatformModelLiveReload: false,
-      enableWorkerRuntime: false
+      enableWorkerRuntime: false,
+      enableAdminCapabilities: true,
+      enableControlPlaneFacade: true
     });
   });
 
@@ -247,7 +249,9 @@ describe("server runtime process modes", () => {
       id: "api_embedded_runtime",
       executionServicesMode: "eager",
       enablePlatformModelLiveReload: false,
-      enableWorkerRuntime: true
+      enableWorkerRuntime: true,
+      enableAdminCapabilities: true,
+      enableControlPlaneFacade: true
     });
 
     expect(
@@ -260,7 +264,9 @@ describe("server runtime process modes", () => {
       id: "worker_executor",
       executionServicesMode: "eager",
       enablePlatformModelLiveReload: false,
-      enableWorkerRuntime: true
+      enableWorkerRuntime: true,
+      enableAdminCapabilities: false,
+      enableControlPlaneFacade: false
     });
   });
 

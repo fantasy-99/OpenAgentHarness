@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type DragEvent } from "react";
 
 import {
   ArrowUp,
@@ -27,8 +27,31 @@ import { cn } from "@/lib/utils";
 
 import { formatRelativeTimestamp, formatTimestamp, formatTimestampPrecise, pathLeaf, prettyJson } from "../support";
 import type { useAppController } from "../use-app-controller";
+import type { WorkspaceUploadItem } from "../use-workspace-file-manager";
 
 type FileManagerProps = ReturnType<typeof useAppController>["runtimeDetailSurfaceProps"]["fileManager"];
+
+interface DroppedFileSystemEntry {
+  name: string;
+  fullPath?: string;
+  isFile: boolean;
+  isDirectory: boolean;
+}
+
+interface DroppedFileSystemFileEntry extends DroppedFileSystemEntry {
+  isFile: true;
+  file: (successCallback: (file: File) => void, errorCallback?: (error: DOMException) => void) => void;
+}
+
+interface DroppedFileSystemDirectoryEntry extends DroppedFileSystemEntry {
+  isDirectory: true;
+  createReader: () => {
+    readEntries: (
+      successCallback: (entries: DroppedFileSystemEntry[]) => void,
+      errorCallback?: (error: DOMException) => void
+    ) => void;
+  };
+}
 
 function normalizeWorkspaceInput(basePath: string, rawValue: string): string {
   const value = rawValue.trim().replace(/\\/g, "/");
@@ -130,6 +153,92 @@ function renderEntryUpdatedAt(value?: string): { inline: string; detail: string 
     inline: relative ?? formatTimestamp(value),
     detail: relative ? `${precise} · ${relative}` : precise
   };
+}
+
+function isFileSystemFileEntry(entry: DroppedFileSystemEntry): entry is DroppedFileSystemFileEntry {
+  return entry.isFile;
+}
+
+function isFileSystemDirectoryEntry(entry: DroppedFileSystemEntry): entry is DroppedFileSystemDirectoryEntry {
+  return entry.isDirectory;
+}
+
+function isDroppedFileSystemEntry(value: unknown): value is DroppedFileSystemEntry {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      "name" in value &&
+      "isFile" in value &&
+      "isDirectory" in value
+  );
+}
+
+function getDroppedFileSystemEntry(item: DataTransferItem): DroppedFileSystemEntry | null {
+  const getEntry = (item as { webkitGetAsEntry?: () => unknown }).webkitGetAsEntry;
+  if (!getEntry) {
+    return null;
+  }
+
+  const entry = getEntry.call(item);
+  return isDroppedFileSystemEntry(entry) ? entry : null;
+}
+
+function readFileSystemFile(entry: DroppedFileSystemFileEntry): Promise<File> {
+  return new Promise((resolve, reject) => entry.file(resolve, reject));
+}
+
+function readFileSystemDirectoryEntries(entry: DroppedFileSystemDirectoryEntry): Promise<DroppedFileSystemEntry[]> {
+  const reader = entry.createReader();
+  const entries: DroppedFileSystemEntry[] = [];
+
+  return new Promise((resolve, reject) => {
+    function readNextBatch() {
+      reader.readEntries((batch) => {
+        if (batch.length === 0) {
+          resolve(entries);
+          return;
+        }
+
+        entries.push(...batch);
+        readNextBatch();
+      }, reject);
+    }
+
+    readNextBatch();
+  });
+}
+
+async function collectDroppedEntryFiles(entry: DroppedFileSystemEntry, parentPath = ""): Promise<WorkspaceUploadItem[]> {
+  const relativePath = parentPath ? `${parentPath}/${entry.name}` : entry.name;
+  if (isFileSystemFileEntry(entry)) {
+    return [{ type: "file", file: await readFileSystemFile(entry), relativePath }];
+  }
+
+  if (!isFileSystemDirectoryEntry(entry)) {
+    return [];
+  }
+
+  const children = await readFileSystemDirectoryEntries(entry);
+  const nestedItems = await Promise.all(children.map((child) => collectDroppedEntryFiles(child, relativePath)));
+  return [{ type: "directory", relativePath }, ...nestedItems.flat()];
+}
+
+async function collectDroppedFiles(dataTransfer: DataTransfer): Promise<WorkspaceUploadItem[]> {
+  const entries = Array.from(dataTransfer.items)
+    .filter((item) => item.kind === "file")
+    .map((item) => getDroppedFileSystemEntry(item))
+    .filter((entry): entry is DroppedFileSystemEntry => entry !== null && entry !== undefined);
+
+  if (entries.length > 0) {
+    const nestedItems = await Promise.all(entries.map((entry) => collectDroppedEntryFiles(entry)));
+    return nestedItems.flat();
+  }
+
+  return Array.from(dataTransfer.files).map((file) => ({
+    type: "file",
+    file,
+    relativePath: file.webkitRelativePath || file.name
+  }));
 }
 
 function FileManagerCommandBar(props: {
@@ -251,6 +360,7 @@ export function WorkspaceFileManagerPanel(props: { fileManager: FileManagerProps
   const { fileManager } = props;
   const [commandMode, setCommandMode] = useState<"new-file" | "new-directory" | "move" | null>(null);
   const [commandValue, setCommandValue] = useState("");
+  const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const imagePreviewUrl = useMemo(() => {
     if (!isImagePreview(fileManager) || !fileManager.selectedFile?.mimeType) {
@@ -304,6 +414,35 @@ export function WorkspaceFileManagerPanel(props: { fileManager: FileManagerProps
     setCommandValue("");
   }
 
+  function handleDragOver(event: DragEvent<HTMLDivElement>) {
+    if (fileManager.workspaceReadOnly || fileManager.mutationBusy) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setDragActive(true);
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLDivElement>) {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      setDragActive(false);
+    }
+  }
+
+  async function handleDrop(event: DragEvent<HTMLDivElement>) {
+    if (fileManager.workspaceReadOnly || fileManager.mutationBusy) {
+      return;
+    }
+
+    event.preventDefault();
+    setDragActive(false);
+    const uploadItems = await collectDroppedFiles(event.dataTransfer);
+    if (uploadItems.length > 0) {
+      fileManager.uploadFiles(uploadItems);
+    }
+  }
+
   return (
     <>
       <input
@@ -331,7 +470,27 @@ export function WorkspaceFileManagerPanel(props: { fileManager: FileManagerProps
         </div>
       ) : (
         <div className="absolute inset-x-3 bottom-24 z-30 top-4 md:inset-x-auto md:bottom-28 md:right-6 md:top-6 md:w-[min(940px,calc(100%-3rem))]">
-          <div className="flex h-full flex-col overflow-hidden rounded-[28px] border border-black/10 bg-background/92 shadow-[0_32px_90px_-42px_rgba(15,23,42,0.55)] backdrop-blur-xl">
+          <div
+            className={cn(
+              "relative flex h-full flex-col overflow-hidden rounded-[28px] border bg-background/92 shadow-[0_32px_90px_-42px_rgba(15,23,42,0.55)] backdrop-blur-xl transition",
+              dragActive ? "border-primary/45 ring-4 ring-primary/10" : "border-black/10"
+            )}
+            onDragOver={handleDragOver}
+            onDragEnter={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
+            {dragActive ? (
+              <div className="pointer-events-none absolute inset-3 z-20 flex items-center justify-center rounded-[24px] border border-dashed border-primary/50 bg-background/80 backdrop-blur-sm">
+                <div className="text-center">
+                  <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                    <Upload className="h-5 w-5" />
+                  </div>
+                  <p className="mt-3 text-sm font-semibold text-foreground">Drop files or folders to upload</p>
+                  <p className="mt-1 text-xs text-muted-foreground">Folder structure is preserved under {displayPath}.</p>
+                </div>
+              </div>
+            ) : null}
             <div className="flex flex-wrap items-start justify-between gap-3 border-b border-black/8 px-4 py-4">
               <div className="min-w-0 space-y-2">
                 <div className="flex min-w-0 items-center gap-2">
@@ -429,7 +588,7 @@ export function WorkspaceFileManagerPanel(props: { fileManager: FileManagerProps
                     {fileManager.entries.length === 0 ? (
                       <div className="rounded-2xl border border-dashed border-black/10 px-4 py-8 text-center">
                         <p className="text-sm font-medium text-foreground">This directory is empty</p>
-                        <p className="mt-1 text-xs text-muted-foreground">Upload files or create a folder to get started.</p>
+                        <p className="mt-1 text-xs text-muted-foreground">Drop files/folders here, upload files, or create a folder to get started.</p>
                       </div>
                     ) : null}
 
@@ -468,7 +627,7 @@ export function WorkspaceFileManagerPanel(props: { fileManager: FileManagerProps
                           <File className="h-5 w-5" />
                         </div>
                         <p className="mt-4 text-sm font-medium text-foreground">Browse a directory or open a file</p>
-                        <p className="mt-1 text-sm text-muted-foreground">The panel supports upload, download, text editing, renaming, and recursive delete.</p>
+                        <p className="mt-1 text-sm text-muted-foreground">The panel supports drag-and-drop folder upload, download, text editing, renaming, and recursive delete.</p>
                       </div>
                     </div>
                   ) : selectedEntry.type === "directory" ? (

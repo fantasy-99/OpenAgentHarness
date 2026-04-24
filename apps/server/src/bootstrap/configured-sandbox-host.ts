@@ -1,70 +1,33 @@
 import type { ServerConfig } from "@oah/config";
 import type { WorkerRegistry, WorkspacePlacementRegistry } from "@oah/engine-core";
 
-import {
-  createE2BCompatibleSandboxHost,
-  createHttpE2BCompatibleSandboxService
-} from "./e2b-compatible-sandbox-host.js";
-import { createNativeE2BSandboxService, normalizeE2BApiUrl } from "./native-e2b-sandbox-service.js";
-import { createMaterializationSandboxHost, type SandboxHost } from "./sandbox-host.js";
-import { resolveSelfHostedSandboxCreateBaseUrl } from "./self-hosted-sandbox-routing.js";
+import type { SandboxHost } from "./sandbox-host.js";
 import { trimToUndefined } from "./string-utils.js";
 import type { WorkspaceMaterializationManager } from "./workspace-materialization.js";
 
-function createRemoteSandboxHost(options: {
-  providerKind: "self_hosted" | "e2b";
-  baseUrl: string;
-  headers?: Record<string, string> | undefined;
-  workspacePlacementRegistry?: Pick<WorkspacePlacementRegistry, "listAll" | "assignOwnerAffinity"> | undefined;
-  workerRegistry?: Pick<WorkerRegistry, "listActive"> | undefined;
-}): SandboxHost {
-  return createE2BCompatibleSandboxHost({
-    providerKind: options.providerKind,
-    diagnostics: {
-      provider: options.providerKind,
-      transport: "http",
-      executionModel: "sandbox_hosted",
-      workerPlacement: "inside_sandbox"
-    },
-    service: createHttpE2BCompatibleSandboxService({
-      baseUrl: options.baseUrl,
-      ...(options.headers ? { headers: options.headers } : {}),
-      ...(options.providerKind === "self_hosted" && options.workspacePlacementRegistry
-        ? {
-            resolveCreateBaseUrl: (workspace) =>
-              resolveSelfHostedSandboxCreateBaseUrl({
-                baseUrl: options.baseUrl,
-                workspace,
-                workspacePlacementRegistry: options.workspacePlacementRegistry,
-                ...(options.workerRegistry ? { workerRegistry: options.workerRegistry } : {})
-              })
-          }
-        : {})
-    })
-  });
+let sandboxHostModulePromise: Promise<typeof import("./sandbox-host.js")> | undefined;
+let e2bCompatibleSandboxHostModulePromise: Promise<typeof import("./e2b-compatible-sandbox-host.js")> | undefined;
+let nativeE2BSandboxServiceModulePromise: Promise<typeof import("./native-e2b-sandbox-service.js")> | undefined;
+let selfHostedSandboxRoutingModulePromise: Promise<typeof import("./self-hosted-sandbox-routing.js")> | undefined;
+
+function loadSandboxHostModule(): Promise<typeof import("./sandbox-host.js")> {
+  sandboxHostModulePromise ??= import("./sandbox-host.js");
+  return sandboxHostModulePromise;
 }
 
-function createNativeE2BSandboxHost(options: {
-  apiKey?: string | undefined;
-  apiUrl?: string | undefined;
-  domain?: string | undefined;
-  headers?: Record<string, string> | undefined;
-  template?: string | undefined;
-  timeoutMs?: number | undefined;
-  requestTimeoutMs?: number | undefined;
-}): SandboxHost {
-  return createE2BCompatibleSandboxHost({
-    providerKind: "e2b",
-    service: createNativeE2BSandboxService({
-      ...(options.apiKey ? { apiKey: options.apiKey } : {}),
-      ...(options.apiUrl ? { apiUrl: options.apiUrl } : {}),
-      ...(options.domain ? { domain: options.domain } : {}),
-      ...(options.headers ? { headers: options.headers } : {}),
-      ...(options.template ? { template: options.template } : {}),
-      ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-      ...(options.requestTimeoutMs !== undefined ? { requestTimeoutMs: options.requestTimeoutMs } : {})
-    })
-  });
+function loadE2BCompatibleSandboxHostModule(): Promise<typeof import("./e2b-compatible-sandbox-host.js")> {
+  e2bCompatibleSandboxHostModulePromise ??= import("./e2b-compatible-sandbox-host.js");
+  return e2bCompatibleSandboxHostModulePromise;
+}
+
+function loadNativeE2BSandboxServiceModule(): Promise<typeof import("./native-e2b-sandbox-service.js")> {
+  nativeE2BSandboxServiceModulePromise ??= import("./native-e2b-sandbox-service.js");
+  return nativeE2BSandboxServiceModulePromise;
+}
+
+function loadSelfHostedSandboxRoutingModule(): Promise<typeof import("./self-hosted-sandbox-routing.js")> {
+  selfHostedSandboxRoutingModulePromise ??= import("./self-hosted-sandbox-routing.js");
+  return selfHostedSandboxRoutingModulePromise;
 }
 
 export async function createConfiguredSandboxHost(options: {
@@ -82,7 +45,7 @@ export async function createConfiguredSandboxHost(options: {
       return undefined;
     }
 
-    return createMaterializationSandboxHost({
+    return (await loadSandboxHostModule()).createMaterializationSandboxHost({
       materializationManager: options.workspaceMaterializationManager
     });
   }
@@ -93,22 +56,50 @@ export async function createConfiguredSandboxHost(options: {
       throw new Error("sandbox.self_hosted.base_url is required when sandbox.provider is self_hosted.");
     }
 
-    return createRemoteSandboxHost({
+    const [{ createE2BCompatibleSandboxHost, createHttpE2BCompatibleSandboxService }, { resolveSelfHostedSandboxCreateBaseUrl }] =
+      await Promise.all([loadE2BCompatibleSandboxHostModule(), loadSelfHostedSandboxRoutingModule()]);
+
+    return createE2BCompatibleSandboxHost({
       providerKind: "self_hosted",
-      baseUrl,
-      headers: options.config.sandbox?.self_hosted?.headers,
-      workspacePlacementRegistry: options.workspacePlacementRegistry,
-      workerRegistry: options.workerRegistry
+      diagnostics: {
+        provider: "self_hosted",
+        transport: "http",
+        executionModel: "sandbox_hosted",
+        workerPlacement: "inside_sandbox"
+      },
+      service: createHttpE2BCompatibleSandboxService({
+        baseUrl,
+        ...(options.config.sandbox?.self_hosted?.headers ? { headers: options.config.sandbox.self_hosted.headers } : {}),
+        ...(options.workspacePlacementRegistry
+          ? {
+              resolveCreateBaseUrl: (workspace) =>
+                resolveSelfHostedSandboxCreateBaseUrl({
+                  baseUrl,
+                  workspace,
+                  workspacePlacementRegistry: options.workspacePlacementRegistry,
+                  ...(options.workerRegistry ? { workerRegistry: options.workerRegistry } : {})
+                })
+            }
+          : {})
+      })
     });
   }
 
-  return createNativeE2BSandboxHost({
-    apiKey: trimToUndefined(options.config.sandbox?.e2b?.api_key),
-    apiUrl: normalizeE2BApiUrl(options.config.sandbox?.e2b?.base_url),
-    domain: trimToUndefined(options.config.sandbox?.e2b?.domain),
-    headers: options.config.sandbox?.e2b?.headers,
-    template: trimToUndefined(options.config.sandbox?.e2b?.template),
-    timeoutMs: options.config.sandbox?.e2b?.timeout_ms,
-    requestTimeoutMs: options.config.sandbox?.e2b?.request_timeout_ms
+  const [{ createE2BCompatibleSandboxHost }, { createNativeE2BSandboxService, normalizeE2BApiUrl }] = await Promise.all([
+    loadE2BCompatibleSandboxHostModule(),
+    loadNativeE2BSandboxServiceModule()
+  ]);
+
+  return createE2BCompatibleSandboxHost({
+    providerKind: "e2b",
+    service: createNativeE2BSandboxService({
+      apiKey: trimToUndefined(options.config.sandbox?.e2b?.api_key),
+      apiUrl: normalizeE2BApiUrl(options.config.sandbox?.e2b?.base_url),
+      domain: trimToUndefined(options.config.sandbox?.e2b?.domain),
+      headers: options.config.sandbox?.e2b?.headers,
+      template: trimToUndefined(options.config.sandbox?.e2b?.template),
+      timeoutMs: options.config.sandbox?.e2b?.timeout_ms,
+      requestTimeoutMs: options.config.sandbox?.e2b?.request_timeout_ms
+    })
   });
 }

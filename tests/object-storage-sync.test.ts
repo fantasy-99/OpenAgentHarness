@@ -89,6 +89,7 @@ const tempDirs: string[] = [];
 
 async function importObjectStorageWithFsOverrides(overrides: Partial<typeof import("node:fs/promises")>) {
   vi.resetModules();
+  vi.stubEnv("OAH_NATIVE_WORKSPACE_SYNC", "0");
   vi.doMock("node:fs/promises", async () => {
     const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
     return { ...actual, ...overrides };
