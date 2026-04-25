@@ -109,3 +109,37 @@ worker Pod 侧至少需要保证这些目录可用：
 当前仍未完成：
 
 - 若还要继续深化，主要会是更细粒度的组织内部多环境 values/overlay 约定，而不是平台能力缺口
+
+## Kubernetes 运行契约
+
+当前 split skeleton 在 Kubernetes 上推荐按下面这组契约运行：
+
+- `oah-api`
+  - 只暴露外部 API 面
+  - 不直接承担 standalone worker drain 生命周期
+- `oah-controller`
+  - 负责 backlog / worker registry / placement 观测
+  - 通过 `scale_target.kubernetes` 作用到 `oah-sandbox`
+  - 多副本时通过 Lease 保证只有 leader 执行 reconcile
+- `oah-sandbox`
+  - 在 Pod 终止前先进入 `draining`
+  - `/readyz` 在 drain 开始后应立即转为 `503`
+  - 只在 drain 超时后才走 run recovery / requeue 策略
+
+当前 K8S scale target 的结果语义也应这样理解：
+
+- `accepted`
+  - scale 请求已经被 API 接受，但目标 Deployment spec 还没完全收敛
+- `progressing`
+  - 目标 Deployment 已指向新副本数，但 rollout 还没 ready
+- `ready`
+  - 目标 Deployment 的 rollout 已达到 ready 状态
+- `blocked`
+  - controller 策略当前阻止缩容
+- `error`
+  - selector、权限、超时、K8S API 错误等导致 reconcile 失败
+
+这组语义的意义在于：
+
+- controller log / snapshot / metrics 不再只回答“有没有 patch 成功”
+- 还会回答“容量是不是已经真正 ready”

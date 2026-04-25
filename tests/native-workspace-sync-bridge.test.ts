@@ -114,6 +114,7 @@ function createOneShotChild(command: string) {
 
 afterEach(async () => {
   process.chdir(originalCwd);
+  delete (globalThis as { __oahNativeWorkspaceSyncGlobalState?: unknown }).__oahNativeWorkspaceSyncGlobalState;
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.resetModules();

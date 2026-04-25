@@ -54,6 +54,10 @@ spec:
               value: {{ printf "%s/server.yaml" .Values.config.mountPath }}
             - name: OAH_INTERNAL_BASE_URL
               value: http://$(HOSTNAME).{{ include "open-agent-harness.workerInternalServiceName" . }}.{{ .Release.Namespace }}.svc.{{ .Values.global.clusterDomain }}:{{ .Values.worker.service.port }}
+            - name: OAH_WORKER_DRAIN_TIMEOUT_MS
+              value: {{ .Values.worker.drain.timeoutMs | quote }}
+            - name: OAH_WORKER_DRAIN_TIMEOUT_STRATEGY
+              value: {{ .Values.worker.drain.timeoutStrategy | quote }}
             {{- with .Values.worker.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -68,6 +72,20 @@ spec:
             {{- include "open-agent-harness.probe" (dict "probe" .Values.worker.readinessProbe) | nindent 12 }}
           livenessProbe:
             {{- include "open-agent-harness.probe" (dict "probe" .Values.worker.livenessProbe) | nindent 12 }}
+          {{- if .Values.worker.drain.preStop.enabled }}
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - node
+                  - -e
+                  - >-
+                    const delayMs = {{ .Values.worker.drain.preStop.delayMs }};
+                    const requestTimeoutMs = Math.max(1000, Math.min(delayMs, 4000));
+                    fetch("http://127.0.0.1:{{ .Values.worker.service.port }}{{ .Values.worker.drain.preStop.path }}", { method: "POST", signal: AbortSignal.timeout(requestTimeoutMs) })
+                    .catch(() => undefined)
+                    .finally(() => { setTimeout(() => process.exit(0), delayMs); });
+          {{- end }}
           volumeMounts:
             - name: oah-config
               mountPath: {{ .Values.config.mountPath }}

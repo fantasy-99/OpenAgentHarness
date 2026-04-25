@@ -35,6 +35,10 @@ spec:
               value: /etc/oah/server.yaml
             - name: OAH_INTERNAL_BASE_URL
               value: http://$(HOSTNAME).oah-sandbox-internal.open-agent-harness.svc.cluster.local:8787
+            - name: OAH_WORKER_DRAIN_TIMEOUT_MS
+              value: "110000"
+            - name: OAH_WORKER_DRAIN_TIMEOUT_STRATEGY
+              value: requeue_running
           ports:
             - containerPort: 8787
               name: http
@@ -46,6 +50,18 @@ spec:
             httpGet:
               path: /healthz
               port: http
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - node
+                  - -e
+                  - >-
+                    const delayMs = 5000;
+                    const requestTimeoutMs = Math.max(1000, Math.min(delayMs, 4000));
+                    fetch("http://127.0.0.1:8787/internal/v1/control/drain", { method: "POST", signal: AbortSignal.timeout(requestTimeoutMs) })
+                    .catch(() => undefined)
+                    .finally(() => { setTimeout(() => process.exit(0), delayMs); });
           volumeMounts:
             - name: oah-config
               mountPath: /etc/oah

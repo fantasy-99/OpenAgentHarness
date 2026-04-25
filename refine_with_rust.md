@@ -117,9 +117,15 @@ Current judgment:
   - `96 files x 4 KiB`:
     TS `bundle-primary` push `2` requests / `64ms`, warm push `1` request / `5ms`, materialize `2 GET` / `39ms`, pull `2 GET` / `41ms`, push RSS peak `0.11 MiB`
   - `96 files x 4 KiB`:
-    native persistent push `2` requests / `131ms`, warm push `1` request / `3ms`, materialize `1 GET` / `13ms`, pull `1 GET` / `13ms`
+    native persistent push `2` requests / `140ms`, warm push `1` request / `4ms`, materialize `1 GET` / `15ms`, pull `1 GET` / `14ms`
+- native push now also reports phase timings:
+    on the same sample, native persistent cold push spends about `28ms` in the primary-bundle path itself (`bundle build ~10ms`, `bundle upload ~13ms`, `manifest write ~3ms`)
+- persistent worker startup now also prewarms the S3 client stack:
+    on the latest sample, native persistent `sync-local-to-remote` reports `clientCreate=0ms` and `commandTotal ~30ms`, while that first-time client-init cost is shifted into worker startup / first persistent command instead
+- bridge and worker timing now also show where the remaining cold-push latency lives:
+    on the latest sample, native persistent cold push still measures about `151ms` in the TS bridge, but only about `27ms` in worker `handle` time and about `123ms` in `receiveDelay`, meaning the dominant cold-path gap is now "request reaches worker late" rather than object-store work or Rust sync execution
   - current interpretation:
-    on trusted mainline prefixes, TS `bundle-primary` and native persistent now both avoid any cold-push read request; TS remains the faster first-push path, while native persistent still wins most clearly on steady-state restore/materialize
+    on trusted mainline prefixes, TS `bundle-primary` and native persistent now both avoid any cold-push read request; after persistent prewarm, the remaining native cold-push gap is no longer mainly inside Rust sync execution and is now traced primarily to worker request receive delay / bridge orchestration before the worker begins handling the command
 
 ### 2. Archive Export
 
@@ -244,6 +250,9 @@ The biggest remaining problems are now on the workspace side:
 - sidecar overhead is still too visible in sync/materialization
 - non-trusted TS `bundle-primary` cold push still keeps the unmanaged-prefix safety probe, by design
 - native persistent wins clearly on warm push and restore/materialize, but native cold push is still slower than TS `bundle-primary` even after request-count parity
+- native cold push now has phase-level proof that only about `28-30ms` of the `136-140ms` persistent path is inside the Rust sync command, so the remaining latency is likely in bridge / IPC / first-call orchestration rather than object-store requests or bundle build/upload
+- native cold push now has an even tighter proof point:
+  on the current sample, about `123ms` of the `151ms` persistent bridge time appears before the worker starts parsing the request at all, so the next optimization target should move from Rust sync internals to worker readiness / stdin receive latency / first-async-command orchestration
 - seed upload cold-start still pays for the first archive build, even though eager archive warming now overlaps part of that work and warm repeated initialization reuses the archive
 - prepared workspace reuse can be pushed harder
 - Docker-heavy cases still need broader benchmark proof before we call the rollout universally proven, even though the main Docker runtime path now defaults to native persistent mode
@@ -261,7 +270,10 @@ Focus on the most frequently exercised hot path.
 
 Next work:
 
-- reduce sidecar startup overhead for sync operations
+- reduce native invocation and runtime setup overhead for sync operations
+- add bridge-level timing around persistent worker request write / queue / response-read so the remaining `~100ms` outside Rust `commandTotal` is no longer opaque
+- add a targeted warmup or readiness strategy for the first async persistent command, because the dominant remaining cold-path cost now shows up as worker-side `receiveDelay` rather than `handle` time
+- decide whether the persistent bridge should keep hot workers even earlier in the server lifecycle, so first real sync work does not pay worker-start / prewarm cost on the request path
 - keep the trusted-prefix fast path scoped to truly managed prefixes, and avoid widening it into unsafe default behavior
 - keep more scan / diff / execute work inside Rust once invoked
 - reduce repeated JSON bridge overhead on large directory trees

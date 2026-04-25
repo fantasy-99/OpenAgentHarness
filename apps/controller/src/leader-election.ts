@@ -13,8 +13,13 @@ export interface ControllerLeaderElectionStatus {
   leaseName?: string | undefined;
   lastAttemptAt?: string | undefined;
   lastRenewAt?: string | undefined;
+  lastLeadershipChangeAt?: string | undefined;
+  leadershipChanges?: number | undefined;
   observedHolderIdentity?: string | undefined;
   lastError?: string | undefined;
+  leaseDurationMs?: number | undefined;
+  renewIntervalMs?: number | undefined;
+  retryIntervalMs?: number | undefined;
 }
 
 export interface ControllerLeaderElectionLogger {
@@ -237,6 +242,8 @@ class NoopControllerLeaderElector implements ControllerLeaderElector {
   readonly #onGainedLeadership: () => Promise<void> | void;
   #running = false;
   #leader = false;
+  #leadershipChanges = 0;
+  #lastLeadershipChangeAt: string | undefined;
 
   constructor(
     config: Extract<ResolvedControllerLeaderElectionConfig, { type: "noop" }>,
@@ -255,6 +262,8 @@ class NoopControllerLeaderElector implements ControllerLeaderElector {
 
     this.#running = true;
     this.#leader = true;
+    this.#leadershipChanges += 1;
+    this.#lastLeadershipChangeAt = new Date().toISOString();
     void Promise.resolve(this.#onGainedLeadership());
   }
 
@@ -263,7 +272,9 @@ class NoopControllerLeaderElector implements ControllerLeaderElector {
       running: this.#running,
       kind: this.kind,
       leader: this.#leader,
-      identity: this.#identity
+      identity: this.#identity,
+      leadershipChanges: this.#leadershipChanges,
+      ...(this.#lastLeadershipChangeAt ? { lastLeadershipChangeAt: this.#lastLeadershipChangeAt } : {})
     };
   }
 
@@ -313,7 +324,11 @@ class KubernetesControllerLeaderElector implements ControllerLeaderElector {
       leader: false,
       identity: config.identity,
       namespace: config.namespace,
-      leaseName: config.leaseName
+      leaseName: config.leaseName,
+      leaseDurationMs: config.leaseDurationMs,
+      renewIntervalMs: config.renewIntervalMs,
+      retryIntervalMs: config.retryIntervalMs,
+      leadershipChanges: 0
     };
   }
 
@@ -377,15 +392,26 @@ class KubernetesControllerLeaderElector implements ControllerLeaderElector {
       running: this.#running,
       leader,
       lastAttemptAt: attemptAt,
-      ...(lastError ? { lastError } : {})
+      ...(lastError ? { lastError } : { lastError: undefined })
     };
 
     if (!wasLeader && leader) {
+      const leadershipChanges = (this.#status.leadershipChanges ?? 0) + 1;
+      const changedAt = new Date().toISOString();
+      this.#status = {
+        ...this.#status,
+        leadershipChanges,
+        lastLeadershipChangeAt: changedAt
+      };
       this.#logger?.info?.(
         `[controller] leadership acquired lease=${this.#config.leaseName} identity=${this.#config.identity}`
       );
       await Promise.resolve(this.#onGainedLeadership());
     } else if (wasLeader && !leader) {
+      this.#status = {
+        ...this.#status,
+        lastLeadershipChangeAt: new Date().toISOString()
+      };
       this.#logger?.warn(
         `[controller] leadership lost lease=${this.#config.leaseName} identity=${this.#config.identity}${
           lastError ? ` error=${lastError}` : ""

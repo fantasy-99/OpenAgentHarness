@@ -84,6 +84,7 @@ export interface AppDependencies {
   clearWorkspaceCoordination?: ((workspaceId: string) => Promise<void>) | undefined;
   healthCheck?: () => Promise<HealthReport> | HealthReport;
   readinessCheck?: () => Promise<ReadinessReport> | ReadinessReport;
+  beginDrain?: (() => Promise<void> | void) | undefined;
   storageAdmin?: StorageAdmin;
   appendEngineLog?: (input: {
     sessionId: string;

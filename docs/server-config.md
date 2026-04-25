@@ -205,6 +205,83 @@ llm:
 > **tip**
 > 当前 controller 的职责边界已经固定为“只管理 sandbox fleet”。sandbox 内 worker 要开几个线程、几个 slot、是否多进程，都由 worker 自己决定并通过 registry 上报容量；controller 只消费这些观测值来决定 sandbox 副本数与放置策略。
 
+### Kubernetes 契约
+
+如果后续部署到 Kubernetes，建议把下面这组字段当成正式契约来理解，而不是“示例值”：
+
+#### `workers.controller.leader_election.kubernetes.*`
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `namespace` | 是 | Lease 所在 namespace |
+| `lease_name` | 是 | leader election 使用的 Lease 名称 |
+| `api_url` | 否 | Kubernetes API 地址；省略时优先使用 in-cluster `KUBERNETES_SERVICE_*` |
+| `token_file` | 否 | ServiceAccount token 路径；默认 `/var/run/secrets/kubernetes.io/serviceaccount/token` |
+| `ca_file` | 否 | Kubernetes CA 证书路径；默认 `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt` |
+| `skip_tls_verify` | 否 | 仅用于开发调试；生产不建议开启 |
+| `lease_duration_ms` | 否 | leader lease 持有时长 |
+| `renew_interval_ms` | 否 | leader 实例续约周期 |
+| `retry_interval_ms` | 否 | 非 leader / 失败重试周期 |
+| `identity` | 否 | 显式 leader identity；默认优先取 `HOSTNAME` |
+
+约束：
+
+- `lease_duration_ms` 应显著大于 `renew_interval_ms`
+- `renew_interval_ms` 应大于或等于 `retry_interval_ms`
+- 若 controller 计划跑多副本，这组参数必须按环境调优，而不是直接复用本地默认值
+
+#### `workers.controller.scale_target.kubernetes.*`
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `namespace` | 是 | 目标 workload 所在 namespace |
+| `deployment` | 条件必填 | 显式指定要缩放的 Deployment 名称 |
+| `label_selector` | 条件必填 | 用 selector 自动发现目标 Deployment；与 `deployment` 二选一即可 |
+| `api_url` | 否 | Kubernetes API 地址；省略时优先使用 in-cluster `KUBERNETES_SERVICE_*` |
+| `token_file` | 否 | ServiceAccount token 路径 |
+| `ca_file` | 否 | Kubernetes CA 证书路径 |
+| `skip_tls_verify` | 否 | 仅用于开发调试；生产不建议开启 |
+
+约束：
+
+- `deployment` 与 `label_selector` 至少要有一个
+- 若使用 `label_selector`，它必须稳定且只能命中一个 worker Deployment
+- 当前 target 仍以 `Deployment` 为正式目标模型；后续若扩到 `StatefulSet`，会单独扩展配置结构
+
+环境变量覆盖关系：
+
+- `OAH_CONTROLLER_LEADER_ELECTION_TYPE`
+- `OAH_CONTROLLER_LEASE_NAMESPACE`
+- `OAH_CONTROLLER_LEASE_NAME`
+- `OAH_CONTROLLER_LEASE_API_URL`
+- `OAH_CONTROLLER_LEASE_TOKEN_FILE`
+- `OAH_CONTROLLER_LEASE_CA_FILE`
+- `OAH_CONTROLLER_LEASE_SKIP_TLS_VERIFY`
+- `OAH_CONTROLLER_LEASE_DURATION_MS`
+- `OAH_CONTROLLER_LEASE_RENEW_INTERVAL_MS`
+- `OAH_CONTROLLER_LEASE_RETRY_INTERVAL_MS`
+- `OAH_CONTROLLER_LEASE_IDENTITY`
+- `OAH_CONTROLLER_TARGET_TYPE`
+- `OAH_CONTROLLER_TARGET_NAMESPACE`
+- `OAH_CONTROLLER_TARGET_DEPLOYMENT`
+- `OAH_CONTROLLER_TARGET_LABEL_SELECTOR`
+- `OAH_CONTROLLER_KUBE_API_URL`
+- `OAH_CONTROLLER_KUBE_TOKEN_FILE`
+- `OAH_CONTROLLER_KUBE_CA_FILE`
+- `OAH_CONTROLLER_KUBE_SKIP_TLS_VERIFY`
+
+运行时语义：
+
+- controller 计算 `desiredReplicas`
+- `scale_target.kubernetes` 负责把目标值 patch 到 `Deployment /scale`
+- 最新 reconcile 结果会区分：
+  - 目标已接受但 rollout 仍未收敛
+  - rollout 正在进行
+  - rollout 已 ready
+  - selector / 权限 / API 异常导致的失败
+
+这意味着在 K8S 上，“副本数 patch 成功”不再等同于“容量已经 ready”。
+
 ---
 
 ## 目录说明

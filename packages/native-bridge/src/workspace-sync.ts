@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { performance } from "node:perf_hooks";
 
 import { resolveWorkspaceSyncBinary } from "./resolve-binary.js";
 
@@ -25,6 +26,8 @@ function parseJsonPayload<T>(payload: string, source: "stdout" | "stderr"): T {
 interface NativeCommandSuccessResponse {
   ok: true;
   protocolVersion: number;
+  bridgeTimings?: NativeWorkspaceSyncBridgeTimings | undefined;
+  workerTimings?: NativeWorkspaceSyncWorkerTimings | undefined;
 }
 
 interface NativeCommandFailureResponse {
@@ -159,15 +162,35 @@ export interface NativeObjectStoreRequestCounts {
   deleteRequests: number;
 }
 
+export interface NativeWorkspaceSyncBridgeTimings {
+  mode: "persistent" | "oneshot";
+  poolInitMs: number;
+  queueWaitMs: number;
+  writeMs: number;
+  responseWaitMs: number;
+  totalBridgeMs: number;
+}
+
+export interface NativeWorkspaceSyncWorkerTimings {
+  receiveDelayMs: number;
+  parseMs: number;
+  handleMs: number;
+  serializeMs: number;
+  writeMs: number;
+  totalWorkerMs: number;
+}
+
 export interface NativeSyncLocalToRemotePhaseTimings {
   scanMs: number;
   fingerprintMs: number;
+  clientCreateMs: number;
   manifestReadMs: number;
   bundleBuildMs: number;
   bundleUploadMs: number;
   manifestWriteMs: number;
   deleteMs: number;
   totalPrimaryPathMs: number;
+  totalCommandMs: number;
 }
 
 export interface NativeSyncLocalToRemoteResult extends NativeCommandSuccessResponse {
@@ -207,6 +230,7 @@ interface NativeWorkspaceSyncWorkerRequest {
   requestId: string;
   command: string;
   payload?: Record<string, unknown>;
+  sentAtMs?: number | undefined;
 }
 
 interface NativeWorkspaceSyncWorkerSuccessResponse extends NativeCommandSuccessResponse {
@@ -217,9 +241,24 @@ interface NativeWorkspaceSyncWorkerFailureResponse extends NativeCommandFailureR
   requestId: string;
 }
 
-let nativeWorkspaceSyncWorkerPoolPromise: Promise<NativeWorkspaceSyncWorkerPool> | undefined;
-let nativeWorkspaceSyncRequestSequence = 0;
 const nativeWorkspaceSyncStdinStreams = new WeakSet<object>();
+type NativeWorkspaceSyncGlobalState = {
+  workerPoolPromise?: Promise<NativeWorkspaceSyncWorkerPool> | undefined;
+  requestSequence: number;
+};
+
+function getNativeWorkspaceSyncGlobalState(): NativeWorkspaceSyncGlobalState {
+  const scope = globalThis as typeof globalThis & {
+    __oahNativeWorkspaceSyncGlobalState?: NativeWorkspaceSyncGlobalState | undefined;
+  };
+  scope.__oahNativeWorkspaceSyncGlobalState ??= {
+    workerPoolPromise: undefined,
+    requestSequence: 0
+  };
+  return scope.__oahNativeWorkspaceSyncGlobalState;
+}
+
+const nativeWorkspaceSyncGlobalState = getNativeWorkspaceSyncGlobalState();
 
 function resolveNativeWorkspaceSyncWorkerCount(): number {
   const explicit = process.env.OAH_NATIVE_WORKSPACE_SYNC_WORKERS?.trim();
@@ -237,6 +276,7 @@ function isPersistentNativeWorkspaceSyncEnabled(): boolean {
 
 function shouldUsePersistentNativeWorkspaceSyncCommand(command: string): boolean {
   return [
+    "ready",
     "fingerprint",
     "fingerprint-batch",
     "scan-local-tree",
@@ -344,12 +384,15 @@ class NativeWorkspaceSyncWorker {
     command: string,
     payload?: Record<string, unknown>
   ): Promise<TResponse> {
+    const queuedAt = performance.now();
     const run = async (): Promise<TResponse> => {
+      const commandStartedAt = performance.now();
+      const queueWaitMs = Math.max(0, Math.round(commandStartedAt - queuedAt));
       if (this.#closed) {
         throw new NativeWorkspaceSyncBridgeError("Native workspace sync worker is no longer available.", "native_worker_closed");
       }
 
-      const requestId = `workspace-sync-${Date.now()}-${nativeWorkspaceSyncRequestSequence += 1}`;
+      const requestId = `workspace-sync-${Date.now()}-${nativeWorkspaceSyncGlobalState.requestSequence += 1}`;
       const responsePromise = new Promise<NativeWorkspaceSyncWorkerSuccessResponse>((resolve, reject) => {
         const timeoutHandle = setTimeout(() => {
           this.#pendingResponses.delete(requestId);
@@ -371,11 +414,26 @@ class NativeWorkspaceSyncWorker {
         const request: NativeWorkspaceSyncWorkerRequest = {
           requestId,
           command,
+          sentAtMs: Date.now(),
           ...(payload !== undefined ? { payload } : {})
         };
+        const writeStartedAt = performance.now();
         await writeNativeWorkspaceSyncPayload(this.#child, `${JSON.stringify(request)}\n`);
+        const writeMs = Math.max(0, Math.round(performance.now() - writeStartedAt));
+        const responseWaitStartedAt = performance.now();
         const response = await responsePromise;
-        return response as unknown as TResponse;
+        const responseWaitMs = Math.max(0, Math.round(performance.now() - responseWaitStartedAt));
+        return {
+          ...(response as unknown as TResponse),
+          bridgeTimings: {
+            mode: "persistent",
+            poolInitMs: 0,
+            queueWaitMs,
+            writeMs,
+            responseWaitMs,
+            totalBridgeMs: Math.max(0, Math.round(performance.now() - commandStartedAt))
+          }
+        };
       } catch (error) {
         const pending = this.#pendingResponses.get(requestId);
         if (pending) {
@@ -498,33 +556,47 @@ async function getNativeWorkspaceSyncWorkerPool(): Promise<NativeWorkspaceSyncWo
     );
   }
 
-  nativeWorkspaceSyncWorkerPoolPromise ??= Promise.resolve(
-    new NativeWorkspaceSyncWorkerPool(
-      Array.from({ length: resolveNativeWorkspaceSyncWorkerCount() }, () =>
-        new NativeWorkspaceSyncWorker(
-          spawn(binary, ["serve"], {
-            stdio: ["pipe", "pipe", "pipe"]
-          }),
-          () => {
-            nativeWorkspaceSyncWorkerPoolPromise = undefined;
-          }
-        )
+  nativeWorkspaceSyncGlobalState.workerPoolPromise ??= (async () => {
+    const workers = Array.from({ length: resolveNativeWorkspaceSyncWorkerCount() }, () =>
+      new NativeWorkspaceSyncWorker(
+        spawn(binary, ["serve"], {
+          stdio: ["pipe", "pipe", "pipe"]
+        }),
+        () => {
+          nativeWorkspaceSyncGlobalState.workerPoolPromise = undefined;
+        }
       )
-    )
-  );
-  return nativeWorkspaceSyncWorkerPoolPromise;
+    );
+    try {
+      await Promise.all(workers.map((worker) => worker.runCommand<NativeCommandSuccessResponse>("ready")));
+      return new NativeWorkspaceSyncWorkerPool(workers);
+    } catch (error) {
+      await Promise.all(workers.map((worker) => worker.close().catch(() => undefined)));
+      throw error;
+    }
+  })();
+  return nativeWorkspaceSyncGlobalState.workerPoolPromise;
 }
 
 export async function shutdownNativeWorkspaceSyncWorkerPool(): Promise<void> {
-  const workerPool = await nativeWorkspaceSyncWorkerPoolPromise?.catch(() => undefined);
-  nativeWorkspaceSyncWorkerPoolPromise = undefined;
+  const workerPool = await nativeWorkspaceSyncGlobalState.workerPoolPromise?.catch(() => undefined);
+  nativeWorkspaceSyncGlobalState.workerPoolPromise = undefined;
   await workerPool?.close();
+}
+
+export async function ensureNativeWorkspaceSyncWorkerPoolReady(): Promise<void> {
+  if (!isNativeWorkspaceSyncEnabled() || !isPersistentNativeWorkspaceSyncEnabled()) {
+    return;
+  }
+
+  await getNativeWorkspaceSyncWorkerPool();
 }
 
 async function runNativeWorkspaceSyncCommandOnce<TResponse extends NativeCommandSuccessResponse>(
   args: string[],
   payload?: Record<string, unknown>
 ): Promise<TResponse> {
+  const commandStartedAt = performance.now();
   const binary = resolveWorkspaceSyncBinary();
   if (!binary) {
     throw new NativeWorkspaceSyncBridgeError(
@@ -553,11 +625,15 @@ async function runNativeWorkspaceSyncCommandOnce<TResponse extends NativeCommand
     stderr += chunk.toString();
   });
 
+  let writeMs = 0;
   if (payload !== undefined) {
+    const writeStartedAt = performance.now();
     child.stdin.write(JSON.stringify(payload));
+    writeMs = Math.max(0, Math.round(performance.now() - writeStartedAt));
   }
   child.stdin.end();
 
+  const responseWaitStartedAt = performance.now();
   const exitCode = await new Promise<number>((resolve, reject) => {
     child.on("error", reject);
     child.on("close", (code) => resolve(code ?? 0));
@@ -589,7 +665,17 @@ async function runNativeWorkspaceSyncCommandOnce<TResponse extends NativeCommand
     );
   }
 
-  return response;
+  return {
+    ...response,
+    bridgeTimings: {
+      mode: "oneshot",
+      poolInitMs: 0,
+      queueWaitMs: 0,
+      writeMs,
+      responseWaitMs: Math.max(0, Math.round(performance.now() - responseWaitStartedAt)),
+      totalBridgeMs: Math.max(0, Math.round(performance.now() - commandStartedAt))
+    }
+  };
 }
 
 async function runNativeWorkspaceSyncCommand<TResponse extends NativeCommandSuccessResponse>(
@@ -598,8 +684,21 @@ async function runNativeWorkspaceSyncCommand<TResponse extends NativeCommandSucc
 ): Promise<TResponse> {
   if (isPersistentNativeWorkspaceSyncEnabled() && args.length === 1 && shouldUsePersistentNativeWorkspaceSyncCommand(args[0]!)) {
     try {
+      const poolInitStartedAt = performance.now();
       const workerPool = await getNativeWorkspaceSyncWorkerPool();
-      return await workerPool.runCommand<TResponse>(args[0]!, payload);
+      const poolInitMs = Math.max(0, Math.round(performance.now() - poolInitStartedAt));
+      const response = await workerPool.runCommand<TResponse>(args[0]!, payload);
+      return {
+        ...response,
+        bridgeTimings: {
+          mode: "persistent",
+          poolInitMs,
+          queueWaitMs: response.bridgeTimings?.queueWaitMs ?? 0,
+          writeMs: response.bridgeTimings?.writeMs ?? 0,
+          responseWaitMs: response.bridgeTimings?.responseWaitMs ?? 0,
+          totalBridgeMs: poolInitMs + (response.bridgeTimings?.totalBridgeMs ?? 0)
+        }
+      };
     } catch (error) {
       console.warn(
         `[oah-native] Falling back to one-shot native workspace sync for ${args.join(" ")}: ${

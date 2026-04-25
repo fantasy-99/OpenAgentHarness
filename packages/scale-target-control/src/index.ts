@@ -8,6 +8,17 @@ import type { ServerConfig } from "@oah/config-server-control";
 
 export type WorkerReplicaTargetOutcome = "disabled" | "steady" | "scaled" | "blocked_scale_down" | "error";
 
+export type WorkerReplicaTargetPhase = "disabled" | "steady" | "accepted" | "progressing" | "ready" | "blocked" | "error";
+
+export interface WorkerReplicaTargetRef {
+  platform: "kubernetes" | "docker_compose" | "noop";
+  kind?: string | undefined;
+  namespace?: string | undefined;
+  name?: string | undefined;
+  discovery?: "explicit" | "label_selector" | undefined;
+  selector?: string | undefined;
+}
+
 export interface WorkerReplicaTargetInput {
   timestamp: string;
   reason: string;
@@ -29,6 +40,16 @@ export interface WorkerReplicaTargetResult {
   appliedReplicas?: number | undefined;
   outcome: WorkerReplicaTargetOutcome;
   at: string;
+  phase?: WorkerReplicaTargetPhase | undefined;
+  stage?: "discover_target" | "read_state" | "apply_scale" | "observe_rollout" | undefined;
+  reasonCode?: string | undefined;
+  targetRef?: WorkerReplicaTargetRef | undefined;
+  generation?: number | undefined;
+  observedGeneration?: number | undefined;
+  readyReplicas?: number | undefined;
+  updatedReplicas?: number | undefined;
+  availableReplicas?: number | undefined;
+  unavailableReplicas?: number | undefined;
   message?: string | undefined;
 }
 
@@ -118,6 +139,36 @@ export interface JsonHttpRequest {
   caFile?: string | undefined;
   skipTlsVerify?: boolean | undefined;
   timeoutMs?: number | undefined;
+}
+
+interface KubernetesDeploymentObservation {
+  specReplicas?: number | undefined;
+  statusReplicas?: number | undefined;
+  readyReplicas?: number | undefined;
+  updatedReplicas?: number | undefined;
+  availableReplicas?: number | undefined;
+  unavailableReplicas?: number | undefined;
+  generation?: number | undefined;
+  observedGeneration?: number | undefined;
+}
+
+class KubernetesReplicaTargetError extends Error {
+  readonly code: string;
+  readonly stage: "discover_target" | "read_state" | "apply_scale" | "observe_rollout";
+  readonly status?: number | undefined;
+
+  constructor(input: {
+    message: string;
+    code: string;
+    stage: "discover_target" | "read_state" | "apply_scale" | "observe_rollout";
+    status?: number | undefined;
+  }) {
+    super(input.message);
+    this.name = "KubernetesReplicaTargetError";
+    this.code = input.code;
+    this.stage = input.stage;
+    this.status = input.status;
+  }
 }
 
 export interface DockerComposeCommandInput {
@@ -348,6 +399,10 @@ export function createNoopWorkerReplicaTarget(config: { allowScaleDown: boolean 
         desiredReplicas: input.desiredReplicas,
         outcome: "disabled",
         at: input.timestamp,
+        phase: "disabled",
+        targetRef: {
+          platform: "noop"
+        },
         message: "scale target disabled"
       };
     }
@@ -365,95 +420,190 @@ export function createKubernetesWorkerReplicaTarget(
   return {
     kind: "kubernetes",
     async reconcile(input) {
-      const deploymentName =
-        config.kubernetes.deployment ??
-        (await discoverKubernetesDeploymentName(
+      let targetRef: WorkerReplicaTargetRef | undefined;
+      let observedState: KubernetesDeploymentObservation | undefined;
+      let observedReplicas: number | undefined;
+
+      try {
+        const deploymentName =
+          config.kubernetes.deployment ??
+          (await discoverKubernetesDeploymentName(
+            {
+              namespace: config.kubernetes.namespace,
+              labelSelector: config.kubernetes.labelSelector!,
+              apiUrl: config.kubernetes.apiUrl,
+              tokenFile: config.kubernetes.tokenFile,
+              caFile: config.kubernetes.caFile,
+              skipTlsVerify: config.kubernetes.skipTlsVerify
+            },
+            request
+          ));
+        targetRef = {
+          platform: "kubernetes",
+          kind: "Deployment",
+          namespace: config.kubernetes.namespace,
+          name: deploymentName,
+          discovery: config.kubernetes.deployment ? "explicit" : "label_selector",
+          ...(config.kubernetes.labelSelector ? { selector: config.kubernetes.labelSelector } : {})
+        };
+
+        const authHeaders = await buildKubernetesAuthHeaders(config.kubernetes.tokenFile);
+        observedState = await readKubernetesDeploymentState(
           {
-            namespace: config.kubernetes.namespace,
-            labelSelector: config.kubernetes.labelSelector!,
             apiUrl: config.kubernetes.apiUrl,
-            tokenFile: config.kubernetes.tokenFile,
+            namespace: config.kubernetes.namespace,
+            deployment: deploymentName,
+            headers: authHeaders,
             caFile: config.kubernetes.caFile,
             skipTlsVerify: config.kubernetes.skipTlsVerify
           },
-          request
-        ));
-      const scaleUrl = buildKubernetesDeploymentScaleUrl({
-        apiUrl: config.kubernetes.apiUrl,
-        namespace: config.kubernetes.namespace,
-        deployment: deploymentName
-      });
-      const authHeaders = await buildKubernetesAuthHeaders(config.kubernetes.tokenFile);
-      const getResponse = await request({
-        url: scaleUrl,
-        method: "GET",
-        headers: {
-          ...authHeaders,
-          accept: "application/json"
-        },
-        caFile: config.kubernetes.caFile,
-        skipTlsVerify: config.kubernetes.skipTlsVerify
-      });
-      assertKubernetesSuccess("read deployment scale", getResponse);
-      const observedReplicas = parseReplicas(getResponse.body);
-      if (typeof observedReplicas === "number") {
-        if (!config.allowScaleDown && input.desiredReplicas < observedReplicas) {
-          return {
-            kind: "kubernetes",
+          request,
+          "read_state"
+        );
+        observedReplicas = observedState.specReplicas ?? observedState.statusReplicas;
+
+        if (typeof observedReplicas === "number" && !config.allowScaleDown && input.desiredReplicas < observedReplicas) {
+          return buildKubernetesResult({
+            input,
+            targetRef,
             attempted: true,
             applied: false,
-            desiredReplicas: input.desiredReplicas,
             observedReplicas,
             appliedReplicas: observedReplicas,
             outcome: "blocked_scale_down",
-            at: input.timestamp,
-            message: "scale down blocked by controller policy"
-          };
+            phase: "blocked",
+            reasonCode: "scale_down_disabled",
+            message: "scale down blocked by controller policy",
+            observedState
+          });
         }
 
-        if (input.desiredReplicas === observedReplicas) {
-          return {
-            kind: "kubernetes",
+        if (typeof observedReplicas === "number" && input.desiredReplicas === observedReplicas) {
+          const phase = isKubernetesDeploymentReady(observedState, input.desiredReplicas) ? "ready" : "progressing";
+          return buildKubernetesResult({
+            input,
+            targetRef,
             attempted: true,
             applied: false,
-            desiredReplicas: input.desiredReplicas,
             observedReplicas,
             appliedReplicas: observedReplicas,
             outcome: "steady",
-            at: input.timestamp
-          };
+            phase,
+            ...(phase === "progressing"
+              ? {
+                  reasonCode: "rollout_in_progress",
+                  stage: "observe_rollout" as const,
+                  message: "deployment already targets desired replicas but rollout is still progressing"
+                }
+              : {}),
+            observedState
+          });
         }
-      }
 
-      const patchResponse = await request({
-        url: scaleUrl,
-        method: "PATCH",
-        headers: {
-          ...authHeaders,
-          accept: "application/json",
-          "content-type": "application/merge-patch+json"
-        },
-        body: JSON.stringify({
-          spec: {
-            replicas: input.desiredReplicas
+        const scaleUrl = buildKubernetesDeploymentScaleUrl({
+          apiUrl: config.kubernetes.apiUrl,
+          namespace: config.kubernetes.namespace,
+          deployment: deploymentName
+        });
+        const patchResponse = await request({
+          url: scaleUrl,
+          method: "PATCH",
+          headers: {
+            ...authHeaders,
+            accept: "application/json",
+            "content-type": "application/merge-patch+json"
+          },
+          body: JSON.stringify({
+            spec: {
+              replicas: input.desiredReplicas
+            }
+          }),
+          caFile: config.kubernetes.caFile,
+          skipTlsVerify: config.kubernetes.skipTlsVerify
+        });
+        assertKubernetesSuccess("patch deployment scale", patchResponse, "apply_scale");
+        const appliedReplicas = parseReplicas(patchResponse.body) ?? input.desiredReplicas;
+
+        let postPatchState: KubernetesDeploymentObservation | undefined;
+        try {
+          postPatchState = await readKubernetesDeploymentState(
+            {
+              apiUrl: config.kubernetes.apiUrl,
+              namespace: config.kubernetes.namespace,
+              deployment: deploymentName,
+              headers: authHeaders,
+              caFile: config.kubernetes.caFile,
+              skipTlsVerify: config.kubernetes.skipTlsVerify
+            },
+            request,
+            "observe_rollout"
+          );
+        } catch (error) {
+          if (error instanceof KubernetesReplicaTargetError) {
+            return buildKubernetesResult({
+              input,
+              targetRef,
+              attempted: true,
+              applied: true,
+              observedReplicas,
+              appliedReplicas,
+              outcome: "scaled",
+              phase: "accepted",
+              reasonCode: "post_patch_observation_unavailable",
+              stage: "observe_rollout",
+              message: `scale request accepted but rollout observation is unavailable: ${error.message}`,
+              observedState
+            });
           }
-        }),
-        caFile: config.kubernetes.caFile,
-        skipTlsVerify: config.kubernetes.skipTlsVerify
-      });
-      assertKubernetesSuccess("patch deployment scale", patchResponse);
-      const appliedReplicas = parseReplicas(patchResponse.body) ?? input.desiredReplicas;
 
-      return {
-        kind: "kubernetes",
-        attempted: true,
-        applied: true,
-        desiredReplicas: input.desiredReplicas,
-        observedReplicas,
-        appliedReplicas,
-        outcome: "scaled",
-        at: input.timestamp
-      };
+          throw error;
+        }
+
+        const postPatchReplicas = postPatchState.specReplicas ?? postPatchState.statusReplicas ?? appliedReplicas;
+        const phase =
+          postPatchReplicas !== input.desiredReplicas
+            ? "accepted"
+            : isKubernetesDeploymentReady(postPatchState, input.desiredReplicas)
+              ? "ready"
+              : "progressing";
+
+        return buildKubernetesResult({
+          input,
+          targetRef,
+          attempted: true,
+          applied: true,
+          observedReplicas,
+          appliedReplicas: postPatchReplicas,
+          outcome: "scaled",
+          phase,
+          ...(phase === "accepted"
+            ? {
+                reasonCode: "scale_request_accepted",
+                stage: "apply_scale" as const,
+                message: "scale request accepted and waiting for deployment spec to converge"
+              }
+            : phase === "progressing"
+              ? {
+                  reasonCode: "rollout_in_progress",
+                  stage: "observe_rollout" as const,
+                  message: "deployment accepted the new replica target and rollout is progressing"
+                }
+              : {
+                  reasonCode: "rollout_ready",
+                  stage: "observe_rollout" as const,
+                  message: "deployment reached the desired replica target and is ready"
+                }),
+          observedState: postPatchState
+        });
+      } catch (error) {
+        return buildKubernetesErrorResult({
+          input,
+          error,
+          targetRef,
+          observedReplicas,
+          observedState
+        });
+      }
     }
   };
 }
@@ -575,6 +725,13 @@ export function createDockerComposeWorkerReplicaTarget(
           appliedReplicas: runningContainers.length,
           outcome: "blocked_scale_down",
           at: input.timestamp,
+          phase: "blocked",
+          reasonCode: "scale_down_disabled",
+          targetRef: {
+            platform: "docker_compose",
+            kind: "service",
+            name: config.dockerCompose.service
+          },
           message: "scale down blocked by controller policy"
         };
       }
@@ -588,7 +745,13 @@ export function createDockerComposeWorkerReplicaTarget(
           observedReplicas: runningContainers.length,
           appliedReplicas: runningContainers.length,
           outcome: "steady",
-          at: input.timestamp
+          at: input.timestamp,
+          phase: "steady",
+          targetRef: {
+            platform: "docker_compose",
+            kind: "service",
+            name: config.dockerCompose.service
+          }
         };
       }
 
@@ -618,6 +781,13 @@ export function createDockerComposeWorkerReplicaTarget(
         appliedReplicas: input.desiredReplicas,
         outcome: "scaled",
         at: input.timestamp,
+        phase: "accepted",
+        reasonCode: "scale_request_accepted",
+        targetRef: {
+          platform: "docker_compose",
+          kind: "service",
+          name: config.dockerCompose.service
+        },
         ...(result.stdout.trim() ? { message: result.stdout.trim() } : {})
       };
     }
@@ -677,6 +847,43 @@ function buildKubernetesDeploymentScaleUrl(input: {
   ).toString();
 }
 
+function buildKubernetesDeploymentUrl(input: {
+  apiUrl: string;
+  namespace: string;
+  deployment: string;
+}): string {
+  return new URL(
+    `/apis/apps/v1/namespaces/${encodeURIComponent(input.namespace)}/deployments/${encodeURIComponent(input.deployment)}`,
+    appendTrailingSlash(input.apiUrl)
+  ).toString();
+}
+
+async function readKubernetesDeploymentState(
+  input: {
+    apiUrl: string;
+    namespace: string;
+    deployment: string;
+    headers: Record<string, string>;
+    caFile?: string | undefined;
+    skipTlsVerify: boolean;
+  },
+  request: KubernetesJsonRequestFn,
+  stage: "read_state" | "observe_rollout"
+): Promise<KubernetesDeploymentObservation> {
+  const response = await request({
+    url: buildKubernetesDeploymentUrl(input),
+    method: "GET",
+    headers: {
+      ...input.headers,
+      accept: "application/json"
+    },
+    caFile: input.caFile,
+    skipTlsVerify: input.skipTlsVerify
+  });
+  assertKubernetesSuccess("read deployment state", response, stage);
+  return parseKubernetesDeploymentObservation(response.body);
+}
+
 async function discoverKubernetesDeploymentName(
   input: {
     namespace: string;
@@ -705,13 +912,21 @@ async function discoverKubernetesDeploymentName(
     caFile: input.caFile,
     skipTlsVerify: input.skipTlsVerify
   });
-  assertKubernetesSuccess("discover target deployment", response);
+  assertKubernetesSuccess("discover target deployment", response, "discover_target");
   const deploymentNames = extractDeploymentNames(response.body);
   if (deploymentNames.length === 0) {
-    throw new Error(`no deployment matched label selector ${input.labelSelector}`);
+    throw new KubernetesReplicaTargetError({
+      message: `no deployment matched label selector ${input.labelSelector}`,
+      code: "selector_no_match",
+      stage: "discover_target"
+    });
   }
   if (deploymentNames.length > 1) {
-    throw new Error(`label selector ${input.labelSelector} matched multiple deployments: ${deploymentNames.join(", ")}`);
+    throw new KubernetesReplicaTargetError({
+      message: `label selector ${input.labelSelector} matched multiple deployments: ${deploymentNames.join(", ")}`,
+      code: "selector_multiple_matches",
+      stage: "discover_target"
+    });
   }
 
   return deploymentNames[0]!;
@@ -746,6 +961,149 @@ function parseReplicas(payload: unknown): number | undefined {
   return typeof replicas === "number" && Number.isFinite(replicas) ? replicas : undefined;
 }
 
+function readNestedNumber(payload: unknown, pathSegments: string[]): number | undefined {
+  let current: unknown = payload;
+  for (const segment of pathSegments) {
+    if (!current || typeof current !== "object") {
+      return undefined;
+    }
+    current = Reflect.get(current, segment);
+  }
+
+  return typeof current === "number" && Number.isFinite(current) ? current : undefined;
+}
+
+function parseKubernetesDeploymentObservation(payload: unknown): KubernetesDeploymentObservation {
+  return {
+    specReplicas: readNestedNumber(payload, ["spec", "replicas"]),
+    statusReplicas: readNestedNumber(payload, ["status", "replicas"]),
+    readyReplicas: readNestedNumber(payload, ["status", "readyReplicas"]),
+    updatedReplicas: readNestedNumber(payload, ["status", "updatedReplicas"]),
+    availableReplicas: readNestedNumber(payload, ["status", "availableReplicas"]),
+    unavailableReplicas: readNestedNumber(payload, ["status", "unavailableReplicas"]),
+    generation: readNestedNumber(payload, ["metadata", "generation"]),
+    observedGeneration: readNestedNumber(payload, ["status", "observedGeneration"])
+  };
+}
+
+function isKubernetesDeploymentReady(
+  observation: KubernetesDeploymentObservation | undefined,
+  desiredReplicas: number
+): boolean {
+  if (!observation) {
+    return false;
+  }
+
+  const desired = Math.max(0, desiredReplicas);
+  const specReplicas = observation.specReplicas;
+  if (typeof specReplicas === "number" && specReplicas !== desired) {
+    return false;
+  }
+
+  const generationConverged =
+    typeof observation.generation !== "number" ||
+    typeof observation.observedGeneration !== "number" ||
+    observation.observedGeneration >= observation.generation;
+  if (!generationConverged) {
+    return false;
+  }
+
+  const readyReplicas = observation.readyReplicas ?? 0;
+  const updatedReplicas = observation.updatedReplicas ?? desired;
+  const availableReplicas = observation.availableReplicas ?? readyReplicas;
+  const unavailableReplicas = observation.unavailableReplicas ?? Math.max(0, desired - availableReplicas);
+
+  if (desired === 0) {
+    return readyReplicas === 0 && availableReplicas === 0 && unavailableReplicas === 0;
+  }
+
+  return readyReplicas >= desired && updatedReplicas >= desired && availableReplicas >= desired && unavailableReplicas === 0;
+}
+
+function buildKubernetesResult(input: {
+  input: WorkerReplicaTargetInput;
+  targetRef: WorkerReplicaTargetRef;
+  attempted: boolean;
+  applied: boolean;
+  observedReplicas?: number | undefined;
+  appliedReplicas?: number | undefined;
+  outcome: WorkerReplicaTargetOutcome;
+  phase: WorkerReplicaTargetPhase;
+  stage?: "discover_target" | "read_state" | "apply_scale" | "observe_rollout" | undefined;
+  reasonCode?: string | undefined;
+  message?: string | undefined;
+  observedState?: KubernetesDeploymentObservation | undefined;
+}): WorkerReplicaTargetResult {
+  return {
+    kind: "kubernetes",
+    attempted: input.attempted,
+    applied: input.applied,
+    desiredReplicas: input.input.desiredReplicas,
+    ...(typeof input.observedReplicas === "number" ? { observedReplicas: input.observedReplicas } : {}),
+    ...(typeof input.appliedReplicas === "number" ? { appliedReplicas: input.appliedReplicas } : {}),
+    outcome: input.outcome,
+    at: input.input.timestamp,
+    phase: input.phase,
+    ...(input.stage ? { stage: input.stage } : {}),
+    ...(input.reasonCode ? { reasonCode: input.reasonCode } : {}),
+    targetRef: input.targetRef,
+    ...(typeof input.observedState?.generation === "number" ? { generation: input.observedState.generation } : {}),
+    ...(typeof input.observedState?.observedGeneration === "number"
+      ? { observedGeneration: input.observedState.observedGeneration }
+      : {}),
+    ...(typeof input.observedState?.readyReplicas === "number" ? { readyReplicas: input.observedState.readyReplicas } : {}),
+    ...(typeof input.observedState?.updatedReplicas === "number"
+      ? { updatedReplicas: input.observedState.updatedReplicas }
+      : {}),
+    ...(typeof input.observedState?.availableReplicas === "number"
+      ? { availableReplicas: input.observedState.availableReplicas }
+      : {}),
+    ...(typeof input.observedState?.unavailableReplicas === "number"
+      ? { unavailableReplicas: input.observedState.unavailableReplicas }
+      : {}),
+    ...(input.message ? { message: input.message } : {})
+  };
+}
+
+function buildKubernetesErrorResult(input: {
+  input: WorkerReplicaTargetInput;
+  error: unknown;
+  targetRef?: WorkerReplicaTargetRef | undefined;
+  observedReplicas?: number | undefined;
+  observedState?: KubernetesDeploymentObservation | undefined;
+}): WorkerReplicaTargetResult {
+  const classified = input.error instanceof KubernetesReplicaTargetError ? input.error : classifyKubernetesError(input.error);
+
+  return {
+    kind: "kubernetes",
+    attempted: true,
+    applied: false,
+    desiredReplicas: input.input.desiredReplicas,
+    ...(typeof input.observedReplicas === "number" ? { observedReplicas: input.observedReplicas } : {}),
+    outcome: "error",
+    at: input.input.timestamp,
+    phase: "error",
+    stage: classified.stage,
+    reasonCode: classified.code,
+    ...(input.targetRef ? { targetRef: input.targetRef } : {}),
+    ...(typeof input.observedState?.generation === "number" ? { generation: input.observedState.generation } : {}),
+    ...(typeof input.observedState?.observedGeneration === "number"
+      ? { observedGeneration: input.observedState.observedGeneration }
+      : {}),
+    ...(typeof input.observedState?.readyReplicas === "number" ? { readyReplicas: input.observedState.readyReplicas } : {}),
+    ...(typeof input.observedState?.updatedReplicas === "number"
+      ? { updatedReplicas: input.observedState.updatedReplicas }
+      : {}),
+    ...(typeof input.observedState?.availableReplicas === "number"
+      ? { availableReplicas: input.observedState.availableReplicas }
+      : {}),
+    ...(typeof input.observedState?.unavailableReplicas === "number"
+      ? { unavailableReplicas: input.observedState.unavailableReplicas }
+      : {}),
+    message: classified.message
+  };
+}
+
 function extractDeploymentNames(payload: unknown): string[] {
   if (!payload || typeof payload !== "object") {
     return [];
@@ -777,7 +1135,8 @@ function assertKubernetesSuccess(
     status: number;
     body: unknown;
     text: string;
-  }
+  },
+  stage: "discover_target" | "read_state" | "apply_scale" | "observe_rollout"
 ): void {
   if (response.status >= 200 && response.status < 300) {
     return;
@@ -785,7 +1144,12 @@ function assertKubernetesSuccess(
 
   const message =
     extractStatusMessage(response.body) ?? (response.text.trim() || `${operation} failed with status ${response.status}`);
-  throw new Error(`${operation} failed with status ${response.status}: ${message}`);
+  throw new KubernetesReplicaTargetError({
+    message: `${operation} failed with status ${response.status}: ${message}`,
+    code: classifyKubernetesStatusCode(response.status),
+    stage,
+    status: response.status
+  });
 }
 
 function assertHttpSuccess(
@@ -817,6 +1181,59 @@ function extractStatusMessage(body: unknown): string | undefined {
 
   const message = Reflect.get(body, "message");
   return typeof message === "string" && message.trim().length > 0 ? message.trim() : undefined;
+}
+
+function classifyKubernetesStatusCode(status: number): string {
+  if (status === 401) {
+    return "unauthorized";
+  }
+  if (status === 403) {
+    return "forbidden";
+  }
+  if (status === 404) {
+    return "not_found";
+  }
+  if (status === 409) {
+    return "conflict";
+  }
+  if (status === 429) {
+    return "rate_limited";
+  }
+  if (status >= 500) {
+    return "api_unavailable";
+  }
+  if (status >= 400) {
+    return "invalid_request";
+  }
+  return "unexpected_status";
+}
+
+function classifyKubernetesError(error: unknown): KubernetesReplicaTargetError {
+  if (error instanceof KubernetesReplicaTargetError) {
+    return error;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  if (/timed out/iu.test(message) || /timeout/iu.test(message) || /abort/iu.test(message)) {
+    return new KubernetesReplicaTargetError({
+      message,
+      code: "timeout",
+      stage: "read_state"
+    });
+  }
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|EHOSTUNREACH|socket hang up/iu.test(message)) {
+    return new KubernetesReplicaTargetError({
+      message,
+      code: "network_error",
+      stage: "read_state"
+    });
+  }
+
+  return new KubernetesReplicaTargetError({
+    message,
+    code: "unexpected_error",
+    stage: "read_state"
+  });
 }
 
 export async function defaultKubernetesJsonRequest(

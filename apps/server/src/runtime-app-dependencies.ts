@@ -28,6 +28,7 @@ function buildSharedAppDependencies(runtime: BootstrappedRuntime): AppDependenci
     workspaceMode: runtime.workspaceMode.kind,
     healthCheck: () => runtime.healthReport(),
     readinessCheck: () => runtime.readinessReport(),
+    beginDrain: () => runtime.beginDrain(),
     appendEngineLog: runtime.appendEngineLog,
     ...(runtime.sandboxHostProviderKind ? { sandboxHostProviderKind: runtime.sandboxHostProviderKind } : {}),
     ...(sandboxOwnerFallbackBaseUrl ? { sandboxOwnerFallbackBaseUrl } : {}),

@@ -2,6 +2,7 @@ export {
   NativeWorkspaceSyncBridgeError,
   computeNativeDirectoryFingerprint,
   computeNativeDirectoryFingerprintBatch,
+  ensureNativeWorkspaceSyncWorkerPoolReady,
   isNativeWorkspaceSyncEnabled,
   planNativeLocalToRemote,
   resolveWorkspaceSyncBinary,

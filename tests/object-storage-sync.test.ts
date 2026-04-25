@@ -732,12 +732,14 @@ describe("object storage sync", () => {
         phaseTimings: {
           scanMs: 3,
           fingerprintMs: 1,
+          clientCreateMs: 6,
           manifestReadMs: 4,
           bundleBuildMs: 18,
           bundleUploadMs: 11,
           manifestWriteMs: 2,
           deleteMs: 0,
-          totalPrimaryPathMs: 35
+          totalPrimaryPathMs: 35,
+          totalCommandMs: 52
         }
       })),
       syncNativeRemoteToLocal: vi.fn(async () => ({
@@ -771,12 +773,14 @@ describe("object storage sync", () => {
       phaseTimings: {
         scanMs: 3,
         fingerprintMs: 1,
+        clientCreateMs: 6,
         manifestReadMs: 4,
         bundleBuildMs: 18,
         bundleUploadMs: 11,
         manifestWriteMs: 2,
         deleteMs: 0,
-        totalPrimaryPathMs: 35
+        totalPrimaryPathMs: 35,
+        totalCommandMs: 52
       },
       requestCounts: {
         listRequests: 1,

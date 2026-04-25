@@ -39,6 +39,13 @@ apiServer:
 
 worker:
   replicaCount: 4
+  terminationGracePeriodSeconds: 240
+  drain:
+    timeoutMs: 210000
+    timeoutStrategy: requeue_running
+    preStop:
+      enabled: true
+      delayMs: 10000
   priorityClassName: oah-worker-critical
   podDisruptionBudget:
     enabled: true
@@ -66,6 +73,9 @@ worker:
 
 controller:
   replicaCount: 2
+  strategy:
+    maxUnavailable: 0
+    maxSurge: 1
   priorityClassName: oah-control-plane
   podDisruptionBudget:
     enabled: true

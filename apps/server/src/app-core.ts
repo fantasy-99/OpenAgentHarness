@@ -118,6 +118,8 @@ export function registerInternalRoutes(app: ReturnType<typeof Fastify>, dependen
 }
 
 export function registerInternalOnlySurface(app: ReturnType<typeof Fastify>, dependencies: AppDependencies): void {
+  let drainRequest: Promise<void> | undefined;
+
   app.get("/healthz", async () =>
     dependencies.healthCheck
       ? await dependencies.healthCheck()
@@ -182,5 +184,19 @@ export function registerInternalOnlySurface(app: ReturnType<typeof Fastify>, dep
   app.get("/metrics", async (_request: FastifyRequest, reply: FastifyReply) => {
     reply.header("content-type", "text/plain; version=0.0.4; charset=utf-8");
     return reply.send(renderNativeWorkspaceSyncMetrics());
+  });
+
+  app.post("/internal/v1/control/drain", async (_request: FastifyRequest, reply: FastifyReply) => {
+    if (dependencies.beginDrain) {
+      drainRequest ??= Promise.resolve(dependencies.beginDrain()).catch((error) => {
+        drainRequest = undefined;
+        throw error;
+      });
+    }
+
+    return reply.status(202).send({
+      status: "accepted",
+      draining: true
+    });
   });
 }

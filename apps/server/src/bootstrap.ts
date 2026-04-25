@@ -79,6 +79,7 @@ let storageAdminModulePromise: Promise<typeof import("./storage-admin.js")> | un
 let modelMetadataDiscoveryModulePromise: Promise<typeof import("./bootstrap/model-metadata-discovery.js")> | undefined;
 let sandboxHostModulePromise: Promise<typeof import("./bootstrap/sandbox-host.js")> | undefined;
 let workspaceMaterializationModulePromise: Promise<typeof import("./bootstrap/workspace-materialization.js")> | undefined;
+let nativeBridgeModulePromise: Promise<typeof import("@oah/native-bridge")> | undefined;
 
 function loadConfigWorkspaceModule(): Promise<typeof import("@oah/config/workspace")> {
   configWorkspaceModulePromise ??= import("@oah/config/workspace").catch(async () => {
@@ -176,6 +177,11 @@ function loadSandboxHostModule(): Promise<typeof import("./bootstrap/sandbox-hos
 function loadWorkspaceMaterializationModule(): Promise<typeof import("./bootstrap/workspace-materialization.js")> {
   workspaceMaterializationModulePromise ??= import("./bootstrap/workspace-materialization.js");
   return workspaceMaterializationModulePromise;
+}
+
+function loadNativeBridgeModule(): Promise<typeof import("@oah/native-bridge")> {
+  nativeBridgeModulePromise ??= import("@oah/native-bridge");
+  return nativeBridgeModulePromise;
 }
 
 function hasRemoteErrorCode(error: unknown, code: string): boolean {
@@ -918,6 +924,10 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     if (!blockingMirrorInit) {
       console.info("[oah-object-storage] mirror initialization continues in background after readiness");
     }
+  }
+  const nativeBridge = await loadNativeBridgeModule();
+  if (nativeBridge.isNativeWorkspaceSyncEnabled()) {
+    await nativeBridge.ensureNativeWorkspaceSyncWorkerPoolReady();
   }
   let workspaceMaterializationManager: WorkspaceMaterializationManager | undefined;
   let sandboxHost: SandboxHost | undefined;

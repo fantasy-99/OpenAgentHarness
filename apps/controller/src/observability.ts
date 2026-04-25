@@ -55,9 +55,35 @@ export function renderControllerMetrics(input: {
   leaderElection: ControllerLeaderElectionStatus;
   controller: ControllerSnapshot;
 }): string {
+  const scaleTargetPhase = input.controller.scaleTarget?.phase;
   const metricFamilies: Array<{ name: string; help: string; value: number }> = [
     { name: "running", help: "Whether the controller reconcile loop is running.", value: input.controller.running ? 1 : 0 },
+    {
+      name: "leader_election_running",
+      help: "Whether leader election is currently active for this controller instance.",
+      value: input.leaderElection.running ? 1 : 0
+    },
     { name: "leader", help: "Whether this controller instance currently holds leadership.", value: input.leaderElection.leader ? 1 : 0 },
+    {
+      name: "leader_election_changes",
+      help: "Number of leadership acquisitions observed by this controller instance.",
+      value: input.leaderElection.leadershipChanges ?? 0
+    },
+    {
+      name: "leader_election_lease_duration_ms",
+      help: "Configured Kubernetes leader election lease duration in milliseconds.",
+      value: input.leaderElection.leaseDurationMs ?? 0
+    },
+    {
+      name: "leader_election_renew_interval_ms",
+      help: "Configured Kubernetes leader election renew interval in milliseconds.",
+      value: input.leaderElection.renewIntervalMs ?? 0
+    },
+    {
+      name: "leader_election_retry_interval_ms",
+      help: "Configured Kubernetes leader election retry interval in milliseconds.",
+      value: input.leaderElection.retryIntervalMs ?? 0
+    },
     { name: "active_replicas", help: "Currently observed active sandbox runtime replicas.", value: input.controller.activeReplicas },
     { name: "desired_replicas", help: "Desired sandbox replicas after gating and cooldown.", value: input.controller.desiredReplicas },
     { name: "suggested_replicas", help: "Raw suggested sandbox replicas before gating and cooldown.", value: input.controller.suggestedReplicas },
@@ -199,6 +225,91 @@ export function renderControllerMetrics(input: {
       name: "placement_execution_failed",
       help: "Number of placement execution operations failed by the controller in the latest reconcile.",
       value: input.controller.placementExecution?.failed ?? 0
+    },
+    {
+      name: "scale_target_attempted",
+      help: "Whether the latest scale target reconcile attempted to interact with the target platform.",
+      value: input.controller.scaleTarget?.attempted ? 1 : 0
+    },
+    {
+      name: "scale_target_applied",
+      help: "Whether the latest scale target reconcile applied a new replica target.",
+      value: input.controller.scaleTarget?.applied ? 1 : 0
+    },
+    {
+      name: "scale_target_observed_replicas",
+      help: "Observed replicas reported by the latest scale target reconcile.",
+      value: input.controller.scaleTarget?.observedReplicas ?? 0
+    },
+    {
+      name: "scale_target_applied_replicas",
+      help: "Applied replicas reported by the latest scale target reconcile.",
+      value: input.controller.scaleTarget?.appliedReplicas ?? 0
+    },
+    {
+      name: "scale_target_ready_replicas",
+      help: "Ready replicas reported by the latest scale target rollout observation.",
+      value: input.controller.scaleTarget?.readyReplicas ?? 0
+    },
+    {
+      name: "scale_target_updated_replicas",
+      help: "Updated replicas reported by the latest scale target rollout observation.",
+      value: input.controller.scaleTarget?.updatedReplicas ?? 0
+    },
+    {
+      name: "scale_target_available_replicas",
+      help: "Available replicas reported by the latest scale target rollout observation.",
+      value: input.controller.scaleTarget?.availableReplicas ?? 0
+    },
+    {
+      name: "scale_target_unavailable_replicas",
+      help: "Unavailable replicas reported by the latest scale target rollout observation.",
+      value: input.controller.scaleTarget?.unavailableReplicas ?? 0
+    },
+    {
+      name: "scale_target_generation",
+      help: "Deployment generation reported by the latest scale target rollout observation.",
+      value: input.controller.scaleTarget?.generation ?? 0
+    },
+    {
+      name: "scale_target_observed_generation",
+      help: "Observed deployment generation reported by the latest scale target rollout observation.",
+      value: input.controller.scaleTarget?.observedGeneration ?? 0
+    },
+    {
+      name: "scale_target_phase_disabled",
+      help: "Whether the latest scale target reconcile is currently in disabled phase.",
+      value: scaleTargetPhase === "disabled" ? 1 : 0
+    },
+    {
+      name: "scale_target_phase_steady",
+      help: "Whether the latest scale target reconcile is currently in steady phase.",
+      value: scaleTargetPhase === "steady" ? 1 : 0
+    },
+    {
+      name: "scale_target_phase_accepted",
+      help: "Whether the latest scale target reconcile is currently in accepted phase.",
+      value: scaleTargetPhase === "accepted" ? 1 : 0
+    },
+    {
+      name: "scale_target_phase_progressing",
+      help: "Whether the latest scale target reconcile is currently in progressing phase.",
+      value: scaleTargetPhase === "progressing" ? 1 : 0
+    },
+    {
+      name: "scale_target_phase_ready",
+      help: "Whether the latest scale target reconcile is currently in ready phase.",
+      value: scaleTargetPhase === "ready" ? 1 : 0
+    },
+    {
+      name: "scale_target_phase_blocked",
+      help: "Whether the latest scale target reconcile is currently in blocked phase.",
+      value: scaleTargetPhase === "blocked" ? 1 : 0
+    },
+    {
+      name: "scale_target_phase_error",
+      help: "Whether the latest scale target reconcile is currently in error phase.",
+      value: scaleTargetPhase === "error" ? 1 : 0
     },
     {
       name: "placement_active",

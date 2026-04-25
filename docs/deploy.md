@@ -156,6 +156,24 @@ git push origin master
 - 现在也提供了生产 `Dockerfile` 与最小 GHCR 发布 workflow，K8S manifests/chart 不再只是假定“外部已有镜像”
 - GHCR workflow 现在还会产出 `sbom/provenance`，并通过 Cosign 做 keyless signing
 
+当前建议额外遵循这几条 K8S 部署契约：
+
+- `oah-controller` 多副本时，必须开启 `leader_election.type=kubernetes`
+- `oah-controller` 的 `scale_target.kubernetes.label_selector` 必须只命中当前 release 的 `oah-sandbox` Deployment
+- `oah-sandbox` 的 `terminationGracePeriodSeconds` 要大于 worker drain 超时
+- `oah-sandbox` 需要在 `preStop` 里先触发本地 drain，再等待短暂缓冲时间，让 `/readyz` 先摘除
+- `controller` 对 scale target 的观测应区分：
+  - 请求已接受
+  - rollout 进行中
+  - rollout 已 ready
+  - 平台调用失败
+
+推荐关系：
+
+- `worker.drain.timeoutMs < terminationGracePeriodSeconds * 1000`
+- `preStop` 只负责“尽快进入 draining”，不要在 hook 里做长时间阻塞逻辑
+- 若 worker 需要在超时后恢复未完成 run，优先使用 `requeue_running` 之类的显式策略，而不是等 K8S 强杀
+
 ---
 
 ## 单 Workspace 模式

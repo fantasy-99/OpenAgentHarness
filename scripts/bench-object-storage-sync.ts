@@ -73,6 +73,12 @@ interface BenchmarkCaseResult {
   pulledFileCount: number;
   pushPhaseTimings?: NativeSyncLocalToRemotePhaseTimingsLike | undefined;
   pushWarmPhaseTimings?: NativeSyncLocalToRemotePhaseTimingsLike | undefined;
+  pushBridgeTimings?: NativeWorkspaceSyncBridgeTimingsLike | undefined;
+  pushWarmBridgeTimings?: NativeWorkspaceSyncBridgeTimingsLike | undefined;
+  pushWorkerTimings?: NativeWorkspaceSyncWorkerTimingsLike | undefined;
+  pushWarmWorkerTimings?: NativeWorkspaceSyncWorkerTimingsLike | undefined;
+  pushWrapperTimings?: DirectorySyncWrapperTimingsLike | undefined;
+  pushWarmWrapperTimings?: DirectorySyncWrapperTimingsLike | undefined;
   pushRequests: StoreOperationCounts;
   pushWarmRequests: StoreOperationCounts;
   materializeRequests: StoreOperationCounts;
@@ -95,12 +101,38 @@ interface NativeRequestCountsLike {
 interface NativeSyncLocalToRemotePhaseTimingsLike {
   scanMs: number;
   fingerprintMs: number;
+  clientCreateMs: number;
   manifestReadMs: number;
   bundleBuildMs: number;
   bundleUploadMs: number;
   manifestWriteMs: number;
   deleteMs: number;
   totalPrimaryPathMs: number;
+  totalCommandMs: number;
+}
+
+interface NativeWorkspaceSyncBridgeTimingsLike {
+  mode: "persistent" | "oneshot";
+  poolInitMs: number;
+  queueWaitMs: number;
+  writeMs: number;
+  responseWaitMs: number;
+  totalBridgeMs: number;
+}
+
+interface DirectorySyncWrapperTimingsLike {
+  nativeCallMs: number;
+  pruneEmptyDirectoriesMs: number;
+  totalNativeWrapperMs: number;
+}
+
+interface NativeWorkspaceSyncWorkerTimingsLike {
+  receiveDelayMs: number;
+  parseMs: number;
+  handleMs: number;
+  serializeMs: number;
+  writeMs: number;
+  totalWorkerMs: number;
 }
 
 const WORKSPACE_SYNC_BINARY_BASENAME = process.platform === "win32" ? "oah-workspace-sync.exe" : "oah-workspace-sync";
@@ -379,12 +411,56 @@ function formatPhaseTimings(timings: NativeSyncLocalToRemotePhaseTimingsLike | u
   return [
     `scan=${timings.scanMs}ms`,
     `fingerprint=${timings.fingerprintMs}ms`,
+    `client-create=${timings.clientCreateMs}ms`,
     `manifest=${timings.manifestReadMs}ms`,
     `bundle-build=${timings.bundleBuildMs}ms`,
     `bundle-upload=${timings.bundleUploadMs}ms`,
     `manifest-write=${timings.manifestWriteMs}ms`,
     `delete=${timings.deleteMs}ms`,
-    `primary-total=${timings.totalPrimaryPathMs}ms`
+    `primary-total=${timings.totalPrimaryPathMs}ms`,
+    `command-total=${timings.totalCommandMs}ms`
+  ].join(" ");
+}
+
+function formatBridgeTimings(timings: NativeWorkspaceSyncBridgeTimingsLike | undefined): string {
+  if (!timings) {
+    return "n/a";
+  }
+
+  return [
+    `mode=${timings.mode}`,
+    `pool-init=${timings.poolInitMs}ms`,
+    `queue=${timings.queueWaitMs}ms`,
+    `write=${timings.writeMs}ms`,
+    `response=${timings.responseWaitMs}ms`,
+    `bridge-total=${timings.totalBridgeMs}ms`
+  ].join(" ");
+}
+
+function formatWrapperTimings(timings: DirectorySyncWrapperTimingsLike | undefined): string {
+  if (!timings) {
+    return "n/a";
+  }
+
+  return [
+    `native-call=${timings.nativeCallMs}ms`,
+    `prune=${timings.pruneEmptyDirectoriesMs}ms`,
+    `wrapper-total=${timings.totalNativeWrapperMs}ms`
+  ].join(" ");
+}
+
+function formatWorkerTimings(timings: NativeWorkspaceSyncWorkerTimingsLike | undefined): string {
+  if (!timings) {
+    return "n/a";
+  }
+
+  return [
+    `receive-delay=${timings.receiveDelayMs}ms`,
+    `parse=${timings.parseMs}ms`,
+    `handle=${timings.handleMs}ms`,
+    `serialize=${timings.serializeMs}ms`,
+    `write=${timings.writeMs}ms`,
+    `worker-total=${timings.totalWorkerMs}ms`
   ].join(" ");
 }
 
@@ -507,7 +583,7 @@ async function runCase(options: {
       convertNativeRequestCounts(pushMeasurement.result.requestCounts) ?? createEmptyStoreOperationCounts()
     );
     console.log(
-      `[bench-object-storage] case=${options.label} stage=push done ms=${Math.round(pushMeasurement.durationMs)} uploaded=${pushMeasurement.result.uploadedFileCount} requests=${sumStoreOperationCounts(pushRequests)} phases="${formatPhaseTimings(pushMeasurement.result.phaseTimings)}"`
+      `[bench-object-storage] case=${options.label} stage=push done ms=${Math.round(pushMeasurement.durationMs)} uploaded=${pushMeasurement.result.uploadedFileCount} requests=${sumStoreOperationCounts(pushRequests)} phases="${formatPhaseTimings(pushMeasurement.result.phaseTimings)}" bridge="${formatBridgeTimings(pushMeasurement.result.bridgeTimings)}" worker="${formatWorkerTimings(pushMeasurement.result.workerTimings)}" wrapper="${formatWrapperTimings(pushMeasurement.result.wrapperTimings)}"`
     );
 
     console.log(`[bench-object-storage] case=${options.label} stage=push-warm start prefix=${options.remotePrefix}`);
@@ -521,7 +597,7 @@ async function runCase(options: {
       convertNativeRequestCounts(pushWarmMeasurement.result.requestCounts) ?? createEmptyStoreOperationCounts()
     );
     console.log(
-      `[bench-object-storage] case=${options.label} stage=push-warm done ms=${Math.round(pushWarmMeasurement.durationMs)} uploaded=${pushWarmMeasurement.result.uploadedFileCount} requests=${sumStoreOperationCounts(pushWarmRequests)} phases="${formatPhaseTimings(pushWarmMeasurement.result.phaseTimings)}"`
+      `[bench-object-storage] case=${options.label} stage=push-warm done ms=${Math.round(pushWarmMeasurement.durationMs)} uploaded=${pushWarmMeasurement.result.uploadedFileCount} requests=${sumStoreOperationCounts(pushWarmRequests)} phases="${formatPhaseTimings(pushWarmMeasurement.result.phaseTimings)}" bridge="${formatBridgeTimings(pushWarmMeasurement.result.bridgeTimings)}" worker="${formatWorkerTimings(pushWarmMeasurement.result.workerTimings)}" wrapper="${formatWrapperTimings(pushWarmMeasurement.result.wrapperTimings)}"`
     );
 
     const materializationManager = new WorkspaceMaterializationManager({
@@ -592,6 +668,12 @@ async function runCase(options: {
       pulledFileCount,
       pushPhaseTimings: pushMeasurement.result.phaseTimings,
       pushWarmPhaseTimings: pushWarmMeasurement.result.phaseTimings,
+      pushBridgeTimings: pushMeasurement.result.bridgeTimings,
+      pushWarmBridgeTimings: pushWarmMeasurement.result.bridgeTimings,
+      pushWorkerTimings: pushMeasurement.result.workerTimings,
+      pushWarmWorkerTimings: pushWarmMeasurement.result.workerTimings,
+      pushWrapperTimings: pushMeasurement.result.wrapperTimings,
+      pushWarmWrapperTimings: pushWarmMeasurement.result.wrapperTimings,
       pushRequests,
       pushWarmRequests,
       materializeRequests,
@@ -878,22 +960,46 @@ async function main(): Promise<void> {
     {
       mode: "typescript",
       pushPhases: formatPhaseTimings(typescriptCase.pushPhaseTimings),
-      pushWarmPhases: formatPhaseTimings(typescriptCase.pushWarmPhaseTimings)
+      pushWarmPhases: formatPhaseTimings(typescriptCase.pushWarmPhaseTimings),
+      pushBridge: formatBridgeTimings(typescriptCase.pushBridgeTimings),
+      pushWarmBridge: formatBridgeTimings(typescriptCase.pushWarmBridgeTimings),
+      pushWorker: formatWorkerTimings(typescriptCase.pushWorkerTimings),
+      pushWarmWorker: formatWorkerTimings(typescriptCase.pushWarmWorkerTimings),
+      pushWrapper: formatWrapperTimings(typescriptCase.pushWrapperTimings),
+      pushWarmWrapper: formatWrapperTimings(typescriptCase.pushWarmWrapperTimings)
     },
     {
       mode: "typescript-primary",
       pushPhases: formatPhaseTimings(typescriptPrimaryCase.pushPhaseTimings),
-      pushWarmPhases: formatPhaseTimings(typescriptPrimaryCase.pushWarmPhaseTimings)
+      pushWarmPhases: formatPhaseTimings(typescriptPrimaryCase.pushWarmPhaseTimings),
+      pushBridge: formatBridgeTimings(typescriptPrimaryCase.pushBridgeTimings),
+      pushWarmBridge: formatBridgeTimings(typescriptPrimaryCase.pushWarmBridgeTimings),
+      pushWorker: formatWorkerTimings(typescriptPrimaryCase.pushWorkerTimings),
+      pushWarmWorker: formatWorkerTimings(typescriptPrimaryCase.pushWarmWorkerTimings),
+      pushWrapper: formatWrapperTimings(typescriptPrimaryCase.pushWrapperTimings),
+      pushWarmWrapper: formatWrapperTimings(typescriptPrimaryCase.pushWarmWrapperTimings)
     },
     {
       mode: "native-oneshot",
       pushPhases: formatPhaseTimings(nativeOneShotCase.pushPhaseTimings),
-      pushWarmPhases: formatPhaseTimings(nativeOneShotCase.pushWarmPhaseTimings)
+      pushWarmPhases: formatPhaseTimings(nativeOneShotCase.pushWarmPhaseTimings),
+      pushBridge: formatBridgeTimings(nativeOneShotCase.pushBridgeTimings),
+      pushWarmBridge: formatBridgeTimings(nativeOneShotCase.pushWarmBridgeTimings),
+      pushWorker: formatWorkerTimings(nativeOneShotCase.pushWorkerTimings),
+      pushWarmWorker: formatWorkerTimings(nativeOneShotCase.pushWarmWorkerTimings),
+      pushWrapper: formatWrapperTimings(nativeOneShotCase.pushWrapperTimings),
+      pushWarmWrapper: formatWrapperTimings(nativeOneShotCase.pushWarmWrapperTimings)
     },
     {
       mode: "native-persistent",
       pushPhases: formatPhaseTimings(nativePersistentCase.pushPhaseTimings),
-      pushWarmPhases: formatPhaseTimings(nativePersistentCase.pushWarmPhaseTimings)
+      pushWarmPhases: formatPhaseTimings(nativePersistentCase.pushWarmPhaseTimings),
+      pushBridge: formatBridgeTimings(nativePersistentCase.pushBridgeTimings),
+      pushWarmBridge: formatBridgeTimings(nativePersistentCase.pushWarmBridgeTimings),
+      pushWorker: formatWorkerTimings(nativePersistentCase.pushWorkerTimings),
+      pushWarmWorker: formatWorkerTimings(nativePersistentCase.pushWarmWorkerTimings),
+      pushWrapper: formatWrapperTimings(nativePersistentCase.pushWrapperTimings),
+      pushWarmWrapper: formatWrapperTimings(nativePersistentCase.pushWarmWrapperTimings)
     }
   ]);
 

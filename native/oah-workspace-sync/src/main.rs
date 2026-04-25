@@ -47,6 +47,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    Ready,
     Version,
     Serve,
     Fingerprint,
@@ -67,6 +68,13 @@ struct VersionResponse<'a> {
     protocol_version: u32,
     name: &'a str,
     version: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadyResponse {
+    ok: bool,
+    protocol_version: u32,
 }
 
 #[derive(Deserialize, Default)]
@@ -206,6 +214,8 @@ struct WorkerRequest {
     request_id: String,
     command: String,
     payload: Option<Value>,
+    #[serde(default)]
+    sent_at_ms: Option<u128>,
 }
 
 #[derive(Default)]
@@ -441,12 +451,25 @@ struct PlanSeedUploadFile {
 struct SyncLocalToRemotePhaseTimings {
     scan_ms: u64,
     fingerprint_ms: u64,
+    client_create_ms: u64,
     manifest_read_ms: u64,
     bundle_build_ms: u64,
     bundle_upload_ms: u64,
     manifest_write_ms: u64,
     delete_ms: u64,
     total_primary_path_ms: u64,
+    total_command_ms: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkerRequestTimings {
+    receive_delay_ms: u64,
+    parse_ms: u64,
+    handle_ms: u64,
+    serialize_ms: u64,
+    write_ms: u64,
+    total_worker_ms: u64,
 }
 
 #[derive(Serialize)]
@@ -540,6 +563,7 @@ fn main() -> ExitCode {
 fn run() -> Result<(), String> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Ready => write_json_value(&handle_command("ready", None, None)?),
         Command::Version => write_json_value(&handle_command("version", None, None)?),
         Command::Serve => serve(),
         Command::Fingerprint => write_json_value(&handle_command(
@@ -625,6 +649,18 @@ fn build_runtime() -> Result<tokio::runtime::Runtime, String> {
         .map_err(|error| format!("Failed to initialize async runtime: {error}"))
 }
 
+fn warm_native_object_store_stack() {
+    let _ = create_s3_client(&NativeObjectStoreConfig {
+        bucket: "oah-warmup".to_string(),
+        region: "us-east-1".to_string(),
+        endpoint: None,
+        force_path_style: Some(true),
+        access_key: Some("oah-warmup".to_string()),
+        secret_key: Some("oah-warmup".to_string()),
+        session_token: None,
+    });
+}
+
 fn read_json_stdin<T: for<'de> Deserialize<'de>>() -> Result<T, String> {
     let mut input = String::new();
     io::stdin()
@@ -666,6 +702,10 @@ fn handle_command(
     runtime: Option<&tokio::runtime::Runtime>,
 ) -> Result<Value, String> {
     match command {
+        "ready" => serialize_json_value(&ReadyResponse {
+            ok: true,
+            protocol_version: PROTOCOL_VERSION,
+        }),
         "version" => serialize_json_value(&VersionResponse {
             ok: true,
             protocol_version: PROTOCOL_VERSION,
@@ -849,7 +889,8 @@ fn handle_worker_request(
 }
 
 fn serve() -> Result<(), String> {
-    let mut runtime = None;
+    let mut runtime = Some(build_runtime()?);
+    warm_native_object_store_stack();
     let stdin = io::stdin();
     let stdout = io::stdout();
     let reader = BufReader::new(stdin.lock());
@@ -861,11 +902,58 @@ fn serve() -> Result<(), String> {
             continue;
         }
 
+        let worker_started_at = Instant::now();
+        let parse_started_at = Instant::now();
         let request = serde_json::from_str::<WorkerRequest>(&line)
             .map_err(|error| format!("Failed to decode worker request JSON: {error}"))?;
+        let parse_ms = elapsed_millis_u64(parse_started_at);
+        let receive_delay_ms = request
+            .sent_at_ms
+            .and_then(|sent_at_ms| {
+                system_time_to_mtime_ms(SystemTime::now())
+                    .map(|now_ms| now_ms.saturating_sub(sent_at_ms))
+            })
+            .map(|delay_ms| delay_ms.min(u128::from(u64::MAX)) as u64)
+            .unwrap_or(0);
+        let handle_started_at = Instant::now();
         let response = handle_worker_request(request, &mut runtime);
+        let handle_ms = elapsed_millis_u64(handle_started_at);
+        let mut response = response;
+        if let Some(object) = response.as_object_mut() {
+            object.insert(
+                "workerTimings".to_string(),
+                serde_json::to_value(WorkerRequestTimings {
+                    receive_delay_ms,
+                    parse_ms,
+                    handle_ms,
+                    serialize_ms: 0,
+                    write_ms: 0,
+                    total_worker_ms: elapsed_millis_u64(worker_started_at),
+                })
+                .map_err(|error| format!("Failed to serialize worker timings JSON: {error}"))?,
+            );
+        }
+        let serialize_started_at = Instant::now();
+        let _ = serde_json::to_string(&response)
+            .map_err(|error| format!("Failed to serialize worker response JSON: {error}"))?;
+        let serialize_ms = elapsed_millis_u64(serialize_started_at);
+        if let Some(object) = response.as_object_mut() {
+            object.insert(
+                "workerTimings".to_string(),
+                serde_json::to_value(WorkerRequestTimings {
+                    receive_delay_ms,
+                    parse_ms,
+                    handle_ms,
+                    serialize_ms,
+                    write_ms: 0,
+                    total_worker_ms: elapsed_millis_u64(worker_started_at),
+                })
+                .map_err(|error| format!("Failed to serialize worker timings JSON: {error}"))?,
+            );
+        }
         let rendered = serde_json::to_string(&response)
             .map_err(|error| format!("Failed to serialize worker response JSON: {error}"))?;
+        let write_started_at = Instant::now();
         writer
             .write_all(rendered.as_bytes())
             .map_err(|error| format!("Failed to write worker response: {error}"))?;
@@ -875,6 +963,7 @@ fn serve() -> Result<(), String> {
         writer
             .flush()
             .map_err(|error| format!("Failed to flush worker response: {error}"))?;
+        let _write_ms = elapsed_millis_u64(write_started_at);
     }
 
     Ok(())
@@ -3308,6 +3397,7 @@ async fn sync_local_to_remote(
 ) -> Result<SyncLocalToRemoteResponse, String> {
     use std::collections::BTreeMap;
 
+    let command_started_at = Instant::now();
     let excludes = normalize_exclude_paths(request.exclude_relative_paths);
     let max_concurrency = resolve_max_concurrency(request.max_concurrency);
     let inline_upload_threshold_bytes =
@@ -3319,18 +3409,22 @@ async fn sync_local_to_remote(
     let mut phase_timings = SyncLocalToRemotePhaseTimings {
         scan_ms: elapsed_millis_u64(scan_started_at),
         fingerprint_ms: 0,
+        client_create_ms: 0,
         manifest_read_ms: 0,
         bundle_build_ms: 0,
         bundle_upload_ms: 0,
         manifest_write_ms: 0,
         delete_ms: 0,
         total_primary_path_ms: 0,
+        total_command_ms: 0,
     };
     let fingerprint_started_at = Instant::now();
     let local_fingerprint = create_fingerprint(&snapshot);
     phase_timings.fingerprint_ms = elapsed_millis_u64(fingerprint_started_at);
 
+    let client_create_started_at = Instant::now();
     let client = create_s3_client(&request.object_store);
+    phase_timings.client_create_ms = elapsed_millis_u64(client_create_started_at);
     let request_counts = Arc::new(NativeObjectStoreRequestCounter::default());
     let snapshot_manifest_files = snapshot
         .files
@@ -3497,6 +3591,7 @@ async fn sync_local_to_remote(
 
         mark_trusted_managed_prefix_seen(&request.remote_prefix);
         phase_timings.total_primary_path_ms = elapsed_millis_u64(primary_path_started_at);
+        phase_timings.total_command_ms = elapsed_millis_u64(command_started_at);
 
         return Ok(SyncLocalToRemoteResponse {
             ok: true,
@@ -3781,6 +3876,7 @@ async fn sync_local_to_remote(
         }
     }
 
+    phase_timings.total_command_ms = elapsed_millis_u64(command_started_at);
     Ok(SyncLocalToRemoteResponse {
         ok: true,
         protocol_version: PROTOCOL_VERSION,
@@ -3789,7 +3885,7 @@ async fn sync_local_to_remote(
         deleted_remote_count,
         created_empty_directory_count,
         request_counts: request_counts.snapshot(),
-        phase_timings: None,
+        phase_timings: Some(phase_timings),
     })
 }
 
@@ -4165,6 +4261,7 @@ mod tests {
                 request_id: "req_1".to_string(),
                 command: "version".to_string(),
                 payload: None,
+                sent_at_ms: None,
             },
             &mut runtime,
         );
@@ -4188,6 +4285,7 @@ mod tests {
                 request_id: "req_2".to_string(),
                 command: "unknown".to_string(),
                 payload: None,
+                sent_at_ms: None,
             },
             &mut runtime,
         );

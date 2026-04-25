@@ -1996,6 +1996,8 @@ export class RedisController {
         desiredReplicas: input.desiredReplicas,
         outcome: "error",
         at: input.timestamp,
+        phase: "error",
+        reasonCode: "target_reconcile_exception",
         message: error instanceof Error ? error.message : String(error)
       };
     }

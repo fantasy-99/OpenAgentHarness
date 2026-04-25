@@ -120,6 +120,13 @@ worker:
   replicaCount: 1
   minReadySeconds: 5
   terminationGracePeriodSeconds: 120
+  drain:
+    timeoutMs: 110000
+    timeoutStrategy: requeue_running
+    preStop:
+      enabled: true
+      path: /internal/v1/control/drain
+      delayMs: 5000
   priorityClassName: ""
   podSecurityContext: {}
   securityContext: {}
@@ -171,7 +178,7 @@ controller:
   securityContext: {}
   topologySpreadConstraints: []
   strategy:
-    maxUnavailable: 1
+    maxUnavailable: 0
     maxSurge: 1
   podDisruptionBudget:
     enabled: false

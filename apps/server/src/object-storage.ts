@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 
 import type { ServerConfig } from "@oah/config";
 import {
@@ -59,6 +60,9 @@ export interface DirectorySyncResult {
   createdEmptyDirectoryCount: number;
   requestCounts?: ObjectStoreRequestCounts | undefined;
   phaseTimings?: DirectorySyncPhaseTimings | undefined;
+  bridgeTimings?: DirectorySyncBridgeTimings | undefined;
+  workerTimings?: DirectorySyncWorkerTimings | undefined;
+  wrapperTimings?: DirectorySyncWrapperTimings | undefined;
 }
 
 export interface RemoteToLocalDirectorySyncResult {
@@ -80,12 +84,38 @@ export interface ObjectStoreRequestCounts {
 export interface DirectorySyncPhaseTimings {
   scanMs: number;
   fingerprintMs: number;
+  clientCreateMs: number;
   manifestReadMs: number;
   bundleBuildMs: number;
   bundleUploadMs: number;
   manifestWriteMs: number;
   deleteMs: number;
   totalPrimaryPathMs: number;
+  totalCommandMs: number;
+}
+
+export interface DirectorySyncWrapperTimings {
+  nativeCallMs: number;
+  pruneEmptyDirectoriesMs: number;
+  totalNativeWrapperMs: number;
+}
+
+export interface DirectorySyncBridgeTimings {
+  mode: "persistent" | "oneshot";
+  poolInitMs: number;
+  queueWaitMs: number;
+  writeMs: number;
+  responseWaitMs: number;
+  totalBridgeMs: number;
+}
+
+export interface DirectorySyncWorkerTimings {
+  receiveDelayMs: number;
+  parseMs: number;
+  handleMs: number;
+  serializeMs: number;
+  writeMs: number;
+  totalWorkerMs: number;
 }
 
 interface LocalDirectorySnapshot {
@@ -1247,6 +1277,7 @@ async function syncNativeLocalDirectoryToRemoteIfAvailable(
           process.env.OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT?.trim().toLowerCase() === "yes" ||
           process.env.OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT?.trim().toLowerCase() === "on")
     } as NativeSyncBundleConfig;
+    const nativeCallStartedAt = performance.now();
     const result = await observeNativeWorkspaceSyncOperation({
       operation: "sync_local_to_remote",
       implementation: "rust",
@@ -1267,13 +1298,24 @@ async function syncNativeLocalDirectoryToRemoteIfAvailable(
           ...(nativeExcludes.length > 0 ? { excludeRelativePaths: nativeExcludes } : {})
         })
     });
+    const nativeCallMs = Math.max(0, Math.round(performance.now() - nativeCallStartedAt));
+    const pruneStartedAt = performance.now();
+    await pruneEmptyDirectories(localDir);
+    const pruneEmptyDirectoriesMs = Math.max(0, Math.round(performance.now() - pruneStartedAt));
     return {
       localFingerprint: result.localFingerprint,
       uploadedFileCount: result.uploadedFileCount,
       deletedRemoteCount: result.deletedRemoteCount,
       createdEmptyDirectoryCount: result.createdEmptyDirectoryCount,
       ...(result.requestCounts ? { requestCounts: result.requestCounts } : {}),
-      ...(result.phaseTimings ? { phaseTimings: result.phaseTimings } : {})
+      ...(result.phaseTimings ? { phaseTimings: result.phaseTimings } : {}),
+      ...(result.bridgeTimings ? { bridgeTimings: result.bridgeTimings } : {}),
+      ...(result.workerTimings ? { workerTimings: result.workerTimings } : {}),
+      wrapperTimings: {
+        nativeCallMs,
+        pruneEmptyDirectoriesMs,
+        totalNativeWrapperMs: nativeCallMs + pruneEmptyDirectoriesMs
+      }
     };
   } catch (error) {
     recordNativeWorkspaceSyncFallback({
@@ -2462,7 +2504,6 @@ export async function syncLocalDirectoryToRemote(
   logger?.(`syncing local changes in ${localDir} back to object storage (${(label ?? remotePrefix) || "."})`);
   const nativeSyncResult = await syncNativeLocalDirectoryToRemoteIfAvailable(store, remotePrefix, localDir, options);
   if (nativeSyncResult) {
-    await pruneEmptyDirectories(localDir);
     return nativeSyncResult;
   }
 

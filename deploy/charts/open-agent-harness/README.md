@@ -61,6 +61,9 @@ helm upgrade --install oah ./deploy/charts/open-agent-harness \
 - `worker.workspaceVolume.type`
 - `worker.workspaceVolume.persistentVolumeClaim.claimName`
 - `worker.resources`
+- `worker.drain.timeoutMs`
+- `worker.drain.timeoutStrategy`
+- `worker.drain.preStop.enabled`
 - `controller.replicaCount`
 - `controller.resources`
 - `apiServer.ingress.enabled`
@@ -85,9 +88,13 @@ helm upgrade --install oah ./deploy/charts/open-agent-harness \
 - `staging.values.yaml`
   - 接近生产的演练环境
   - 已开启 Ingress、PDB、topology spread、PVC workspace volume、ServiceMonitor
+  - worker drain / `terminationGracePeriodSeconds` 已显式对齐
+  - controller rollout 显式使用 `maxUnavailable: 0`
 - `prod.values.yaml`
   - 更偏正式生产的起点
   - 更高副本数、更严格的 `DoNotSchedule` spread 策略、PVC workspace volume、IRSA/Workload Identity 注解占位
+  - worker drain / `terminationGracePeriodSeconds` 已显式对齐
+  - controller rollout 显式使用 `maxUnavailable: 0`
 
 ## 配置说明
 
@@ -115,6 +122,15 @@ helm upgrade --install oah ./deploy/charts/open-agent-harness \
   - `worker.workspaceVolume.type=persistentVolumeClaim`
 - 当 `worker.workspaceVolume.type=persistentVolumeClaim` 时，需要设置：
   - `worker.workspaceVolume.persistentVolumeClaim.claimName`
+- worker 现在默认会把 K8S `preStop` hook 对齐到本地 drain 控制入口：
+  - `worker.drain.preStop.enabled=true`
+  - `worker.drain.timeoutMs` 控制 worker drain 超时
+  - `worker.drain.timeoutStrategy` 控制 drain 超时后的 run recovery 策略
+  - `worker.terminationGracePeriodSeconds` 应大于 `worker.drain.timeoutMs / 1000`
+- controller 默认 rollout 现在也建议使用：
+  - `controller.strategy.maxUnavailable=0`
+  - `controller.strategy.maxSurge=1`
+  这样在多副本控制面下不会因为滚动发布主动把 leader election 面降到 0 个 ready 实例
 - `apiServer.serviceAnnotations` / `worker.serviceAnnotations` / `controller.service.annotations` 可用于补充 LB / scrape / mesh 侧 annotations
 - `controller.serviceAccount.annotations` 可用于 IRSA / Workload Identity 等集群集成
 - worker 的 `OAH_INTERNAL_BASE_URL` 会自动按 release 名称和 namespace 生成 headless service DNS

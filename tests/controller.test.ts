@@ -2312,6 +2312,185 @@ describe("controller", () => {
     expect(requests.some((request) => request.method === "PATCH")).toBe(true);
   });
 
+  it("clears stale leader-election errors after leadership recovers", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-controller-lease-recovery-"));
+    tempDirs.push(tempDir);
+    const tokenFile = path.join(tempDir, "token");
+    await writeFile(tokenFile, "test-token", "utf8");
+
+    let attempt = 0;
+    const gained: string[] = [];
+    const lost: string[] = [];
+
+    const elector = createControllerLeaderElector(
+      {
+        type: "kubernetes",
+        identity: "controller-a",
+        namespace: "open-agent-harness",
+        leaseName: "oah-controller",
+        apiUrl: "https://kubernetes.default.svc",
+        tokenFile,
+        caFile: undefined,
+        skipTlsVerify: true,
+        leaseDurationMs: 1000,
+        renewIntervalMs: 10,
+        retryIntervalMs: 10
+      },
+      {
+        onGainedLeadership() {
+          gained.push("gained");
+        },
+        onLostLeadership() {
+          lost.push("lost");
+        },
+        request: async (request) => {
+          if (request.method === "GET") {
+            attempt += 1;
+            if (attempt === 1) {
+              throw new Error("request timed out after 500ms");
+            }
+
+            return {
+              status: 200,
+              body: {
+                metadata: {
+                  resourceVersion: attempt >= 3 ? "2" : "1"
+                },
+                spec: {
+                  holderIdentity: attempt >= 3 ? "controller-a" : "other-controller",
+                  renewTime: new Date().toISOString(),
+                  leaseDurationSeconds: 1,
+                  leaseTransitions: attempt >= 3 ? 2 : 1
+                }
+              },
+              text: "{}"
+            };
+          }
+
+          return {
+            status: 200,
+            body: {
+              metadata: {
+                resourceVersion: "2"
+              },
+              spec: {
+                holderIdentity: "controller-a",
+                renewTime: new Date().toISOString(),
+                leaseDurationSeconds: 1,
+                leaseTransitions: 2
+              }
+            },
+            text: "{}"
+          };
+        }
+      }
+    );
+
+    elector.start();
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    const snapshot = elector.snapshot();
+    await elector.close();
+
+    expect(snapshot.leader).toBe(true);
+    expect(snapshot.lastError).toBeUndefined();
+    expect(snapshot.leadershipChanges).toBe(1);
+    expect(snapshot.lastLeadershipChangeAt).toEqual(expect.any(String));
+    expect(gained.length).toBeGreaterThan(0);
+    expect(lost).toHaveLength(1);
+  });
+
+  it("tracks multiple leadership acquisitions across failover", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-controller-lease-failover-"));
+    tempDirs.push(tempDir);
+    const tokenFile = path.join(tempDir, "token");
+    await writeFile(tokenFile, "test-token", "utf8");
+
+    let getCount = 0;
+    const gained: string[] = [];
+    const lost: string[] = [];
+
+    const elector = createControllerLeaderElector(
+      {
+        type: "kubernetes",
+        identity: "controller-a",
+        namespace: "open-agent-harness",
+        leaseName: "oah-controller",
+        apiUrl: "https://kubernetes.default.svc",
+        tokenFile,
+        caFile: undefined,
+        skipTlsVerify: true,
+        leaseDurationMs: 1000,
+        renewIntervalMs: 10,
+        retryIntervalMs: 10
+      },
+      {
+        onGainedLeadership() {
+          gained.push("gained");
+        },
+        onLostLeadership() {
+          lost.push("lost");
+        },
+        request: async (request) => {
+          if (request.method === "GET") {
+            getCount += 1;
+            if (getCount === 2) {
+              throw new Error("socket hang up");
+            }
+
+            return {
+              status: 200,
+              body: {
+                metadata: {
+                  resourceVersion: `${getCount}`
+                },
+                spec: {
+                  holderIdentity: getCount === 1 || getCount === 3 ? "other-controller" : "controller-a",
+                  renewTime:
+                    getCount === 1 || getCount === 3
+                      ? "2026-04-15T00:00:00.000Z"
+                      : new Date().toISOString(),
+                  leaseDurationSeconds: 1,
+                  leaseTransitions: getCount >= 3 ? 2 : 1
+                }
+              },
+              text: "{}"
+            };
+          }
+
+          return {
+            status: 200,
+            body: {
+              metadata: {
+                resourceVersion: `${getCount + 1}`
+              },
+              spec: {
+                holderIdentity: "controller-a",
+                renewTime: new Date().toISOString(),
+                leaseDurationSeconds: 1,
+                leaseTransitions: 2
+              }
+            },
+            text: "{}"
+          };
+        }
+      }
+    );
+
+    elector.start();
+    const startedAt = Date.now();
+    while (gained.length < 2 && Date.now() - startedAt < 250) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const snapshot = elector.snapshot();
+    await elector.close();
+
+    expect(snapshot.leader).toBe(true);
+    expect(snapshot.leadershipChanges).toBeGreaterThanOrEqual(2);
+    expect(snapshot.lastLeadershipChangeAt).toEqual(expect.any(String));
+    expect(gained.length).toBeGreaterThanOrEqual(2);
+    expect(lost.length).toBeGreaterThanOrEqual(1);
+  });
+
   it("blocks kubernetes scale-down when policy disables it", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-controller-target-"));
     tempDirs.push(tempDir);
@@ -2343,11 +2522,22 @@ describe("controller", () => {
             return {
               status: 200,
               body: {
+                metadata: {
+                  generation: 4
+                },
                 spec: {
                   replicas: 3
+                },
+                status: {
+                  observedGeneration: 4,
+                  replicas: 3,
+                  readyReplicas: 3,
+                  updatedReplicas: 3,
+                  availableReplicas: 3,
+                  unavailableReplicas: 0
                 }
               },
-              text: "{\"spec\":{\"replicas\":3}}"
+              text: "{\"spec\":{\"replicas\":3},\"status\":{\"readyReplicas\":3}}"
             };
           }
 
@@ -2366,7 +2556,7 @@ describe("controller", () => {
       busySlots: 0
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       kind: "kubernetes",
       attempted: true,
       applied: false,
@@ -2374,12 +2564,21 @@ describe("controller", () => {
       observedReplicas: 3,
       appliedReplicas: 3,
       outcome: "blocked_scale_down",
+      phase: "blocked",
+      reasonCode: "scale_down_disabled",
+      targetRef: {
+        platform: "kubernetes",
+        kind: "Deployment",
+        namespace: "open-agent-harness",
+        name: "oah-worker",
+        discovery: "explicit"
+      },
       at: "2026-04-15T00:00:00.000Z",
       message: "scale down blocked by controller policy"
     });
     expect(requests).toHaveLength(1);
     expect(requests[0]?.method).toBe("GET");
-    expect(requests[0]?.url).toContain("/apis/apps/v1/namespaces/open-agent-harness/deployments/oah-worker/scale");
+    expect(requests[0]?.url).toContain("/apis/apps/v1/namespaces/open-agent-harness/deployments/oah-worker");
   });
 
   it("patches kubernetes deployment scale when desired replicas change", async () => {
@@ -2409,15 +2608,26 @@ describe("controller", () => {
             headers: request.headers,
             body: request.body
           });
-          if (request.method === "GET") {
+          if (request.method === "GET" && request.url.endsWith("/deployments/oah-worker")) {
             return {
               status: 200,
               body: {
+                metadata: {
+                  generation: requests.length >= 3 ? 8 : 7
+                },
                 spec: {
-                  replicas: 2
+                  replicas: requests.length >= 3 ? 4 : 2
+                },
+                status: {
+                  observedGeneration: requests.length >= 3 ? 8 : 7,
+                  replicas: requests.length >= 3 ? 4 : 2,
+                  readyReplicas: requests.length >= 3 ? 4 : 2,
+                  updatedReplicas: requests.length >= 3 ? 4 : 2,
+                  availableReplicas: requests.length >= 3 ? 4 : 2,
+                  unavailableReplicas: 0
                 }
               },
-              text: "{\"spec\":{\"replicas\":2}}"
+              text: requests.length >= 3 ? "{\"spec\":{\"replicas\":4}}" : "{\"spec\":{\"replicas\":2}}"
             };
           }
 
@@ -2444,7 +2654,7 @@ describe("controller", () => {
       busySlots: 2
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       kind: "kubernetes",
       attempted: true,
       applied: true,
@@ -2452,11 +2662,17 @@ describe("controller", () => {
       observedReplicas: 2,
       appliedReplicas: 4,
       outcome: "scaled",
+      phase: "ready",
+      reasonCode: "rollout_ready",
+      readyReplicas: 4,
+      availableReplicas: 4,
+      updatedReplicas: 4,
       at: "2026-04-15T00:00:00.000Z"
     });
-    expect(requests).toHaveLength(2);
+    expect(requests).toHaveLength(3);
     expect(requests[0]?.method).toBe("GET");
     expect(requests[1]?.method).toBe("PATCH");
+    expect(requests[2]?.method).toBe("GET");
     expect(requests[1]?.headers.authorization).toBe("Bearer test-token");
     expect(requests[1]?.headers["content-type"]).toBe("application/merge-patch+json");
     expect(requests[1]?.body).toBe(JSON.stringify({ spec: { replicas: 4 } }));
@@ -2542,7 +2758,7 @@ describe("controller", () => {
       busySlots: 1
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       kind: "docker_compose",
       attempted: true,
       applied: true,
@@ -2550,6 +2766,13 @@ describe("controller", () => {
       observedReplicas: 2,
       appliedReplicas: 3,
       outcome: "scaled",
+      phase: "accepted",
+      reasonCode: "scale_request_accepted",
+      targetRef: {
+        platform: "docker_compose",
+        kind: "service",
+        name: "oah-sandbox"
+      },
       at: "2026-04-15T00:00:00.000Z",
       message: "scaled"
     });
@@ -2673,7 +2896,7 @@ describe("controller", () => {
       busySlots: 1
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       kind: "docker_compose",
       attempted: true,
       applied: true,
@@ -2681,6 +2904,13 @@ describe("controller", () => {
       observedReplicas: 3,
       appliedReplicas: 2,
       outcome: "scaled",
+      phase: "accepted",
+      reasonCode: "scale_request_accepted",
+      targetRef: {
+        platform: "docker_compose",
+        kind: "service",
+        name: "oah-sandbox"
+      },
       at: "2026-04-15T00:00:00.000Z",
       message: "scaled"
     });
@@ -2863,11 +3093,22 @@ describe("controller", () => {
             return {
               status: 200,
               body: {
+                metadata: {
+                  generation: requests.length >= 4 ? 3 : 2
+                },
                 spec: {
-                  replicas: 2
+                  replicas: requests.length >= 4 ? 3 : 2
+                },
+                status: {
+                  observedGeneration: requests.length >= 4 ? 3 : 2,
+                  replicas: requests.length >= 4 ? 3 : 2,
+                  readyReplicas: requests.length >= 4 ? 3 : 2,
+                  updatedReplicas: requests.length >= 4 ? 3 : 2,
+                  availableReplicas: requests.length >= 4 ? 3 : 2,
+                  unavailableReplicas: 0
                 }
               },
-              text: "{\"spec\":{\"replicas\":2}}"
+              text: requests.length >= 4 ? "{\"spec\":{\"replicas\":3}}" : "{\"spec\":{\"replicas\":2}}"
             };
           }
 
@@ -2899,11 +3140,69 @@ describe("controller", () => {
       desiredReplicas: 3,
       observedReplicas: 2,
       appliedReplicas: 3,
-      outcome: "scaled"
+      outcome: "scaled",
+      phase: "ready",
+      targetRef: {
+        discovery: "label_selector",
+        name: "oah-worker"
+      }
     });
     expect(requests[0]?.url).toContain("/deployments?labelSelector=app.kubernetes.io%2Fcomponent%3Dworker");
-    expect(requests[1]?.url).toContain("/deployments/oah-worker/scale");
+    expect(requests[1]?.url).toContain("/deployments/oah-worker");
     expect(requests[2]?.url).toContain("/deployments/oah-worker/scale");
+    expect(requests[3]?.url).toContain("/deployments/oah-worker");
+  });
+
+  it("classifies selector discovery failures for kubernetes scale targets", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-controller-target-discovery-empty-"));
+    tempDirs.push(tempDir);
+    const tokenFile = path.join(tempDir, "token");
+    await writeFile(tokenFile, "test-token", "utf8");
+
+    const target = createKubernetesWorkerReplicaTarget(
+      {
+        type: "kubernetes",
+        allowScaleDown: true,
+        kubernetes: {
+          namespace: "open-agent-harness",
+          labelSelector: "app.kubernetes.io/component=worker",
+          apiUrl: "https://kubernetes.default.svc",
+          tokenFile,
+          caFile: undefined,
+          skipTlsVerify: true
+        }
+      },
+      {
+        request: async () => ({
+          status: 200,
+          body: {
+            items: []
+          },
+          text: "{\"items\":[]}"
+        })
+      }
+    );
+
+    const result = await target.reconcile({
+      timestamp: "2026-04-15T00:00:00.000Z",
+      reason: "scale_up",
+      desiredReplicas: 3,
+      suggestedReplicas: 3,
+      activeReplicas: 1,
+      activeSlots: 1,
+      busySlots: 1
+    });
+
+    expect(result).toMatchObject({
+      kind: "kubernetes",
+      attempted: true,
+      applied: false,
+      desiredReplicas: 3,
+      outcome: "error",
+      phase: "error",
+      stage: "discover_target",
+      reasonCode: "selector_no_match"
+    });
   });
 
   it("renders controller metrics and serves observability endpoints", async () => {
@@ -3089,13 +3388,45 @@ describe("controller", () => {
           blockers: [],
           evaluatedAt: "2026-04-15T00:00:00.000Z"
         },
+        scaleTarget: {
+          kind: "kubernetes",
+          attempted: true,
+          applied: true,
+          desiredReplicas: 3,
+          observedReplicas: 2,
+          appliedReplicas: 3,
+          outcome: "scaled",
+          at: "2026-04-15T00:00:00.000Z",
+          phase: "progressing",
+          reasonCode: "rollout_in_progress",
+          readyReplicas: 2,
+          updatedReplicas: 2,
+          availableReplicas: 2,
+          unavailableReplicas: 1,
+          generation: 9,
+          observedGeneration: 9,
+          targetRef: {
+            platform: "kubernetes",
+            kind: "Deployment",
+            namespace: "open-agent-harness",
+            name: "oah-sandbox",
+            discovery: "label_selector",
+            selector: "app.kubernetes.io/component=sandbox"
+          }
+        },
         recentDecisions: []
       }
     });
 
     expect(metrics).toContain("oah_controller_leader 1");
+    expect(metrics).toContain("oah_controller_leader_election_running 1");
+    expect(metrics).toContain("oah_controller_leader_election_changes 0");
     expect(metrics).toContain("oah_controller_scale_down_allowed 0");
     expect(metrics).toContain("oah_controller_scale_down_blocked_replicas 1");
+    expect(metrics).toContain("oah_controller_scale_target_attempted 1");
+    expect(metrics).toContain("oah_controller_scale_target_applied 1");
+    expect(metrics).toContain("oah_controller_scale_target_ready_replicas 2");
+    expect(metrics).toContain("oah_controller_scale_target_phase_progressing 1");
     expect(metrics).toContain("oah_controller_sandbox_desired 3");
     expect(metrics).toContain("oah_controller_sandbox_logical 3");
     expect(metrics).toContain("oah_controller_sandbox_owner_groups 2");

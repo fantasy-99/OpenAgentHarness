@@ -318,6 +318,26 @@ async function createStartedAppWithWorkspaceAndGateway(
 
 async function createStartedInternalWorkerApp(options?: {
   sandboxHostProviderKind?: "embedded" | "self_hosted" | "e2b";
+  beginDrain?: (() => Promise<void> | void) | undefined;
+  readinessCheck?: (() => Promise<{
+    status: "ready" | "not_ready";
+    draining?: boolean;
+    reason?: "draining" | "checks_down";
+    checks: {
+      postgres: "up" | "down" | "not_configured";
+      redisEvents: "up" | "down" | "not_configured";
+      redisRunQueue: "up" | "down" | "not_configured";
+    };
+  }> | {
+    status: "ready" | "not_ready";
+    draining?: boolean;
+    reason?: "draining" | "checks_down";
+    checks: {
+      postgres: "up" | "down" | "not_configured";
+      redisEvents: "up" | "down" | "not_configured";
+      redisRunQueue: "up" | "down" | "not_configured";
+    };
+  }) | undefined;
 }) {
   const gateway = new FakeModelGateway(20);
   const persistence = createMemoryRuntimePersistence();
@@ -332,6 +352,8 @@ async function createStartedInternalWorkerApp(options?: {
     modelGateway: gateway,
     defaultModel: "openai-default",
     logger: false,
+    ...(options?.beginDrain ? { beginDrain: options.beginDrain } : {}),
+    ...(options?.readinessCheck ? { readinessCheck: options.readinessCheck } : {}),
     ...(options?.sandboxHostProviderKind ? { sandboxHostProviderKind: options.sandboxHostProviderKind } : {})
   });
 
@@ -586,6 +608,50 @@ describe("http api", () => {
     });
 
     expect(landingResponse.status).toBe(404);
+  });
+
+  it("exposes an internal drain control endpoint for Kubernetes preStop", async () => {
+    let draining = false;
+    let drainCalls = 0;
+    activeApp = await createStartedInternalWorkerApp({
+      beginDrain: async () => {
+        drainCalls += 1;
+        draining = true;
+      },
+      readinessCheck: async () => ({
+        status: draining ? "not_ready" : "ready",
+        ...(draining ? { draining: true, reason: "draining" as const } : { draining: false }),
+        checks: {
+          postgres: "not_configured",
+          redisEvents: "not_configured",
+          redisRunQueue: "not_configured"
+        }
+      })
+    });
+
+    const drainResponse = await fetch(`${activeApp.baseUrl}/internal/v1/control/drain`, {
+      method: "POST"
+    });
+    expect(drainResponse.status).toBe(202);
+    await expect(drainResponse.json()).resolves.toEqual({
+      status: "accepted",
+      draining: true
+    });
+
+    const readyzResponse = await fetch(`${activeApp.baseUrl}/readyz`);
+    expect(readyzResponse.status).toBe(503);
+    await expect(readyzResponse.json()).resolves.toEqual({
+      status: "not_ready",
+      draining: true,
+      reason: "draining",
+      checks: {
+        postgres: "not_configured",
+        redisEvents: "not_configured",
+        redisRunQueue: "not_configured"
+      }
+    });
+
+    expect(drainCalls).toBe(1);
   });
 
   it("lists workspace runtimes from runtime_dir", async () => {

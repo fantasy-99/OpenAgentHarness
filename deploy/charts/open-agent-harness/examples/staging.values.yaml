@@ -36,6 +36,13 @@ apiServer:
 
 worker:
   replicaCount: 2
+  terminationGracePeriodSeconds: 180
+  drain:
+    timeoutMs: 150000
+    timeoutStrategy: requeue_running
+    preStop:
+      enabled: true
+      delayMs: 8000
   podDisruptionBudget:
     enabled: true
     maxUnavailable: 1
@@ -63,6 +70,9 @@ worker:
 
 controller:
   replicaCount: 2
+  strategy:
+    maxUnavailable: 0
+    maxSurge: 1
   podDisruptionBudget:
     enabled: true
     minAvailable: 1
