@@ -5,6 +5,9 @@ ARG BASE_RUST_IMAGE=rust:1.95-alpine
 
 FROM ${BASE_BUILD_IMAGE} AS deps
 
+ARG TARGETOS
+ARG TARGETARCH
+
 LABEL org.opencontainers.image.title="Open Agent Harness" \
       org.opencontainers.image.description="Production image for split-deployed Open Agent Harness." \
       org.opencontainers.image.version="0.1.0" \
@@ -37,7 +40,7 @@ COPY packages/storage-redis/package.json ./packages/storage-redis/package.json
 COPY packages/storage-redis-control/package.json ./packages/storage-redis-control/package.json
 COPY packages/storage-sqlite/package.json ./packages/storage-sqlite/package.json
 
-RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+RUN --mount=type=cache,id=pnpm-store-${TARGETOS}-${TARGETARCH},target=/pnpm/store,sharing=locked \
   pnpm config set store-dir /pnpm/store \
   && pnpm fetch --frozen-lockfile \
   && pnpm install --frozen-lockfile --offline
@@ -132,6 +135,9 @@ RUN pnpm --filter @oah/compose-scaler deploy --legacy --prod /opt/oah/compose-sc
 
 FROM ${BASE_RUST_IMAGE} AS native-build-base
 
+ARG TARGETOS
+ARG TARGETARCH
+
 WORKDIR /app/native
 
 RUN --mount=type=cache,target=/var/cache/apk \
@@ -150,16 +156,16 @@ RUN mkdir -p /app/native/oah-workspace-sync/src /app/native/oah-archive-export/s
 
 FROM native-build-base AS native-workspace-sync-build
 
-RUN --mount=type=cache,id=oah-native-workspace-sync-cargo-registry,target=/usr/local/cargo/registry \
-  --mount=type=cache,id=oah-native-workspace-sync-cargo-git,target=/usr/local/cargo/git \
-  --mount=type=cache,id=oah-native-workspace-sync-target,target=/tmp/oah-native-workspace-sync-target \
+RUN --mount=type=cache,id=oah-native-workspace-sync-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+  --mount=type=cache,id=oah-native-workspace-sync-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+  --mount=type=cache,id=oah-native-workspace-sync-target-${TARGETOS}-${TARGETARCH},target=/tmp/oah-native-workspace-sync-target,sharing=locked \
   cargo build --locked --release -p oah-workspace-sync --target-dir /tmp/oah-native-workspace-sync-target
 
 COPY native/oah-workspace-sync/src ./oah-workspace-sync/src
 
-RUN --mount=type=cache,id=oah-native-workspace-sync-cargo-registry,target=/usr/local/cargo/registry \
-  --mount=type=cache,id=oah-native-workspace-sync-cargo-git,target=/usr/local/cargo/git \
-  --mount=type=cache,id=oah-native-workspace-sync-target,target=/tmp/oah-native-workspace-sync-target \
+RUN --mount=type=cache,id=oah-native-workspace-sync-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+  --mount=type=cache,id=oah-native-workspace-sync-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+  --mount=type=cache,id=oah-native-workspace-sync-target-${TARGETOS}-${TARGETARCH},target=/tmp/oah-native-workspace-sync-target,sharing=locked \
   find /app/native/oah-workspace-sync/src -type f -exec touch {} + \
   && cargo clean --target-dir /tmp/oah-native-workspace-sync-target -p oah-workspace-sync \
   && cargo build --locked --release -p oah-workspace-sync --target-dir /tmp/oah-native-workspace-sync-target \
@@ -168,16 +174,16 @@ RUN --mount=type=cache,id=oah-native-workspace-sync-cargo-registry,target=/usr/l
 
 FROM native-build-base AS native-compose-scaler-build
 
-RUN --mount=type=cache,id=oah-native-compose-scaler-cargo-registry,target=/usr/local/cargo/registry \
-  --mount=type=cache,id=oah-native-compose-scaler-cargo-git,target=/usr/local/cargo/git \
-  --mount=type=cache,id=oah-native-compose-scaler-target,target=/tmp/oah-native-compose-scaler-target \
+RUN --mount=type=cache,id=oah-native-compose-scaler-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+  --mount=type=cache,id=oah-native-compose-scaler-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+  --mount=type=cache,id=oah-native-compose-scaler-target-${TARGETOS}-${TARGETARCH},target=/tmp/oah-native-compose-scaler-target,sharing=locked \
   cargo build --locked --release -p oah-compose-scaler --target-dir /tmp/oah-native-compose-scaler-target
 
 COPY native/oah-compose-scaler/src ./oah-compose-scaler/src
 
-RUN --mount=type=cache,id=oah-native-compose-scaler-cargo-registry,target=/usr/local/cargo/registry \
-  --mount=type=cache,id=oah-native-compose-scaler-cargo-git,target=/usr/local/cargo/git \
-  --mount=type=cache,id=oah-native-compose-scaler-target,target=/tmp/oah-native-compose-scaler-target \
+RUN --mount=type=cache,id=oah-native-compose-scaler-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+  --mount=type=cache,id=oah-native-compose-scaler-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+  --mount=type=cache,id=oah-native-compose-scaler-target-${TARGETOS}-${TARGETARCH},target=/tmp/oah-native-compose-scaler-target,sharing=locked \
   find /app/native/oah-compose-scaler/src -type f -exec touch {} + \
   && cargo clean --target-dir /tmp/oah-native-compose-scaler-target -p oah-compose-scaler \
   && cargo build --locked --release -p oah-compose-scaler --target-dir /tmp/oah-native-compose-scaler-target \

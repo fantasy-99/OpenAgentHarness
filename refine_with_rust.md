@@ -147,17 +147,17 @@ Current native bundle split on this sample:
 
 Latest local proof after this stage:
 
-- TS sidecar cold push: `1564ms`, `1027` requests
-- TS `bundle-primary` cold push: `427ms`, `2` requests
+- TS sidecar cold push: `1797ms`, `1027` requests
+- TS `bundle-primary` cold push: `383ms`, `2` requests
 - native persistent cold push: `50ms`, `2` requests
 - native persistent warm push: `6ms`, `1` request
-- native persistent materialize: `96ms` in the final run, with prior same-stage runs around `78ms`; `1` request
-- native persistent pull: `78ms`, `1` request
-- native persistent push phase split: `scan=2ms`, `bundle-build=11ms`, `bundle-upload=31ms`, `command-total=49ms`
-- native persistent materialize split: `bundle-get=1ms`, `bundle-body-read=3ms`, `bundle-extract=85ms`, `fingerprint=3ms`, `command-total=94ms`
-- native persistent materialize extract micro-split: `extract-create=51343us`, `extract-write=6549us`, `extract-mtime=8492us`, `extract-mkdir=740us`, `extract-target-check=0us`, `extract-files=1024`
+- native persistent materialize: `84ms`, `1` request
+- native persistent pull: `77ms`, `1` request
+- native persistent push phase split: `scan=2ms`, `bundle-build=11ms`, `bundle-upload=30ms`, `command-total=48ms`
+- native persistent materialize split: `bundle-get=1ms`, `bundle-body-read=2ms`, `bundle-extract=75ms`, `fingerprint=3ms`, `command-total=83ms`
+- native persistent materialize extract micro-split: `extract-create=42839us`, `extract-write=5236us`, `extract-mtime=11467us`, `extract-mkdir=778us`, `extract-target-check=0us`, `extract-files=1024`
 - native persistent pull split: `bundle-get=1ms`, `bundle-body-read=2ms`, `bundle-extract=69ms`, `fingerprint=3ms`, `command-total=77ms`
-- native persistent pull extract micro-split: `extract-create=41928us`, `extract-write=5192us`, `extract-mtime=6438us`, `extract-mkdir=706us`, `extract-target-check=0us`, `extract-files=1024`
+- native persistent pull extract micro-split: `extract-create=41644us`, `extract-write=5367us`, `extract-mtime=6692us`, `extract-mkdir=676us`, `extract-target-check=0us`, `extract-files=1024`
 - explicit writer-off control: native persistent cold push `97ms`, with `bundle-build=55ms` and `command-total=96ms`
 - explicit extractor-off control: native persistent materialize `127ms`, pull `113ms`
 
@@ -264,6 +264,7 @@ The remaining mainline work is now narrower and more concrete:
 - continue improving prepared-seed reuse and seed upload efficiency
 - add broader Docker CPU/memory constrained proof against real runtime mixes, not only the synthetic `1024 x 4 KiB` fixture
 - keep TS fallback semantically aligned with native behavior
+- keep reducing native Rust file size by extracting low-coupling modules first; avoid large behavioral rewrites while performance work is still active
 
 ## Next Phase Entry Point
 
@@ -281,6 +282,15 @@ The next phase should continue from:
 3. move runtime/tool/skill copy and merge into a native command only if those real-runtime measurements show copy/setup cost dominating
 4. keep improving Docker benchmark ergonomics so constrained measurements stay cheap enough to run regularly
 
+Structural cleanup now has a safe order:
+
+1. keep `native/oah-archive-export` schema/SQL definitions outside `main.rs` - done in `native/oah-archive-export/src/schema.rs`
+2. split `native/oah-workspace-sync` path normalization and ignore/exclude rules into a small `path_rules` module - done in `native/oah-workspace-sync/src/path_rules.rs`
+3. split `native/oah-workspace-sync` tar/ustar bundle writer, extractor, and in-memory bundle environment controls into a `sync_bundle` module - done in `native/oah-workspace-sync/src/sync_bundle.rs`
+4. split `native/oah-workspace-sync` sandbox HTTP config/client/listing/prune rules into `sandbox_http.rs` - done in `native/oah-workspace-sync/src/sandbox_http.rs`
+5. split `native/oah-workspace-sync` local filesystem stat/remove/ensure/cleanup helpers into `local_fs.rs` - done in `native/oah-workspace-sync/src/local_fs.rs`
+6. next split snapshot/manifest planning or archive-export row insertion before S3/object-store orchestration, because object-store orchestration crosses many request/response structs
+
 ## Repository Scan: Rust Candidate Map
 
 This repository already has the right Rust boundary: native binaries under `native/`, called from TypeScript through `@oah/native-bridge` or a server-side bridge module.
@@ -297,6 +307,9 @@ These are the highest-confidence candidates because they are already on the Dock
    - Current pass: in-memory root bundle thresholds are now native-configurable and default high enough to cover the `1024 files x 4 KiB` benchmark class without forcing tempfile I/O.
    - Current pass: bundle creation now uses a hybrid tar strategy. Clean snapshots keep the faster root-tar path; snapshots with ignored runtime junk switch to a snapshot-list tar path so `.DS_Store`, `__pycache__`, `.pyc`, SQLite sidecars, and internal sync files do not leak into bundles.
    - Current pass: filtered/in-memory sync bundles now use a native ustar writer by default, with `OAH_NATIVE_WORKSPACE_SYNC_RUST_BUNDLE_WRITER=0` available as an external-tar control/fallback.
+   - Current pass: native snapshots now remember when `collect_snapshot` has already produced relative-path order, so fingerprinting and the Rust ustar writer can skip duplicate sorts on the main collected-snapshot path.
+   - Current cleanup: sync bundle tar/ustar writing, tar subprocess fallback, in-memory bundle thresholds, and ustar byte extraction now live in `native/oah-workspace-sync/src/sync_bundle.rs`, leaving `main.rs` focused on command handling and sync orchestration.
+   - Current cleanup: sandbox HTTP client/listing/prune helpers now live in `native/oah-workspace-sync/src/sandbox_http.rs`, and local filesystem cleanup/materialization helpers live in `native/oah-workspace-sync/src/local_fs.rs`.
    - Measured win: larger-sample `bundle-build` dropped from about `55ms` to about `11ms`; native persistent cold push dropped from about `97ms` to about `45ms` in the writer-on/off control.
    - Next win: upload/materialize cost and very-large tempfile/streaming behavior.
 
@@ -343,6 +356,7 @@ These are useful, but should wait until the main workspace path is proven under 
 2. Archive export worker refinement
    - Code surface: `native/oah-archive-export`, `apps/server/src/native-archive-export.ts`, and `apps/server/src/workspace-archive-export.ts`.
    - Current state: Rust already writes SQLite bundles/checksums and supports persistent streaming.
+   - Current cleanup: SQLite schema and insert statement definitions now live in `native/oah-archive-export/src/schema.rs`, trimming `main.rs` and keeping storage layout changes localized.
    - Rust opportunity: improve batching/transaction shape, add timing counters, and keep row serialization streaming all the way from TS to Rust.
    - Expected win: lower archive export CPU and memory, but this is background work rather than the main latency path.
 

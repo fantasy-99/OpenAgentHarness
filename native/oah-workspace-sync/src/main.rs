@@ -1,10 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::env;
 use std::fs;
 use std::future::Future;
-use std::io::{self, BufRead, BufReader, BufWriter, Cursor, Read, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command as ProcessCommand, ExitCode};
+use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -16,40 +15,33 @@ use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::{Delete, ObjectIdentifier};
 use aws_sdk_s3::Client as S3Client;
 use clap::{Parser, Subcommand};
-use filetime::{set_file_handle_times, set_file_mtime, FileTime};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
-use reqwest::{Client as HttpClient, StatusCode, Url};
+use filetime::{set_file_mtime, FileTime};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 use sha1::{Digest, Sha1};
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::runtime::Builder as RuntimeBuilder;
 use tokio::task::JoinSet;
+
+mod local_fs;
+mod path_rules;
+mod sandbox_http;
+mod sync_bundle;
+
+use local_fs::*;
+use path_rules::*;
+use sandbox_http::*;
+use sync_bundle::*;
 
 const PROTOCOL_VERSION: u32 = 1;
 const BINARY_NAME: &str = "oah-workspace-sync";
 const BINARY_VERSION: &str = env!("CARGO_PKG_VERSION");
 const OBJECT_MTIME_METADATA_KEY: &str = "oah-mtime-ms";
-const INTERNAL_SYNC_MANIFEST_RELATIVE_PATH: &str = ".oah-sync-manifest.json";
-const INTERNAL_SYNC_BUNDLE_RELATIVE_PATH: &str = ".oah-sync-bundle.tar";
 const INLINE_UPLOAD_THRESHOLD_BYTES: u64 = 128 * 1024;
 const DEFAULT_SYNC_BUNDLE_MIN_FILE_COUNT: usize = 16;
 const DEFAULT_SYNC_BUNDLE_MIN_TOTAL_BYTES: u64 = 128 * 1024;
-const DEFAULT_IN_MEMORY_SYNC_BUNDLE_MIN_SOURCE_BYTES: u64 = 256 * 1024;
-const DEFAULT_IN_MEMORY_SYNC_BUNDLE_MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
-const DEFAULT_IN_MEMORY_SYNC_BUNDLE_EXTRACT_MAX_BYTES: u64 = 16 * 1024 * 1024;
-const TAR_BLOCK_SIZE: usize = 512;
-const IN_MEMORY_SYNC_BUNDLE_MIN_SOURCE_BYTES_ENV: &str =
-    "OAH_NATIVE_WORKSPACE_SYNC_IN_MEMORY_BUNDLE_MIN_SOURCE_BYTES";
-const IN_MEMORY_SYNC_BUNDLE_MAX_SOURCE_BYTES_ENV: &str =
-    "OAH_NATIVE_WORKSPACE_SYNC_IN_MEMORY_BUNDLE_MAX_SOURCE_BYTES";
-const IN_MEMORY_SYNC_BUNDLE_EXTRACT_MAX_BYTES_ENV: &str =
-    "OAH_NATIVE_WORKSPACE_SYNC_IN_MEMORY_BUNDLE_EXTRACT_MAX_BYTES";
-const RUST_SYNC_BUNDLE_WRITER_ENV: &str = "OAH_NATIVE_WORKSPACE_SYNC_RUST_BUNDLE_WRITER";
-const RUST_SYNC_BUNDLE_EXTRACTOR_ENV: &str = "OAH_NATIVE_WORKSPACE_SYNC_RUST_BUNDLE_EXTRACTOR";
 
 #[derive(Parser)]
 #[command(name = BINARY_NAME, version = BINARY_VERSION, about = "Open Agent Harness native workspace sync utilities.")]
@@ -204,15 +196,6 @@ struct NativeSyncBundleConfig {
     trust_managed_prefixes: Option<bool>,
 }
 
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct NativeSandboxHttpConfig {
-    base_url: String,
-    sandbox_id: String,
-    #[serde(default)]
-    headers: HashMap<String, String>,
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ErrorResponse {
@@ -235,6 +218,7 @@ struct WorkerRequest {
 #[derive(Default)]
 struct Snapshot {
     files: Vec<FileEntry>,
+    files_sorted_by_relative_path: bool,
     directories: BTreeSet<String>,
     empty_directories: BTreeSet<String>,
     ignored_paths: Vec<String>,
@@ -576,36 +560,6 @@ struct SyncLocalToSandboxHttpResponse {
     local_fingerprint: String,
     created_directory_count: usize,
     uploaded_file_count: usize,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct NativeSandboxHttpFileStat {
-    kind: String,
-    size: u64,
-    mtime_ms: f64,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct NativeSandboxHttpEntryPage {
-    items: Vec<NativeSandboxHttpEntry>,
-    next_cursor: Option<String>,
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct NativeSandboxHttpEntry {
-    path: String,
-    #[serde(rename = "type")]
-    entry_type: String,
-    size_bytes: Option<u64>,
-    updated_at: Option<String>,
-}
-
-struct NativeSandboxHttpRemoteState {
-    existing_directories: BTreeSet<String>,
-    existing_file_stats: BTreeMap<String, NativeSandboxHttpFileStat>,
 }
 
 fn main() -> ExitCode {
@@ -1048,14 +1002,6 @@ fn serve() -> Result<(), String> {
     Ok(())
 }
 
-fn normalize_path(value: &Path) -> String {
-    value.to_string_lossy().replace('\\', "/")
-}
-
-fn normalize_relative_path(value: &str) -> String {
-    value.replace('\\', "/").trim_matches('/').to_string()
-}
-
 fn parse_object_mtime_ms(metadata: Option<&HashMap<String, String>>) -> Option<u128> {
     metadata
         .and_then(|metadata| metadata.get(OBJECT_MTIME_METADATA_KEY))
@@ -1148,307 +1094,6 @@ fn should_assume_empty_trusted_managed_prefix(
     true
 }
 
-#[derive(Clone)]
-struct NativeSandboxHttpClient {
-    client: HttpClient,
-    base_url: String,
-    route_prefix: String,
-    sandbox_id: String,
-}
-
-fn parse_sandbox_http_base_url(input: &str) -> (String, String) {
-    let trimmed = input.trim();
-    if let Ok(mut url) = Url::parse(trimmed) {
-        let path = url.path().trim_end_matches('/').to_string();
-        let route_prefix = if path.ends_with("/internal/v1") {
-            "/internal/v1"
-        } else if path.ends_with("/api/v1") {
-            "/api/v1"
-        } else {
-            ""
-        };
-        let normalized_path = if route_prefix.is_empty() {
-            path
-        } else {
-            path.trim_end_matches(route_prefix)
-                .trim_end_matches('/')
-                .to_string()
-        };
-        url.set_path(if normalized_path.is_empty() {
-            "/"
-        } else {
-            &normalized_path
-        });
-        url.set_query(None);
-        url.set_fragment(None);
-        return (
-            url.to_string().trim_end_matches('/').to_string(),
-            route_prefix.to_string(),
-        );
-    }
-
-    let trimmed = trimmed.trim_end_matches('/').to_string();
-    if let Some(base_url) = trimmed.strip_suffix("/internal/v1") {
-        return (
-            base_url.trim_end_matches('/').to_string(),
-            "/internal/v1".to_string(),
-        );
-    }
-    if let Some(base_url) = trimmed.strip_suffix("/api/v1") {
-        return (
-            base_url.trim_end_matches('/').to_string(),
-            "/api/v1".to_string(),
-        );
-    }
-    (trimmed, String::new())
-}
-
-impl NativeSandboxHttpClient {
-    fn new(config: &NativeSandboxHttpConfig) -> Result<Self, String> {
-        let mut headers = HeaderMap::new();
-        for (key, value) in &config.headers {
-            let name = HeaderName::from_bytes(key.as_bytes())
-                .map_err(|error| format!("Invalid sandbox HTTP header name {key:?}: {error}"))?;
-            let header_value = HeaderValue::from_str(value).map_err(|error| {
-                format!("Invalid sandbox HTTP header value for {key:?}: {error}")
-            })?;
-            headers.insert(name, header_value);
-        }
-
-        let client = HttpClient::builder()
-            .default_headers(headers)
-            .build()
-            .map_err(|error| format!("Failed to initialize sandbox HTTP client: {error}"))?;
-        let (base_url, route_prefix) = parse_sandbox_http_base_url(&config.base_url);
-
-        Ok(Self {
-            client,
-            base_url,
-            route_prefix,
-            sandbox_id: config.sandbox_id.clone(),
-        })
-    }
-
-    fn build_url(&self, request_path: &str, query: &[(&str, String)]) -> Result<Url, String> {
-        let mapped_path = if self.route_prefix.is_empty() {
-            request_path.to_string()
-        } else {
-            request_path.replacen("/api/v1", &self.route_prefix, 1)
-        };
-        let mut url = Url::parse(&format!("{}{}", self.base_url, mapped_path))
-            .map_err(|error| format!("Failed to build sandbox HTTP URL: {error}"))?;
-        for (key, value) in query {
-            url.query_pairs_mut().append_pair(key, value);
-        }
-        Ok(url)
-    }
-
-    async fn create_directory(&self, path: &str) -> Result<(), String> {
-        let url = self.build_url(
-            &format!("/api/v1/sandboxes/{}/directories", self.sandbox_id),
-            &[],
-        )?;
-        let response = self
-            .client
-            .post(url)
-            .json(&serde_json::json!({
-                "path": path,
-                "createParents": true
-            }))
-            .send()
-            .await
-            .map_err(|error| format!("Failed to create sandbox directory {path}: {error}"))?;
-        if response.status().is_success() {
-            return Ok(());
-        }
-
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| String::from("<unavailable>"));
-        Err(format!(
-            "Failed to create sandbox directory {path}: HTTP {status} {body}"
-        ))
-    }
-
-    async fn upload_file(&self, path: &str, data: Vec<u8>, mtime_ms: u128) -> Result<(), String> {
-        let url = self.build_url(
-            &format!("/api/v1/sandboxes/{}/files/upload", self.sandbox_id),
-            &[
-                ("path", path.to_string()),
-                ("overwrite", "true".to_string()),
-                ("mtimeMs", mtime_ms.to_string()),
-            ],
-        )?;
-        let response = self
-            .client
-            .put(url)
-            .header(CONTENT_TYPE, "application/octet-stream")
-            .body(data)
-            .send()
-            .await
-            .map_err(|error| format!("Failed to upload sandbox file {path}: {error}"))?;
-        if response.status().is_success() {
-            return Ok(());
-        }
-
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| String::from("<unavailable>"));
-        Err(format!(
-            "Failed to upload sandbox file {path}: HTTP {status} {body}"
-        ))
-    }
-
-    async fn stat_path(&self, path: &str) -> Result<Option<NativeSandboxHttpFileStat>, String> {
-        let url = self.build_url(
-            &format!("/api/v1/sandboxes/{}/files/stat", self.sandbox_id),
-            &[("path", path.to_string())],
-        )?;
-        let response = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(|error| format!("Failed to stat sandbox file {path}: {error}"))?;
-        if response.status() == StatusCode::NOT_FOUND {
-            return Ok(None);
-        }
-        if response.status().is_success() {
-            let payload = response
-                .json::<NativeSandboxHttpFileStat>()
-                .await
-                .map_err(|error| {
-                    format!("Failed to decode sandbox file stat response for {path}: {error}")
-                })?;
-            return Ok(Some(payload));
-        }
-
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| String::from("<unavailable>"));
-        Err(format!(
-            "Failed to stat sandbox file {path}: HTTP {status} {body}"
-        ))
-    }
-
-    async fn list_entries(
-        &self,
-        path: &str,
-        cursor: Option<&str>,
-    ) -> Result<NativeSandboxHttpEntryPage, String> {
-        let mut query = vec![
-            ("path", path.to_string()),
-            ("pageSize", "200".to_string()),
-            ("sortBy", "name".to_string()),
-            ("sortOrder", "asc".to_string()),
-        ];
-        if let Some(cursor) = cursor {
-            query.push(("cursor", cursor.to_string()));
-        }
-        let url = self.build_url(
-            &format!("/api/v1/sandboxes/{}/files/entries", self.sandbox_id),
-            &query,
-        )?;
-        let response = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(|error| format!("Failed to list sandbox entries under {path}: {error}"))?;
-        if response.status() == StatusCode::NOT_FOUND {
-            return Ok(NativeSandboxHttpEntryPage {
-                items: Vec::new(),
-                next_cursor: None,
-            });
-        }
-        if response.status().is_success() {
-            return response
-                .json::<NativeSandboxHttpEntryPage>()
-                .await
-                .map_err(|error| {
-                    format!("Failed to decode sandbox entry listing for {path}: {error}")
-                });
-        }
-
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| String::from("<unavailable>"));
-        Err(format!(
-            "Failed to list sandbox entries under {path}: HTTP {status} {body}"
-        ))
-    }
-
-    async fn delete_entry(&self, path: &str, recursive: bool) -> Result<(), String> {
-        let url = self.build_url(
-            &format!("/api/v1/sandboxes/{}/files/entry", self.sandbox_id),
-            &[
-                ("path", path.to_string()),
-                ("recursive", recursive.to_string()),
-            ],
-        )?;
-        let response = self
-            .client
-            .delete(url)
-            .send()
-            .await
-            .map_err(|error| format!("Failed to delete sandbox entry {path}: {error}"))?;
-        if response.status() == StatusCode::NOT_FOUND {
-            return Ok(());
-        }
-        if response.status().is_success() {
-            return Ok(());
-        }
-
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .unwrap_or_else(|_| String::from("<unavailable>"));
-        Err(format!(
-            "Failed to delete sandbox entry {path}: HTTP {status} {body}"
-        ))
-    }
-}
-
-fn sandbox_mtime_matches(local_mtime_ms: u128, remote_mtime_ms: f64) -> bool {
-    (remote_mtime_ms - local_mtime_ms as f64).abs() < 1.0
-}
-
-fn sandbox_file_matches(
-    local_size: u64,
-    local_mtime_ms: u128,
-    remote: &NativeSandboxHttpFileStat,
-) -> bool {
-    remote.kind == "file"
-        && remote.size == local_size
-        && sandbox_mtime_matches(local_mtime_ms, remote.mtime_ms)
-}
-
-fn parse_workspace_entry_updated_at_ms(value: &str) -> Option<f64> {
-    let parsed = OffsetDateTime::parse(value.trim(), &Rfc3339).ok()?;
-    Some(parsed.unix_timestamp_nanos() as f64 / 1_000_000.0)
-}
-
-fn sandbox_entry_file_stat(entry: &NativeSandboxHttpEntry) -> Option<NativeSandboxHttpFileStat> {
-    if entry.entry_type != "file" {
-        return None;
-    }
-
-    Some(NativeSandboxHttpFileStat {
-        kind: "file".to_string(),
-        size: entry.size_bytes?,
-        mtime_ms: parse_workspace_entry_updated_at_ms(entry.updated_at.as_deref()?)?,
-    })
-}
-
 async fn process_with_concurrency<T, R, F, Fut>(
     items: Vec<T>,
     max_concurrency: usize,
@@ -1497,166 +1142,12 @@ where
     Ok(results)
 }
 
-fn build_remote_path(base_path: &str, relative_path: &str) -> String {
-    let normalized_base = base_path
-        .replace('\\', "/")
-        .trim_end_matches('/')
-        .to_string();
-    let normalized_relative = normalize_relative_path(relative_path);
-
-    if normalized_base.is_empty() {
-        return normalized_relative;
-    }
-
-    if normalized_relative.is_empty() {
-        return normalized_base;
-    }
-
-    format!("{normalized_base}/{normalized_relative}")
-}
-
-async fn collect_remote_sandbox_entries(
-    sandbox_client: &NativeSandboxHttpClient,
-    root_path: &str,
-) -> Result<Vec<NativeSandboxHttpEntry>, String> {
-    let mut directories_to_visit = vec![root_path.to_string()];
-    let mut collected = Vec::new();
-
-    while let Some(current_path) = directories_to_visit.pop() {
-        let mut cursor: Option<String> = None;
-        loop {
-            let page = sandbox_client
-                .list_entries(&current_path, cursor.as_deref())
-                .await?;
-            for entry in page.items {
-                if entry.entry_type == "directory" {
-                    directories_to_visit.push(entry.path.clone());
-                }
-                collected.push(entry);
-            }
-
-            match page.next_cursor {
-                Some(next_cursor) => {
-                    cursor = Some(next_cursor);
-                }
-                None => break,
-            }
-        }
-    }
-
-    Ok(collected)
-}
-
-async fn prune_unexpected_remote_sandbox_entries(
-    sandbox_client: &NativeSandboxHttpClient,
-    root_path: &str,
-    expected_directories: &BTreeSet<String>,
-    expected_files: &BTreeSet<String>,
-) -> Result<NativeSandboxHttpRemoteState, String> {
-    let mut keep_directories = expected_directories.clone();
-    keep_directories.insert(root_path.to_string());
-    let mut remote_entries = collect_remote_sandbox_entries(sandbox_client, root_path).await?;
-    remote_entries.sort_by(|left, right| right.path.len().cmp(&left.path.len()));
-    let mut remote_state = NativeSandboxHttpRemoteState {
-        existing_directories: BTreeSet::new(),
-        existing_file_stats: BTreeMap::new(),
-    };
-
-    for entry in remote_entries {
-        if should_keep_remote_sandbox_entry(&entry, &keep_directories, expected_files) {
-            if entry.entry_type == "directory" {
-                remote_state.existing_directories.insert(entry.path.clone());
-            } else if let Some(file_stat) = sandbox_entry_file_stat(&entry) {
-                remote_state
-                    .existing_file_stats
-                    .insert(entry.path.clone(), file_stat);
-            }
-            continue;
-        }
-
-        sandbox_client
-            .delete_entry(&entry.path, entry.entry_type == "directory")
-            .await?;
-    }
-
-    Ok(remote_state)
-}
-
-fn should_keep_remote_sandbox_entry(
-    entry: &NativeSandboxHttpEntry,
-    expected_directories: &BTreeSet<String>,
-    expected_files: &BTreeSet<String>,
-) -> bool {
-    let keep_directory = entry.entry_type == "directory"
-        && expected_directories.contains(&entry.path)
-        && !expected_files.contains(&entry.path);
-    let keep_file = entry.entry_type == "file"
-        && expected_files.contains(&entry.path)
-        && !expected_directories.contains(&entry.path);
-    keep_directory || keep_file
-}
-
-fn normalize_exclude_paths(paths: Vec<String>) -> Vec<String> {
-    paths
-        .into_iter()
-        .map(|path| normalize_relative_path(&path))
-        .filter(|path| !path.is_empty())
-        .collect()
-}
-
-fn should_ignore_relative_path(relative_path: &str) -> bool {
-    if relative_path.is_empty() {
-        return false;
-    }
-
-    let normalized_relative_path = normalize_relative_path(relative_path);
-    if normalized_relative_path == INTERNAL_SYNC_MANIFEST_RELATIVE_PATH {
-        return true;
-    }
-
-    if normalized_relative_path == INTERNAL_SYNC_BUNDLE_RELATIVE_PATH {
-        return true;
-    }
-
-    let segments: Vec<&str> = relative_path.split('/').collect();
-    if segments.iter().any(|segment| *segment == "__pycache__") {
-        return true;
-    }
-
-    match segments.last().copied() {
-        Some(".DS_Store") => true,
-        Some(basename) if basename.ends_with(".pyc") => true,
-        Some(basename) if basename.ends_with(".db-shm") => true,
-        Some(basename) if basename.ends_with(".db-wal") => true,
-        _ => false,
-    }
-}
-
-fn should_exclude_relative_path(relative_path: &str, excludes: &[String]) -> bool {
-    excludes.iter().any(|exclude| {
-        relative_path == exclude || relative_path.starts_with(&format!("{exclude}/"))
-    })
-}
-
-fn relative_path_from_remote_key(prefix: &str, key: &str) -> Option<String> {
-    let normalized_prefix = normalize_relative_path(prefix);
-    if normalized_prefix.is_empty() {
-        return Some(normalize_relative_path(key));
-    }
-
-    if key == normalized_prefix {
-        return Some(String::new());
-    }
-
-    key.strip_prefix(&format!("{normalized_prefix}/"))
-        .map(normalize_relative_path)
-}
-
 fn collect_snapshot(root_dir: &Path, excludes: &[String]) -> Result<Snapshot, String> {
     match fs::metadata(root_dir) {
         Ok(metadata) if metadata.is_dir() => {
             let mut snapshot = Snapshot::default();
             walk_directory(root_dir, root_dir, excludes, &mut snapshot)?;
+            snapshot.files_sorted_by_relative_path = true;
             Ok(snapshot)
         }
         Ok(_) => Ok(Snapshot::default()),
@@ -1787,17 +1278,28 @@ fn walk_directory(
 
 fn create_fingerprint(snapshot: &Snapshot) -> String {
     let mut hash = Sha1::new();
-    let mut files = snapshot.files.iter().collect::<Vec<_>>();
-    files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-
-    for file in files {
-        hash.update(
-            format!(
-                "file:{}:{}:{}\n",
-                file.relative_path, file.size, file.mtime_ms
-            )
-            .as_bytes(),
-        );
+    if snapshot.files_sorted_by_relative_path {
+        for file in &snapshot.files {
+            hash.update(
+                format!(
+                    "file:{}:{}:{}\n",
+                    file.relative_path, file.size, file.mtime_ms
+                )
+                .as_bytes(),
+            );
+        }
+    } else {
+        let mut files = snapshot.files.iter().collect::<Vec<_>>();
+        files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        for file in files {
+            hash.update(
+                format!(
+                    "file:{}:{}:{}\n",
+                    file.relative_path, file.size, file.mtime_ms
+                )
+                .as_bytes(),
+            );
+        }
     }
 
     for relative_directory in &snapshot.empty_directories {
@@ -2559,543 +2061,6 @@ async fn write_remote_sync_manifest(
     Ok(())
 }
 
-fn build_local_sync_bundle_blocking(
-    file_entries: Vec<FileEntry>,
-    empty_directories: Vec<String>,
-) -> Result<tempfile::TempPath, String> {
-    let mut bundle_file = tempfile::NamedTempFile::new()
-        .map_err(|error| format!("Failed to create temporary sync bundle file: {error}"))?;
-    write_snapshot_tar_archive(bundle_file.as_file_mut(), &file_entries, &empty_directories)
-        .map_err(|error| format!("Failed to build sync bundle archive: {error}"))?;
-    bundle_file
-        .as_file_mut()
-        .flush()
-        .map_err(|error| format!("Failed to flush sync bundle archive: {error}"))?;
-    Ok(bundle_file.into_temp_path())
-}
-
-fn write_tar_file_list(relative_paths: &[String], list_file: &mut fs::File) -> Result<(), String> {
-    for (index, relative_path) in relative_paths.iter().enumerate() {
-        list_file
-            .write_all(relative_path.as_bytes())
-            .map_err(|error| {
-                format!("Failed to write sync bundle file list entry {relative_path}: {error}")
-            })?;
-        if index + 1 < relative_paths.len() {
-            list_file.write_all(&[0]).map_err(|error| {
-                format!(
-                    "Failed to write sync bundle file list separator after {relative_path}: {error}"
-                )
-            })?;
-        }
-    }
-    list_file
-        .flush()
-        .map_err(|error| format!("Failed to flush sync bundle file list: {error}"))
-}
-
-fn run_tar_with_file_list_to_path(
-    root_dir: &Path,
-    relative_paths: &[String],
-    output_path: &Path,
-) -> Result<bool, String> {
-    if relative_paths.is_empty() {
-        return Ok(false);
-    }
-
-    let mut list_file = tempfile::NamedTempFile::new()
-        .map_err(|error| format!("Failed to create temporary sync bundle file list: {error}"))?;
-    write_tar_file_list(relative_paths, list_file.as_file_mut())?;
-
-    let status = match ProcessCommand::new("tar")
-        .env("COPYFILE_DISABLE", "1")
-        .env("COPY_EXTENDED_ATTRIBUTES_DISABLE", "1")
-        .arg("-cf")
-        .arg(output_path)
-        .arg("--null")
-        .arg("-T")
-        .arg(list_file.path())
-        .arg("-C")
-        .arg(root_dir)
-        .status()
-    {
-        Ok(status) => status,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(_) => return Ok(false),
-    };
-
-    Ok(status.success())
-}
-
-fn try_build_local_sync_bundle_with_tar_blocking(
-    root_dir: &Path,
-    relative_paths: &[String],
-) -> Result<Option<tempfile::TempPath>, String> {
-    let mut bundle_file = tempfile::NamedTempFile::new()
-        .map_err(|error| format!("Failed to create temporary sync bundle file: {error}"))?;
-    if !run_tar_with_file_list_to_path(root_dir, relative_paths, bundle_file.path())? {
-        return Ok(None);
-    }
-
-    bundle_file
-        .as_file_mut()
-        .flush()
-        .map_err(|error| format!("Failed to flush sync bundle archive: {error}"))?;
-    Ok(Some(bundle_file.into_temp_path()))
-}
-
-fn try_build_local_sync_bundle_root_with_tar_blocking(
-    root_dir: &Path,
-) -> Result<Option<tempfile::TempPath>, String> {
-    let mut bundle_file = tempfile::NamedTempFile::new()
-        .map_err(|error| format!("Failed to create temporary sync bundle file: {error}"))?;
-
-    let status = match ProcessCommand::new("tar")
-        .env("COPYFILE_DISABLE", "1")
-        .env("COPY_EXTENDED_ATTRIBUTES_DISABLE", "1")
-        .arg("-cf")
-        .arg(bundle_file.path())
-        .arg("--exclude")
-        .arg(INTERNAL_SYNC_MANIFEST_RELATIVE_PATH)
-        .arg("--exclude")
-        .arg(INTERNAL_SYNC_BUNDLE_RELATIVE_PATH)
-        .arg("-C")
-        .arg(root_dir)
-        .arg(".")
-        .status()
-    {
-        Ok(status) => status,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Ok(None),
-    };
-
-    if !status.success() {
-        return Ok(None);
-    }
-
-    bundle_file
-        .as_file_mut()
-        .flush()
-        .map_err(|error| format!("Failed to flush sync bundle archive: {error}"))?;
-    Ok(Some(bundle_file.into_temp_path()))
-}
-
-fn try_build_local_sync_bundle_with_tar_to_memory_blocking(
-    root_dir: &Path,
-    relative_paths: &[String],
-) -> Result<Option<Vec<u8>>, String> {
-    if relative_paths.is_empty() {
-        return Ok(None);
-    }
-
-    let mut list_file = tempfile::NamedTempFile::new()
-        .map_err(|error| format!("Failed to create temporary sync bundle file list: {error}"))?;
-    write_tar_file_list(relative_paths, list_file.as_file_mut())?;
-
-    let output = match ProcessCommand::new("tar")
-        .env("COPYFILE_DISABLE", "1")
-        .env("COPY_EXTENDED_ATTRIBUTES_DISABLE", "1")
-        .arg("-cf")
-        .arg("-")
-        .arg("--null")
-        .arg("-T")
-        .arg(list_file.path())
-        .arg("-C")
-        .arg(root_dir)
-        .output()
-    {
-        Ok(output) => output,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Ok(None),
-    };
-
-    if !output.status.success() {
-        return Ok(None);
-    }
-
-    Ok(Some(output.stdout))
-}
-
-fn try_build_local_sync_bundle_root_with_tar_to_memory_blocking(
-    root_dir: &Path,
-) -> Result<Option<Vec<u8>>, String> {
-    let output = match ProcessCommand::new("tar")
-        .env("COPYFILE_DISABLE", "1")
-        .env("COPY_EXTENDED_ATTRIBUTES_DISABLE", "1")
-        .arg("-cf")
-        .arg("-")
-        .arg("--exclude")
-        .arg(INTERNAL_SYNC_MANIFEST_RELATIVE_PATH)
-        .arg("--exclude")
-        .arg(INTERNAL_SYNC_BUNDLE_RELATIVE_PATH)
-        .arg("-C")
-        .arg(root_dir)
-        .arg(".")
-        .output()
-    {
-        Ok(output) => output,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Ok(None),
-    };
-
-    if !output.status.success() {
-        return Ok(None);
-    }
-
-    Ok(Some(output.stdout))
-}
-
-fn write_snapshot_tar_archive<W: Write>(
-    writer: W,
-    file_entries: &[FileEntry],
-    empty_directories: &[String],
-) -> io::Result<W> {
-    let mut builder = tar::Builder::new(writer);
-    builder.mode(tar::HeaderMode::Deterministic);
-
-    for file in file_entries {
-        let mut source = fs::File::open(&file.absolute_path)?;
-        let mut header = tar::Header::new_gnu();
-        header.set_entry_type(tar::EntryType::Regular);
-        header.set_size(file.size);
-        header.set_mode(file.mode);
-        header.set_mtime((file.mtime_ms / 1000).min(u128::from(u64::MAX)) as u64);
-        header.set_cksum();
-        builder.append_data(&mut header, Path::new(&file.relative_path), &mut source)?;
-    }
-
-    for relative_path in empty_directories {
-        let mut header = tar::Header::new_gnu();
-        header.set_entry_type(tar::EntryType::Directory);
-        header.set_size(0);
-        header.set_mode(0o755);
-        header.set_mtime(0);
-        header.set_cksum();
-        builder.append_data(&mut header, Path::new(relative_path), io::empty())?;
-    }
-
-    builder.into_inner()
-}
-
-fn split_ustar_path(path: &str) -> Option<(&str, &str)> {
-    let path = path.trim_start_matches("./").trim_end_matches('/');
-    if path.is_empty() {
-        return None;
-    }
-
-    if path.as_bytes().len() <= 100 {
-        return Some(("", path));
-    }
-
-    for (index, _) in path.match_indices('/').rev() {
-        let prefix = &path[..index];
-        let name = &path[index + 1..];
-        if !name.is_empty() && prefix.as_bytes().len() <= 155 && name.as_bytes().len() <= 100 {
-            return Some((prefix, name));
-        }
-    }
-
-    None
-}
-
-fn write_octal_field(header: &mut [u8], start: usize, len: usize, value: u64) -> io::Result<()> {
-    if len == 0 {
-        return Ok(());
-    }
-
-    let digits_len = len.saturating_sub(1);
-    let value_text = format!("{value:0digits_len$o}");
-    if value_text.len() > digits_len {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "tar header numeric field is too large",
-        ));
-    }
-
-    let field = &mut header[start..start + len];
-    field.fill(b'0');
-    let offset = digits_len - value_text.len();
-    field[offset..offset + value_text.len()].copy_from_slice(value_text.as_bytes());
-    field[len - 1] = 0;
-    Ok(())
-}
-
-fn write_ustar_header<W: Write>(
-    writer: &mut W,
-    relative_path: &str,
-    size: u64,
-    mode: u32,
-    mtime_seconds: u64,
-    entry_type: u8,
-) -> io::Result<()> {
-    let (prefix, name) = split_ustar_path(relative_path).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("tar path is too long for ustar header: {relative_path}"),
-        )
-    })?;
-    let mut header = [0_u8; TAR_BLOCK_SIZE];
-    header[0..name.len()].copy_from_slice(name.as_bytes());
-    write_octal_field(&mut header, 100, 8, u64::from(mode))?;
-    write_octal_field(&mut header, 108, 8, 0)?;
-    write_octal_field(&mut header, 116, 8, 0)?;
-    write_octal_field(&mut header, 124, 12, size)?;
-    write_octal_field(&mut header, 136, 12, mtime_seconds)?;
-    header[148..156].fill(b' ');
-    header[156] = entry_type;
-    header[257..263].copy_from_slice(b"ustar\0");
-    header[263..265].copy_from_slice(b"00");
-    if !prefix.is_empty() {
-        header[345..345 + prefix.len()].copy_from_slice(prefix.as_bytes());
-    }
-
-    let checksum = header.iter().map(|byte| u32::from(*byte)).sum::<u32>();
-    let checksum_text = format!("{checksum:06o}");
-    header[148..154].copy_from_slice(checksum_text.as_bytes());
-    header[154] = 0;
-    header[155] = b' ';
-    writer.write_all(&header)
-}
-
-fn write_padding<W: Write>(writer: &mut W, size: u64) -> io::Result<()> {
-    let remainder = (size as usize) % TAR_BLOCK_SIZE;
-    if remainder == 0 {
-        return Ok(());
-    }
-
-    let padding = [0_u8; TAR_BLOCK_SIZE];
-    writer.write_all(&padding[..TAR_BLOCK_SIZE - remainder])
-}
-
-fn write_snapshot_ustar_archive<W: Write>(
-    mut writer: W,
-    file_entries: &[FileEntry],
-    empty_directories: &[String],
-) -> io::Result<W> {
-    let mut buffer = [0_u8; 64 * 1024];
-    for file in file_entries {
-        write_ustar_header(
-            &mut writer,
-            &file.relative_path,
-            file.size,
-            file.mode,
-            (file.mtime_ms / 1000).min(u128::from(u64::MAX)) as u64,
-            b'0',
-        )?;
-        let mut source = fs::File::open(&file.absolute_path)?;
-        loop {
-            let read = source.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            writer.write_all(&buffer[..read])?;
-        }
-        write_padding(&mut writer, file.size)?;
-    }
-
-    for relative_path in empty_directories {
-        let directory_path = format!("{}/", relative_path.trim_end_matches('/'));
-        write_ustar_header(&mut writer, &directory_path, 0, 0o755, 0, b'5')?;
-    }
-
-    writer.write_all(&[0_u8; TAR_BLOCK_SIZE])?;
-    writer.write_all(&[0_u8; TAR_BLOCK_SIZE])?;
-    Ok(writer)
-}
-
-fn build_local_sync_bundle_to_memory_blocking(
-    file_entries: &[FileEntry],
-    empty_directories: &[String],
-) -> Result<Vec<u8>, String> {
-    write_snapshot_ustar_archive(Vec::new(), file_entries, empty_directories)
-        .map_err(|error| format!("Failed to build in-memory sync bundle archive: {error}"))
-}
-
-fn collect_bundle_relative_paths(snapshot: &Snapshot) -> Vec<String> {
-    let mut relative_paths = snapshot
-        .files
-        .iter()
-        .map(|file| file.relative_path.clone())
-        .chain(snapshot.empty_directories.iter().cloned())
-        .collect::<Vec<_>>();
-    relative_paths.sort();
-    relative_paths
-}
-
-enum BuiltSyncBundle {
-    TempPath(tempfile::TempPath),
-    Bytes(Vec<u8>),
-}
-
-#[derive(Clone, Copy)]
-struct InMemorySyncBundleSourceByteRange {
-    min: u64,
-    max: u64,
-}
-
-fn read_u64_env(name: &str) -> Option<u64> {
-    let raw = env::var(name).ok()?;
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    trimmed.parse::<u64>().ok()
-}
-
-fn read_bool_env(name: &str) -> Option<bool> {
-    let raw = env::var(name).ok()?;
-    let normalized = raw.trim().to_ascii_lowercase();
-    if normalized.is_empty() {
-        return None;
-    }
-
-    if matches!(normalized.as_str(), "1" | "true" | "yes" | "on") {
-        return Some(true);
-    }
-
-    if matches!(normalized.as_str(), "0" | "false" | "no" | "off") {
-        return Some(false);
-    }
-
-    None
-}
-
-fn should_use_rust_sync_bundle_writer() -> bool {
-    read_bool_env(RUST_SYNC_BUNDLE_WRITER_ENV).unwrap_or(true)
-}
-
-fn should_use_rust_sync_bundle_extractor() -> bool {
-    read_bool_env(RUST_SYNC_BUNDLE_EXTRACTOR_ENV).unwrap_or(true)
-}
-
-fn resolve_in_memory_sync_bundle_source_byte_range() -> InMemorySyncBundleSourceByteRange {
-    let min = read_u64_env(IN_MEMORY_SYNC_BUNDLE_MIN_SOURCE_BYTES_ENV)
-        .unwrap_or(DEFAULT_IN_MEMORY_SYNC_BUNDLE_MIN_SOURCE_BYTES);
-    let mut max = read_u64_env(IN_MEMORY_SYNC_BUNDLE_MAX_SOURCE_BYTES_ENV)
-        .unwrap_or(DEFAULT_IN_MEMORY_SYNC_BUNDLE_MAX_SOURCE_BYTES);
-    if max < min {
-        max = min;
-    }
-
-    InMemorySyncBundleSourceByteRange { min, max }
-}
-
-fn should_build_sync_bundle_in_memory(snapshot_total_bytes: u64) -> bool {
-    let range = resolve_in_memory_sync_bundle_source_byte_range();
-    (range.min..=range.max).contains(&snapshot_total_bytes)
-}
-
-async fn build_local_sync_bundle(
-    root_dir: &Path,
-    snapshot: &Snapshot,
-    excludes: &[String],
-) -> Result<BuiltSyncBundle, String> {
-    let root_dir_buf = root_dir.to_path_buf();
-    let relative_paths = collect_bundle_relative_paths(snapshot);
-    if excludes.is_empty() {
-        let can_use_root_tar_fast_path = snapshot.ignored_paths.is_empty();
-        let snapshot_total_bytes = snapshot.files.iter().map(|file| file.size).sum::<u64>();
-        if should_build_sync_bundle_in_memory(snapshot_total_bytes) {
-            if should_use_rust_sync_bundle_writer() {
-                let file_entries = snapshot.files.clone();
-                let empty_directories = snapshot
-                    .empty_directories
-                    .iter()
-                    .cloned()
-                    .collect::<Vec<_>>();
-                if let Ok(bundle_bytes) = tokio::task::spawn_blocking(move || {
-                    let mut file_entries = file_entries;
-                    file_entries
-                        .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-                    build_local_sync_bundle_to_memory_blocking(&file_entries, &empty_directories)
-                })
-                .await
-                .map_err(|error| format!("Sync bundle worker task failed: {error}"))?
-                {
-                    return Ok(BuiltSyncBundle::Bytes(bundle_bytes));
-                }
-            }
-
-            if can_use_root_tar_fast_path {
-                let root_dir_for_in_memory_fast_path = root_dir_buf.clone();
-                if let Some(bundle_bytes) = tokio::task::spawn_blocking(move || {
-                    try_build_local_sync_bundle_root_with_tar_to_memory_blocking(
-                        &root_dir_for_in_memory_fast_path,
-                    )
-                })
-                .await
-                .map_err(|error| format!("Sync bundle worker task failed: {error}"))??
-                {
-                    return Ok(BuiltSyncBundle::Bytes(bundle_bytes));
-                }
-            } else {
-                let root_dir_for_in_memory_fast_path = root_dir_buf.clone();
-                let relative_paths_for_in_memory_fast_path = relative_paths.clone();
-                if let Some(bundle_bytes) = tokio::task::spawn_blocking(move || {
-                    try_build_local_sync_bundle_with_tar_to_memory_blocking(
-                        &root_dir_for_in_memory_fast_path,
-                        &relative_paths_for_in_memory_fast_path,
-                    )
-                })
-                .await
-                .map_err(|error| format!("Sync bundle worker task failed: {error}"))??
-                {
-                    return Ok(BuiltSyncBundle::Bytes(bundle_bytes));
-                }
-            }
-        }
-
-        let root_dir_for_fast_path = root_dir_buf.clone();
-        if can_use_root_tar_fast_path {
-            if let Some(bundle_path) = tokio::task::spawn_blocking(move || {
-                try_build_local_sync_bundle_root_with_tar_blocking(&root_dir_for_fast_path)
-            })
-            .await
-            .map_err(|error| format!("Sync bundle worker task failed: {error}"))??
-            {
-                return Ok(BuiltSyncBundle::TempPath(bundle_path));
-            }
-        } else {
-            let relative_paths_for_fast_path = relative_paths.clone();
-            if let Some(bundle_path) = tokio::task::spawn_blocking(move || {
-                try_build_local_sync_bundle_with_tar_blocking(
-                    &root_dir_for_fast_path,
-                    &relative_paths_for_fast_path,
-                )
-            })
-            .await
-            .map_err(|error| format!("Sync bundle worker task failed: {error}"))??
-            {
-                return Ok(BuiltSyncBundle::TempPath(bundle_path));
-            }
-        }
-    }
-
-    let file_entries_input = snapshot.files.iter().cloned().collect::<Vec<_>>();
-    let empty_directory_relative_paths = snapshot
-        .empty_directories
-        .iter()
-        .cloned()
-        .collect::<Vec<_>>();
-
-    tokio::task::spawn_blocking(move || {
-        if let Some(bundle_path) =
-            try_build_local_sync_bundle_with_tar_blocking(&root_dir_buf, &relative_paths)?
-        {
-            return Ok(BuiltSyncBundle::TempPath(bundle_path));
-        }
-
-        let mut file_entries = file_entries_input;
-        file_entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-
-        build_local_sync_bundle_blocking(file_entries, empty_directory_relative_paths)
-            .map(BuiltSyncBundle::TempPath)
-    })
-    .await
-    .map_err(|error| format!("Sync bundle worker task failed: {error}"))?
-}
-
 struct UploadSyncBundleResult {
     bundle_build_ms: u64,
     bundle_body_prepare_ms: u64,
@@ -3202,408 +2167,6 @@ async fn delete_remote_object_if_present(
         .await
         .map_err(|error| format!("Failed to delete S3 object {key}: {error}"))?;
     Ok(())
-}
-
-fn prune_empty_local_directories_blocking(root_dir: &Path) -> Result<(), String> {
-    let Ok(metadata) = fs::metadata(root_dir) else {
-        return Ok(());
-    };
-    if !metadata.is_dir() {
-        return Ok(());
-    }
-
-    fn walk(directory: &Path) -> Result<bool, String> {
-        let entries = match fs::read_dir(directory) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-            Err(error) => {
-                return Err(format!(
-                    "Failed to read local directory {} while pruning empty directories: {error}",
-                    directory.display()
-                ));
-            }
-        };
-
-        let mut has_children = false;
-        for entry in entries {
-            let entry = entry.map_err(|error| {
-                format!(
-                    "Failed to read local directory entry in {} while pruning empty directories: {error}",
-                    directory.display()
-                )
-            })?;
-            let path = entry.path();
-            let file_type = entry.file_type().map_err(|error| {
-                format!(
-                    "Failed to inspect local directory entry {} while pruning empty directories: {error}",
-                    path.display()
-                )
-            })?;
-
-            if file_type.is_dir() {
-                let keep_child = walk(&path)?;
-                if !keep_child {
-                    fs::remove_dir_all(&path).map_err(|error| {
-                        format!(
-                            "Failed to remove empty local directory {}: {error}",
-                            path.display()
-                        )
-                    })?;
-                    continue;
-                }
-            }
-
-            has_children = true;
-        }
-
-        Ok(has_children)
-    }
-
-    walk(root_dir)?;
-    Ok(())
-}
-
-async fn prune_empty_local_directories(root_dir: &Path) -> Result<(), String> {
-    let root_dir = root_dir.to_path_buf();
-    tokio::task::spawn_blocking(move || prune_empty_local_directories_blocking(&root_dir))
-        .await
-        .map_err(|error| format!("Empty directory prune worker task failed: {error}"))?
-}
-
-async fn is_local_directory_empty(target_path: &Path) -> Result<bool, String> {
-    match tokio::fs::metadata(target_path).await {
-        Ok(metadata) if !metadata.is_dir() => Ok(false),
-        Ok(_) => {
-            let mut entries = tokio::fs::read_dir(target_path).await.map_err(|error| {
-                format!(
-                    "Failed to read local directory {}: {error}",
-                    target_path.display()
-                )
-            })?;
-            Ok(entries
-                .next_entry()
-                .await
-                .map_err(|error| {
-                    format!(
-                        "Failed to inspect local directory {}: {error}",
-                        target_path.display()
-                    )
-                })?
-                .is_none())
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
-        Err(error) => Err(format!(
-            "Failed to stat local directory {}: {error}",
-            target_path.display()
-        )),
-    }
-}
-
-fn unpack_sync_bundle_reader_blocking<R: Read>(root_dir: PathBuf, reader: R) -> Result<(), String> {
-    fs::create_dir_all(&root_dir).map_err(|error| {
-        format!(
-            "Failed to create local bundle root {}: {error}",
-            root_dir.display()
-        )
-    })?;
-    let mut archive = tar::Archive::new(reader);
-    archive.unpack(&root_dir).map_err(|error| {
-        format!(
-            "Failed to unpack sync bundle into {}: {error}",
-            root_dir.display()
-        )
-    })
-}
-
-fn unpack_sync_bundle_blocking(root_dir: PathBuf, bundle_path: PathBuf) -> Result<(), String> {
-    let bundle_file = fs::File::open(&bundle_path).map_err(|error| {
-        format!(
-            "Failed to open sync bundle archive {}: {error}",
-            bundle_path.display()
-        )
-    })?;
-    unpack_sync_bundle_reader_blocking(root_dir, bundle_file)
-}
-
-#[derive(Clone, Default)]
-struct SyncBundleExtractTimings {
-    mkdir_us: u64,
-    replace_us: u64,
-    file_create_us: u64,
-    file_write_us: u64,
-    file_mtime_us: u64,
-    chmod_us: u64,
-    target_check_us: u64,
-    file_count: u64,
-    directory_count: u64,
-}
-
-struct SyncBundleExtractOutcome {
-    extractor: &'static str,
-    timings: SyncBundleExtractTimings,
-}
-
-fn unpack_sync_bundle_bytes_blocking(
-    root_dir: PathBuf,
-    bundle_bytes: Vec<u8>,
-    skip_existing_target_checks: bool,
-) -> Result<SyncBundleExtractOutcome, String> {
-    if should_use_rust_sync_bundle_extractor() {
-        if let Some(timings) = try_unpack_ustar_bundle_bytes_blocking(
-            &root_dir,
-            &bundle_bytes,
-            skip_existing_target_checks,
-        )? {
-            return Ok(SyncBundleExtractOutcome {
-                extractor: "rust-ustar",
-                timings,
-            });
-        }
-    }
-
-    unpack_sync_bundle_reader_blocking(root_dir, Cursor::new(bundle_bytes))?;
-    Ok(SyncBundleExtractOutcome {
-        extractor: "tar",
-        timings: SyncBundleExtractTimings::default(),
-    })
-}
-
-fn parse_tar_octal_field(field: &[u8]) -> Option<u64> {
-    let text = field
-        .iter()
-        .copied()
-        .take_while(|byte| *byte != 0)
-        .filter(|byte| !byte.is_ascii_whitespace())
-        .collect::<Vec<_>>();
-    if text.is_empty() {
-        return Some(0);
-    }
-
-    std::str::from_utf8(&text)
-        .ok()
-        .and_then(|value| u64::from_str_radix(value, 8).ok())
-}
-
-fn tar_header_name(header: &[u8; TAR_BLOCK_SIZE]) -> Option<String> {
-    let name_end = header[0..100]
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(100);
-    let name = std::str::from_utf8(&header[0..name_end]).ok()?;
-    let prefix_end = header[345..500]
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(155);
-    let prefix = std::str::from_utf8(&header[345..345 + prefix_end]).ok()?;
-    if prefix.is_empty() {
-        Some(name.to_string())
-    } else {
-        Some(format!("{prefix}/{name}"))
-    }
-}
-
-fn safe_bundle_relative_path(raw_path: &str) -> Option<PathBuf> {
-    let normalized = normalize_relative_path(raw_path.trim_start_matches("./"));
-    if normalized.is_empty() || normalized == "." {
-        return None;
-    }
-
-    let mut relative_path = PathBuf::new();
-    for segment in normalized.split('/') {
-        if segment.is_empty() || segment == "." || segment == ".." {
-            return None;
-        }
-        relative_path.push(segment);
-    }
-    Some(relative_path)
-}
-
-fn try_unpack_ustar_bundle_bytes_blocking(
-    root_dir: &Path,
-    bundle_bytes: &[u8],
-    skip_existing_target_checks: bool,
-) -> Result<Option<SyncBundleExtractTimings>, String> {
-    if bundle_bytes.len() < TAR_BLOCK_SIZE * 2 || bundle_bytes.len() % TAR_BLOCK_SIZE != 0 {
-        return Ok(None);
-    }
-
-    let mut timings = SyncBundleExtractTimings::default();
-    let mkdir_started_at = Instant::now();
-    fs::create_dir_all(root_dir).map_err(|error| {
-        format!(
-            "Failed to create local bundle root {}: {error}",
-            root_dir.display()
-        )
-    })?;
-    timings.mkdir_us += elapsed_micros_u64(mkdir_started_at);
-
-    let mut offset = 0;
-    let mut saw_entry = false;
-    let mut created_directories = HashSet::new();
-    created_directories.insert(root_dir.to_path_buf());
-    while offset + TAR_BLOCK_SIZE <= bundle_bytes.len() {
-        let header_slice = &bundle_bytes[offset..offset + TAR_BLOCK_SIZE];
-        if header_slice.iter().all(|byte| *byte == 0) {
-            return Ok(if saw_entry { Some(timings) } else { None });
-        }
-
-        let header: &[u8; TAR_BLOCK_SIZE] = header_slice
-            .try_into()
-            .map_err(|_| "Failed to read ustar header block.".to_string())?;
-        if &header[257..263] != b"ustar\0" {
-            return Ok(None);
-        }
-
-        let raw_path = tar_header_name(header).ok_or_else(|| {
-            "Failed to decode ustar header path while extracting sync bundle.".to_string()
-        })?;
-        let Some(relative_path) = safe_bundle_relative_path(&raw_path) else {
-            return Ok(None);
-        };
-        let size = parse_tar_octal_field(&header[124..136]).ok_or_else(|| {
-            format!("Failed to parse ustar entry size for {raw_path} while extracting sync bundle.")
-        })?;
-        let mode = parse_tar_octal_field(&header[100..108]).unwrap_or(0o644) as u32;
-        let mtime_seconds = parse_tar_octal_field(&header[136..148]).unwrap_or(0);
-        let data_offset = offset + TAR_BLOCK_SIZE;
-        let size_usize = usize::try_from(size).map_err(|_| {
-            format!("Ustar entry {raw_path} is too large to extract on this platform.")
-        })?;
-        let data_end = data_offset.checked_add(size_usize).ok_or_else(|| {
-            format!("Ustar entry {raw_path} overflowed while extracting sync bundle.")
-        })?;
-        if data_end > bundle_bytes.len() {
-            return Ok(None);
-        }
-
-        let target_path = root_dir.join(&relative_path);
-        match header[156] {
-            b'0' | 0 => {
-                if let Some(parent) = target_path.parent() {
-                    let parent_path = parent.to_path_buf();
-                    if created_directories.insert(parent_path.clone()) {
-                        let mkdir_started_at = Instant::now();
-                        fs::create_dir_all(&parent_path).map_err(|error| {
-                            format!(
-                                "Failed to create local bundle parent {}: {error}",
-                                parent_path.display()
-                            )
-                        })?;
-                        timings.mkdir_us += elapsed_micros_u64(mkdir_started_at);
-                    }
-                }
-                if !skip_existing_target_checks {
-                    let target_check_started_at = Instant::now();
-                    let existing_directory =
-                        matches!(fs::metadata(&target_path), Ok(metadata) if metadata.is_dir());
-                    timings.target_check_us += elapsed_micros_u64(target_check_started_at);
-                    if existing_directory {
-                        let replace_started_at = Instant::now();
-                        fs::remove_dir_all(&target_path).map_err(|error| {
-                            format!(
-                                "Failed to replace local bundle directory {}: {error}",
-                                target_path.display()
-                            )
-                        })?;
-                        timings.replace_us += elapsed_micros_u64(replace_started_at);
-                    }
-                }
-                let file_create_started_at = Instant::now();
-                let mut file = fs::File::create(&target_path).map_err(|error| {
-                    format!(
-                        "Failed to create local bundle file {}: {error}",
-                        target_path.display()
-                    )
-                })?;
-                timings.file_create_us += elapsed_micros_u64(file_create_started_at);
-                let file_write_started_at = Instant::now();
-                file.write_all(&bundle_bytes[data_offset..data_end])
-                    .map_err(|error| {
-                        format!(
-                            "Failed to write local bundle file {}: {error}",
-                            target_path.display()
-                        )
-                    })?;
-                timings.file_write_us += elapsed_micros_u64(file_write_started_at);
-                #[cfg(unix)]
-                {
-                    if mode & 0o7777 != 0o644 {
-                        use std::os::unix::fs::PermissionsExt;
-                        let permissions = fs::Permissions::from_mode(mode & 0o7777);
-                        let chmod_started_at = Instant::now();
-                        fs::set_permissions(&target_path, permissions).map_err(|error| {
-                            format!(
-                                "Failed to set permissions on local bundle file {}: {error}",
-                                target_path.display()
-                            )
-                        })?;
-                        timings.chmod_us += elapsed_micros_u64(chmod_started_at);
-                    }
-                }
-                if mtime_seconds > 0 {
-                    let file_mtime_started_at = Instant::now();
-                    set_file_handle_times(
-                        &file,
-                        None,
-                        Some(FileTime::from_unix_time(
-                            mtime_seconds.min(i64::MAX as u64) as i64,
-                            0,
-                        )),
-                    )
-                    .map_err(|error| {
-                        format!(
-                            "Failed to set mtime on local bundle file {}: {error}",
-                            target_path.display()
-                        )
-                    })?;
-                    timings.file_mtime_us += elapsed_micros_u64(file_mtime_started_at);
-                }
-                timings.file_count += 1;
-            }
-            b'5' => {
-                if created_directories.insert(target_path.clone()) {
-                    let mkdir_started_at = Instant::now();
-                    fs::create_dir_all(&target_path).map_err(|error| {
-                        format!(
-                            "Failed to create local bundle directory {}: {error}",
-                            target_path.display()
-                        )
-                    })?;
-                    timings.mkdir_us += elapsed_micros_u64(mkdir_started_at);
-                }
-                #[cfg(unix)]
-                {
-                    if mode & 0o7777 != 0o755 {
-                        use std::os::unix::fs::PermissionsExt;
-                        let permissions = fs::Permissions::from_mode(mode & 0o7777);
-                        let chmod_started_at = Instant::now();
-                        fs::set_permissions(&target_path, permissions).map_err(|error| {
-                            format!(
-                                "Failed to set permissions on local bundle directory {}: {error}",
-                                target_path.display()
-                            )
-                        })?;
-                        timings.chmod_us += elapsed_micros_u64(chmod_started_at);
-                    }
-                }
-                timings.directory_count += 1;
-            }
-            _ => return Ok(None),
-        }
-
-        saw_entry = true;
-        let padded_size = size_usize.div_ceil(TAR_BLOCK_SIZE) * TAR_BLOCK_SIZE;
-        offset = data_offset
-            .checked_add(padded_size)
-            .ok_or_else(|| format!("Ustar entry {raw_path} overflowed archive bounds."))?;
-    }
-
-    Ok(None)
-}
-
-fn resolve_in_memory_sync_bundle_extract_max_bytes() -> u64 {
-    read_u64_env(IN_MEMORY_SYNC_BUNDLE_EXTRACT_MAX_BYTES_ENV)
-        .unwrap_or(DEFAULT_IN_MEMORY_SYNC_BUNDLE_EXTRACT_MAX_BYTES)
 }
 
 #[derive(Clone)]
@@ -3841,86 +2404,6 @@ async fn upload_local_file(
         .map_err(|error| format!("Failed to upload S3 object {key}: {error}"))?;
 
     Ok(true)
-}
-
-async fn stat_local_path(target_path: &Path) -> Result<Option<fs::Metadata>, String> {
-    match tokio::fs::metadata(target_path).await {
-        Ok(metadata) => Ok(Some(metadata)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!(
-            "Failed to stat local path {}: {error}",
-            target_path.display()
-        )),
-    }
-}
-
-async fn remove_local_path(target_path: &Path) -> Result<bool, String> {
-    let Some(metadata) = stat_local_path(target_path).await? else {
-        return Ok(false);
-    };
-
-    if metadata.is_dir() {
-        tokio::fs::remove_dir_all(target_path)
-            .await
-            .map_err(|error| {
-                format!(
-                    "Failed to remove local directory {}: {error}",
-                    target_path.display()
-                )
-            })?;
-    } else {
-        tokio::fs::remove_file(target_path).await.map_err(|error| {
-            format!(
-                "Failed to remove local file {}: {error}",
-                target_path.display()
-            )
-        })?;
-    }
-
-    Ok(true)
-}
-
-async fn ensure_local_directory(target_path: &Path) -> Result<bool, String> {
-    match stat_local_path(target_path).await? {
-        Some(metadata) if metadata.is_dir() => return Ok(false),
-        Some(_) => {
-            remove_local_path(target_path).await?;
-        }
-        None => {}
-    }
-
-    tokio::fs::create_dir_all(target_path)
-        .await
-        .map_err(|error| {
-            format!(
-                "Failed to create local directory {}: {error}",
-                target_path.display()
-            )
-        })?;
-
-    Ok(true)
-}
-
-async fn prepare_local_file_target(target_path: &Path) -> Result<Option<fs::Metadata>, String> {
-    let existing = match stat_local_path(target_path).await? {
-        Some(metadata) if metadata.is_file() => Some(metadata),
-        Some(_) => {
-            remove_local_path(target_path).await?;
-            None
-        }
-        None => None,
-    };
-
-    if let Some(parent) = target_path.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|error| {
-            format!(
-                "Failed to create parent directory {}: {error}",
-                parent.display()
-            )
-        })?;
-    }
-
-    Ok(existing)
 }
 
 async fn download_remote_file(
@@ -4996,10 +3479,6 @@ fn elapsed_millis_u64(started_at: Instant) -> u64 {
     started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
-fn elapsed_micros_u64(started_at: Instant) -> u64 {
-    started_at.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
-}
-
 async fn sync_local_to_sandbox_http(
     request: SyncLocalToSandboxHttpRequest,
 ) -> Result<SyncLocalToSandboxHttpResponse, String> {
@@ -5102,42 +3581,10 @@ async fn sync_local_to_sandbox_http(
     })
 }
 
-fn add_directory_with_parents(relative_path: &str, directories: &mut BTreeSet<String>) {
-    let normalized = normalize_relative_path(relative_path);
-    if normalized.is_empty() {
-        return;
-    }
-
-    let segments = normalized.split('/').collect::<Vec<_>>();
-    for index in 0..segments.len() {
-        let candidate = segments[..=index].join("/");
-        if !candidate.is_empty() {
-            directories.insert(candidate);
-        }
-    }
-}
-
-fn should_preserve_top_level_name(
-    relative_path: &str,
-    preserve_top_level_names: &[String],
-) -> bool {
-    const EMPTY: &str = "";
-
-    let normalized = normalize_relative_path(relative_path);
-    if normalized.is_empty() {
-        return false;
-    }
-
-    let top_level_name = normalized.split('/').next().unwrap_or(EMPTY);
-    !top_level_name.is_empty()
-        && preserve_top_level_names
-            .iter()
-            .any(|candidate| candidate == top_level_name)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     fn make_snapshot() -> Snapshot {
         let mut directories = BTreeSet::new();
@@ -5169,10 +3616,29 @@ mod tests {
                     mode: 0o644,
                 },
             ],
+            files_sorted_by_relative_path: false,
             directories,
             empty_directories: BTreeSet::new(),
             ignored_paths: vec!["/workspace/.DS_Store".to_string()],
         }
+    }
+
+    #[test]
+    fn fingerprint_matches_when_snapshot_files_are_marked_sorted() {
+        let mut unsorted_snapshot = make_snapshot();
+        unsorted_snapshot.files.reverse();
+        unsorted_snapshot.files_sorted_by_relative_path = false;
+
+        let mut sorted_snapshot = make_snapshot();
+        sorted_snapshot
+            .files
+            .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        sorted_snapshot.files_sorted_by_relative_path = true;
+
+        assert_eq!(
+            create_fingerprint(&unsorted_snapshot),
+            create_fingerprint(&sorted_snapshot)
+        );
     }
 
     #[test]
