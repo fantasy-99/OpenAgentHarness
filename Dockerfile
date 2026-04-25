@@ -3,10 +3,10 @@ ARG BASE_RUNTIME_IMAGE=alpine:3.22
 ARG BASE_DOCKER_CLI_IMAGE=docker:cli
 ARG BASE_RUST_IMAGE=rust:1.95-alpine
 
-FROM ${BASE_BUILD_IMAGE} AS deps
+FROM --platform=$BUILDPLATFORM ${BASE_BUILD_IMAGE} AS deps
 
-ARG TARGETOS
-ARG TARGETARCH
+ARG BUILDOS
+ARG BUILDARCH
 
 LABEL org.opencontainers.image.title="Open Agent Harness" \
       org.opencontainers.image.description="Production image for split-deployed Open Agent Harness." \
@@ -40,7 +40,7 @@ COPY packages/storage-redis/package.json ./packages/storage-redis/package.json
 COPY packages/storage-redis-control/package.json ./packages/storage-redis-control/package.json
 COPY packages/storage-sqlite/package.json ./packages/storage-sqlite/package.json
 
-RUN --mount=type=cache,id=pnpm-store-${TARGETOS}-${TARGETARCH},target=/pnpm/store,sharing=locked \
+RUN --mount=type=cache,id=pnpm-store-${BUILDOS}-${BUILDARCH},target=/pnpm/store,sharing=locked \
   pnpm config set store-dir /pnpm/store \
   && pnpm fetch --frozen-lockfile \
   && pnpm install --frozen-lockfile --offline
