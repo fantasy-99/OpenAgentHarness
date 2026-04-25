@@ -11,7 +11,8 @@ import {
   syncWorkspaceRootToObjectStore,
   syncRemotePrefixToLocal,
   type DirectoryObjectStore,
-  type ObjectStoreRequestCounts
+  type ObjectStoreRequestCounts,
+  type RemoteToLocalDirectorySyncPhaseTimings
 } from "../object-storage.js";
 
 type WorkspaceMaterializationSource =
@@ -38,7 +39,7 @@ interface WorkspaceMaterializationEntry {
   materializedAt?: string | undefined;
   lastSyncedLocalFingerprint?: string | undefined;
   lastActivityAt: string;
-  inFlight?: Promise<ObjectStoreRequestCounts | undefined> | undefined;
+  inFlight?: Promise<WorkspaceMaterializeResult | undefined> | undefined;
 }
 
 export class WorkspaceMaterializationDrainingError extends Error {
@@ -147,9 +148,15 @@ export interface WorkspaceMaterializationLease {
   sourceKind: "object_store" | "local_directory";
   remotePrefix?: string | undefined;
   materializeRequestCounts?: ObjectStoreRequestCounts | undefined;
+  materializePhaseTimings?: RemoteToLocalDirectorySyncPhaseTimings | undefined;
   markDirty(): void;
   touch(): void;
   release(options?: { dirty?: boolean | undefined }): Promise<void>;
+}
+
+interface WorkspaceMaterializeResult {
+  requestCounts?: ObjectStoreRequestCounts | undefined;
+  phaseTimings?: RemoteToLocalDirectorySyncPhaseTimings | undefined;
 }
 
 export interface WorkspaceMaterializationManagerOptions {
@@ -285,7 +292,7 @@ export class WorkspaceMaterializationManager {
       this.#entries.set(cacheKey, entry);
     }
 
-    const materializeRequestCounts = await this.#ensureMaterialized(entry);
+    const materializeResult = await this.#ensureMaterialized(entry);
     const baselineFingerprint =
       entry.source.kind === "object_store"
         ? (entry.lastSyncedLocalFingerprint ?? (await this.#readSyncMetadata(entry))?.localFingerprint) ??
@@ -308,7 +315,8 @@ export class WorkspaceMaterializationManager {
       localPath: entry.localPath,
       sourceKind: entry.source.kind,
       ...(entry.source.kind === "object_store" ? { remotePrefix: entry.source.remotePrefix } : {}),
-      ...(materializeRequestCounts ? { materializeRequestCounts } : {}),
+      ...(materializeResult?.requestCounts ? { materializeRequestCounts: materializeResult.requestCounts } : {}),
+      ...(materializeResult?.phaseTimings ? { materializePhaseTimings: materializeResult.phaseTimings } : {}),
       markDirty: () => {
         entry!.dirty = true;
         this.#touchEntry(entry!);
@@ -516,7 +524,7 @@ export class WorkspaceMaterializationManager {
     return true;
   }
 
-  async #ensureMaterialized(entry: WorkspaceMaterializationEntry): Promise<ObjectStoreRequestCounts | undefined> {
+  async #ensureMaterialized(entry: WorkspaceMaterializationEntry): Promise<WorkspaceMaterializeResult | undefined> {
     if (entry.source.kind !== "object_store") {
       entry.materializedAt ??= nowIso();
       this.#failures.delete(entry.cacheKey);
@@ -559,7 +567,10 @@ export class WorkspaceMaterializationManager {
           await this.#writeSyncMetadata(entry);
           entry.materializedAt = nowIso();
           this.#failures.delete(entry.cacheKey);
-          return syncResult.requestCounts;
+          return {
+            ...(syncResult.requestCounts ? { requestCounts: syncResult.requestCounts } : {}),
+            ...(syncResult.phaseTimings ? { phaseTimings: syncResult.phaseTimings } : {})
+          };
         } catch (error) {
           throw this.#recordOperationFailure(entry, "materialize", "materialize", error);
         }

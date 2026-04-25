@@ -12,7 +12,7 @@ Sandbox 文件管理 API，支撑 web 文件管理以及 `embedded` / `self_host
 
 ### `POST /sandboxes`
 
-创建或解析一个 sandbox。可以直接传 `workspaceId` 绑定已有 workspace，也可以传 `name + runtime` 新建。
+创建或解析一个 sandbox。可以直接传 `workspaceId` 绑定已有 workspace，也可以传 `name + runtime` 新建。解析已有 workspace 时返回 `200`，新建 sandbox-backed workspace 时返回 `201`。
 
 ### `GET /sandboxes/{sandboxId}`
 
@@ -30,7 +30,7 @@ Sandbox 文件管理 API，支撑 web 文件管理以及 `embedded` / `self_host
 
 ### `GET /sandboxes/{sandboxId}/files/stat`
 
-读取文件或目录元数据，返回 `type`、`sizeBytes`、`mode`、`mtimeMs`、`birthtimeMs` 等字段。
+读取文件或目录元数据，返回 `kind`（file / directory）、`size`、`mtimeMs`、`birthtimeMs`、`path`。
 
 ### `PUT /sandboxes/{sandboxId}/files/content`
 
@@ -42,7 +42,7 @@ Sandbox 文件管理 API，支撑 web 文件管理以及 `embedded` / `self_host
 
 ### `PUT /sandboxes/{sandboxId}/files/upload`
 
-原始字节流上传。参数：`path`。Body: `application/octet-stream`。适合二进制文件。
+原始字节流上传。参数：`path`、`overwrite`、`ifMatch`、`mtimeMs`。Body: `application/octet-stream`。适合二进制文件。
 
 ### `GET /sandboxes/{sandboxId}/files/download`
 

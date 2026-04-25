@@ -27,6 +27,7 @@ export {
   type NativeSyncBundleConfig,
   type NativeSyncLocalToSandboxHttpResult,
   type NativeSyncLocalToRemoteResult,
+  type NativeSyncRemoteToLocalPhaseTimings,
   type NativeSyncRemoteToLocalResult,
   type NativeWorkspaceSyncObjectStoreConfig,
   planNativeRemoteToLocal,

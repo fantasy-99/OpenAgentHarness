@@ -214,6 +214,15 @@ export interface NativeSyncRemoteToLocalPhaseTimings {
   bundleGetMs: number;
   bundleBodyReadMs: number;
   bundleExtractMs: number;
+  bundleExtractMkdirUs: number;
+  bundleExtractReplaceUs: number;
+  bundleExtractFileCreateUs: number;
+  bundleExtractFileWriteUs: number;
+  bundleExtractFileMtimeUs: number;
+  bundleExtractChmodUs: number;
+  bundleExtractTargetCheckUs: number;
+  bundleExtractFileCount: number;
+  bundleExtractDirectoryCount: number;
   bundleTransport: "none" | "memory" | "tempfile";
   bundleExtractor: "none" | "rust-ustar" | "tar";
   bundleBytes: number;

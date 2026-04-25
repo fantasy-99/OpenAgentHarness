@@ -10,7 +10,7 @@ info:
     defines the HTTP API for workspace management, session messaging, run
     lifecycle, action invocation, and SSE event streaming.
 servers:
-  - url: http://localhost:3000/api/v1
+  - url: http://localhost:8787/api/v1
     description: Local development
 tags:
   - name: Workspaces
@@ -262,8 +262,14 @@ paths:
             schema:
               $ref: '#/components/schemas/EnsureSandboxForWorkspaceRequest'
       responses:
+        '200':
+          description: Existing sandbox resolved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sandbox'
         '201':
-          description: Sandbox created or resolved
+          description: Sandbox created
           content:
             application/json:
               schema:
@@ -412,6 +418,9 @@ paths:
       parameters:
         - $ref: '#/components/parameters/SandboxId'
         - $ref: '#/components/parameters/EntryPathQuery'
+        - $ref: '#/components/parameters/UploadOverwrite'
+        - $ref: '#/components/parameters/UploadIfMatch'
+        - $ref: '#/components/parameters/UploadMtimeMs'
       requestBody:
         required: true
         content:
@@ -1003,6 +1012,28 @@ components:
       schema:
         type: string
         minLength: 1
+    UploadOverwrite:
+      name: overwrite
+      in: query
+      required: false
+      schema:
+        type: boolean
+        default: true
+    UploadIfMatch:
+      name: ifMatch
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Optimistic concurrency token. When provided, upload only succeeds if the current file etag matches.
+    UploadMtimeMs:
+      name: mtimeMs
+      in: query
+      required: false
+      schema:
+        type: number
+        minimum: 0
+      description: Optional modification timestamp in milliseconds to preserve for the uploaded file.
     EntrySortBy:
       name: sortBy
       in: query

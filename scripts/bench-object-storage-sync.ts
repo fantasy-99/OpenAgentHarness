@@ -127,6 +127,15 @@ interface NativeSyncRemoteToLocalPhaseTimingsLike {
   bundleGetMs: number;
   bundleBodyReadMs: number;
   bundleExtractMs: number;
+  bundleExtractMkdirUs: number;
+  bundleExtractReplaceUs: number;
+  bundleExtractFileCreateUs: number;
+  bundleExtractFileWriteUs: number;
+  bundleExtractFileMtimeUs: number;
+  bundleExtractChmodUs: number;
+  bundleExtractTargetCheckUs: number;
+  bundleExtractFileCount: number;
+  bundleExtractDirectoryCount: number;
   bundleTransport: "none" | "memory" | "tempfile";
   bundleExtractor: "none" | "rust-ustar" | "tar";
   bundleBytes: number;
@@ -481,6 +490,15 @@ function formatRemotePhaseTimings(timings: NativeSyncRemoteToLocalPhaseTimingsLi
     `bundle-get=${timings.bundleGetMs}ms`,
     `bundle-body-read=${timings.bundleBodyReadMs}ms`,
     `bundle-extract=${timings.bundleExtractMs}ms`,
+    `extract-mkdir=${timings.bundleExtractMkdirUs}us`,
+    `extract-replace=${timings.bundleExtractReplaceUs}us`,
+    `extract-create=${timings.bundleExtractFileCreateUs}us`,
+    `extract-write=${timings.bundleExtractFileWriteUs}us`,
+    `extract-mtime=${timings.bundleExtractFileMtimeUs}us`,
+    `extract-chmod=${timings.bundleExtractChmodUs}us`,
+    `extract-target-check=${timings.bundleExtractTargetCheckUs}us`,
+    `extract-files=${timings.bundleExtractFileCount}`,
+    `extract-dirs=${timings.bundleExtractDirectoryCount}`,
     `bundle-transport=${timings.bundleTransport}`,
     `bundle-extractor=${timings.bundleExtractor}`,
     `bundle-bytes=${timings.bundleBytes}`,
@@ -673,7 +691,8 @@ async function runCase(options: {
       try {
         return {
           localPath: lease.localPath,
-          requestCounts: lease.materializeRequestCounts
+          requestCounts: lease.materializeRequestCounts,
+          phaseTimings: lease.materializePhaseTimings
         };
       } finally {
         await lease.release();
@@ -686,7 +705,7 @@ async function runCase(options: {
     );
     const materializedFileCount = await countLocalFiles(materializeMeasurement.result.localPath);
     console.log(
-      `[bench-object-storage] case=${options.label} stage=materialize done ms=${Math.round(materializeMeasurement.durationMs)} files=${materializedFileCount} requests=${sumStoreOperationCounts(materializeRequests)}`
+      `[bench-object-storage] case=${options.label} stage=materialize done ms=${Math.round(materializeMeasurement.durationMs)} files=${materializedFileCount} requests=${sumStoreOperationCounts(materializeRequests)} phases="${formatRemotePhaseTimings(materializeMeasurement.result.phaseTimings)}"`
     );
     await materializationManager.close();
 
@@ -702,7 +721,7 @@ async function runCase(options: {
     );
     const pulledFileCount = await countLocalFiles(targetDir);
     console.log(
-      `[bench-object-storage] case=${options.label} stage=pull done ms=${Math.round(pullMeasurement.durationMs)} files=${pulledFileCount} requests=${sumStoreOperationCounts(pullRequests)}`
+      `[bench-object-storage] case=${options.label} stage=pull done ms=${Math.round(pullMeasurement.durationMs)} files=${pulledFileCount} requests=${sumStoreOperationCounts(pullRequests)} phases="${formatRemotePhaseTimings(pullMeasurement.result.phaseTimings)}"`
     );
 
     return {
@@ -728,6 +747,8 @@ async function runCase(options: {
       pushWarmWorkerTimings: pushWarmMeasurement.result.workerTimings,
       pushWrapperTimings: pushMeasurement.result.wrapperTimings,
       pushWarmWrapperTimings: pushWarmMeasurement.result.wrapperTimings,
+      materializePhaseTimings: materializeMeasurement.result.phaseTimings,
+      pullPhaseTimings: pullMeasurement.result.phaseTimings,
       pushRequests,
       pushWarmRequests,
       materializeRequests,

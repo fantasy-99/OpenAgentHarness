@@ -16,7 +16,7 @@ use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::types::{Delete, ObjectIdentifier};
 use aws_sdk_s3::Client as S3Client;
 use clap::{Parser, Subcommand};
-use filetime::{set_file_mtime, FileTime};
+use filetime::{set_file_handle_times, set_file_mtime, FileTime};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
 use reqwest::{Client as HttpClient, StatusCode, Url};
 use serde::de::DeserializeOwned;
@@ -511,6 +511,15 @@ struct SyncRemoteToLocalPhaseTimings {
     bundle_get_ms: u64,
     bundle_body_read_ms: u64,
     bundle_extract_ms: u64,
+    bundle_extract_mkdir_us: u64,
+    bundle_extract_replace_us: u64,
+    bundle_extract_file_create_us: u64,
+    bundle_extract_file_write_us: u64,
+    bundle_extract_file_mtime_us: u64,
+    bundle_extract_chmod_us: u64,
+    bundle_extract_target_check_us: u64,
+    bundle_extract_file_count: u64,
+    bundle_extract_directory_count: u64,
     bundle_transport: String,
     bundle_extractor: String,
     bundle_bytes: u64,
@@ -3316,18 +3325,47 @@ fn unpack_sync_bundle_blocking(root_dir: PathBuf, bundle_path: PathBuf) -> Resul
     unpack_sync_bundle_reader_blocking(root_dir, bundle_file)
 }
 
+#[derive(Clone, Default)]
+struct SyncBundleExtractTimings {
+    mkdir_us: u64,
+    replace_us: u64,
+    file_create_us: u64,
+    file_write_us: u64,
+    file_mtime_us: u64,
+    chmod_us: u64,
+    target_check_us: u64,
+    file_count: u64,
+    directory_count: u64,
+}
+
+struct SyncBundleExtractOutcome {
+    extractor: &'static str,
+    timings: SyncBundleExtractTimings,
+}
+
 fn unpack_sync_bundle_bytes_blocking(
     root_dir: PathBuf,
     bundle_bytes: Vec<u8>,
-) -> Result<&'static str, String> {
-    if should_use_rust_sync_bundle_extractor()
-        && try_unpack_ustar_bundle_bytes_blocking(&root_dir, &bundle_bytes)?
-    {
-        return Ok("rust-ustar");
+    skip_existing_target_checks: bool,
+) -> Result<SyncBundleExtractOutcome, String> {
+    if should_use_rust_sync_bundle_extractor() {
+        if let Some(timings) = try_unpack_ustar_bundle_bytes_blocking(
+            &root_dir,
+            &bundle_bytes,
+            skip_existing_target_checks,
+        )? {
+            return Ok(SyncBundleExtractOutcome {
+                extractor: "rust-ustar",
+                timings,
+            });
+        }
     }
 
     unpack_sync_bundle_reader_blocking(root_dir, Cursor::new(bundle_bytes))?;
-    Ok("tar")
+    Ok(SyncBundleExtractOutcome {
+        extractor: "tar",
+        timings: SyncBundleExtractTimings::default(),
+    })
 }
 
 fn parse_tar_octal_field(field: &[u8]) -> Option<u64> {
@@ -3383,38 +3421,44 @@ fn safe_bundle_relative_path(raw_path: &str) -> Option<PathBuf> {
 fn try_unpack_ustar_bundle_bytes_blocking(
     root_dir: &Path,
     bundle_bytes: &[u8],
-) -> Result<bool, String> {
+    skip_existing_target_checks: bool,
+) -> Result<Option<SyncBundleExtractTimings>, String> {
     if bundle_bytes.len() < TAR_BLOCK_SIZE * 2 || bundle_bytes.len() % TAR_BLOCK_SIZE != 0 {
-        return Ok(false);
+        return Ok(None);
     }
 
+    let mut timings = SyncBundleExtractTimings::default();
+    let mkdir_started_at = Instant::now();
     fs::create_dir_all(root_dir).map_err(|error| {
         format!(
             "Failed to create local bundle root {}: {error}",
             root_dir.display()
         )
     })?;
+    timings.mkdir_us += elapsed_micros_u64(mkdir_started_at);
 
     let mut offset = 0;
     let mut saw_entry = false;
+    let mut created_directories = HashSet::new();
+    created_directories.insert(root_dir.to_path_buf());
     while offset + TAR_BLOCK_SIZE <= bundle_bytes.len() {
         let header_slice = &bundle_bytes[offset..offset + TAR_BLOCK_SIZE];
         if header_slice.iter().all(|byte| *byte == 0) {
-            return Ok(saw_entry);
+            return Ok(if saw_entry { Some(timings) } else { None });
         }
 
         let header: &[u8; TAR_BLOCK_SIZE] = header_slice
             .try_into()
             .map_err(|_| "Failed to read ustar header block.".to_string())?;
         if &header[257..263] != b"ustar\0" {
-            return Ok(false);
+            return Ok(None);
         }
 
         let raw_path = tar_header_name(header).ok_or_else(|| {
             "Failed to decode ustar header path while extracting sync bundle.".to_string()
         })?;
         let Some(relative_path) = safe_bundle_relative_path(&raw_path) else {
-            return Ok(false);
+            return Ok(None);
         };
         let size = parse_tar_octal_field(&header[124..136]).ok_or_else(|| {
             format!("Failed to parse ustar entry size for {raw_path} while extracting sync bundle.")
@@ -3429,34 +3473,50 @@ fn try_unpack_ustar_bundle_bytes_blocking(
             format!("Ustar entry {raw_path} overflowed while extracting sync bundle.")
         })?;
         if data_end > bundle_bytes.len() {
-            return Ok(false);
+            return Ok(None);
         }
 
         let target_path = root_dir.join(&relative_path);
         match header[156] {
             b'0' | 0 => {
                 if let Some(parent) = target_path.parent() {
-                    fs::create_dir_all(parent).map_err(|error| {
-                        format!(
-                            "Failed to create local bundle parent {}: {error}",
-                            parent.display()
-                        )
-                    })?;
+                    let parent_path = parent.to_path_buf();
+                    if created_directories.insert(parent_path.clone()) {
+                        let mkdir_started_at = Instant::now();
+                        fs::create_dir_all(&parent_path).map_err(|error| {
+                            format!(
+                                "Failed to create local bundle parent {}: {error}",
+                                parent_path.display()
+                            )
+                        })?;
+                        timings.mkdir_us += elapsed_micros_u64(mkdir_started_at);
+                    }
                 }
-                if matches!(fs::metadata(&target_path), Ok(metadata) if metadata.is_dir()) {
-                    fs::remove_dir_all(&target_path).map_err(|error| {
-                        format!(
-                            "Failed to replace local bundle directory {}: {error}",
-                            target_path.display()
-                        )
-                    })?;
+                if !skip_existing_target_checks {
+                    let target_check_started_at = Instant::now();
+                    let existing_directory =
+                        matches!(fs::metadata(&target_path), Ok(metadata) if metadata.is_dir());
+                    timings.target_check_us += elapsed_micros_u64(target_check_started_at);
+                    if existing_directory {
+                        let replace_started_at = Instant::now();
+                        fs::remove_dir_all(&target_path).map_err(|error| {
+                            format!(
+                                "Failed to replace local bundle directory {}: {error}",
+                                target_path.display()
+                            )
+                        })?;
+                        timings.replace_us += elapsed_micros_u64(replace_started_at);
+                    }
                 }
+                let file_create_started_at = Instant::now();
                 let mut file = fs::File::create(&target_path).map_err(|error| {
                     format!(
                         "Failed to create local bundle file {}: {error}",
                         target_path.display()
                     )
                 })?;
+                timings.file_create_us += elapsed_micros_u64(file_create_started_at);
+                let file_write_started_at = Instant::now();
                 file.write_all(&bundle_bytes[data_offset..data_end])
                     .map_err(|error| {
                         format!(
@@ -3464,23 +3524,31 @@ fn try_unpack_ustar_bundle_bytes_blocking(
                             target_path.display()
                         )
                     })?;
+                timings.file_write_us += elapsed_micros_u64(file_write_started_at);
                 #[cfg(unix)]
                 {
                     if mode & 0o7777 != 0o644 {
                         use std::os::unix::fs::PermissionsExt;
                         let permissions = fs::Permissions::from_mode(mode & 0o7777);
+                        let chmod_started_at = Instant::now();
                         fs::set_permissions(&target_path, permissions).map_err(|error| {
                             format!(
                                 "Failed to set permissions on local bundle file {}: {error}",
                                 target_path.display()
                             )
                         })?;
+                        timings.chmod_us += elapsed_micros_u64(chmod_started_at);
                     }
                 }
                 if mtime_seconds > 0 {
-                    set_file_mtime(
-                        &target_path,
-                        FileTime::from_unix_time(mtime_seconds.min(i64::MAX as u64) as i64, 0),
+                    let file_mtime_started_at = Instant::now();
+                    set_file_handle_times(
+                        &file,
+                        None,
+                        Some(FileTime::from_unix_time(
+                            mtime_seconds.min(i64::MAX as u64) as i64,
+                            0,
+                        )),
                     )
                     .map_err(|error| {
                         format!(
@@ -3488,30 +3556,39 @@ fn try_unpack_ustar_bundle_bytes_blocking(
                             target_path.display()
                         )
                     })?;
+                    timings.file_mtime_us += elapsed_micros_u64(file_mtime_started_at);
                 }
+                timings.file_count += 1;
             }
             b'5' => {
-                fs::create_dir_all(&target_path).map_err(|error| {
-                    format!(
-                        "Failed to create local bundle directory {}: {error}",
-                        target_path.display()
-                    )
-                })?;
+                if created_directories.insert(target_path.clone()) {
+                    let mkdir_started_at = Instant::now();
+                    fs::create_dir_all(&target_path).map_err(|error| {
+                        format!(
+                            "Failed to create local bundle directory {}: {error}",
+                            target_path.display()
+                        )
+                    })?;
+                    timings.mkdir_us += elapsed_micros_u64(mkdir_started_at);
+                }
                 #[cfg(unix)]
                 {
                     if mode & 0o7777 != 0o755 {
                         use std::os::unix::fs::PermissionsExt;
                         let permissions = fs::Permissions::from_mode(mode & 0o7777);
+                        let chmod_started_at = Instant::now();
                         fs::set_permissions(&target_path, permissions).map_err(|error| {
                             format!(
                                 "Failed to set permissions on local bundle directory {}: {error}",
                                 target_path.display()
                             )
                         })?;
+                        timings.chmod_us += elapsed_micros_u64(chmod_started_at);
                     }
                 }
+                timings.directory_count += 1;
             }
-            _ => return Ok(false),
+            _ => return Ok(None),
         }
 
         saw_entry = true;
@@ -3521,7 +3598,7 @@ fn try_unpack_ustar_bundle_bytes_blocking(
             .ok_or_else(|| format!("Ustar entry {raw_path} overflowed archive bounds."))?;
     }
 
-    Ok(false)
+    Ok(None)
 }
 
 fn resolve_in_memory_sync_bundle_extract_max_bytes() -> u64 {
@@ -3535,6 +3612,7 @@ struct HydrateSyncBundleResult {
     bundle_get_ms: u64,
     bundle_body_read_ms: u64,
     bundle_extract_ms: u64,
+    bundle_extract_timings: SyncBundleExtractTimings,
     bundle_transport: &'static str,
     bundle_extractor: &'static str,
     bundle_bytes: u64,
@@ -3547,6 +3625,7 @@ impl HydrateSyncBundleResult {
             bundle_get_ms: 0,
             bundle_body_read_ms: 0,
             bundle_extract_ms: 0,
+            bundle_extract_timings: SyncBundleExtractTimings::default(),
             bundle_transport: "none",
             bundle_extractor: "none",
             bundle_bytes: 0,
@@ -3561,6 +3640,20 @@ fn record_hydrate_timings(
     phase_timings.bundle_get_ms += hydrate_result.bundle_get_ms;
     phase_timings.bundle_body_read_ms += hydrate_result.bundle_body_read_ms;
     phase_timings.bundle_extract_ms += hydrate_result.bundle_extract_ms;
+    phase_timings.bundle_extract_mkdir_us += hydrate_result.bundle_extract_timings.mkdir_us;
+    phase_timings.bundle_extract_replace_us += hydrate_result.bundle_extract_timings.replace_us;
+    phase_timings.bundle_extract_file_create_us +=
+        hydrate_result.bundle_extract_timings.file_create_us;
+    phase_timings.bundle_extract_file_write_us +=
+        hydrate_result.bundle_extract_timings.file_write_us;
+    phase_timings.bundle_extract_file_mtime_us +=
+        hydrate_result.bundle_extract_timings.file_mtime_us;
+    phase_timings.bundle_extract_chmod_us += hydrate_result.bundle_extract_timings.chmod_us;
+    phase_timings.bundle_extract_target_check_us +=
+        hydrate_result.bundle_extract_timings.target_check_us;
+    phase_timings.bundle_extract_file_count += hydrate_result.bundle_extract_timings.file_count;
+    phase_timings.bundle_extract_directory_count +=
+        hydrate_result.bundle_extract_timings.directory_count;
     if hydrate_result.hydrated {
         phase_timings.bundle_transport = hydrate_result.bundle_transport.to_string();
         phase_timings.bundle_extractor = hydrate_result.bundle_extractor.to_string();
@@ -3620,8 +3713,8 @@ async fn maybe_hydrate_from_remote_sync_bundle(
             let bundle_bytes_len = bundle_bytes.len() as u64;
             let root_dir = root_dir.to_path_buf();
             let extract_started_at = Instant::now();
-            let bundle_extractor = tokio::task::spawn_blocking(move || {
-                unpack_sync_bundle_bytes_blocking(root_dir, bundle_bytes)
+            let extract_outcome = tokio::task::spawn_blocking(move || {
+                unpack_sync_bundle_bytes_blocking(root_dir, bundle_bytes, require_empty_root)
             })
             .await
             .map_err(|error| format!("Sync bundle extraction worker task failed: {error}"))??;
@@ -3630,8 +3723,9 @@ async fn maybe_hydrate_from_remote_sync_bundle(
                 bundle_get_ms,
                 bundle_body_read_ms,
                 bundle_extract_ms: elapsed_millis_u64(extract_started_at),
+                bundle_extract_timings: extract_outcome.timings,
                 bundle_transport: "memory",
-                bundle_extractor,
+                bundle_extractor: extract_outcome.extractor,
                 bundle_bytes: bundle_bytes_len,
             });
         }
@@ -3676,6 +3770,7 @@ async fn maybe_hydrate_from_remote_sync_bundle(
             bundle_get_ms,
             bundle_body_read_ms,
             bundle_extract_ms: elapsed_millis_u64(extract_started_at),
+            bundle_extract_timings: SyncBundleExtractTimings::default(),
             bundle_transport: "tempfile",
             bundle_extractor: "tar",
             bundle_bytes,
@@ -3926,6 +4021,15 @@ async fn sync_remote_to_local(
         bundle_get_ms: 0,
         bundle_body_read_ms: 0,
         bundle_extract_ms: 0,
+        bundle_extract_mkdir_us: 0,
+        bundle_extract_replace_us: 0,
+        bundle_extract_file_create_us: 0,
+        bundle_extract_file_write_us: 0,
+        bundle_extract_file_mtime_us: 0,
+        bundle_extract_chmod_us: 0,
+        bundle_extract_target_check_us: 0,
+        bundle_extract_file_count: 0,
+        bundle_extract_directory_count: 0,
         bundle_transport: "none".to_string(),
         bundle_extractor: "none".to_string(),
         bundle_bytes: 0,
@@ -4890,6 +4994,10 @@ async fn sync_local_to_remote(
 
 fn elapsed_millis_u64(started_at: Instant) -> u64 {
     started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn elapsed_micros_u64(started_at: Instant) -> u64 {
+    started_at.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
 }
 
 async fn sync_local_to_sandbox_http(

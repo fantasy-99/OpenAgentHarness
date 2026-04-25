@@ -109,6 +109,15 @@ export interface RemoteToLocalDirectorySyncPhaseTimings {
   bundleGetMs: number;
   bundleBodyReadMs: number;
   bundleExtractMs: number;
+  bundleExtractMkdirUs: number;
+  bundleExtractReplaceUs: number;
+  bundleExtractFileCreateUs: number;
+  bundleExtractFileWriteUs: number;
+  bundleExtractFileMtimeUs: number;
+  bundleExtractChmodUs: number;
+  bundleExtractTargetCheckUs: number;
+  bundleExtractFileCount: number;
+  bundleExtractDirectoryCount: number;
   bundleTransport: "none" | "memory" | "tempfile";
   bundleExtractor: "none" | "rust-ustar" | "tar";
   bundleBytes: number;
@@ -1484,6 +1493,8 @@ async function syncNativeRemotePrefixToLocalIfAvailable(
           syncBundle
         })
     });
+    const remotePhaseTimings = (result as { phaseTimings?: RemoteToLocalDirectorySyncPhaseTimings | undefined })
+      .phaseTimings;
     return {
       ...("localFingerprint" in result && typeof result.localFingerprint === "string"
         ? { localFingerprint: result.localFingerprint }
@@ -1492,7 +1503,7 @@ async function syncNativeRemotePrefixToLocalIfAvailable(
       createdDirectoryCount: result.createdDirectoryCount,
       downloadedFileCount: result.downloadedFileCount,
       ...(result.requestCounts ? { requestCounts: result.requestCounts } : {}),
-      ...(result.phaseTimings ? { phaseTimings: result.phaseTimings } : {})
+      ...(remotePhaseTimings ? { phaseTimings: remotePhaseTimings } : {})
     };
   } catch (error) {
     recordNativeWorkspaceSyncFallback({

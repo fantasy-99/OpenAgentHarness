@@ -134,26 +134,30 @@ Current shape:
 - TS `bundle-primary` cold push: about `417-509ms`
 - native persistent cold push: about `45ms` with the Rust ustar writer, or about `97ms` with it disabled
 - native persistent warm push: about `6-8ms`
-- native persistent materialize: about `84ms` with the Rust ustar extractor, or about `127ms` with it disabled
-- native persistent pull: about `86ms` with the Rust ustar extractor, or about `113ms` with it disabled
+- native persistent materialize: about `78-96ms` with the Rust ustar extractor, or about `127ms` with it disabled
+- native persistent pull: about `77-78ms` with the Rust ustar extractor, or about `113ms` with it disabled
 
 Current native bundle split on this sample:
 
 - Rust ustar writer enabled: `bundle-build ~11ms`, `bundle-upload ~24ms`, `command-total ~44ms`
 - Rust ustar writer disabled / external tar path: `bundle-build ~55ms`, `bundle-upload ~34ms`, `command-total ~96ms`
-- Rust ustar extractor enabled: native persistent materialize `84ms`, pull `86ms`
+- Rust ustar extractor enabled: native persistent materialize `78-96ms`, pull `77-78ms`
 - Rust ustar extractor disabled / `tar::Archive` path: native persistent materialize `127ms`, pull `113ms`
 - transport mode: `memory`
 
 Latest local proof after this stage:
 
-- TS sidecar cold push: `1334ms`, `1027` requests
-- TS `bundle-primary` cold push: `433ms`, `2` requests
-- native persistent cold push: `45ms`, `2` requests
+- TS sidecar cold push: `1564ms`, `1027` requests
+- TS `bundle-primary` cold push: `427ms`, `2` requests
+- native persistent cold push: `50ms`, `2` requests
 - native persistent warm push: `6ms`, `1` request
-- native persistent materialize: `84ms`, `1` request
-- native persistent pull: `86ms`, `1` request
-- native persistent push phase split: `scan=3ms`, `bundle-build=11ms`, `bundle-upload=24ms`, `command-total=44ms`
+- native persistent materialize: `96ms` in the final run, with prior same-stage runs around `78ms`; `1` request
+- native persistent pull: `78ms`, `1` request
+- native persistent push phase split: `scan=2ms`, `bundle-build=11ms`, `bundle-upload=31ms`, `command-total=49ms`
+- native persistent materialize split: `bundle-get=1ms`, `bundle-body-read=3ms`, `bundle-extract=85ms`, `fingerprint=3ms`, `command-total=94ms`
+- native persistent materialize extract micro-split: `extract-create=51343us`, `extract-write=6549us`, `extract-mtime=8492us`, `extract-mkdir=740us`, `extract-target-check=0us`, `extract-files=1024`
+- native persistent pull split: `bundle-get=1ms`, `bundle-body-read=2ms`, `bundle-extract=69ms`, `fingerprint=3ms`, `command-total=77ms`
+- native persistent pull extract micro-split: `extract-create=41928us`, `extract-write=5192us`, `extract-mtime=6438us`, `extract-mkdir=706us`, `extract-target-check=0us`, `extract-files=1024`
 - explicit writer-off control: native persistent cold push `97ms`, with `bundle-build=55ms` and `command-total=96ms`
 - explicit extractor-off control: native persistent materialize `127ms`, pull `113ms`
 
@@ -220,8 +224,13 @@ The in-memory hydration path now tries a constrained ustar extractor before fall
 
 Measured result on `1024 files x 4 KiB`:
 
-- native persistent materialize improved from `127ms` to `84ms`
-- native persistent pull improved from `113ms` to `86ms`
+- native persistent materialize improved from `127ms` to the `78-96ms` range in same-stage runs
+- native persistent pull improved from `113ms` to about `78ms`
+- remote-to-local phase timings now expose `bundle-get`, body read, extractor kind, bundle bytes, fingerprint, and command total
+- the Rust ustar extractor now exposes microsecond counters for mkdir, directory replacement, file create, file write, mtime restore, chmod, and extracted entry counts
+- mtime restore now uses the open file handle instead of a second path lookup where the file has just been created
+- empty-root bundle hydration now skips per-file target replacement checks; the benchmark records `extract-target-check=0us` on the materialize/pull fast path
+- the latest split shows file creation as the largest remaining extract sub-cost: about `40-51ms` for `1024` files, versus about `6-8.5ms` for mtime restore and about `5-6.5ms` for file writes
 
 ### 4. Small and large bundle cases should not be treated the same
 
@@ -250,6 +259,7 @@ That conclusion is justified because native persistent now improves:
 The remaining mainline work is now narrower and more concrete:
 
 - keep reducing upload and remaining materialize cost now that build and in-memory extract both have native fast paths
+- investigate whether extractor file creation can be reduced by a streaming/tempfile strategy, directory-level batching, or a different materialization shape; S3 get/read is not the bottleneck on the current sample
 - keep oneshot documented and tested as fallback-only unless future measurements show a reason to optimize it
 - continue improving prepared-seed reuse and seed upload efficiency
 - add broader Docker CPU/memory constrained proof against real runtime mixes, not only the synthetic `1024 x 4 KiB` fixture
@@ -297,8 +307,12 @@ These are the highest-confidence candidates because they are already on the Dock
    - Current pass: native local-to-remote sync now prunes empty directories itself, so the TS native wrapper no longer performs a second recursive cleanup walk.
    - Current pass: native remote-to-local hydration now extracts smaller and medium sync bundles from memory when the remote `content-length` is under `OAH_NATIVE_WORKSPACE_SYNC_IN_MEMORY_BUNDLE_EXTRACT_MAX_BYTES` instead of always writing a temporary bundle file first.
    - Current pass: in-memory hydration now uses a constrained native ustar extractor by default, with `OAH_NATIVE_WORKSPACE_SYNC_RUST_BUNDLE_EXTRACTOR=0` available as a fallback/control.
-   - Measured win: native persistent materialize dropped from `127ms` to `84ms`; pull dropped from `113ms` to `86ms` on `1024 files x 4 KiB`.
-   - Next win: expose remote-to-local phase timings and reduce any remaining download/fingerprint cost.
+   - Current pass: remote-to-local phase timings now include extractor details and microsecond sub-counters for file creation, writes, mtime restoration, chmod, mkdir, replacement, and entry counts.
+   - Current pass: Rust ustar extraction restores file mtime through the open file handle, avoiding a second path lookup for newly created files.
+   - Current pass: empty-root bundle hydration skips per-file target replacement checks, while incremental/non-empty hydration keeps the compatibility check.
+   - Measured win: native persistent materialize dropped from `127ms` to the `78-96ms` range; pull dropped from `113ms` to about `78ms` on `1024 files x 4 KiB`.
+   - Current bottleneck: file creation dominates the remaining extractor cost at roughly `40-51ms` per `1024` files; mtime restore is now about `6-8.5ms`, writes about `5-6.5ms`, and bundle download/read is only `3-4ms`.
+   - Next win: reduce local file creation/materialization cost or change the materialization shape; do not spend the next pass on S3 download for this sample.
 
 3. `native/oah-workspace-sync`: seed archive build/upload path
    - Current path already uses native planning; seed archive construction now prefers a native `build-seed-archive` command and falls back to the previous TS `tar` spawn.
