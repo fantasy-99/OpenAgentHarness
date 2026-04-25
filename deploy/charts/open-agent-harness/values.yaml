@@ -71,6 +71,11 @@ apiServer:
   replicaCount: 1
   minReadySeconds: 5
   terminationGracePeriodSeconds: 30
+  nodeOptions: "--max-old-space-size=320"
+  runtimeOptimizations:
+    allowPrivateInternalModelRoutes: true
+    workspacePrewarmEnabled: false
+    objectStorageTrustManagedPrefixes: true
   priorityClassName: ""
   podSecurityContext: {}
   securityContext: {}
@@ -120,6 +125,10 @@ worker:
   replicaCount: 1
   minReadySeconds: 5
   terminationGracePeriodSeconds: 120
+  nodeOptions: "--max-old-space-size=224"
+  runtimeOptimizations:
+    allowPrivateInternalRoutes: true
+    objectStorageTrustManagedPrefixes: true
   drain:
     timeoutMs: 110000
     timeoutStrategy: requeue_running
@@ -173,6 +182,7 @@ controller:
   replicaCount: 1
   minReadySeconds: 5
   terminationGracePeriodSeconds: 30
+  nodeOptions: "--max-old-space-size=80"
   priorityClassName: ""
   podSecurityContext: {}
   securityContext: {}

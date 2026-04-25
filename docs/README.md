@@ -25,6 +25,9 @@
 - [domain-model.md](./domain-model.md) — 领域对象、注册表和能力边界
 - [server-config.md](./server-config.md) — 服务端配置文件与运行模式
 - [deploy.md](./deploy.md) — 本地启动、联调、embedded worker 与拆分部署方式
+- [k8s-compose-reuse-matrix.md](./k8s-compose-reuse-matrix.md) — Compose 优化到 K8S 的复用对照
+- [k8s-rollout-checklist.md](./k8s-rollout-checklist.md) — K8S staging / production 上线检查清单
+- [k8s-operations-runbook.md](./k8s-operations-runbook.md) — K8S 常见异常的排障与恢复手册
 - [workspace/README.md](./workspace/README.md) — `.openharness/` 目录规范与配置详解
 - [engine/README.md](./engine/README.md) — Engine 生命周期、上下文、执行、队列与事件
 - [openapi/README.md](./openapi/README.md) — API 参考与 OpenAPI 3.1 规范
@@ -34,6 +37,9 @@
 ## 按目标快速跳转
 
 - 想先把系统跑起来：看 [deploy.md](./deploy.md)
+- 想确认 Compose 优化是否继承到 K8S：看 [k8s-compose-reuse-matrix.md](./k8s-compose-reuse-matrix.md)
+- 想做 K8S 上线检查：看 [k8s-rollout-checklist.md](./k8s-rollout-checklist.md)
+- 想做 K8S 故障排查：看 [k8s-operations-runbook.md](./k8s-operations-runbook.md)
 - 想理解系统边界：看 [architecture-overview.md](./architecture-overview.md)
 - 想先对齐命名：看 [terminology.md](./terminology.md)
 - 想先搞清概念层级：看 [concept-relationships.md](./concept-relationships.md)

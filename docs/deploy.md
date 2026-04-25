@@ -84,6 +84,8 @@ pnpm dev:web
 - [`deploy/charts/open-agent-harness/examples/strict-egress.values.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/charts/open-agent-harness/examples/strict-egress.values.yaml)
 - [`deploy/charts/open-agent-harness/examples/prod-hardening.values.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/charts/open-agent-harness/examples/prod-hardening.values.yaml)
 - [`docs/k8s-rollout-checklist.md`](/Users/wumengsong/Code/OpenAgentHarness/docs/k8s-rollout-checklist.md)
+- [`docs/k8s-operations-runbook.md`](/Users/wumengsong/Code/OpenAgentHarness/docs/k8s-operations-runbook.md)
+- [`docs/k8s-compose-reuse-matrix.md`](/Users/wumengsong/Code/OpenAgentHarness/docs/k8s-compose-reuse-matrix.md)
 - [`deploy/kubernetes/api-server.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/kubernetes/api-server.yaml)
 - [`deploy/kubernetes/worker.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/kubernetes/worker.yaml)
 - [`deploy/kubernetes/controller.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/kubernetes/controller.yaml)
@@ -135,6 +137,16 @@ helm upgrade --install oah ./deploy/charts/open-agent-harness \
   -f ./deploy/charts/open-agent-harness/examples/prod.values.yaml \
   -f ./deploy/charts/open-agent-harness/examples/prod-hardening.values.yaml
 ```
+
+如果要把 K8S 相关材料按使用顺序看，建议走这条线：
+
+1. [ROADMAP_K8S.md](/Users/wumengsong/Code/OpenAgentHarness/ROADMAP_K8S.md)
+2. [deploy.md](/Users/wumengsong/Code/OpenAgentHarness/docs/deploy.md)
+3. [deploy/charts/open-agent-harness/README.md](/Users/wumengsong/Code/OpenAgentHarness/deploy/charts/open-agent-harness/README.md)
+4. [prod-hardening.values.yaml](/Users/wumengsong/Code/OpenAgentHarness/deploy/charts/open-agent-harness/examples/prod-hardening.values.yaml)
+5. [k8s-compose-reuse-matrix.md](/Users/wumengsong/Code/OpenAgentHarness/docs/k8s-compose-reuse-matrix.md)
+6. [k8s-rollout-checklist.md](/Users/wumengsong/Code/OpenAgentHarness/docs/k8s-rollout-checklist.md)
+7. [k8s-operations-runbook.md](/Users/wumengsong/Code/OpenAgentHarness/docs/k8s-operations-runbook.md)
 
 如果要发布正式镜像，仓库现在也提供了一条最小 GHCR 发布链路：
 

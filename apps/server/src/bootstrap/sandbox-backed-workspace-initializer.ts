@@ -62,6 +62,7 @@ export const nativeWorkspaceSyncAdapter = {
   computeDirectoryFingerprint: nativeBridge.computeNativeDirectoryFingerprint,
   computeDirectoryFingerprintBatch: nativeBridge.computeNativeDirectoryFingerprintBatch,
   planSeedUpload: nativeBridge.planNativeSeedUpload,
+  buildSeedArchive: nativeBridge.buildNativeSeedArchive,
   syncLocalToSandboxHttp: nativeBridge.syncNativeLocalToSandboxHttp
 };
 
@@ -630,6 +631,35 @@ async function buildSeedArchive(input: {
   archivePath: string;
   timeoutMs?: number | undefined;
 }): Promise<string> {
+  if (nativeWorkspaceSyncAdapter.isEnabled()) {
+    try {
+      const result = await observeNativeWorkspaceSyncOperation({
+        operation: "build_seed_archive",
+        implementation: "rust",
+        target: input.localSeedRoot,
+        logFailure: false,
+        metadata: {
+          archivePath: input.archivePath
+        },
+        action: () =>
+          nativeWorkspaceSyncAdapter.buildSeedArchive({
+            rootDir: input.localSeedRoot,
+            archivePath: input.archivePath
+          })
+      });
+      return result.archivePath;
+    } catch (error) {
+      recordNativeWorkspaceSyncFallback({
+        operation: "build_seed_archive",
+        target: input.localSeedRoot,
+        error,
+        metadata: {
+          archivePath: input.archivePath
+        }
+      });
+    }
+  }
+
   const tempArchivePath = `${input.archivePath}.tmp-${createId("seed")}`;
   try {
     await runLocalProcess({
@@ -1009,17 +1039,17 @@ export function createSandboxBackedWorkspaceInitializer(options: {
         const archiveMetricsPromise = config?.includeArchiveMetrics
           ? collectPreparedSeedArchiveMetrics(preparedWorkspaceRoot).catch(() => undefined)
           : Promise.resolve(undefined);
-        if (config?.warmArchiveDuringPrepare) {
-          void archiveMetricsPromise
-            .then((archiveMetrics) => {
-              preparedEntry.archiveMetrics = archiveMetrics;
-              if (archiveMetrics && shouldAttemptSeedArchiveUpload(archiveMetrics)) {
-                return ensurePreparedSeedArchive(preparedEntry);
-              }
-              return undefined;
-            })
-            .catch(() => undefined);
-        }
+        const archiveWarmPromise = config?.warmArchiveDuringPrepare
+          ? archiveMetricsPromise
+              .then((archiveMetrics) => {
+                preparedEntry.archiveMetrics = archiveMetrics;
+                if (archiveMetrics && shouldAttemptSeedArchiveUpload(archiveMetrics)) {
+                  return ensurePreparedSeedArchive(preparedEntry);
+                }
+                return undefined;
+              })
+              .catch(() => undefined)
+          : Promise.resolve(undefined);
 
         const discovered = await enrichWorkspaceModelsWithDiscoveredMetadata(
           await discoverWorkspace(preparedWorkspaceRoot, "project", {
@@ -1031,6 +1061,7 @@ export function createSandboxBackedWorkspaceInitializer(options: {
         );
         const archiveMetrics = await archiveMetricsPromise;
         preparedEntry.archiveMetrics = archiveMetrics;
+        await archiveWarmPromise;
 
         return {
           ...preparedEntry,

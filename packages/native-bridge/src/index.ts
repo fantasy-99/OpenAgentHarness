@@ -1,5 +1,6 @@
 export {
   NativeWorkspaceSyncBridgeError,
+  buildNativeSeedArchive,
   computeNativeDirectoryFingerprint,
   computeNativeDirectoryFingerprintBatch,
   ensureNativeWorkspaceSyncWorkerPoolReady,
@@ -13,6 +14,7 @@ export {
   type NativeDirectoryFingerprintBatchEntry,
   type NativeDirectoryFingerprintBatchResult,
   type NativeDirectoryFingerprintResult,
+  type NativeBuildSeedArchiveResult,
   type NativePlanLocalToRemoteResult,
   type NativePlanSeedUploadResult,
   type NativePlanDownloadCandidate,

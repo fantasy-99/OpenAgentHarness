@@ -48,13 +48,21 @@ spec:
         - name: api
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["node", "apps/server/dist/index.js", "--config", "/etc/oah/server.yaml", "--api-only"]
+          command: ["node", "dist/index.js", "--config", "/etc/oah/server.yaml", "--api-only"]
           ports:
             - containerPort: {{ .Values.apiServer.service.port }}
               name: http
           env:
             - name: OAH_CONFIG
               value: {{ printf "%s/server.yaml" .Values.config.mountPath }}
+            - name: NODE_OPTIONS
+              value: {{ .Values.apiServer.nodeOptions | quote }}
+            - name: OAH_ALLOW_PRIVATE_INTERNAL_MODEL_ROUTES
+              value: {{ ternary "true" "false" .Values.apiServer.runtimeOptimizations.allowPrivateInternalModelRoutes | quote }}
+            - name: OAH_WORKSPACE_PREWARM_ENABLED
+              value: {{ ternary "true" "false" .Values.apiServer.runtimeOptimizations.workspacePrewarmEnabled | quote }}
+            - name: OAH_OBJECT_STORAGE_SYNC_TRUST_MANAGED_PREFIXES
+              value: {{ ternary "true" "false" .Values.apiServer.runtimeOptimizations.objectStorageTrustManagedPrefixes | quote }}
             {{- with .Values.apiServer.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

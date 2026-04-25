@@ -9,6 +9,7 @@ export type NativeWorkspaceSyncOperation =
   | "plan_remote_to_local"
   | "sync_remote_to_local"
   | "plan_seed_upload"
+  | "build_seed_archive"
   | "sync_local_to_sandbox_http";
 
 interface AttemptLabels {

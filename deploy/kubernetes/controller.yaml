@@ -30,13 +30,15 @@ spec:
         - name: controller
           image: ghcr.io/open-agent-harness/open-agent-harness:latest
           imagePullPolicy: IfNotPresent
-          command: ["node", "apps/controller/dist/index.js", "--config", "/etc/oah/server.yaml"]
+          command: ["node", "dist/index.js", "--config", "/etc/oah/server.yaml"]
           ports:
             - name: http
               containerPort: 8788
           env:
             - name: OAH_CONFIG
               value: /etc/oah/server.yaml
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=80"
             - name: OAH_CONTROLLER_LEADER_ELECTION_TYPE
               value: kubernetes
             - name: OAH_CONTROLLER_LEASE_NAMESPACE

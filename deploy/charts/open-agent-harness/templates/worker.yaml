@@ -48,12 +48,18 @@ spec:
         - name: sandbox
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["node", "apps/server/dist/worker.js", "--config", "/etc/oah/server.yaml"]
+          command: ["node", "dist/worker.js", "--config", "/etc/oah/server.yaml"]
           env:
             - name: OAH_CONFIG
               value: {{ printf "%s/server.yaml" .Values.config.mountPath }}
+            - name: NODE_OPTIONS
+              value: {{ .Values.worker.nodeOptions | quote }}
             - name: OAH_INTERNAL_BASE_URL
               value: http://$(HOSTNAME).{{ include "open-agent-harness.workerInternalServiceName" . }}.{{ .Release.Namespace }}.svc.{{ .Values.global.clusterDomain }}:{{ .Values.worker.service.port }}
+            - name: OAH_ALLOW_PRIVATE_INTERNAL_ROUTES
+              value: {{ ternary "true" "false" .Values.worker.runtimeOptimizations.allowPrivateInternalRoutes | quote }}
+            - name: OAH_OBJECT_STORAGE_SYNC_TRUST_MANAGED_PREFIXES
+              value: {{ ternary "true" "false" .Values.worker.runtimeOptimizations.objectStorageTrustManagedPrefixes | quote }}
             - name: OAH_WORKER_DRAIN_TIMEOUT_MS
               value: {{ .Values.worker.drain.timeoutMs | quote }}
             - name: OAH_WORKER_DRAIN_TIMEOUT_STRATEGY

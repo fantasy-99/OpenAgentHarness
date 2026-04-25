@@ -1,7 +1,18 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  copyFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync
+} from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "../packages/config/node_modules/yaml/dist/index.js";
@@ -13,6 +24,8 @@ const mode = process.argv[2];
 const composeProjectName =
   process.env.COMPOSE_PROJECT_NAME || path.basename(repoRoot).toLowerCase().replace(/[^a-z0-9]/g, "");
 const readonlyObjectStorageVolumeKeys = ["oah-runtimes", "oah-models", "oah-tools", "oah-skills", "oah-archives"];
+const readonlyObjectStorageSourceDirs = ["runtimes", "models", "tools", "skills", "archives"];
+const workspaceSyncBinaryBasename = process.platform === "win32" ? "oah-workspace-sync.exe" : "oah-workspace-sync";
 
 if (mode !== "up" && mode !== "down") {
   console.error("Usage: node ./scripts/local-stack.mjs <up|down>");
@@ -72,6 +85,23 @@ function runCapture(command, args, options = {}) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function readBoolEnv(name, fallback = false) {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) {
+    return fallback;
+  }
+
+  if (["1", "true", "yes", "on"].includes(raw)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(raw)) {
+    return false;
+  }
+
+  return fallback;
 }
 
 function tryRunCapture(command, args, options = {}) {
@@ -464,6 +494,11 @@ function composeVolumeName(volumeKey) {
 }
 
 function recreateReadonlyObjectStorageVolumes() {
+  if (readBoolEnv("OAH_LOCAL_SKIP_READONLY_VOLUME_RECREATE")) {
+    console.log("Skipping readonly object-storage volume recreation because OAH_LOCAL_SKIP_READONLY_VOLUME_RECREATE is set.");
+    return;
+  }
+
   console.log(
     "Recreating readonly object-storage volumes to avoid rclone plugin path restore drift after docker/plugin restarts."
   );
@@ -570,6 +605,153 @@ function hasLocalOahImage(services = []) {
   });
 }
 
+function appendDirectoryFingerprint(hash, directoryPath, label) {
+  if (!existsSync(directoryPath)) {
+    hash.update(`${label}\tmissing\n`);
+    return;
+  }
+
+  const walk = (currentPath, relativePath) => {
+    const stat = statSync(currentPath);
+    if (stat.isDirectory()) {
+      hash.update(`${label}\td\t${relativePath}\n`);
+      for (const entry of readdirSync(currentPath, { withFileTypes: true }).sort((left, right) =>
+        left.name.localeCompare(right.name)
+      )) {
+        walk(path.join(currentPath, entry.name), path.join(relativePath, entry.name));
+      }
+      return;
+    }
+
+    if (stat.isFile()) {
+      hash.update(`${label}\tf\t${relativePath}\t${stat.size}\t${Math.trunc(stat.mtimeMs)}\n`);
+      return;
+    }
+
+    hash.update(`${label}\to\t${relativePath}\t${stat.size}\t${Math.trunc(stat.mtimeMs)}\n`);
+  };
+
+  walk(directoryPath, ".");
+}
+
+function resolveNativeWorkspaceSyncBinary() {
+  const configured = process.env.OAH_NATIVE_WORKSPACE_SYNC_BINARY?.trim();
+  const candidates = [
+    configured,
+    path.join(repoRoot, ".native-target", "release", workspaceSyncBinaryBasename),
+    path.join(repoRoot, "native", "target", "release", workspaceSyncBinaryBasename),
+    path.join(repoRoot, "native", "target", "debug", workspaceSyncBinaryBasename),
+    path.join(repoRoot, "native", "bin", workspaceSyncBinaryBasename)
+  ].filter(Boolean);
+
+  return candidates.find((candidate) => existsSync(candidate));
+}
+
+function tryNativeReadonlyObjectStorageSourceFingerprint(deployRoot) {
+  const binary = resolveNativeWorkspaceSyncBinary();
+  if (!binary) {
+    return undefined;
+  }
+
+  const sourceRoot = path.join(deployRoot, "source");
+  const directories = readonlyObjectStorageSourceDirs.map((directoryName) => ({
+    label: directoryName,
+    rootDir: path.join(sourceRoot, directoryName),
+    exists: existsSync(path.join(sourceRoot, directoryName))
+  }));
+  const existingDirectories = directories.filter((entry) => entry.exists);
+  if (existingDirectories.length === 0) {
+    return undefined;
+  }
+
+  const result = spawnSync(binary, ["fingerprint-batch"], {
+    cwd: repoRoot,
+    env: process.env,
+    input: JSON.stringify({
+      directories: existingDirectories.map((entry) => ({
+        rootDir: entry.rootDir
+      }))
+    }),
+    encoding: "utf8",
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+  if (result.status !== 0) {
+    return undefined;
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(result.stdout || "{}");
+  } catch {
+    return undefined;
+  }
+  if (!payload?.ok || !Array.isArray(payload.results)) {
+    return undefined;
+  }
+
+  const nativeByRoot = new Map(payload.results.map((entry) => [entry.rootDir, entry]));
+  const hash = createHash("sha256");
+  for (const directory of directories) {
+    if (!directory.exists) {
+      hash.update(`${directory.label}\tmissing\n`);
+      continue;
+    }
+
+    const native = nativeByRoot.get(directory.rootDir);
+    if (!native?.fingerprint) {
+      return undefined;
+    }
+    hash.update(
+      `${directory.label}\tnative\t${native.fingerprint}\t${native.fileCount ?? 0}\t${native.emptyDirectoryCount ?? 0}\n`
+    );
+  }
+
+  return hash.digest("hex");
+}
+
+function readonlyObjectStorageSourceFingerprint(deployRoot) {
+  const nativeFingerprint = tryNativeReadonlyObjectStorageSourceFingerprint(deployRoot);
+  if (nativeFingerprint) {
+    return nativeFingerprint;
+  }
+
+  const sourceRoot = path.join(deployRoot, "source");
+  const hash = createHash("sha256");
+  for (const directoryName of readonlyObjectStorageSourceDirs) {
+    appendDirectoryFingerprint(hash, path.join(sourceRoot, directoryName), directoryName);
+  }
+  return hash.digest("hex");
+}
+
+function syncReadonlyObjectStorageSources() {
+  if (readBoolEnv("OAH_LOCAL_SKIP_STORAGE_SYNC")) {
+    console.log("Skipping storage sync because OAH_LOCAL_SKIP_STORAGE_SYNC is set.");
+    return;
+  }
+
+  const deployRoot = process.env.OAH_DEPLOY_ROOT;
+  if (!deployRoot) {
+    throw new Error("OAH_DEPLOY_ROOT is required before storage sync.");
+  }
+
+  const generatedDir = path.join(deployRoot, ".oah-local");
+  const fingerprintPath = path.join(generatedDir, "readonly-source.fingerprint");
+  const nextFingerprint = readonlyObjectStorageSourceFingerprint(deployRoot);
+  const syncOnChangeOnly = readBoolEnv("OAH_LOCAL_SYNC_ON_CHANGE_ONLY");
+
+  if (syncOnChangeOnly && existsSync(fingerprintPath)) {
+    const previousFingerprint = readFileSync(fingerprintPath, "utf8").trim();
+    if (previousFingerprint === nextFingerprint) {
+      console.log("Readonly object-storage sources are unchanged; skipping storage sync.");
+      return;
+    }
+  }
+
+  run("pnpm", ["storage:sync"]);
+  mkdirSync(generatedDir, { recursive: true });
+  writeFileSync(fingerprintPath, `${nextFingerprint}\n`, "utf8");
+}
+
 async function up() {
   ensureDeployRoot();
   prepareDockerServerConfigs();
@@ -580,8 +762,12 @@ async function up() {
   run("docker", ["compose", "-f", composeFile, "up", "-d", "postgres", "redis", "minio"]);
   await waitForCoreInfraHealthy();
   recreateReadonlyObjectStorageVolumes();
-  await resetLocalRedisCoordinationState();
-  run("pnpm", ["storage:sync"]);
+  if (readBoolEnv("OAH_LOCAL_SKIP_REDIS_FLUSH")) {
+    console.log("Skipping Redis coordination reset because OAH_LOCAL_SKIP_REDIS_FLUSH is set.");
+  } else {
+    await resetLocalRedisCoordinationState();
+  }
+  syncReadonlyObjectStorageSources();
 
   const initialSandboxReplicaCount = Math.max(
     0,

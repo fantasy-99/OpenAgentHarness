@@ -266,6 +266,7 @@ export function normalizeModelMetadata(metadata: Record<string, unknown> | undef
     normalized.contextWindowTokens = contextWindowTokens;
   }
 
+  delete normalized.max_model_len;
   delete normalized.context_window_tokens;
 
   return Object.keys(normalized).length > 0 ? normalized : undefined;

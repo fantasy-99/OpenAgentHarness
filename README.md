@@ -279,6 +279,7 @@ pnpm dev:web
 OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync
 OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync -- --include-workspaces
 OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm local:up
+OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root OAH_SKIP_BUILD=1 OAH_LOCAL_SYNC_ON_CHANGE_ONLY=1 pnpm local:up
 pnpm local:down
 ```
 

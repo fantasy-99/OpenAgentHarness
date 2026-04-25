@@ -76,6 +76,8 @@ pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts 
 | `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync -- --include-workspaces` | 连同 `source/workspaces` 一起同步到 MinIO |
 | `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm local:up` | 启动本地整套服务（`oah-api` / `oah-controller` / `oah-sandbox`） |
 | `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root OAH_SKIP_BUILD=1 pnpm local:up` | 复用本地已有 OAH 镜像，跳过 Docker 构建 |
+| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root OAH_LOCAL_SYNC_ON_CHANGE_ONLY=1 pnpm local:up` | 仍通过 MinIO/rclone 模拟对象存储部署，但只在只读源目录变化时重新同步 |
+| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root OAH_LOCAL_SKIP_READONLY_VOLUME_RECREATE=1 pnpm local:up` | 保留已有 rclone 只读卷，适合 Docker/rclone 插件未重启且只想快速重启服务 |
 | `pnpm local:down` | 停止本地整套服务 |
 | `pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts -- --api-only --config ./server.example.yaml` | 仅启动 `oah-api` |
 | `pnpm exec tsx --tsconfig ./apps/controller/tsconfig.json ./apps/controller/src/index.ts -- --config ./server.example.yaml` | 单独启动 `oah-controller` |
@@ -104,6 +106,14 @@ pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts 
   ```
 - 旧版本本地环境如果已经缓存的是 `openagentharness-oah-api` / `openagentharness-oah-controller` / `openagentharness-oah-sandbox`，`local:up` 现在也会自动识别并回退到 `--no-build`
 - 如果必须重新构建，先确认 Docker Desktop 自身能访问 Docker Hub，再重试。
+
+### 本地对象存储模拟的启动优化
+
+`local:up` 默认保持生产形态：把 deploy root 的只读源目录同步到 MinIO，并通过 rclone Docker volume 挂载到容器内。重复启动时可以按场景降低固定开销：
+
+- `OAH_LOCAL_SYNC_ON_CHANGE_ONLY=1`：只读源目录的文件清单、大小或 mtime 没变时跳过 `pnpm storage:sync`，对象存储仍然是运行时读取来源。
+- `OAH_LOCAL_SKIP_READONLY_VOLUME_RECREATE=1`：不重建 rclone 只读卷。仅在 Docker Desktop 和 rclone 插件没有重启、且你不需要修复插件 path drift 时使用。
+- `OAH_LOCAL_SKIP_REDIS_FLUSH=1`：保留 Redis 协调状态。通常调试队列/调度残留时才用；默认会清空以避免旧本地状态影响测试。
 
 ### `VolumeDriver.Get ... context deadline exceeded`
 

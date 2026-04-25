@@ -76,6 +76,8 @@ Optional flags: `--tool-dir`, `--skill-dir`, `--host`, `--port`
 | `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync -- --include-workspaces` | Also sync `source/workspaces` to MinIO |
 | `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm local:up` | Start the full local stack (`oah-api` / `oah-controller` / `oah-sandbox`) |
 | `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root OAH_SKIP_BUILD=1 pnpm local:up` | Reuse an already-built local OAH image and skip Docker build |
+| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root OAH_LOCAL_SYNC_ON_CHANGE_ONLY=1 pnpm local:up` | Keep the MinIO/rclone object-storage simulation, but resync readonly sources only when they changed |
+| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root OAH_LOCAL_SKIP_READONLY_VOLUME_RECREATE=1 pnpm local:up` | Reuse existing rclone readonly volumes when Docker/rclone has not restarted and you only need a fast service restart |
 | `pnpm local:down` | Stop the full local stack |
 | `pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts -- --api-only --config ./server.example.yaml` | Start `oah-api` only |
 | `pnpm exec tsx --tsconfig ./apps/controller/tsconfig.json ./apps/controller/src/index.ts -- --config ./server.example.yaml` | Start `oah-controller` only |
@@ -91,3 +93,11 @@ Optional flags: `--tool-dir`, `--skill-dir`, `--host`, `--port`
 - [Workspace Guide](./workspace/README.md) — Configure agents, skills, and tools
 - [Deploy and Run](./deploy.md) — Unified local vs split production deployment
 - [Design Overview](./design-overview.md) — Core design decisions
+
+## Local Object Storage Startup Tuning
+
+`local:up` keeps the production-like shape by default: it syncs readonly deploy-root sources to MinIO, then mounts them into containers through rclone Docker volumes. For repeated local runs:
+
+- `OAH_LOCAL_SYNC_ON_CHANGE_ONLY=1` skips `pnpm storage:sync` when readonly source file names, sizes, and mtimes are unchanged. Runtime reads still go through object storage.
+- `OAH_LOCAL_SKIP_READONLY_VOLUME_RECREATE=1` keeps the existing rclone readonly volumes. Use it only when Docker Desktop and the rclone plugin have not restarted and you do not need to recover from plugin path drift.
+- `OAH_LOCAL_SKIP_REDIS_FLUSH=1` preserves Redis coordination state. The default reset is safer for repeatable local tests.

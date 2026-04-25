@@ -130,6 +130,13 @@ export interface NativePlanSeedUploadResult extends NativeCommandSuccessResponse
   files: NativeSeedUploadFile[];
 }
 
+export interface NativeBuildSeedArchiveResult extends NativeCommandSuccessResponse {
+  archivePath: string;
+  archiveBytes: number;
+  fileCount: number;
+  emptyDirectoryCount: number;
+}
+
 export interface NativeWorkspaceSyncObjectStoreConfig {
   bucket: string;
   region: string;
@@ -286,6 +293,7 @@ function shouldUsePersistentNativeWorkspaceSyncCommand(command: string): boolean
     "plan-local-to-remote",
     "plan-remote-to-local",
     "plan-seed-upload",
+    "build-seed-archive",
     "sync-local-to-remote",
     "sync-remote-to-local",
     "sync-local-to-sandbox-http"
@@ -784,6 +792,16 @@ export async function planNativeSeedUpload(input: {
     rootDir: input.rootDir,
     remoteBasePath: input.remoteBasePath,
     ...(input.excludeRelativePaths ? { excludeRelativePaths: input.excludeRelativePaths } : {})
+  });
+}
+
+export async function buildNativeSeedArchive(input: {
+  rootDir: string;
+  archivePath: string;
+}): Promise<NativeBuildSeedArchiveResult> {
+  return runNativeWorkspaceSyncCommand<NativeBuildSeedArchiveResult>(["build-seed-archive"], {
+    rootDir: input.rootDir,
+    archivePath: input.archivePath
   });
 }
 

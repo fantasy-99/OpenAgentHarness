@@ -1302,9 +1302,6 @@ async function syncNativeLocalDirectoryToRemoteIfAvailable(
         })
     });
     const nativeCallMs = Math.max(0, Math.round(performance.now() - nativeCallStartedAt));
-    const pruneStartedAt = performance.now();
-    await pruneEmptyDirectories(localDir);
-    const pruneEmptyDirectoriesMs = Math.max(0, Math.round(performance.now() - pruneStartedAt));
     return {
       localFingerprint: result.localFingerprint,
       uploadedFileCount: result.uploadedFileCount,
@@ -1316,8 +1313,8 @@ async function syncNativeLocalDirectoryToRemoteIfAvailable(
       ...(result.workerTimings ? { workerTimings: result.workerTimings } : {}),
       wrapperTimings: {
         nativeCallMs,
-        pruneEmptyDirectoriesMs,
-        totalNativeWrapperMs: nativeCallMs + pruneEmptyDirectoriesMs
+        pruneEmptyDirectoriesMs: 0,
+        totalNativeWrapperMs: nativeCallMs
       }
     };
   } catch (error) {

@@ -34,6 +34,7 @@ export class ToolMessageService {
   readonly #createId: ToolMessageServiceDependencies["createId"];
   readonly #nowIso: ToolMessageServiceDependencies["nowIso"];
   readonly #previewValue: ToolMessageServiceDependencies["previewValue"];
+  readonly #lastMessageCreatedAtBySessionId = new Map<string, number>();
 
   constructor(dependencies: ToolMessageServiceDependencies) {
     this.#messageRepository = dependencies.messageRepository;
@@ -58,6 +59,19 @@ export class ToolMessageService {
     };
   }
 
+  #nextMessageCreatedAt(sessionId: string): string {
+    const nowMs = Date.parse(this.#nowIso());
+    const lastCreatedAtMs = this.#lastMessageCreatedAtBySessionId.get(sessionId);
+    const createdAtMs =
+      Number.isFinite(nowMs) && Number.isFinite(lastCreatedAtMs)
+        ? Math.max(nowMs, (lastCreatedAtMs ?? nowMs) + 1)
+        : Number.isFinite(nowMs)
+          ? nowMs
+          : Date.now();
+    this.#lastMessageCreatedAtBySessionId.set(sessionId, createdAtMs);
+    return new Date(createdAtMs).toISOString();
+  }
+
   async ensureAssistantMessage(
     session: Session,
     run: Run,
@@ -77,7 +91,7 @@ export class ToolMessageService {
       role: "assistant",
       content: textContent(content),
       ...(metadata ? { metadata } : {}),
-      createdAt: this.#nowIso()
+      createdAt: this.#nextMessageCreatedAt(session.id)
     })) as AssistantMessage;
 
     allMessages?.push(message);
@@ -163,7 +177,7 @@ export class ToolMessageService {
           const mergedMetadata = this.#mergeToolMetadata(metadata, toolMetadataByCallId?.get(toolCall.toolCallId));
           return mergedMetadata ? { metadata: mergedMetadata } : {};
         })(),
-        createdAt: this.#nowIso()
+        createdAt: this.#nextMessageCreatedAt(session.id)
       });
 
       allMessages.push(assistantToolCallMessage);
@@ -215,7 +229,7 @@ export class ToolMessageService {
           const mergedMetadata = this.#mergeToolMetadata(metadata, toolMetadataByCallId?.get(toolResult.toolCallId));
           return mergedMetadata ? { metadata: mergedMetadata } : {};
         })(),
-        createdAt: this.#nowIso()
+        createdAt: this.#nextMessageCreatedAt(session.id)
       });
       allMessages.push(toolMessage);
 
@@ -258,7 +272,7 @@ export class ToolMessageService {
           const mergedMetadata = this.#mergeToolMetadata(metadata, toolMetadataByCallId?.get(toolError.toolCallId));
           return mergedMetadata ? { metadata: mergedMetadata } : {};
         })(),
-        createdAt: this.#nowIso()
+        createdAt: this.#nextMessageCreatedAt(session.id)
       });
       allMessages.push(toolMessage);
 
@@ -299,7 +313,7 @@ export class ToolMessageService {
         output: input.output
       }),
       ...(input.metadata ? { metadata: input.metadata } : {}),
-      createdAt: this.#nowIso()
+      createdAt: this.#nextMessageCreatedAt(input.session.id)
     });
 
     await this.#appendEvent({
@@ -341,7 +355,7 @@ export class ToolMessageService {
         }
       ]),
       ...(input.metadata ? { metadata: input.metadata } : {}),
-      createdAt: this.#nowIso()
+      createdAt: this.#nextMessageCreatedAt(input.session.id)
     });
 
     await this.#appendEvent({
@@ -379,7 +393,7 @@ export class ToolMessageService {
         error: input.error
       }),
       ...(input.metadata ? { metadata: input.metadata } : {}),
-      createdAt: this.#nowIso()
+      createdAt: this.#nextMessageCreatedAt(input.session.id)
     });
 
     await this.#appendEvent({

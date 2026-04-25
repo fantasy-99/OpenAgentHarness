@@ -85,4 +85,20 @@ pnpm dev:web                                        # 启动调试控制台
 
     [:octicons-arrow-right-24: 部署](./deploy.md)
 
+-   :material-shield-check-outline:{ .lg .middle } **K8S 上线清单**
+
+    ---
+
+    staging 验证、production readiness、release gate
+
+    [:octicons-arrow-right-24: 检查](./k8s-rollout-checklist.md)
+
+-   :material-stethoscope:{ .lg .middle } **K8S 运维 Runbook**
+
+    ---
+
+    leader、rollout、drain、strict egress 等故障排查
+
+    [:octicons-arrow-right-24: 排障](./k8s-operations-runbook.md)
+
 </div>

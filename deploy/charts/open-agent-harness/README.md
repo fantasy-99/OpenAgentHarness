@@ -37,6 +37,9 @@ helm upgrade --install oah ./deploy/charts/open-agent-harness \
 - [prod.values.yaml](/Users/wumengsong/Code/OpenAgentHarness/deploy/charts/open-agent-harness/examples/prod.values.yaml)
 - [strict-egress.values.yaml](/Users/wumengsong/Code/OpenAgentHarness/deploy/charts/open-agent-harness/examples/strict-egress.values.yaml)
 - [prod-hardening.values.yaml](/Users/wumengsong/Code/OpenAgentHarness/deploy/charts/open-agent-harness/examples/prod-hardening.values.yaml)
+- [Compose To Kubernetes Reuse Matrix](/Users/wumengsong/Code/OpenAgentHarness/docs/k8s-compose-reuse-matrix.md)
+- [Kubernetes Rollout Checklist](/Users/wumengsong/Code/OpenAgentHarness/docs/k8s-rollout-checklist.md)
+- [Kubernetes Operations Runbook](/Users/wumengsong/Code/OpenAgentHarness/docs/k8s-operations-runbook.md)
 
 渲染或安装示例：
 
@@ -55,6 +58,11 @@ helm upgrade --install oah ./deploy/charts/open-agent-harness \
   -f ./deploy/charts/open-agent-harness/examples/prod.values.yaml \
   -f ./deploy/charts/open-agent-harness/examples/prod-hardening.values.yaml
 ```
+
+完成渲染和部署后，建议再按这两份文档收尾：
+
+- [Kubernetes Rollout Checklist](/Users/wumengsong/Code/OpenAgentHarness/docs/k8s-rollout-checklist.md)
+- [Kubernetes Operations Runbook](/Users/wumengsong/Code/OpenAgentHarness/docs/k8s-operations-runbook.md)
 
 ## 常用 values
 

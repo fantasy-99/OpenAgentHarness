@@ -29,13 +29,21 @@ spec:
         - name: api
           image: ghcr.io/open-agent-harness/open-agent-harness:latest
           imagePullPolicy: IfNotPresent
-          command: ["node", "apps/server/dist/index.js", "--config", "/etc/oah/server.yaml", "--api-only"]
+          command: ["node", "dist/index.js", "--config", "/etc/oah/server.yaml", "--api-only"]
           ports:
             - containerPort: 8787
               name: http
           env:
             - name: OAH_CONFIG
               value: /etc/oah/server.yaml
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=320"
+            - name: OAH_ALLOW_PRIVATE_INTERNAL_MODEL_ROUTES
+              value: "true"
+            - name: OAH_WORKSPACE_PREWARM_ENABLED
+              value: "false"
+            - name: OAH_OBJECT_STORAGE_SYNC_TRUST_MANAGED_PREFIXES
+              value: "true"
           readinessProbe:
             httpGet:
               path: /readyz

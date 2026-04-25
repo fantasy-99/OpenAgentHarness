@@ -39,7 +39,8 @@ COPY packages/storage-sqlite/package.json ./packages/storage-sqlite/package.json
 
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
   pnpm config set store-dir /pnpm/store \
-  && pnpm fetch --frozen-lockfile
+  && pnpm fetch --frozen-lockfile \
+  && pnpm install --frozen-lockfile --offline
 
 FROM deps AS source
 
@@ -50,10 +51,6 @@ COPY apps/server ./apps/server
 COPY apps/worker ./apps/worker
 COPY packages ./packages
 COPY scripts ./scripts
-
-RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
-  pnpm config set store-dir /pnpm/store \
-  && pnpm install --frozen-lockfile --offline
 
 FROM source AS controller-build
 

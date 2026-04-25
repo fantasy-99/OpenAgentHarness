@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::env;
 use std::fs;
 use std::future::Future;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
@@ -37,8 +38,12 @@ const INTERNAL_SYNC_BUNDLE_RELATIVE_PATH: &str = ".oah-sync-bundle.tar";
 const INLINE_UPLOAD_THRESHOLD_BYTES: u64 = 128 * 1024;
 const DEFAULT_SYNC_BUNDLE_MIN_FILE_COUNT: usize = 16;
 const DEFAULT_SYNC_BUNDLE_MIN_TOTAL_BYTES: u64 = 128 * 1024;
-const DEFAULT_IN_MEMORY_SYNC_BUNDLE_MIN_SOURCE_BYTES: u64 = 512 * 1024;
+const DEFAULT_IN_MEMORY_SYNC_BUNDLE_MIN_SOURCE_BYTES: u64 = 256 * 1024;
 const DEFAULT_IN_MEMORY_SYNC_BUNDLE_MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
+const IN_MEMORY_SYNC_BUNDLE_MIN_SOURCE_BYTES_ENV: &str =
+    "OAH_NATIVE_WORKSPACE_SYNC_IN_MEMORY_BUNDLE_MIN_SOURCE_BYTES";
+const IN_MEMORY_SYNC_BUNDLE_MAX_SOURCE_BYTES_ENV: &str =
+    "OAH_NATIVE_WORKSPACE_SYNC_IN_MEMORY_BUNDLE_MAX_SOURCE_BYTES";
 
 #[derive(Parser)]
 #[command(name = BINARY_NAME, version = BINARY_VERSION, about = "Open Agent Harness native workspace sync utilities.")]
@@ -60,6 +65,7 @@ enum Command {
     PlanRemoteToLocal,
     SyncRemoteToLocal,
     PlanSeedUpload,
+    BuildSeedArchive,
     SyncLocalToSandboxHttp,
 }
 
@@ -274,6 +280,24 @@ struct PlanSeedUploadRequest {
     remote_base_path: String,
     #[serde(default)]
     exclude_relative_paths: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BuildSeedArchiveRequest {
+    root_dir: String,
+    archive_path: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BuildSeedArchiveResponse {
+    ok: bool,
+    protocol_version: u32,
+    archive_path: String,
+    archive_bytes: u64,
+    file_count: usize,
+    empty_directory_count: usize,
 }
 
 #[derive(Clone, Deserialize)]
@@ -617,6 +641,11 @@ fn run() -> Result<(), String> {
             Some(read_json_stdin_value()?),
             None,
         )?),
+        Command::BuildSeedArchive => write_json_value(&handle_command(
+            "build-seed-archive",
+            Some(read_json_stdin_value()?),
+            None,
+        )?),
         Command::SyncLocalToSandboxHttp => {
             let runtime = build_runtime()?;
             write_json_value(&handle_command(
@@ -831,6 +860,10 @@ fn handle_command(
                 directories: plan.directories,
                 files: plan.files,
             })
+        }
+        "build-seed-archive" => {
+            let request: BuildSeedArchiveRequest = parse_payload(payload, command)?;
+            serialize_json_value(&build_seed_archive(request)?)
         }
         "sync-local-to-sandbox-http" => {
             let request: SyncLocalToSandboxHttpRequest = parse_payload(payload, command)?;
@@ -2184,6 +2217,84 @@ fn create_seed_upload_plan(snapshot: &Snapshot, remote_base_path: &str) -> SeedU
     SeedUploadPlan { directories, files }
 }
 
+fn build_seed_archive(request: BuildSeedArchiveRequest) -> Result<BuildSeedArchiveResponse, String> {
+    let root_dir = PathBuf::from(&request.root_dir);
+    let archive_path = PathBuf::from(&request.archive_path);
+    let snapshot = collect_snapshot(&root_dir, &[])?;
+    let archive_parent = archive_path.parent().ok_or_else(|| {
+        format!(
+            "Failed to resolve parent directory for seed archive {}.",
+            archive_path.display()
+        )
+    })?;
+    fs::create_dir_all(archive_parent).map_err(|error| {
+        format!(
+            "Failed to create seed archive directory {}: {error}",
+            archive_parent.display()
+        )
+    })?;
+
+    let mut archive_file = tempfile::Builder::new()
+        .prefix(".oah-seed-")
+        .suffix(".tar.tmp")
+        .tempfile_in(archive_parent)
+        .map_err(|error| format!("Failed to create temporary seed archive file: {error}"))?;
+    let mut builder = tar::Builder::new(archive_file.as_file_mut());
+
+    let mut files = snapshot.files.iter().collect::<Vec<_>>();
+    files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    for file in files {
+        builder
+            .append_path_with_name(&file.absolute_path, Path::new(&file.relative_path))
+            .map_err(|error| {
+                format!(
+                    "Failed to append {} to seed archive as {}: {error}",
+                    file.absolute_path, file.relative_path
+                )
+            })?;
+    }
+
+    for relative_path in &snapshot.empty_directories {
+        builder
+            .append_dir(Path::new(relative_path), root_dir.join(relative_path))
+            .map_err(|error| {
+                format!("Failed to append empty directory {relative_path} to seed archive: {error}")
+            })?;
+    }
+
+    builder
+        .into_inner()
+        .map_err(|error| format!("Failed to finalize seed archive: {error}"))?
+        .flush()
+        .map_err(|error| format!("Failed to flush seed archive: {error}"))?;
+
+    let temp_archive_path = archive_file.into_temp_path();
+    fs::rename(&temp_archive_path, &archive_path).map_err(|error| {
+        format!(
+            "Failed to move temporary seed archive {} to {}: {error}",
+            temp_archive_path.display(),
+            archive_path.display()
+        )
+    })?;
+    let archive_bytes = fs::metadata(&archive_path)
+        .map_err(|error| {
+            format!(
+                "Failed to stat seed archive {} after build: {error}",
+                archive_path.display()
+            )
+        })?
+        .len();
+
+    Ok(BuildSeedArchiveResponse {
+        ok: true,
+        protocol_version: PROTOCOL_VERSION,
+        archive_path: normalize_path(&archive_path),
+        archive_bytes,
+        file_count: snapshot.files.len(),
+        empty_directory_count: snapshot.empty_directories.len(),
+    })
+}
+
 fn create_s3_client(config: &NativeObjectStoreConfig) -> S3Client {
     let mut builder = aws_sdk_s3::config::Builder::new().region(Region::new(config.region.clone()));
     if let Some(endpoint) = &config.endpoint {
@@ -2558,6 +2669,39 @@ enum BuiltSyncBundle {
     Bytes(Vec<u8>),
 }
 
+#[derive(Clone, Copy)]
+struct InMemorySyncBundleSourceByteRange {
+    min: u64,
+    max: u64,
+}
+
+fn read_u64_env(name: &str) -> Option<u64> {
+    let raw = env::var(name).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    trimmed.parse::<u64>().ok()
+}
+
+fn resolve_in_memory_sync_bundle_source_byte_range() -> InMemorySyncBundleSourceByteRange {
+    let min = read_u64_env(IN_MEMORY_SYNC_BUNDLE_MIN_SOURCE_BYTES_ENV)
+        .unwrap_or(DEFAULT_IN_MEMORY_SYNC_BUNDLE_MIN_SOURCE_BYTES);
+    let mut max = read_u64_env(IN_MEMORY_SYNC_BUNDLE_MAX_SOURCE_BYTES_ENV)
+        .unwrap_or(DEFAULT_IN_MEMORY_SYNC_BUNDLE_MAX_SOURCE_BYTES);
+    if max < min {
+        max = min;
+    }
+
+    InMemorySyncBundleSourceByteRange { min, max }
+}
+
+fn should_build_sync_bundle_in_memory(snapshot_total_bytes: u64) -> bool {
+    let range = resolve_in_memory_sync_bundle_source_byte_range();
+    (range.min..=range.max).contains(&snapshot_total_bytes)
+}
+
 async fn build_local_sync_bundle(
     root_dir: &Path,
     snapshot: &Snapshot,
@@ -2566,10 +2710,7 @@ async fn build_local_sync_bundle(
     let root_dir_buf = root_dir.to_path_buf();
     if excludes.is_empty() {
         let snapshot_total_bytes = snapshot.files.iter().map(|file| file.size).sum::<u64>();
-        if (DEFAULT_IN_MEMORY_SYNC_BUNDLE_MIN_SOURCE_BYTES
-            ..=DEFAULT_IN_MEMORY_SYNC_BUNDLE_MAX_SOURCE_BYTES)
-            .contains(&snapshot_total_bytes)
-        {
+        if should_build_sync_bundle_in_memory(snapshot_total_bytes) {
             let root_dir_for_in_memory_fast_path = root_dir_buf.clone();
             if let Some(bundle_bytes) = tokio::task::spawn_blocking(move || {
                 try_build_local_sync_bundle_root_with_tar_to_memory_blocking(
@@ -2745,6 +2886,72 @@ async fn delete_remote_object_if_present(
         .await
         .map_err(|error| format!("Failed to delete S3 object {key}: {error}"))?;
     Ok(())
+}
+
+fn prune_empty_local_directories_blocking(root_dir: &Path) -> Result<(), String> {
+    let Ok(metadata) = fs::metadata(root_dir) else {
+        return Ok(());
+    };
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+
+    fn walk(directory: &Path) -> Result<bool, String> {
+        let entries = match fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(format!(
+                    "Failed to read local directory {} while pruning empty directories: {error}",
+                    directory.display()
+                ));
+            }
+        };
+
+        let mut has_children = false;
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                format!(
+                    "Failed to read local directory entry in {} while pruning empty directories: {error}",
+                    directory.display()
+                )
+            })?;
+            let path = entry.path();
+            let file_type = entry.file_type().map_err(|error| {
+                format!(
+                    "Failed to inspect local directory entry {} while pruning empty directories: {error}",
+                    path.display()
+                )
+            })?;
+
+            if file_type.is_dir() {
+                let keep_child = walk(&path)?;
+                if !keep_child {
+                    fs::remove_dir_all(&path).map_err(|error| {
+                        format!(
+                            "Failed to remove empty local directory {}: {error}",
+                            path.display()
+                        )
+                    })?;
+                    continue;
+                }
+            }
+
+            has_children = true;
+        }
+
+        Ok(has_children)
+    }
+
+    walk(root_dir)?;
+    Ok(())
+}
+
+async fn prune_empty_local_directories(root_dir: &Path) -> Result<(), String> {
+    let root_dir = root_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || prune_empty_local_directories_blocking(&root_dir))
+        .await
+        .map_err(|error| format!("Empty directory prune worker task failed: {error}"))?
 }
 
 async fn is_local_directory_empty(target_path: &Path) -> Result<bool, String> {
@@ -3988,6 +4195,7 @@ async fn sync_local_to_remote(
         }
     }
 
+    prune_empty_local_directories(&root_dir).await?;
     phase_timings.total_command_ms = elapsed_millis_u64(command_started_at);
     Ok(SyncLocalToRemoteResponse {
         ok: true,
@@ -4270,6 +4478,49 @@ mod tests {
         assert_eq!(plan.files[1].remote_path, "/workspace/root/keep/child.txt");
         assert_eq!(plan.files[2].remote_path, "/workspace/root/orphan.txt");
         assert_eq!(plan.files[1].mtime_ms, 3000);
+    }
+
+    #[test]
+    fn build_seed_archive_writes_tar_and_ignores_runtime_junk() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("workspace");
+        fs::create_dir_all(root.join("src")).expect("src");
+        fs::create_dir_all(root.join("empty")).expect("empty");
+        fs::create_dir_all(root.join("__pycache__")).expect("pycache");
+        fs::write(root.join("src").join("main.txt"), "hello").expect("main");
+        fs::write(root.join(".DS_Store"), "junk").expect("ds store");
+        fs::write(root.join("__pycache__").join("main.pyc"), "junk").expect("pyc");
+
+        let archive_path = temp.path().join("workspace-seed.tar");
+        let response = build_seed_archive(BuildSeedArchiveRequest {
+            root_dir: normalize_path(&root),
+            archive_path: normalize_path(&archive_path),
+        })
+        .expect("build seed archive");
+
+        assert_eq!(response.file_count, 1);
+        assert_eq!(response.empty_directory_count, 1);
+        assert!(response.archive_bytes > 0);
+
+        let archive_file = fs::File::open(&archive_path).expect("archive");
+        let mut archive = tar::Archive::new(archive_file);
+        let names = archive
+            .entries()
+            .expect("entries")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .path()
+                    .expect("path")
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&"src/main.txt".to_string()));
+        assert!(names.contains(&"empty".to_string()));
+        assert!(!names.iter().any(|name| name.contains(".DS_Store")));
+        assert!(!names.iter().any(|name| name.contains("__pycache__")));
     }
 
     #[test]
