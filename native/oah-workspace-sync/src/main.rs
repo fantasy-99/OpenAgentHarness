@@ -4,6 +4,7 @@ use std::time::Instant;
 mod bundle_policy;
 mod bundle_transfer;
 mod local_fs;
+mod local_materialize;
 mod manifest;
 mod object_store;
 mod object_sync;
@@ -15,6 +16,8 @@ mod sandbox_sync;
 mod seed_archive;
 mod snapshot;
 mod sync_bundle;
+mod sync_bundle_ustar;
+mod sync_bundle_ustar_writer;
 mod sync_operations;
 
 use protocol::{run, ErrorResponse, PROTOCOL_VERSION};

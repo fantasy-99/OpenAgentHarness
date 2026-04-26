@@ -80,6 +80,7 @@ for ENV_NAME in \
   OAH_BENCH_MAINLINE_SIZE_BYTES \
   OAH_BENCH_MAINLINE_ITERATIONS \
   OAH_BENCH_MAINLINE_SEED_SYNC_REPEATS \
+  OAH_BENCH_MAINLINE_RUNTIME_NAME \
   OAH_NATIVE_WORKSPACE_SYNC_RUST_BUNDLE_WRITER \
   OAH_NATIVE_WORKSPACE_SYNC_RUST_BUNDLE_EXTRACTOR
 do
@@ -88,9 +89,21 @@ do
   fi
 done
 
+DOCKER_VOLUME_ARGS=()
+if [[ -n "${OAH_BENCH_MAINLINE_RUNTIME_SOURCE_DIR:-}" ]]; then
+  RUNTIME_SOURCE_DIR="$(cd "${OAH_BENCH_MAINLINE_RUNTIME_SOURCE_DIR}" && pwd)"
+  DOCKER_VOLUME_ARGS+=("-v" "${RUNTIME_SOURCE_DIR}:/bench-runtime-source:ro")
+  DOCKER_ENV_ARGS+=("-e" "OAH_BENCH_MAINLINE_RUNTIME_SOURCE_DIR=/bench-runtime-source")
+elif [[ -n "${OAH_DEPLOY_ROOT:-}" ]]; then
+  DEPLOY_ROOT="$(cd "${OAH_DEPLOY_ROOT}" && pwd)"
+  DOCKER_VOLUME_ARGS+=("-v" "${DEPLOY_ROOT}:/bench-deploy-root:ro")
+  DOCKER_ENV_ARGS+=("-e" "OAH_DEPLOY_ROOT=/bench-deploy-root")
+fi
+
 docker run --rm \
   --cpus="${CONTAINER_CPUS}" \
   --memory="${CONTAINER_MEMORY}" \
+  "${DOCKER_VOLUME_ARGS[@]}" \
   "${DOCKER_ENV_ARGS[@]}" \
   "${IMAGE_TAG}" \
   "$@"

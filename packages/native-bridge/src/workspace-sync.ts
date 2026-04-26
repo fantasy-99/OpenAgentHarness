@@ -137,6 +137,24 @@ export interface NativeBuildSeedArchiveResult extends NativeCommandSuccessRespon
   emptyDirectoryCount: number;
 }
 
+export interface NativeMaterializeLocalTreeResult extends NativeCommandSuccessResponse {
+  fingerprint: string;
+  targetFingerprintVerified: boolean;
+  copiedFileCount: number;
+  skippedUnchangedFileCount: number;
+  createdDirectoryCount: number;
+  removedTarget: boolean;
+  totalBytes: number;
+  phaseTimings: {
+    scanMs: number;
+    targetPrepareMs: number;
+    mkdirMs: number;
+    copyMs: number;
+    fingerprintMs: number;
+    totalCommandMs: number;
+  };
+}
+
 export interface NativeWorkspaceSyncObjectStoreConfig {
   bucket: string;
   region: string;
@@ -224,7 +242,7 @@ export interface NativeSyncRemoteToLocalPhaseTimings {
   bundleExtractFileCount: number;
   bundleExtractDirectoryCount: number;
   bundleTransport: "none" | "memory" | "tempfile";
-  bundleExtractor: "none" | "rust-ustar" | "tar";
+  bundleExtractor: "none" | "rust-ustar" | "rust-ustar-stream" | "tar";
   bundleBytes: number;
   downloadMs: number;
   infoCheckMs: number;
@@ -324,6 +342,7 @@ function shouldUsePersistentNativeWorkspaceSyncCommand(command: string): boolean
     "plan-remote-to-local",
     "plan-seed-upload",
     "build-seed-archive",
+    "materialize-local-tree",
     "sync-local-to-remote",
     "sync-remote-to-local",
     "sync-local-to-sandbox-http"
@@ -832,6 +851,26 @@ export async function buildNativeSeedArchive(input: {
   return runNativeWorkspaceSyncCommand<NativeBuildSeedArchiveResult>(["build-seed-archive"], {
     rootDir: input.rootDir,
     archivePath: input.archivePath
+  });
+}
+
+export async function materializeNativeLocalTree(input: {
+  sourceRootDir: string;
+  targetRootDir: string;
+  excludeRelativePaths?: string[] | undefined;
+  mode?: "create" | "replace" | "merge" | undefined;
+  preserveTimestamps?: boolean | undefined;
+  applyDefaultIgnores?: boolean | undefined;
+  computeTargetFingerprint?: boolean | undefined;
+}): Promise<NativeMaterializeLocalTreeResult> {
+  return runNativeWorkspaceSyncCommand<NativeMaterializeLocalTreeResult>(["materialize-local-tree"], {
+    sourceRootDir: input.sourceRootDir,
+    targetRootDir: input.targetRootDir,
+    ...(input.excludeRelativePaths ? { excludeRelativePaths: input.excludeRelativePaths } : {}),
+    ...(input.mode ? { mode: input.mode } : {}),
+    ...(typeof input.preserveTimestamps === "boolean" ? { preserveTimestamps: input.preserveTimestamps } : {}),
+    ...(typeof input.applyDefaultIgnores === "boolean" ? { applyDefaultIgnores: input.applyDefaultIgnores } : {}),
+    ...(typeof input.computeTargetFingerprint === "boolean" ? { computeTargetFingerprint: input.computeTargetFingerprint } : {})
   });
 }
 

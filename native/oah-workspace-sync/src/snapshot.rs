@@ -39,11 +39,31 @@ pub(crate) struct ScanFileEntry {
     pub(crate) mtime_ms: u128,
 }
 
+pub(crate) struct SnapshotOptions {
+    pub(crate) ignore_default_junk: bool,
+}
+
+impl Default for SnapshotOptions {
+    fn default() -> Self {
+        Self {
+            ignore_default_junk: true,
+        }
+    }
+}
+
 pub(crate) fn collect_snapshot(root_dir: &Path, excludes: &[String]) -> Result<Snapshot, String> {
+    collect_snapshot_with_options(root_dir, excludes, SnapshotOptions::default())
+}
+
+pub(crate) fn collect_snapshot_with_options(
+    root_dir: &Path,
+    excludes: &[String],
+    options: SnapshotOptions,
+) -> Result<Snapshot, String> {
     match fs::metadata(root_dir) {
         Ok(metadata) if metadata.is_dir() => {
             let mut snapshot = Snapshot::default();
-            walk_directory(root_dir, root_dir, excludes, &mut snapshot)?;
+            walk_directory(root_dir, root_dir, excludes, &options, &mut snapshot)?;
             snapshot.files_sorted_by_relative_path = true;
             Ok(snapshot)
         }
@@ -127,6 +147,7 @@ fn walk_directory(
     directory: &Path,
     root_dir: &Path,
     excludes: &[String],
+    options: &SnapshotOptions,
     snapshot: &mut Snapshot,
 ) -> Result<(), String> {
     let mut entries = match fs::read_dir(directory) {
@@ -154,7 +175,7 @@ fn walk_directory(
             Err(_) => continue,
         };
 
-        if should_ignore_relative_path(&relative_path) {
+        if options.ignore_default_junk && should_ignore_relative_path(&relative_path) {
             snapshot.ignored_paths.push(normalize_path(&absolute_path));
             suppressed_children = true;
             continue;
@@ -178,7 +199,7 @@ fn walk_directory(
             if !relative_path.is_empty() {
                 snapshot.directories.insert(relative_path.clone());
             }
-            walk_directory(&absolute_path, root_dir, excludes, snapshot)?;
+            walk_directory(&absolute_path, root_dir, excludes, options, snapshot)?;
             continue;
         }
 

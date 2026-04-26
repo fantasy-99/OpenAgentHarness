@@ -9,6 +9,7 @@
   "type": "module",
   "scripts": {
     "bench:archive-export": "pnpm exec tsx ./scripts/bench-archive-export.ts",
+    "bench:runtime-materialize": "pnpm exec tsx ./scripts/bench-runtime-materialize.ts",
     "build": "tsc -b && pnpm --filter @oah/web build",
     "build:runtime-bundles": "node ./scripts/build-runtime-bundles.mjs",
     "bench:object-storage-sync": "pnpm exec tsx ./scripts/bench-object-storage-sync.ts",

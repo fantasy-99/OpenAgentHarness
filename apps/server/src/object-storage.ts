@@ -119,7 +119,7 @@ export interface RemoteToLocalDirectorySyncPhaseTimings {
   bundleExtractFileCount: number;
   bundleExtractDirectoryCount: number;
   bundleTransport: "none" | "memory" | "tempfile";
-  bundleExtractor: "none" | "rust-ustar" | "tar";
+  bundleExtractor: "none" | "rust-ustar" | "rust-ustar-stream" | "tar";
   bundleBytes: number;
   downloadMs: number;
   infoCheckMs: number;

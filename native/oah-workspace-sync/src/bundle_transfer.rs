@@ -283,17 +283,19 @@ pub(crate) async fn maybe_hydrate_from_remote_sync_bundle(
         let root_dir = root_dir.to_path_buf();
         let bundle_path_buf = bundle_path.to_path_buf();
         let extract_started_at = Instant::now();
-        tokio::task::spawn_blocking(move || unpack_sync_bundle_blocking(root_dir, bundle_path_buf))
-            .await
-            .map_err(|error| format!("Sync bundle extraction worker task failed: {error}"))??;
+        let extract_outcome = tokio::task::spawn_blocking(move || {
+            unpack_sync_bundle_blocking(root_dir, bundle_path_buf, require_empty_root)
+        })
+        .await
+        .map_err(|error| format!("Sync bundle extraction worker task failed: {error}"))??;
         Ok(HydrateSyncBundleResult {
             hydrated: true,
             bundle_get_ms,
             bundle_body_read_ms,
             bundle_extract_ms: elapsed_millis_u64(extract_started_at),
-            bundle_extract_timings: SyncBundleExtractTimings::default(),
+            bundle_extract_timings: extract_outcome.timings,
             bundle_transport: "tempfile",
-            bundle_extractor: "tar",
+            bundle_extractor: extract_outcome.extractor,
             bundle_bytes,
         })
     }

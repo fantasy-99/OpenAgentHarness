@@ -1,3 +1,6 @@
+use crate::local_materialize::{
+    materialize_local_tree, LocalMaterializeMode, LocalMaterializeRequest,
+};
 use crate::manifest::PlanRemoteEntry;
 use crate::path_rules::{build_remote_path, normalize_path, should_ignore_relative_path};
 use crate::plan::{
@@ -10,9 +13,13 @@ use crate::sandbox_http::{
 };
 use crate::seed_archive::{build_seed_archive, BuildSeedArchiveRequest};
 use crate::snapshot::{collect_snapshot, create_fingerprint, FileEntry, Snapshot};
-use crate::sync_bundle::build_local_sync_bundle_to_memory_blocking;
+use crate::sync_bundle::{
+    build_local_sync_bundle_to_memory_blocking, unpack_sync_bundle_blocking,
+    unpack_sync_bundle_bytes_blocking,
+};
 use serde_json::Value;
 use std::collections::BTreeSet;
+use std::env;
 use std::fs;
 use std::io::Cursor;
 use std::path::Path;
@@ -261,6 +268,242 @@ fn sync_bundle_from_snapshot_uses_filtered_entries() {
     assert!(normalized_names.contains(&"empty".to_string()));
     assert!(!names.iter().any(|name| name.contains(".DS_Store")));
     assert!(!names.iter().any(|name| name.contains("__pycache__")));
+}
+
+#[test]
+fn sync_bundle_tempfile_extract_uses_streaming_ustar_path() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().join("workspace");
+    fs::create_dir_all(root.join("src")).expect("src");
+    fs::create_dir_all(root.join("empty")).expect("empty");
+    fs::write(root.join("src").join("main.txt"), "hello").expect("main");
+
+    let snapshot = collect_snapshot(&root, &[]).expect("snapshot");
+    let mut files = snapshot.files.clone();
+    files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    let empty_directories = snapshot
+        .empty_directories
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    let bundle_bytes =
+        build_local_sync_bundle_to_memory_blocking(&files, &empty_directories).expect("bundle");
+    let bundle_path = temp.path().join("bundle.tar");
+    fs::write(&bundle_path, bundle_bytes).expect("bundle file");
+
+    env::set_var("OAH_NATIVE_WORKSPACE_SYNC_RUST_BUNDLE_EXTRACTOR", "1");
+    let target_root = temp.path().join("target");
+    let outcome = unpack_sync_bundle_blocking(target_root.clone(), bundle_path, true)
+        .expect("stream extract");
+
+    assert_eq!(outcome.extractor, "rust-ustar-stream");
+    assert_eq!(outcome.timings.target_check_us, 0);
+    assert_eq!(outcome.timings.file_count, 1);
+    assert_eq!(outcome.timings.directory_count, 1);
+    assert_eq!(
+        fs::read_to_string(target_root.join("src").join("main.txt")).expect("extracted file"),
+        "hello"
+    );
+    assert!(target_root.join("empty").is_dir());
+}
+
+#[test]
+fn sync_bundle_memory_extract_handles_many_files() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().join("workspace");
+    fs::create_dir_all(root.join("src")).expect("src");
+    for index in 0..96 {
+        fs::write(
+            root.join("src").join(format!("file-{index:03}.txt")),
+            format!("hello {index}"),
+        )
+        .expect("fixture file");
+    }
+
+    let snapshot = collect_snapshot(&root, &[]).expect("snapshot");
+    let bundle_bytes =
+        build_local_sync_bundle_to_memory_blocking(&snapshot.files, &[]).expect("bundle");
+
+    env::set_var("OAH_NATIVE_WORKSPACE_SYNC_RUST_BUNDLE_EXTRACTOR", "1");
+    let target_root = temp.path().join("target");
+    let outcome = unpack_sync_bundle_bytes_blocking(target_root.clone(), bundle_bytes, true)
+        .expect("memory extract");
+
+    assert_eq!(outcome.extractor, "rust-ustar");
+    assert_eq!(outcome.timings.target_check_us, 0);
+    assert_eq!(outcome.timings.file_count, 96);
+    assert_eq!(
+        fs::read_to_string(target_root.join("src").join("file-042.txt")).expect("extracted file"),
+        "hello 42"
+    );
+}
+
+#[test]
+fn materialize_local_tree_copies_files_empty_directories_and_metadata() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir_all(source.join("src")).expect("src");
+    fs::create_dir_all(source.join("empty")).expect("empty");
+    fs::create_dir_all(source.join("__pycache__")).expect("pycache");
+    let main_path = source.join("src").join("main.txt");
+    let pyc_path = source.join("__pycache__").join("main.pyc");
+    fs::write(&main_path, "hello").expect("main");
+    fs::write(&pyc_path, "cached").expect("pyc");
+    filetime::set_file_mtime(
+        &main_path,
+        filetime::FileTime::from_unix_time(1_700_000_000, 0),
+    )
+    .expect("mtime");
+
+    let response = materialize_local_tree(LocalMaterializeRequest {
+        source_root_dir: normalize_path(&source),
+        target_root_dir: normalize_path(&target),
+        exclude_relative_paths: Vec::new(),
+        mode: LocalMaterializeMode::Create,
+        preserve_timestamps: true,
+        apply_default_ignores: false,
+        compute_target_fingerprint: true,
+    })
+    .expect("materialize");
+
+    assert_eq!(response.copied_file_count, 2);
+    assert_eq!(response.skipped_unchanged_file_count, 0);
+    assert!(response.target_fingerprint_verified);
+    assert_eq!(
+        fs::read_to_string(target.join("src").join("main.txt")).unwrap(),
+        "hello"
+    );
+    assert_eq!(
+        fs::read_to_string(target.join("__pycache__").join("main.pyc")).unwrap(),
+        "cached"
+    );
+    assert!(target.join("empty").is_dir());
+    let source_snapshot = collect_snapshot(&source, &[]).expect("source snapshot");
+    let target_snapshot = collect_snapshot(&target, &[]).expect("target snapshot");
+    assert_eq!(
+        create_fingerprint(&source_snapshot),
+        create_fingerprint(&target_snapshot)
+    );
+}
+
+#[test]
+fn materialize_local_tree_replace_removes_stale_entries_and_respects_excludes() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir_all(source.join("keep")).expect("keep");
+    fs::create_dir_all(source.join("skip")).expect("skip");
+    fs::write(source.join("keep").join("file.txt"), "fresh").expect("fresh");
+    fs::write(source.join("skip").join("file.txt"), "skip").expect("skip");
+    fs::create_dir_all(&target).expect("target");
+    fs::write(target.join("stale.txt"), "stale").expect("stale");
+
+    let response = materialize_local_tree(LocalMaterializeRequest {
+        source_root_dir: normalize_path(&source),
+        target_root_dir: normalize_path(&target),
+        exclude_relative_paths: vec!["skip".to_string()],
+        mode: LocalMaterializeMode::Replace,
+        preserve_timestamps: true,
+        apply_default_ignores: true,
+        compute_target_fingerprint: true,
+    })
+    .expect("replace materialize");
+
+    assert!(response.removed_target);
+    assert_eq!(response.copied_file_count, 1);
+    assert_eq!(
+        fs::read_to_string(target.join("keep").join("file.txt")).unwrap(),
+        "fresh"
+    );
+    assert!(!target.join("skip").exists());
+    assert!(!target.join("stale.txt").exists());
+}
+
+#[test]
+fn materialize_local_tree_merge_skips_unchanged_files_and_preserves_stale_entries() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir_all(&source).expect("source");
+    fs::create_dir_all(&target).expect("target");
+    fs::write(source.join("same.txt"), "same").expect("same source");
+    fs::write(target.join("stale.txt"), "stale").expect("stale");
+
+    materialize_local_tree(LocalMaterializeRequest {
+        source_root_dir: normalize_path(&source),
+        target_root_dir: normalize_path(&target),
+        exclude_relative_paths: Vec::new(),
+        mode: LocalMaterializeMode::Merge,
+        preserve_timestamps: true,
+        apply_default_ignores: false,
+        compute_target_fingerprint: true,
+    })
+    .expect("first merge");
+
+    let second = materialize_local_tree(LocalMaterializeRequest {
+        source_root_dir: normalize_path(&source),
+        target_root_dir: normalize_path(&target),
+        exclude_relative_paths: Vec::new(),
+        mode: LocalMaterializeMode::Merge,
+        preserve_timestamps: true,
+        apply_default_ignores: false,
+        compute_target_fingerprint: true,
+    })
+    .expect("second merge");
+
+    assert_eq!(second.copied_file_count, 0);
+    assert_eq!(second.skipped_unchanged_file_count, 1);
+    assert_eq!(
+        fs::read_to_string(target.join("stale.txt")).unwrap(),
+        "stale"
+    );
+}
+
+#[test]
+fn materialize_local_tree_can_skip_target_fingerprint_scan() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir_all(&source).expect("source");
+    fs::write(source.join("main.txt"), "hello").expect("main");
+
+    let response = materialize_local_tree(LocalMaterializeRequest {
+        source_root_dir: normalize_path(&source),
+        target_root_dir: normalize_path(&target),
+        exclude_relative_paths: Vec::new(),
+        mode: LocalMaterializeMode::Create,
+        preserve_timestamps: true,
+        apply_default_ignores: false,
+        compute_target_fingerprint: false,
+    })
+    .expect("materialize");
+
+    assert!(!response.target_fingerprint_verified);
+    let source_snapshot = collect_snapshot(&source, &[]).expect("source snapshot");
+    assert_eq!(response.fingerprint, create_fingerprint(&source_snapshot));
+}
+
+#[test]
+fn materialize_local_tree_create_rejects_existing_target() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source = temp.path().join("source");
+    let target = temp.path().join("target");
+    fs::create_dir_all(&source).expect("source");
+    fs::create_dir_all(&target).expect("target");
+
+    let error = materialize_local_tree(LocalMaterializeRequest {
+        source_root_dir: normalize_path(&source),
+        target_root_dir: normalize_path(&target),
+        exclude_relative_paths: Vec::new(),
+        mode: LocalMaterializeMode::Create,
+        preserve_timestamps: true,
+        apply_default_ignores: false,
+        compute_target_fingerprint: true,
+    })
+    .expect_err("create should reject existing target");
+
+    assert!(error.contains("already exists"));
 }
 
 #[test]

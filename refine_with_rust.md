@@ -108,6 +108,8 @@ The mainline seed path now avoids a lot of avoidable work:
 - unchanged-file upload skipping
 - stale remote entry cleanup
 - fewer redundant `mkdir` and `stat` calls
+- shared native local-tree materialization for runtime root copy, imported tool server copy, and imported runtime skill copy, with TS fallback still preserving the previous behavior
+- runtime initialization uses native local-tree materialization without a target fingerprint verification pass because the initializer does not consume that value
 
 ## Measured Result
 
@@ -144,6 +146,24 @@ Current native bundle split on this sample:
 - Rust ustar extractor enabled: native persistent materialize `78-96ms`, pull `77-78ms`
 - Rust ustar extractor disabled / `tar::Archive` path: native persistent materialize `127ms`, pull `113ms`
 - transport mode: `memory`
+
+In-memory extraction parallelization experiment:
+
+- implementation: parse ustar bytes first, then optionally write regular files in scoped Rust worker threads for empty-root extraction
+- controls: `OAH_NATIVE_WORKSPACE_SYNC_PARALLEL_MEMORY_EXTRACTOR=1` and optional `OAH_NATIVE_WORKSPACE_SYNC_PARALLEL_MEMORY_EXTRACTOR_THREADS`
+- current default: disabled, because local APFS benchmarks did not show a stable win
+- `1024 files x 4 KiB`: parallel on produced native persistent materialize/pull around `84/80ms`; parallel off produced about `79/83ms`
+- `4096 files x 1 KiB`: parallel on produced native persistent materialize/pull around `311/310ms`; parallel off produced about `290/284ms`
+- conclusion: keep the parse-first/parallel code as an explicit Linux/Docker experiment, but do not enable it by default until constrained-container or other filesystem measurements show a real wall-time win
+
+Forced tempfile hydration control on the same `1024 files x 4 KiB` class:
+
+- command shape: `OAH_NATIVE_WORKSPACE_SYNC_IN_MEMORY_BUNDLE_EXTRACT_MAX_BYTES=1`
+- latest streaming Rust extractor run: native persistent materialize `88ms`, pull `85ms`
+- previous same-stage streaming Rust extractor run: native persistent materialize about `87ms`, pull about `88ms`
+- streaming Rust extractor disabled: native persistent materialize about `125ms`, pull about `119ms`
+- latest representative streaming split: `bundle-get=1ms`, `bundle-body-read=8ms`, `bundle-extract=72ms`, `extract-create=42759us`, `extract-write=6327us`, `extract-mtime=7336us`, `extract-target-check=0us`, `extract-files=1024`
+- transport/extractor tags: `bundle-transport=tempfile`, `bundle-extractor=rust-ustar-stream`
 
 Latest local proof after this stage:
 
@@ -184,7 +204,55 @@ Real runtime from `OAH_DEPLOY_ROOT=/Users/wumengsong/Code/test_oah_server`, runt
 - native direct sandbox-http cold sync: oneshot `22.2ms`, persistent `7.1ms`
 - native direct sandbox-http warm sync: oneshot `11.3ms`, persistent `2.8ms`
 
+Latest rerun against the same local deploy-root runtime with `5` fingerprint iterations and `3` warm seed repeats:
+
+- runtime source inventory: current local deploy root runtimes are small; `compact-hook-e2e-runtime` is the largest observed sample at about `72 KiB` and `16` files
+- native direct fingerprint: oneshot avg `98.76ms` with first-start skew, persistent avg `23.89ms` with first-start skew and steady-state minimum `0.17ms`
+- native direct plan-seed-upload: oneshot avg `3.73ms`, persistent avg `0.28ms`
+- native direct sandbox-http cold sync: oneshot `17.26ms`, persistent `7.02ms`
+- native direct sandbox-http warm sync: oneshot avg `11.95ms`, persistent avg `3.07ms`
+- initializer seed prepare cold: TS `146.37ms`, native oneshot `33.17ms`, native persistent `133.69ms`
+- initializer seed prepare warm: TS avg `21.45ms`, native oneshot avg `14.17ms`, native persistent avg `4.66ms`
+- conclusion: current real local runtime mix is too small to justify moving runtime/tool/skill copy into Rust yet; prepared-seed reuse plus persistent native sync still wins on warm path
+
 The persistent cold number on small real runtimes can be distorted by first worker startup. The steady-state and larger synthetic cases still favor persistent mode; oneshot remains useful as a fallback and as a debugging/control mode, not as the preferred hot path.
+
+### Runtime local-tree materialization proof
+
+The benchmark script for this path is now:
+
+```bash
+OAH_DEPLOY_ROOT=/Users/wumengsong/Code/test_oah_server pnpm bench:runtime-materialize
+```
+
+It measures `initializeWorkspaceFromRuntime` directly across:
+
+- TS fallback
+- native oneshot
+- native persistent worker
+
+It also includes imported platform tool server and runtime skill directory copies in the file counts.
+
+Current local deploy-root results, `8` iterations against the largest observed local runtimes:
+
+- `compact-hook-e2e-runtime`: `16 files / 21 KiB`; TS warm avg `5.26ms`, native oneshot warm avg `8.55ms`, native persistent warm avg `3.72ms`, persistent first run `118.1ms`
+- `micro-learning`: `17 files / 98 KiB`; TS warm avg `6.08ms`, native oneshot warm avg `11.54ms`, native persistent warm avg `4.16ms`, persistent first run `115.07ms`
+- smaller deploy runtimes: TS warm avg about `1.96-2.78ms`, native persistent warm avg about `1.48-2.45ms`, native oneshot about `5-6ms`
+
+Synthetic runtime with imported tools and skills:
+
+- Before the empty-target fast path, `1797 files / 1.8 MiB`: TS warm avg `390.69ms`, native oneshot warm avg `315ms`, native persistent warm avg `290.18ms`
+- Before the empty-target fast path, `7173 files / 7.0 MiB`: TS warm avg `1504.62ms`, native oneshot warm avg `1166.1ms`, native persistent warm avg `1132.58ms`
+- After the empty-target fast path, `1797 files / 1.8 MiB`: TS warm avg `354.29ms`, native oneshot warm avg `189.93ms`, native persistent warm avg `166.09ms`
+- After the empty-target fast path, `7173 files / 7.0 MiB`: TS warm avg `1484.11ms`, native oneshot warm avg `696.66ms`, native persistent warm avg `681.11ms`
+- Parallel local materialization experiment: `OAH_NATIVE_WORKSPACE_SYNC_PARALLEL_LOCAL_MATERIALIZE=1` produced no win on local APFS (`1797` files persistent warm about `162.28ms`, effectively noise, and `7173` files persistent warm about `702.72ms`, slower than serial), so it remains off by default.
+
+Decision from this measurement:
+
+- Keep the native materialization substrate integrated; it clearly wins once runtime/tool/skill trees contain thousands of files.
+- Do not move runtime settings, tool command rewrite, `AGENTS.md`, explicit skill writing, or settings merge logic into Rust. Those remain orchestration/semantics and are not the measured bottleneck.
+- Do not prefer native oneshot for small runtime initialization. It is a control/fallback mode; persistent native is the only runtime-copy mode worth preferring.
+- Further work should target Linux/Docker-constrained validation and any lower-level file creation/copy improvements that benchmark cleanly. Broader runtime-initializer rewrites are not justified by the current measurements.
 
 ## What We Learned In This Phase
 
@@ -262,9 +330,11 @@ The remaining mainline work is now narrower and more concrete:
 - investigate whether extractor file creation can be reduced by a streaming/tempfile strategy, directory-level batching, or a different materialization shape; S3 get/read is not the bottleneck on the current sample
 - keep oneshot documented and tested as fallback-only unless future measurements show a reason to optimize it
 - continue improving prepared-seed reuse and seed upload efficiency
+- keep native runtime/tool/skill local-tree materialization integrated, but only continue optimizing its copy kernel; current local deploy runtimes are too small to justify moving more runtime initialization semantics into Rust
 - add broader Docker CPU/memory constrained proof against real runtime mixes, not only the synthetic `1024 x 4 KiB` fixture
 - keep TS fallback semantically aligned with native behavior
 - keep reducing native Rust file size by extracting low-coupling modules first; avoid large behavioral rewrites while performance work is still active
+- keep hot-path bundle code split by responsibility so upload/extract performance work can continue without re-growing a monolithic module
 
 ## Next Phase Entry Point
 
@@ -279,7 +349,7 @@ The next phase should continue from:
 
 1. reduce native bundle upload cost after the Rust writer/extractor shift
 2. measure real runtime mixes from `OAH_DEPLOY_ROOT`, especially runtimes larger than the current small local samples
-3. move runtime/tool/skill copy and merge into a native command only if those real-runtime measurements show copy/setup cost dominating
+3. keep measuring the native local-tree materialization path now that runtime/tool/skill copy can use it behind the existing `OAH_NATIVE_WORKSPACE_SYNC` switch
 4. keep improving Docker benchmark ergonomics so constrained measurements stay cheap enough to run regularly
 
 Structural cleanup now has a safe order:
@@ -303,7 +373,12 @@ Structural cleanup now has a safe order:
 17. split `native/oah-workspace-sync` sandbox HTTP sync orchestration into `sandbox_sync.rs` - done in `native/oah-workspace-sync/src/sandbox_sync.rs`
 18. split `native/oah-workspace-sync` object-store sync state machines into `object_sync.rs` - done in `native/oah-workspace-sync/src/object_sync.rs`
 19. split `native/oah-workspace-sync` unit tests out of `main.rs` into `tests.rs` - done in `native/oah-workspace-sync/src/tests.rs`
-20. next split helper modules internally if any newly extracted file grows past a clear responsibility boundary
+20. split `native/oah-workspace-sync` ustar header writing, in-memory extraction, and streaming extraction helpers out of `sync_bundle.rs` - done in `native/oah-workspace-sync/src/sync_bundle_ustar.rs`
+21. split `native/oah-workspace-sync` ustar archive writing out of the extractor module - done in `native/oah-workspace-sync/src/sync_bundle_ustar_writer.rs`
+22. split `native/oah-archive-export` bundle writing, streaming write, and persistent worker write handling out of `main.rs` - done in `native/oah-archive-export/src/bundle_writer.rs`
+23. split local-to-local materialization into `native/oah-workspace-sync/src/local_materialize.rs` so workspace sync and runtime initialization can share copy, metadata preservation, fingerprint, and timing behavior - done
+24. add `scripts/bench-runtime-materialize.ts` so runtime root, imported tool server, and imported skill copy can be measured directly - done
+25. next split helper modules internally if any newly extracted file grows past a clear responsibility boundary
 
 ## Repository Scan: Rust Candidate Map
 
@@ -322,7 +397,7 @@ These are the highest-confidence candidates because they are already on the Dock
    - Current pass: bundle creation now uses a hybrid tar strategy. Clean snapshots keep the faster root-tar path; snapshots with ignored runtime junk switch to a snapshot-list tar path so `.DS_Store`, `__pycache__`, `.pyc`, SQLite sidecars, and internal sync files do not leak into bundles.
    - Current pass: filtered/in-memory sync bundles now use a native ustar writer by default, with `OAH_NATIVE_WORKSPACE_SYNC_RUST_BUNDLE_WRITER=0` available as an external-tar control/fallback.
    - Current pass: native snapshots now remember when `collect_snapshot` has already produced relative-path order, so fingerprinting and the Rust ustar writer can skip duplicate sorts on the main collected-snapshot path.
-   - Current cleanup: sync bundle tar/ustar writing, tar subprocess fallback, in-memory bundle thresholds, and ustar byte extraction now live in `native/oah-workspace-sync/src/sync_bundle.rs`, leaving `main.rs` focused on command handling and sync orchestration.
+   - Current cleanup: sync bundle policy/orchestration, tar subprocess fallback, and in-memory bundle thresholds now live in `native/oah-workspace-sync/src/sync_bundle.rs`; ustar extraction helpers live in `native/oah-workspace-sync/src/sync_bundle_ustar.rs`; ustar archive writing lives in `native/oah-workspace-sync/src/sync_bundle_ustar_writer.rs`, leaving `main.rs` focused on command handling and sync orchestration.
    - Current cleanup: sandbox HTTP client/listing/prune helpers now live in `native/oah-workspace-sync/src/sandbox_http.rs`, and local filesystem cleanup/materialization helpers live in `native/oah-workspace-sync/src/local_fs.rs`.
    - Current cleanup: local snapshot scanning/fingerprinting now lives in `native/oah-workspace-sync/src/snapshot.rs`, sync manifest conversion in `native/oah-workspace-sync/src/manifest.rs`, and upload/download/seed planning in `native/oah-workspace-sync/src/plan.rs`.
    - Current cleanup: sync bundle policy/config lives in `native/oah-workspace-sync/src/bundle_policy.rs`, object-store helpers in `native/oah-workspace-sync/src/object_store.rs`, seed archive construction in `native/oah-workspace-sync/src/seed_archive.rs`, CLI/worker protocol handling in `native/oah-workspace-sync/src/protocol.rs`, bundle upload/delete/hydrate orchestration in `native/oah-workspace-sync/src/bundle_transfer.rs`, repeated sync operations in `native/oah-workspace-sync/src/sync_operations.rs`, sandbox HTTP sync orchestration in `native/oah-workspace-sync/src/sandbox_sync.rs`, object-store sync state machines in `native/oah-workspace-sync/src/object_sync.rs`, and unit tests in `native/oah-workspace-sync/src/tests.rs`.
@@ -339,9 +414,10 @@ These are the highest-confidence candidates because they are already on the Dock
    - Current pass: remote-to-local phase timings now include extractor details and microsecond sub-counters for file creation, writes, mtime restoration, chmod, mkdir, replacement, and entry counts.
    - Current pass: Rust ustar extraction restores file mtime through the open file handle, avoiding a second path lookup for newly created files.
    - Current pass: empty-root bundle hydration skips per-file target replacement checks, while incremental/non-empty hydration keeps the compatibility check.
+   - Current pass: tempfile-backed bundle hydration now also attempts the native ustar extractor through a streaming file reader before falling back to `tar::Archive`, so larger bundles can keep extractor timing detail without loading the archive into memory.
    - Measured win: native persistent materialize dropped from `127ms` to the `78-96ms` range; pull dropped from `113ms` to about `78ms` on `1024 files x 4 KiB`.
    - Current bottleneck: file creation dominates the remaining extractor cost at roughly `40-51ms` per `1024` files; mtime restore is now about `6-8.5ms`, writes about `5-6.5ms`, and bundle download/read is only `3-4ms`.
-   - Next win: reduce local file creation/materialization cost or change the materialization shape; do not spend the next pass on S3 download for this sample.
+   - Next win: measure larger tempfile-backed bundles with the streaming extractor, then reduce local file creation/materialization cost or change the materialization shape; do not spend the next pass on S3 download for this sample.
 
 3. `native/oah-workspace-sync`: seed archive build/upload path
    - Current path already uses native planning; seed archive construction now prefers a native `build-seed-archive` command and falls back to the previous TS `tar` spawn.
@@ -352,7 +428,19 @@ These are the highest-confidence candidates because they are already on the Dock
    - Measured win: synthetic Docker-limited prepared-seed warm prepare improved from TS `86ms` to native persistent `35ms`; real `compact-hook-e2e-runtime` warm prepare improved from TS `22.5ms` to native persistent `6.5ms`.
    - Expected next win: faster cold workspace creation and lower peak memory when prepared seeds contain many small files.
 
-4. `scripts/local-stack.mjs`: readonly deploy-source fingerprint and storage sync planning
+4. `native/oah-workspace-sync`: runtime initialization local-tree materialization
+   - Code surface: `initializeWorkspaceFromRuntime`, `importEngineTools`, and `importRuntimeSkills` in `packages/config/src/runtimes.ts`.
+   - Previous behavior: Node recursively copied runtime roots, imported tool server directories, and imported runtime skill directories in separate passes.
+   - Current pass: native exposes `materialize-local-tree` with `create`, `replace`, and `merge` modes, optional default junk filtering, timestamp preservation, mode preservation, changed-file counts, skipped-file counts, target cleanup reporting, fingerprint, and phase timings.
+   - Current integration: runtime root copy now uses native `create` mode when `OAH_NATIVE_WORKSPACE_SYNC=1`; imported tools and skills use native `replace` mode. Failures remove the partially materialized target and fall back to the previous TS `cp` behavior.
+   - Current pass: runtime initialization disables target fingerprint verification for native local materialization because the initializer does not consume the returned fingerprint.
+   - Current pass: empty-target materialization no longer performs per-file target existence checks, parent directory creation checks, or post-copy reopen for metadata restoration; mtime and mode are restored through the file handle used for writing.
+   - Current pass: optional parallel local materialization exists behind `OAH_NATIVE_WORKSPACE_SYNC_PARALLEL_LOCAL_MATERIALIZE=1`, but remains disabled by default because local APFS measurements did not show a stable win.
+   - Why this unifies the paths: workspace sync and runtime initialization now share the same lower-level scan/filter/copy/materialize/fingerprint substrate while TS still owns runtime settings, tool command rewriting, `AGENTS.md`, explicit runtime skills, and settings merges.
+   - Measured result: current real deploy runtimes are tiny, so persistent warm improves by only a few milliseconds and cold worker startup dominates first run. Synthetic `1797` and `7173` file runtime/tool/skill trees now show native persistent warm wins of about `53%` and `54%` versus TS after the empty-target fast path.
+   - Decision: keep this native path and benchmark, but do not move more runtime initialization semantics into Rust. For the OpenCode comparison, prefer persistent native mode and keep oneshot as fallback/control only.
+
+5. `scripts/local-stack.mjs`: readonly deploy-source fingerprint and storage sync planning
    - Local deployment uses `OAH_DEPLOY_ROOT` and scans `source/runtimes`, `source/models`, `source/tools`, `source/skills`, and `source/archives` before `pnpm storage:sync`.
    - Code surface: `appendDirectoryFingerprint`, `readonlyObjectStorageSourceFingerprint`, and `syncReadonlyObjectStorageSources` in `scripts/local-stack.mjs`.
    - Rust opportunity: reuse the native directory scanner/fingerprint command for this deploy-root scan.
@@ -363,22 +451,17 @@ These are the highest-confidence candidates because they are already on the Dock
 
 These are useful, but should wait until the main workspace path is proven under Docker constraints.
 
-1. Runtime initialization and imported tool/skill copying
-   - Code surface: `initializeWorkspaceFromRuntime`, `importEngineTools`, and `importRuntimeSkills` in `packages/config/src/runtimes.ts`.
-   - Current behavior: Node recursively copies runtime, tools, and skills with several separate passes.
-   - Rust opportunity: copy tree, merge file metadata, and return a structured changed-file summary in one native command.
-   - Expected win: faster prepare-seed and workspace creation when runtimes contain many files.
-
-2. Archive export worker refinement
+1. Archive export worker refinement
    - Code surface: `native/oah-archive-export`, `apps/server/src/native-archive-export.ts`, and `apps/server/src/workspace-archive-export.ts`.
    - Current state: Rust already writes SQLite bundles/checksums and supports persistent streaming.
    - Current cleanup: SQLite schema and insert statement definitions now live in `native/oah-archive-export/src/schema.rs`, trimming `main.rs` and keeping storage layout changes localized.
    - Current cleanup: export-root inspection and checksum helpers now live in `native/oah-archive-export/src/inspection.rs`, separate from SQLite row writing.
    - Current cleanup: SQLite write pragmas, row insertion, and JSON field extraction now live in `native/oah-archive-export/src/rows.rs`, so streaming protocol code stays separate from row serialization.
+   - Current cleanup: bundle writing, newline-delimited stream writing, and persistent worker request handling now live in `native/oah-archive-export/src/bundle_writer.rs`, reducing `main.rs` to CLI dispatch, checksum/inspection wrappers, and tests.
    - Rust opportunity: improve batching/transaction shape, add timing counters, and keep row serialization streaming all the way from TS to Rust.
    - Expected win: lower archive export CPU and memory, but this is background work rather than the main latency path.
 
-3. Storage admin archive-directory inspection
+2. Storage admin archive-directory inspection
    - Code surface: `summarizeArchiveExportDirectory` in `apps/server/src/storage-admin.ts`.
    - Current behavior: TS scans archive export roots and stats bundles.
    - Rust opportunity: reuse `oah-archive-export inspect-export-root` plus byte totals/latest date.
@@ -444,8 +527,10 @@ Current Docker proof status:
 - A second run with `OAH_LOCAL_SYNC_ON_CHANGE_ONLY=1` detected unchanged readonly sources and skipped `pnpm storage:sync`.
 - The local stack reached healthy/running state for Postgres, Redis, MinIO, API, sandbox worker, controller, and compose scaler.
 - `scripts/bench-workspace-mainline-docker.sh` now builds its native Linux binary through a Rust Alpine builder stage instead of installing Rust with `curl rustup` inside the Node image, copies `docs/` for initializer schema reads, and forwards benchmark env vars into the constrained container.
+- `scripts/bench-workspace-mainline-docker.sh` now supports real runtime measurements by mounting either `OAH_BENCH_MAINLINE_RUNTIME_SOURCE_DIR` to `/bench-runtime-source` or `OAH_DEPLOY_ROOT` to `/bench-deploy-root`, so `--runtime-name <name>` can be used inside the constrained container.
 - Docker-limited prepared-seed measurement for `1024 files x 4 KiB` now exists: native persistent warm prepare `35ms` versus TS `86ms`; native oneshot remains a useful control but is not the preferred hot path.
 - Real-runtime prepared-seed measurement from `OAH_DEPLOY_ROOT` now exists for `compact-hook-e2e-runtime`: native persistent warm prepare `6.5ms` versus TS `22.5ms`.
+- Attempted Docker-limited real-runtime run for `compact-hook-e2e-runtime` with `--cpus=2 --memory=1g`, but this local run was interrupted after the image build spent several minutes in Alpine package installation before reaching the benchmark. The script capability is in place; the measurement still needs a warm Docker build cache or a less package-install-heavy image path.
 
 Do not broaden Rust scope until these Docker-constrained measurements keep showing the same pattern on larger real runtime mixes.
 

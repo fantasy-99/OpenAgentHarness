@@ -1,5 +1,6 @@
 import { cp, mkdir, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { isNativeWorkspaceSyncEnabled, materializeNativeLocalTree } from "@oah/native-bridge";
 import yauzl from "yauzl";
 
 import type {
@@ -10,6 +11,36 @@ import type {
 } from "./types.js";
 import { pathExists, readDirectoryEntriesIfExists, resolvePathInsideRoot } from "./shared.js";
 import { loadPlatformToolServers, loadWorkspaceSettings, updateWorkspaceRuntimeSetting } from "./workspace.js";
+
+async function materializeLocalTreeWithNativeFallback(input: {
+  sourceRootDir: string;
+  targetRootDir: string;
+  mode: "create" | "replace" | "merge";
+}): Promise<boolean> {
+  if (!isNativeWorkspaceSyncEnabled()) {
+    return false;
+  }
+
+  try {
+    await materializeNativeLocalTree({
+      sourceRootDir: input.sourceRootDir,
+      targetRootDir: input.targetRootDir,
+      mode: input.mode,
+      preserveTimestamps: true,
+      applyDefaultIgnores: false,
+      computeTargetFingerprint: false
+    });
+    return true;
+  } catch (error) {
+    await rm(input.targetRootDir, { recursive: true, force: true }).catch(() => undefined);
+    console.warn(
+      `[oah-native] Falling back to TypeScript runtime tree copy for ${input.sourceRootDir}: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    return false;
+  }
+}
 
 async function appendAgentsMd(rootPath: string, agentsMd: string): Promise<void> {
   const agentsPath = path.join(rootPath, "AGENTS.md");
@@ -152,13 +183,20 @@ async function importRuntimeSkills(
     }
 
     const targetDirectory = resolvePathInsideRoot(skillsRoot, skillName, "skill name");
-    await rm(targetDirectory, { recursive: true, force: true });
-    await cp(sourceDirectory, targetDirectory, {
-      recursive: true,
-      force: false,
-      errorOnExist: false,
-      preserveTimestamps: true
+    const copiedWithNative = await materializeLocalTreeWithNativeFallback({
+      sourceRootDir: sourceDirectory,
+      targetRootDir: targetDirectory,
+      mode: "replace"
     });
+    if (!copiedWithNative) {
+      await rm(targetDirectory, { recursive: true, force: true });
+      await cp(sourceDirectory, targetDirectory, {
+        recursive: true,
+        force: false,
+        errorOnExist: false,
+        preserveTimestamps: true
+      });
+    }
   }
 }
 
@@ -205,13 +243,20 @@ async function importEngineTools(
     }
 
     const targetDirectory = resolvePathInsideRoot(targetServersRoot, toolName, "tool server name");
-    await rm(targetDirectory, { recursive: true, force: true });
-    await cp(sourceDirectory, targetDirectory, {
-      recursive: true,
-      force: false,
-      errorOnExist: false,
-      preserveTimestamps: true
+    const copiedWithNative = await materializeLocalTreeWithNativeFallback({
+      sourceRootDir: sourceDirectory,
+      targetRootDir: targetDirectory,
+      mode: "replace"
     });
+    if (!copiedWithNative) {
+      await rm(targetDirectory, { recursive: true, force: true });
+      await cp(sourceDirectory, targetDirectory, {
+        recursive: true,
+        force: false,
+        errorOnExist: false,
+        preserveTimestamps: true
+      });
+    }
 
     if (typeof serializedDefinition.command === "string") {
       serializedDefinition.command = rewriteImportedToolCommandForWorkspace(
@@ -238,15 +283,22 @@ export async function initializeWorkspaceFromRuntime(input: InitializeWorkspaceF
     throw new Error(`Workspace root already exists: ${input.rootPath}`);
   }
 
-  await mkdir(path.dirname(input.rootPath), { recursive: true });
-  await mkdir(input.rootPath, { recursive: true });
-  for (const entry of await readdir(runtimePath, { withFileTypes: true })) {
-    await cp(path.join(runtimePath, entry.name), path.join(input.rootPath, entry.name), {
-      recursive: true,
-      force: false,
-      errorOnExist: true,
-      preserveTimestamps: true
-    });
+  const copiedRuntimeWithNative = await materializeLocalTreeWithNativeFallback({
+    sourceRootDir: runtimePath,
+    targetRootDir: input.rootPath,
+    mode: "create"
+  });
+  if (!copiedRuntimeWithNative) {
+    await mkdir(path.dirname(input.rootPath), { recursive: true });
+    await mkdir(input.rootPath, { recursive: true });
+    for (const entry of await readdir(runtimePath, { withFileTypes: true })) {
+      await cp(path.join(runtimePath, entry.name), path.join(input.rootPath, entry.name), {
+        recursive: true,
+        force: false,
+        errorOnExist: true,
+        preserveTimestamps: true
+      });
+    }
   }
 
   const runtimeSettings = await loadWorkspaceSettings(input.rootPath);

@@ -10,6 +10,7 @@ use tokio::runtime::Builder as RuntimeBuilder;
 
 use crate::bundle_policy::NativeSyncBundleConfig;
 use crate::elapsed_millis_u64;
+use crate::local_materialize::{materialize_local_tree, LocalMaterializeRequest};
 use crate::manifest::PlanRemoteEntry;
 use crate::object_store::{
     create_s3_client, system_time_to_mtime_ms, NativeObjectStoreConfig, ObjectStoreRequestCounts,
@@ -50,6 +51,7 @@ enum Command {
     SyncRemoteToLocal,
     PlanSeedUpload,
     BuildSeedArchive,
+    MaterializeLocalTree,
     SyncLocalToSandboxHttp,
 }
 
@@ -399,6 +401,11 @@ pub(crate) fn run() -> Result<(), String> {
             Some(read_json_stdin_value()?),
             None,
         )?),
+        Command::MaterializeLocalTree => write_json_value(&handle_command(
+            "materialize-local-tree",
+            Some(read_json_stdin_value()?),
+            None,
+        )?),
         Command::SyncLocalToSandboxHttp => {
             let runtime = build_runtime()?;
             write_json_value(&handle_command(
@@ -598,6 +605,10 @@ fn handle_command(
         "build-seed-archive" => {
             let request: BuildSeedArchiveRequest = parse_payload(payload, command)?;
             serialize_json_value(&build_seed_archive(request, PROTOCOL_VERSION)?)
+        }
+        "materialize-local-tree" => {
+            let request: LocalMaterializeRequest = parse_payload(payload, command)?;
+            serialize_json_value(&materialize_local_tree(request)?)
         }
         "sync-local-to-sandbox-http" => {
             let request: SyncLocalToSandboxHttpRequest = parse_payload(payload, command)?;
