@@ -2994,10 +2994,7 @@ describe("http api", () => {
           mode: "primary",
           prompt: "You are a project assistant.",
           tools: {
-            native: [],
-            actions: [],
-            skills: [],
-            external: []
+            native: []
           },
           switch: [],
           subagents: []
