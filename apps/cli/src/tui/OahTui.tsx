@@ -1,9 +1,17 @@
 import React from "react";
-import { Box, useApp, useWindowSize } from "ink";
+import { Box, Static, useApp, useWindowSize } from "ink";
 
 import type { OahConnection } from "../api/oah-api.js";
 import { HelpDialog, SessionDialog, WorkspaceDialog } from "./components/dialogs.js";
-import { getMessagesRowCount, Messages, SpinnerLine } from "./components/messages.js";
+import {
+  getChatLinesRowCount,
+  getTranscriptItems,
+  getTranscriptLineItems,
+  Messages,
+  SpinnerLine,
+  TranscriptItemView,
+  type TranscriptItem
+} from "./components/messages.js";
 import { getPromptInputRowCount, getSlashSuggestionRowCount, PromptInput } from "./components/prompt.js";
 import { useTuiInput } from "./input/use-tui-input.js";
 import { useOahReplState } from "./state/use-oah-repl-state.js";
@@ -27,13 +35,17 @@ function OahRepl({ connection }: { connection: OahConnection }) {
   const chromeRows = promptRows + spinnerRows;
   const dialogRows = state.dialog ? Math.max(8, Math.min(Math.floor(height * 0.66), height - chromeRows - 3)) : 0;
   const transcriptHeight = Math.max(3, height - dialogRows - chromeRows);
-  const messageRows = getMessagesRowCount({
+  const splitTranscript = splitStaticTranscript({
     lines: state.messages,
+    workspace: state.currentWorkspace,
     session: state.currentSession,
+    serviceUrl: connection.baseUrl,
     height: transcriptHeight,
     columns
   });
-  const promptCursorY = messageRows + spinnerRows + dialogRows + 1;
+  const liveMessageRows = getChatLinesRowCount(splitTranscript.liveLines, columns);
+  const liveViewportRows = Math.min(liveMessageRows, transcriptHeight);
+  const promptCursorY = liveViewportRows + spinnerRows + dialogRows + 1;
   const agentMode =
     state.catalog?.agents.find((agent) => agent.name === state.currentSession?.activeAgentName)?.mode ??
     (state.currentSession ? "unknown" : "");
@@ -60,17 +72,23 @@ function OahRepl({ connection }: { connection: OahConnection }) {
 
   return (
     <Box flexDirection="column">
-      <Box flexDirection="column">
-        <Messages
-          lines={state.messages}
-          workspace={state.currentWorkspace}
-          session={state.currentSession}
-          serviceUrl={connection.baseUrl}
-          height={transcriptHeight}
-          columns={columns}
-        />
-        <SpinnerLine run={latestRun} />
+      <Static items={splitTranscript.staticItems}>
+        {(item) => <TranscriptItemView key={item.id} item={item} columns={columns} />}
+      </Static>
+      <Box flexDirection="column" height={liveViewportRows} overflow="hidden" justifyContent="flex-end">
+        {splitTranscript.liveLines.length > 0 ? (
+          <Messages
+            lines={splitTranscript.liveLines}
+            workspace={state.currentWorkspace}
+            session={state.currentSession}
+            serviceUrl={connection.baseUrl}
+            height={transcriptHeight}
+            columns={columns}
+            showBanner={false}
+          />
+        ) : null}
       </Box>
+      <SpinnerLine run={latestRun} />
       {activeDialog}
       <PromptInput
         value={state.composer}
@@ -88,6 +106,48 @@ function OahRepl({ connection }: { connection: OahConnection }) {
       />
     </Box>
   );
+}
+
+function splitStaticTranscript(input: {
+  lines: ReturnType<typeof useOahReplState>["messages"];
+  workspace: ReturnType<typeof useOahReplState>["currentWorkspace"];
+  session: ReturnType<typeof useOahReplState>["currentSession"];
+  serviceUrl: string;
+  height: number;
+  columns: number;
+}): { staticItems: TranscriptItem[]; liveLines: ReturnType<typeof useOahReplState>["messages"] } {
+  if (!input.session || input.lines.length === 0) {
+    return {
+      staticItems: getTranscriptItems({
+        lines: [],
+        workspace: input.workspace,
+        session: input.session,
+        serviceUrl: input.serviceUrl,
+        height: input.height,
+        columns: input.columns,
+        includeBanner: true
+      }),
+      liveLines: []
+    };
+  }
+
+  const staticLines = input.lines.slice(0, -1);
+  const liveLines = input.lines.slice(-1);
+  return {
+    staticItems: [
+      ...getTranscriptItems({
+        lines: [],
+        workspace: input.workspace,
+        session: input.session,
+        serviceUrl: input.serviceUrl,
+        height: input.height,
+        columns: input.columns,
+        includeBanner: true
+      }),
+      ...getTranscriptLineItems(staticLines)
+    ],
+    liveLines
+  };
 }
 
 export function OahTui({ connection }: { connection: OahConnection }) {

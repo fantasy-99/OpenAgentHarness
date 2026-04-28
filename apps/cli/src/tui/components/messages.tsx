@@ -15,6 +15,24 @@ type VisibleChatLine = ChatLine & {
   marginBottom: number;
 };
 
+export type TranscriptItem =
+  | {
+      id: string;
+      kind: "banner";
+      workspace: Workspace | null;
+      session: Session | null;
+      serviceUrl: string;
+      columns: number;
+      subtitle: string;
+      height: number;
+      compact: boolean;
+    }
+  | {
+      id: string;
+      kind: "line";
+      line: VisibleChatLine;
+    };
+
 export function Messages(props: {
   lines: ChatLine[];
   workspace: Workspace | null;
@@ -22,7 +40,9 @@ export function Messages(props: {
   serviceUrl: string;
   height: number;
   columns: number;
+  showBanner?: boolean | undefined;
 }) {
+  const showBanner = props.showBanner ?? true;
   const hasMessages = props.session !== null && props.lines.length > 0;
   const visibleLines = hasMessages ? getTranscriptLines(props.lines) : [];
   const bannerSubtitle = !props.session
@@ -31,7 +51,7 @@ export function Messages(props: {
       ? "Resuming your session"
       : "Start typing or use / for commands";
 
-  if (!props.session) {
+  if (!props.session && showBanner) {
     return (
       <Box flexDirection="column" height={props.height} flexShrink={1} justifyContent="flex-end" overflow="hidden">
         <StartBanner
@@ -46,7 +66,11 @@ export function Messages(props: {
     );
   }
 
-  if (!hasMessages) {
+  if (!props.session) {
+    return null;
+  }
+
+  if (!hasMessages && showBanner) {
     return (
       <Box flexDirection="column" height={props.height} flexShrink={1} justifyContent="flex-end" overflow="hidden">
         <StartBanner
@@ -65,18 +89,20 @@ export function Messages(props: {
 
   return (
     <Box flexDirection="column">
-      <Box marginBottom={1}>
-        <StartBanner
-          height={props.columns >= 70 ? 12 : 7}
-          columns={props.columns}
-          subtitle={bannerSubtitle}
-          serviceUrl={props.serviceUrl}
-          workspaceName={props.workspace?.name}
-          sessionTitle={props.session.title}
-          sessionId={props.session.id}
-          compact={props.columns < 70}
-        />
-      </Box>
+      {showBanner ? (
+        <Box marginBottom={1}>
+          <StartBanner
+            height={props.columns >= 70 ? 12 : 7}
+            columns={props.columns}
+            subtitle={bannerSubtitle}
+            serviceUrl={props.serviceUrl}
+            workspaceName={props.workspace?.name}
+            sessionTitle={props.session.title}
+            sessionId={props.session.id}
+            compact={props.columns < 70}
+          />
+        </Box>
+      ) : null}
       <Box flexDirection="column">
         {visibleLines.map((line) => (
           <MessageRow key={line.id} line={line} columns={props.columns} />
@@ -84,6 +110,73 @@ export function Messages(props: {
       </Box>
     </Box>
   );
+}
+
+export function getTranscriptItems(input: {
+  lines: ChatLine[];
+  workspace: Workspace | null;
+  session: Session | null;
+  serviceUrl: string;
+  height: number;
+  columns: number;
+  includeBanner: boolean;
+}) {
+  const hasMessages = input.session !== null && input.lines.length > 0;
+  const bannerSubtitle = !input.session
+    ? "Create or switch to a session with ^O"
+    : hasMessages
+      ? "Resuming your session"
+      : "Start typing or use / for commands";
+  const items: TranscriptItem[] = [];
+
+  if (input.includeBanner) {
+    items.push({
+      id: `banner:${input.workspace?.id ?? "none"}:${input.session?.id ?? "none"}`,
+      kind: "banner",
+      workspace: input.workspace,
+      session: input.session,
+      serviceUrl: input.serviceUrl,
+      columns: input.columns,
+      subtitle: bannerSubtitle,
+      height: hasMessages ? (input.columns >= 70 ? 12 : 7) : input.height,
+      compact: hasMessages ? input.columns < 70 : input.height < 9
+    });
+  }
+
+  items.push(...getTranscriptLineItems(input.lines));
+  return items;
+}
+
+export function getTranscriptLineItems(lines: ChatLine[]) {
+  return getTranscriptLines(lines).map((line) => ({
+    id: `line:${line.id}`,
+    kind: "line" as const,
+    line: {
+      ...line,
+      marginBottom: 1
+    }
+  }));
+}
+
+export function TranscriptItemView(props: { item: TranscriptItem; columns: number }) {
+  if (props.item.kind === "banner") {
+    return (
+      <Box key={props.item.id} marginBottom={1}>
+        <StartBanner
+          height={props.item.height}
+          columns={props.item.columns}
+          subtitle={props.item.subtitle}
+          serviceUrl={props.item.serviceUrl}
+          workspaceName={props.item.workspace?.name}
+          sessionTitle={props.item.session?.title}
+          sessionId={props.item.session?.id}
+          compact={props.item.compact}
+        />
+      </Box>
+    );
+  }
+
+  return <MessageRow key={props.item.id} line={props.item.line} columns={props.columns} />;
 }
 
 export function getMessagesRowCount(input: { lines: ChatLine[]; session: Session | null; height: number; columns: number }) {
@@ -94,7 +187,11 @@ export function getMessagesRowCount(input: { lines: ChatLine[]; session: Session
 
   const bannerRows = input.columns >= 70 ? 12 : 7;
   const bannerMargin = 1;
-  return bannerRows + bannerMargin + input.lines.reduce((rows, line, index) => rows + lineRowCount(line, input.columns, index === input.lines.length - 1), 0);
+  return bannerRows + bannerMargin + getChatLinesRowCount(input.lines, input.columns);
+}
+
+export function getChatLinesRowCount(lines: ChatLine[], columns: number) {
+  return lines.reduce((rows, line, index) => rows + lineRowCount(line, columns, index === lines.length - 1), 0);
 }
 
 function MessageRow(props: { line: VisibleChatLine; columns: number }) {
