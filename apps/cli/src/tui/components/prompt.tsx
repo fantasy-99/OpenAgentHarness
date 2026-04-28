@@ -1,13 +1,26 @@
-import React from "react";
-import { Box, Text } from "ink";
+import React, { useRef } from "react";
+import { Box, Text, useBoxMetrics, useCursor, type DOMElement } from "ink";
 
 import { clampIndex, getSlashCommandMatches } from "../domain/utils.js";
 
 export function PromptInput(props: { value: string; cursor: number; disabled?: boolean; running: boolean }) {
   const beforeCursor = props.value.slice(0, props.cursor);
   const afterCursor = props.value.slice(props.cursor);
+  const promptRef = useRef<DOMElement>(null!);
+  const promptMetrics = useBoxMetrics(promptRef);
+  const { setCursorPosition } = useCursor();
+
+  setCursorPosition(
+    !props.disabled && promptMetrics.hasMeasured
+      ? {
+          x: promptMetrics.left + 4 + terminalWidth(beforeCursor),
+          y: promptMetrics.top + 1
+        }
+      : undefined
+  );
+
   return (
-    <Box flexDirection="column">
+    <Box ref={promptRef} flexDirection="column">
       <Box
         flexDirection="row"
         alignItems="flex-start"
@@ -22,16 +35,45 @@ export function PromptInput(props: { value: string; cursor: number; disabled?: b
         {props.value ? (
           <Text wrap="truncate-end">
             {beforeCursor}
-            {!props.disabled ? <Text inverse>{afterCursor[0] ?? " "}</Text> : null}
-            {afterCursor.slice(1)}
+            {afterCursor}
           </Text>
         ) : (
-          <Text>{!props.disabled ? <Text inverse> </Text> : " "}</Text>
+          <Text> </Text>
         )}
       </Box>
       <PromptFooter {...(props.disabled === undefined ? {} : { disabled: props.disabled })} />
     </Box>
   );
+}
+
+function terminalWidth(value: string) {
+  return Array.from(value).reduce((width, char) => width + characterWidth(char), 0);
+}
+
+function characterWidth(char: string) {
+  const codePoint = char.codePointAt(0) ?? 0;
+  if (codePoint === 0 || codePoint < 32 || (codePoint >= 0x7f && codePoint < 0xa0)) {
+    return 0;
+  }
+  if (
+    codePoint >= 0x1100 &&
+    (codePoint <= 0x115f ||
+      codePoint === 0x2329 ||
+      codePoint === 0x232a ||
+      (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
+      (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+      (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+      (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+      (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+      (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+      (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+      (codePoint >= 0x1f300 && codePoint <= 0x1f64f) ||
+      (codePoint >= 0x1f900 && codePoint <= 0x1f9ff) ||
+      (codePoint >= 0x20000 && codePoint <= 0x3fffd))
+  ) {
+    return 2;
+  }
+  return 1;
 }
 
 function PromptFooter(props: { disabled?: boolean }) {

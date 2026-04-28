@@ -8,6 +8,8 @@
   --cyberpunk-glow-cyan: 0 0 18px rgba(77, 235, 255, 0.36);
   --cyberpunk-glow-yellow: 0 0 18px rgba(247, 234, 42, 0.34);
   --cyberpunk-glow-magenta: 0 0 20px rgba(255, 76, 216, 0.3);
+  --cyberpunk-corner-cyan: rgba(77, 235, 255, 0.46);
+  --cyberpunk-corner-yellow: rgba(247, 234, 42, 0.5);
 }
 
 :root[data-theme="cyberpunk"] body {
@@ -64,8 +66,13 @@
 }
 
 :root[data-theme="cyberpunk"] .app-sidebar-surface .sidebar-hero {
+  position: relative;
+  overflow: hidden;
   border-color: rgba(77, 235, 255, 0.18) !important;
   background:
+    radial-gradient(circle at 16px 14px, rgba(247, 234, 42, 0.38) 0 2px, transparent 2.5px),
+    radial-gradient(circle at 28px 14px, rgba(77, 235, 255, 0.42) 0 2px, transparent 2.5px),
+    radial-gradient(circle at 40px 14px, rgba(255, 76, 216, 0.34) 0 2px, transparent 2.5px),
     linear-gradient(90deg, rgba(247, 234, 42, 0.026), transparent 52%),
     linear-gradient(180deg, rgba(77, 235, 255, 0.035), rgba(5, 6, 18, 0.18)),
     rgba(5, 6, 18, 0.72) !important;
@@ -76,8 +83,13 @@
 }
 
 :root[data-theme="cyberpunk"] .app-sidebar-surface .sidebar-surface-hero {
+  position: relative;
+  overflow: hidden;
   border-color: rgba(77, 235, 255, 0.18) !important;
   background:
+    radial-gradient(circle at 16px 14px, rgba(247, 234, 42, 0.38) 0 2px, transparent 2.5px),
+    radial-gradient(circle at 28px 14px, rgba(77, 235, 255, 0.42) 0 2px, transparent 2.5px),
+    radial-gradient(circle at 40px 14px, rgba(255, 76, 216, 0.34) 0 2px, transparent 2.5px),
     linear-gradient(90deg, rgba(247, 234, 42, 0.026), transparent 52%),
     linear-gradient(180deg, rgba(77, 235, 255, 0.035), rgba(5, 6, 18, 0.18)),
     rgba(5, 6, 18, 0.72) !important;
@@ -85,6 +97,20 @@
     inset 0 1px 0 rgba(77, 235, 255, 0.055),
     inset 0 -1px 0 rgba(77, 235, 255, 0.12),
     0 18px 32px -30px rgba(77, 235, 255, 0.28) !important;
+}
+
+:root[data-theme="cyberpunk"] .app-sidebar-surface .sidebar-hero::after,
+:root[data-theme="cyberpunk"] .app-sidebar-surface .sidebar-surface-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(var(--cyberpunk-corner-yellow), var(--cyberpunk-corner-yellow)) top right / 30px 1px no-repeat,
+    linear-gradient(var(--cyberpunk-corner-yellow), var(--cyberpunk-corner-yellow)) top right / 1px 18px no-repeat,
+    linear-gradient(var(--cyberpunk-corner-cyan), var(--cyberpunk-corner-cyan)) bottom left / 26px 1px no-repeat,
+    linear-gradient(var(--cyberpunk-corner-cyan), var(--cyberpunk-corner-cyan)) bottom left / 1px 16px no-repeat;
+  opacity: 0.72;
 }
 
 :root[data-theme="cyberpunk"] .app-sidebar-surface .sidebar-hero-icon {
@@ -302,6 +328,25 @@
   opacity: 0.72;
 }
 
+:root[data-theme="cyberpunk"] .ob-section::after,
+:root[data-theme="cyberpunk"] .panel-card::after,
+:root[data-theme="cyberpunk"] .data-grid-shell::after,
+:root[data-theme="cyberpunk"] .info-panel::after,
+:root[data-theme="cyberpunk"] .console-entry::after,
+:root[data-theme="cyberpunk"] .code-panel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(var(--cyberpunk-corner-cyan), var(--cyberpunk-corner-cyan)) top left / 24px 1px no-repeat,
+    linear-gradient(var(--cyberpunk-corner-cyan), var(--cyberpunk-corner-cyan)) top left / 1px 16px no-repeat,
+    linear-gradient(var(--cyberpunk-corner-yellow), var(--cyberpunk-corner-yellow)) bottom right / 28px 1px no-repeat,
+    linear-gradient(var(--cyberpunk-corner-yellow), var(--cyberpunk-corner-yellow)) bottom right / 1px 18px no-repeat;
+  opacity: 0.55;
+}
+
 :root[data-theme="cyberpunk"] .ob-section > *,
 :root[data-theme="cyberpunk"] .panel-card > *,
 :root[data-theme="cyberpunk"] .data-grid-shell > *,
@@ -348,11 +393,13 @@
 :root[data-theme="cyberpunk"] .ob-workspace-item.ob-list-item-active,
 :root[data-theme="cyberpunk"] .ob-session-item.ob-list-item-active {
   background:
+    linear-gradient(90deg, rgba(247, 234, 42, 0.72) 0 3px, transparent 3px 100%),
     linear-gradient(90deg, rgba(247, 234, 42, 0.16), rgba(77, 235, 255, 0.08) 56%, rgba(255, 76, 216, 0.06)),
     rgba(12, 14, 31, 0.74);
 }
 
 :root[data-theme="cyberpunk"] .conversation-avatar {
+  position: relative;
   border: 1px solid rgba(77, 235, 255, 0.22);
   background: linear-gradient(135deg, rgba(77, 235, 255, 0.16), rgba(184, 148, 255, 0.12));
   color: rgba(157, 238, 255, 0.94);
@@ -361,12 +408,30 @@
     0 0 18px -12px rgba(77, 235, 255, 0.8);
 }
 
+:root[data-theme="cyberpunk"] .conversation-avatar::after {
+  content: "";
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--cyberpunk-yellow);
+  box-shadow:
+    0 0 0 2px rgba(5, 5, 16, 0.82),
+    0 0 10px rgba(247, 234, 42, 0.72);
+}
+
 :root[data-theme="cyberpunk"] .conversation-message-bubble {
   position: relative;
   isolation: isolate;
   overflow: hidden;
   border-color: rgba(77, 235, 255, 0.18);
   background:
+    linear-gradient(var(--cyberpunk-corner-cyan), var(--cyberpunk-corner-cyan)) top left / 28px 1px no-repeat,
+    linear-gradient(var(--cyberpunk-corner-cyan), var(--cyberpunk-corner-cyan)) top left / 1px 18px no-repeat,
+    linear-gradient(var(--cyberpunk-corner-yellow), var(--cyberpunk-corner-yellow)) bottom right / 30px 1px no-repeat,
+    linear-gradient(var(--cyberpunk-corner-yellow), var(--cyberpunk-corner-yellow)) bottom right / 1px 18px no-repeat,
     linear-gradient(180deg, rgba(14, 18, 39, 0.92), rgba(8, 10, 25, 0.94)),
     radial-gradient(circle at top left, rgba(77, 235, 255, 0.14), transparent 30%);
   box-shadow:
@@ -411,6 +476,10 @@
 :root[data-theme="cyberpunk"] .conversation-message-bubble-user {
   border-color: rgba(247, 234, 42, 0.3);
   background:
+    linear-gradient(rgba(5, 5, 16, 0.3), rgba(5, 5, 16, 0.3)) top left / 26px 1px no-repeat,
+    linear-gradient(rgba(5, 5, 16, 0.26), rgba(5, 5, 16, 0.26)) top left / 1px 16px no-repeat,
+    linear-gradient(rgba(5, 5, 16, 0.24), rgba(5, 5, 16, 0.24)) bottom right / 30px 1px no-repeat,
+    linear-gradient(rgba(5, 5, 16, 0.22), rgba(5, 5, 16, 0.22)) bottom right / 1px 18px no-repeat,
     linear-gradient(135deg, rgba(247, 234, 42, 0.95), rgba(255, 244, 86, 0.9)),
     linear-gradient(180deg, rgba(255, 255, 255, 0.42), transparent);
   color: #111019;
@@ -564,6 +633,8 @@
 :root[data-theme="cyberpunk"] .conversation-message-bubble-assistant .info-panel {
   border-color: rgba(77, 235, 255, 0.18);
   background:
+    linear-gradient(var(--cyberpunk-corner-cyan), var(--cyberpunk-corner-cyan)) top left / 22px 1px no-repeat,
+    linear-gradient(var(--cyberpunk-corner-cyan), var(--cyberpunk-corner-cyan)) top left / 1px 14px no-repeat,
     linear-gradient(180deg, rgba(8, 12, 28, 0.78), rgba(5, 6, 18, 0.82)),
     radial-gradient(circle at top left, rgba(77, 235, 255, 0.08), transparent 28%);
 }
@@ -645,6 +716,7 @@
 
 :root[data-theme="cyberpunk"] .conversation-composer,
 :root[data-theme="cyberpunk"] .conversation-queued-panel {
+  position: relative;
   border-color: rgba(77, 235, 255, 0.24) !important;
   background:
     linear-gradient(180deg, rgba(10, 12, 28, 0.38), rgba(5, 6, 18, 0.48)) !important;
@@ -672,6 +744,20 @@
   background: linear-gradient(90deg, transparent, rgba(77, 235, 255, 0.72), rgba(247, 234, 42, 0.52), transparent);
   background-size: 160% 100%;
   opacity: 0.74;
+}
+
+:root[data-theme="cyberpunk"] .conversation-composer::after {
+  content: "";
+  position: absolute;
+  inset: auto 18px 8px auto;
+  width: 42px;
+  height: 2px;
+  pointer-events: none;
+  background: linear-gradient(90deg, var(--cyberpunk-yellow), var(--cyberpunk-cyan));
+  box-shadow:
+    0 0 12px rgba(247, 234, 42, 0.45),
+    0 0 16px rgba(77, 235, 255, 0.34);
+  opacity: 0.62;
 }
 
 :root[data-theme="cyberpunk"] .workspace-file-dock-button {
@@ -715,6 +801,103 @@
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.14),
     0 0 18px -12px rgba(247, 234, 42, 0.9);
+}
+
+:root[data-theme="cyberpunk"] [data-slot="tooltip-content"] {
+  position: relative;
+  isolation: isolate;
+  border: 1px solid rgba(77, 235, 255, 0.34);
+  background:
+    linear-gradient(var(--cyberpunk-corner-yellow), var(--cyberpunk-corner-yellow)) top right / 32px 1px no-repeat,
+    linear-gradient(var(--cyberpunk-corner-yellow), var(--cyberpunk-corner-yellow)) top right / 1px 18px no-repeat,
+    linear-gradient(var(--cyberpunk-corner-cyan), var(--cyberpunk-corner-cyan)) bottom left / 28px 1px no-repeat,
+    linear-gradient(var(--cyberpunk-corner-cyan), var(--cyberpunk-corner-cyan)) bottom left / 1px 16px no-repeat,
+    radial-gradient(circle at 16% 0%, rgba(247, 234, 42, 0.16), transparent 34%),
+    radial-gradient(circle at 88% 100%, rgba(77, 235, 255, 0.15), transparent 32%),
+    linear-gradient(180deg, rgba(12, 15, 32, 0.96), rgba(5, 6, 18, 0.98));
+  color: rgba(255, 246, 201, 0.92);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 246, 201, 0.12),
+    inset 0 -1px 0 rgba(77, 235, 255, 0.11),
+    0 16px 34px -24px rgba(0, 0, 0, 0.92),
+    0 0 28px -16px rgba(77, 235, 255, 0.78),
+    0 0 34px -24px rgba(247, 234, 42, 0.52);
+  text-shadow: 0 0 12px rgba(77, 235, 255, 0.1);
+  backdrop-filter: blur(14px) saturate(1.22);
+  -webkit-backdrop-filter: blur(14px) saturate(1.22);
+}
+
+:root[data-theme="cyberpunk"] [data-slot="tooltip-content"]::before {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background:
+    linear-gradient(90deg, rgba(247, 234, 42, 0.18), transparent 26%, rgba(77, 235, 255, 0.12) 72%, transparent),
+    repeating-linear-gradient(0deg, rgba(255, 246, 201, 0.03) 0 1px, transparent 1px 6px);
+  opacity: 0.84;
+}
+
+:root[data-theme="cyberpunk"] [data-slot="tooltip-content"]::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 0;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(247, 234, 42, 0.86), rgba(77, 235, 255, 0.68), transparent);
+  box-shadow: 0 0 13px rgba(247, 234, 42, 0.38);
+  opacity: 0.78;
+}
+
+:root[data-theme="cyberpunk"] [data-slot="tooltip-content"] > * {
+  position: relative;
+  z-index: 1;
+}
+
+:root[data-theme="cyberpunk"] [data-slot="tooltip-content"] > svg {
+  z-index: 0;
+  border: 1px solid rgba(77, 235, 255, 0.28);
+  background: rgba(7, 8, 23, 0.98) !important;
+  fill: rgba(7, 8, 23, 0.98) !important;
+  box-shadow:
+    0 0 12px rgba(77, 235, 255, 0.42),
+    0 0 16px rgba(247, 234, 42, 0.18);
+}
+
+:root[data-theme="cyberpunk"] [data-slot="tooltip-content"] :where(.text-sm.font-semibold, strong) {
+  color: #fff46b !important;
+  text-shadow:
+    0 0 11px rgba(247, 234, 42, 0.28),
+    0 0 18px rgba(77, 235, 255, 0.12);
+}
+
+:root[data-theme="cyberpunk"] [data-slot="tooltip-content"] :where([class*="text-background/60"], [class*="text-background\\/60"]) {
+  color: rgba(77, 235, 255, 0.74) !important;
+  text-shadow: 0 0 10px rgba(77, 235, 255, 0.18);
+}
+
+:root[data-theme="cyberpunk"] [data-slot="tooltip-content"] :where([class*="text-background/70"], [class*="text-background\\/70"]) {
+  color: rgba(157, 238, 255, 0.72) !important;
+}
+
+:root[data-theme="cyberpunk"] [data-slot="tooltip-content"] :where([class*="text-background/88"], [class*="text-background\\/88"]) {
+  color: rgba(255, 246, 201, 0.9) !important;
+}
+
+:root[data-theme="cyberpunk"] [data-slot="tooltip-content"] .font-mono {
+  color: rgba(77, 235, 255, 0.9);
+  text-shadow: 0 0 12px rgba(77, 235, 255, 0.18);
+}
+
+:root[data-theme="cyberpunk"] [data-slot="kbd"] {
+  border: 1px solid rgba(247, 234, 42, 0.28);
+  background: rgba(247, 234, 42, 0.12);
+  color: #fff46b;
+  box-shadow: inset 0 1px 0 rgba(255, 246, 201, 0.12);
 }
 
 :root[data-theme="cyberpunk"] button.bg-primary,
@@ -829,11 +1012,44 @@
     animation: cyberpunk-microbar-flow 3.8s ease-in-out infinite;
   }
 
+  :root[data-theme="cyberpunk"] .conversation-composer::after,
+  :root[data-theme="cyberpunk"] .conversation-avatar::after {
+    animation: cyberpunk-status-dot 3.4s ease-in-out infinite;
+  }
+
+  :root[data-theme="cyberpunk"] .app-sidebar-surface .sidebar-hero::after,
+  :root[data-theme="cyberpunk"] .app-sidebar-surface .sidebar-surface-hero::after,
+  :root[data-theme="cyberpunk"] .conversation-message-bubble-assistant::after {
+    animation: cyberpunk-corner-breathe 5.6s ease-in-out infinite;
+  }
+
   :root[data-theme="cyberpunk"] [data-slot="tabs-trigger"][data-state="active"],
   :root[data-theme="cyberpunk"] [data-slot="tabs-trigger"][data-active],
   :root[data-theme="cyberpunk"] .sidebar-mode-toggle button[class*="bg-white"],
   :root[data-theme="cyberpunk"] .workspace-file-dock-button {
     animation: cyberpunk-neon-pulse 4.2s ease-in-out infinite;
+  }
+}
+
+@keyframes cyberpunk-status-dot {
+  0%,
+  100% {
+    opacity: 0.58;
+    filter: saturate(1);
+  }
+  48% {
+    opacity: 0.95;
+    filter: saturate(1.35);
+  }
+}
+
+@keyframes cyberpunk-corner-breathe {
+  0%,
+  100% {
+    filter: saturate(1);
+  }
+  50% {
+    filter: saturate(1.16);
   }
 }
 
