@@ -14,6 +14,7 @@ import {
   Search,
   Settings2,
   Table2,
+  Trash2,
   Upload,
   Workflow
 } from "lucide-react";
@@ -218,6 +219,7 @@ function SidebarActionItem(props: {
 }
 
 function RuntimeSidebar(props: SidebarProps) {
+  const [runtimeWorkspaceDeleteBusy, setRuntimeWorkspaceDeleteBusy] = useState(false);
   const { workspaceRuntimeFilter, setWorkspaceRuntimeFilter, serviceScope } = useSettingsStore(
     useShallow((state) => ({
       workspaceRuntimeFilter: state.workspaceRuntimeFilter,
@@ -235,6 +237,15 @@ function RuntimeSidebar(props: SidebarProps) {
       : `${props.savedSessionsCount} of ${props.totalSavedSessionsCount} sessions`;
   const expandedWorkspaceIdSet = useMemo(() => new Set(props.expandedWorkspaceIds), [props.expandedWorkspaceIds]);
   const expandedSessionIdSet = useMemo(() => new Set(props.expandedSessionIds), [props.expandedSessionIds]);
+  const selectedRuntimeWorkspaceIds = useMemo(
+    () => (workspaceRuntimeFilter.trim() ? props.filteredSavedWorkspaces.map((entry) => entry.id) : []),
+    [props.filteredSavedWorkspaces, workspaceRuntimeFilter]
+  );
+  const canDeleteRuntimeWorkspaces =
+    props.workspaceManagementEnabled &&
+    workspaceRuntimeFilter.trim().length > 0 &&
+    selectedRuntimeWorkspaceIds.length > 0 &&
+    !runtimeWorkspaceDeleteBusy;
   const workspaceSessionGroups = useMemo(
     () =>
       props.filteredSavedWorkspaces.map((entry) => {
@@ -343,6 +354,18 @@ function RuntimeSidebar(props: SidebarProps) {
     });
   }
 
+  async function handleDeleteCurrentRuntimeWorkspaces() {
+    if (!canDeleteRuntimeWorkspaces) {
+      return;
+    }
+    setRuntimeWorkspaceDeleteBusy(true);
+    try {
+      await props.deleteWorkspacesForRuntime(workspaceRuntimeFilter, selectedRuntimeWorkspaceIds);
+    } finally {
+      setRuntimeWorkspaceDeleteBusy(false);
+    }
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-2 py-3">
@@ -398,27 +421,47 @@ function RuntimeSidebar(props: SidebarProps) {
               </Button>
             </div>
           </div>
-          <label className="space-y-1 px-2">
+          <div className="space-y-1 px-2">
             <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Runtime</span>
-            <Select
-              value={workspaceRuntimeFilter || "__all_runtimes__"}
-              onValueChange={(value) => setWorkspaceRuntimeFilter(value === "__all_runtimes__" ? "" : value)}
-            >
-              <SelectTrigger className="h-8 w-full rounded-xl border-black/10 bg-white/68 text-xs shadow-none" aria-label="Workspace runtime filter">
-                <SelectValue placeholder="All runtimes" />
-              </SelectTrigger>
-              <SelectContent align="start">
-                <SelectItem value="__all_runtimes__">All runtimes</SelectItem>
-                {props.workspaceRuntimeFilterOptions.map((runtime) => (
-                  <SelectItem key={runtime} value={runtime}>
-                    {runtime}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </label>
+            <div className="flex items-center gap-1.5">
+              <Select
+                value={workspaceRuntimeFilter || "__all_runtimes__"}
+                onValueChange={(value) => setWorkspaceRuntimeFilter(value === "__all_runtimes__" ? "" : value)}
+              >
+                <SelectTrigger className="h-8 min-w-0 flex-1 rounded-xl border-black/10 bg-white/68 text-xs shadow-none" aria-label="Workspace runtime filter">
+                  <SelectValue placeholder="All runtimes" />
+                </SelectTrigger>
+                <SelectContent align="start">
+                  <SelectItem value="__all_runtimes__">All runtimes</SelectItem>
+                  {props.workspaceRuntimeFilterOptions.map((runtime) => (
+                    <SelectItem key={runtime} value={runtime}>
+                      {runtime}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {props.workspaceManagementEnabled ? (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-8 w-8 shrink-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  disabled={!canDeleteRuntimeWorkspaces}
+                  onClick={() => {
+                    void handleDeleteCurrentRuntimeWorkspaces();
+                  }}
+                  title={
+                    workspaceRuntimeFilter.trim()
+                      ? `Delete ${selectedRuntimeWorkspaceIds.length} workspace${selectedRuntimeWorkspaceIds.length === 1 ? "" : "s"} for this runtime`
+                      : "Select a runtime to delete its workspaces"
+                  }
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              ) : null}
+            </div>
+          </div>
           {props.filteredSavedWorkspaces.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-black/12 bg-white/32 px-4 py-8 text-center">
+            <div className="sidebar-empty-state rounded-xl border border-dashed border-black/12 bg-white/32 px-4 py-8 text-center">
               <p className="text-sm font-medium text-foreground">
                 {workspaceRuntimeFilter ? "No matching workspaces" : "No workspaces"}
               </p>

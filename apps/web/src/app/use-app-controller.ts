@@ -2344,6 +2344,7 @@ export function useAppController() {
           current.includes(targetId) ? current.filter((entry) => entry !== targetId) : [targetId, ...current].slice(0, 64)
         ),
       deleteWorkspace: navigationActions.deleteWorkspace,
+      deleteWorkspacesForRuntime: navigationActions.deleteWorkspacesForRuntime,
       storageOverview: storageController.storageSurfaceProps.storageOverview,
       storageRedisEnabled: storageController.storageSurfaceProps.storageRedisEnabled,
       storageBrowserTab: storageController.storageSurfaceProps.storageBrowserTab,
@@ -2392,6 +2393,7 @@ export function useAppController() {
       navigationActions.createSession,
       navigationActions.createWorkspace,
       navigationActions.deleteWorkspace,
+      navigationActions.deleteWorkspacesForRuntime,
       navigationActions.deleteWorkspaceRuntime,
       navigationActions.expandWorkspaceInSidebar,
       navigationActions.openWorkspace,

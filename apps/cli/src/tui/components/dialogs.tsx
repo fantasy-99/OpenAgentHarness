@@ -18,7 +18,7 @@ export function WorkspaceDialog(props: {
         <WorkspaceCreateFieldRow label="Name" value={props.dialog.name} placeholder="Workspace name" selected={props.dialog.field === "name"} />
         <WorkspaceCreateFieldRow
           label="Runtime"
-          value={props.dialog.runtimeQuery}
+          value={props.dialog.field === "runtime" ? props.dialog.runtimeQuery : props.dialog.runtime}
           placeholder={props.dialog.runtime || (props.runtimes.length > 0 ? "Type to search" : "No runtimes available")}
           selected={props.dialog.field === "runtime"}
         />
@@ -59,11 +59,12 @@ export function WorkspaceDialog(props: {
 }
 
 function WorkspaceCreateFieldRow(props: { label: string; value: string; placeholder: string; selected: boolean }) {
+  const hasValue = props.value.length > 0;
   return (
     <Box marginTop={props.label === "Name" ? 1 : 0}>
       <Text {...(props.selected ? { color: "cyan" } : {})} bold={props.selected} wrap="truncate-end">
         {props.selected ? "❯" : " "} {props.label.padEnd(9)}{" "}
-        {props.value ? props.value : props.placeholder}
+        {hasValue ? props.value : <Text dimColor>{props.placeholder}</Text>}
         {props.selected ? <Text inverse> </Text> : null}
       </Text>
     </Box>

@@ -7,7 +7,7 @@ import {
   createWorkspaceDialog,
   insertTextAt,
   mergeRefreshedChatLines,
-  messageToChatLine,
+  messageToChatLines,
   runFailureToChatLine,
   shortId,
   updateChatLinesFromEvent
@@ -73,7 +73,7 @@ export function useOahReplState(connection: OahConnection) {
     async (session: Session) => {
       try {
         const [nextMessages, nextRuns] = await Promise.all([client.listSessionMessages(session.id), client.listSessionRuns(session.id)]);
-        const nextLines = nextMessages.map(messageToChatLine);
+        const nextLines = nextMessages.flatMap(messageToChatLines);
         const runFailureLine = nextRuns[0] ? runFailureToChatLine(nextRuns[0]) : null;
         const refreshedLines = runFailureLine ? [...nextLines, runFailureLine] : nextLines;
         setMessages((current) => mergeRefreshedChatLines(current, refreshedLines));
@@ -312,6 +312,11 @@ export function useOahReplState(connection: OahConnection) {
       .streamSessionEvents(currentSession.id, {
         ...(lastCursorRef.current ? { cursor: lastCursorRef.current } : {}),
         signal: controller.signal,
+        onOpen: () => {
+          if (!controller.signal.aborted) {
+            setStreamState("open");
+          }
+        },
         onEvent: (event) => {
           lastCursorRef.current = event.cursor || lastCursorRef.current;
           setStreamState("open");

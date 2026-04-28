@@ -201,6 +201,7 @@ export class OahApiClient {
     options: {
       cursor?: string;
       signal: AbortSignal;
+      onOpen?: () => void;
       onEvent: (event: SessionEventContract) => void;
     }
   ): Promise<void> {
@@ -223,6 +224,8 @@ export class OahApiClient {
     if (!response.ok) {
       throw new Error(`${response.status} ${response.statusText}`);
     }
+
+    options.onOpen?.();
 
     await consumeSse(response, (frame) => {
       const event = {

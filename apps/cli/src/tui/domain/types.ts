@@ -7,8 +7,16 @@ export type ChatLine = {
   id: string;
   role: string;
   text: string;
-  createdAt?: string;
-  tone?: "normal" | "muted" | "error";
+  createdAt?: string | undefined;
+  tone?: "normal" | "muted" | "error" | undefined;
+  kind?: "message" | "tool" | "attachment" | "approval" | "system" | "reasoning" | undefined;
+  title?: string | undefined;
+  detail?: string | undefined;
+  toolName?: string | undefined;
+  toolCallId?: string | undefined;
+  toolStatus?: "queued" | "running" | "completed" | "failed" | "denied" | "waiting" | undefined;
+  durationMs?: number | undefined;
+  sourceType?: string | undefined;
 };
 
 export type WorkspaceCreateField = "name" | "runtime" | "rootPath" | "ownerId" | "serviceName";

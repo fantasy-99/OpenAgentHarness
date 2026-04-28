@@ -99,6 +99,146 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function readString(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function readNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function readToolStatus(value: unknown): ChatLine["toolStatus"] | undefined {
+  if (
+    value === "queued" ||
+    value === "running" ||
+    value === "completed" ||
+    value === "failed" ||
+    value === "denied" ||
+    value === "waiting" ||
+    value === "started"
+  ) {
+    return value === "started" ? "running" : value;
+  }
+  return undefined;
+}
+
+function truncateSingleLine(value: string, limit = 96) {
+  const normalized = value.replace(/\s+/gu, " ").trim();
+  return normalized.length > limit ? `${normalized.slice(0, Math.max(1, limit - 1))}…` : normalized;
+}
+
+function jsonPreview(value: unknown, limit = 96) {
+  try {
+    return truncateSingleLine(typeof value === "string" ? value : JSON.stringify(value), limit);
+  } catch {
+    return truncateSingleLine(String(value), limit);
+  }
+}
+
+function prettyJson(value: unknown) {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function summarizeToolInput(value: unknown) {
+  if (value === undefined) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return truncateSingleLine(value);
+  }
+  if (!isRecord(value)) {
+    return jsonPreview(value);
+  }
+
+  for (const key of ["command", "cmd", "query", "path", "filePath", "filename", "url", "name"]) {
+    const field = value[key];
+    if (typeof field === "string" && field.trim().length > 0) {
+      return key === "command" || key === "cmd" ? `$ ${truncateSingleLine(field)}` : truncateSingleLine(field);
+    }
+  }
+
+  const entries = Object.entries(value)
+    .filter(([, entryValue]) => entryValue !== undefined)
+    .slice(0, 3)
+    .map(([key, entryValue]) => `${key}: ${jsonPreview(entryValue, 36)}`);
+  return truncateSingleLine(entries.join(", "));
+}
+
+function readToolMetadata(metadata: unknown) {
+  const record = isRecord(metadata) ? metadata : undefined;
+  return {
+    toolStatus: readToolStatus(record?.toolStatus),
+    durationMs: readNumber(record?.toolDurationMs),
+    sourceType: readString(record?.toolSourceType)
+  };
+}
+
+function formatDuration(durationMs: number | undefined) {
+  if (durationMs === undefined) {
+    return "";
+  }
+  return durationMs < 1000 ? `${Math.max(0, Math.round(durationMs))} ms` : `${(durationMs / 1000).toFixed(durationMs >= 10000 ? 0 : 1)} s`;
+}
+
+function toolOutputToText(output: unknown): { text: string; failed: boolean; denied: boolean } {
+  if (!isRecord(output)) {
+    return {
+      text: typeof output === "string" ? output : prettyJson(output),
+      failed: false,
+      denied: false
+    };
+  }
+
+  switch (output.type) {
+    case "text":
+      return { text: typeof output.value === "string" ? output.value : prettyJson(output.value), failed: false, denied: false };
+    case "json":
+      return { text: prettyJson(output.value), failed: false, denied: false };
+    case "error-text":
+      return { text: typeof output.value === "string" ? output.value : "Tool execution failed.", failed: true, denied: false };
+    case "error-json":
+      return { text: prettyJson(output.value), failed: true, denied: false };
+    case "execution-denied":
+      return {
+        text: typeof output.reason === "string" ? output.reason : "Execution denied.",
+        failed: true,
+        denied: true
+      };
+    case "content":
+      if (Array.isArray(output.value)) {
+        return {
+          text: output.value
+            .map((item) => {
+              if (!isRecord(item)) {
+                return "";
+              }
+              if (item.type === "text" && typeof item.text === "string") {
+                return item.text;
+              }
+              if (item.type === "file-data" || item.type === "file-url") {
+                return `[file] ${readString(item.filename) ?? readString(item.url) ?? ""}`.trim();
+              }
+              if (item.type === "image-data" || item.type === "image-url") {
+                return `[image] ${readString(item.url) ?? ""}`.trim();
+              }
+              return "";
+            })
+            .filter(Boolean)
+            .join("\n"),
+          failed: false,
+          denied: false
+        };
+      }
+      return { text: prettyJson(output.value), failed: false, denied: false };
+    default:
+      return { text: prettyJson(output), failed: false, denied: false };
+  }
+}
+
 export function stringifyMessageContent(value: unknown): string {
   if (typeof value === "string") {
     return value;
@@ -134,15 +274,193 @@ export function stringifyMessageContent(value: unknown): string {
       .filter(Boolean);
     return parts.join("\n");
   }
-  return JSON.stringify(value);
+  return JSON.stringify(value) ?? String(value);
+}
+
+function makeLineId(messageId: string, index: number) {
+  return index === 0 ? messageId : `${messageId}:part:${index}`;
+}
+
+export function messageToChatLines(message: Message): ChatLine[] {
+  const metadata = "metadata" in message ? message.metadata : undefined;
+  const toolMetadata = readToolMetadata(metadata);
+  if (typeof message.content === "string") {
+    return [
+      {
+        id: message.id,
+        role: message.role,
+        text: message.content,
+        createdAt: message.createdAt,
+        kind: message.role === "system" ? "system" : "message",
+        tone: message.role === "system" ? "muted" : undefined
+      }
+    ];
+  }
+
+  if (!Array.isArray(message.content)) {
+    return [
+      {
+        id: message.id,
+        role: message.role,
+        text: stringifyMessageContent(message.content),
+        createdAt: message.createdAt,
+        kind: message.role === "system" ? "system" : "message",
+        tone: message.role === "system" ? "muted" : undefined
+      }
+    ];
+  }
+
+  const lines: ChatLine[] = [];
+  for (const [partIndex, part] of message.content.entries()) {
+    if (part.type === "text" && part.text.trim().length > 0) {
+      lines.push({
+        id: makeLineId(message.id, lines.length),
+        role: message.role,
+        text: part.text,
+        createdAt: message.createdAt,
+        kind: "message"
+      });
+      continue;
+    }
+    if (part.type === "reasoning" && part.text.trim().length > 0) {
+      lines.push({
+        id: makeLineId(message.id, lines.length),
+        role: message.role,
+        text: part.text,
+        title: "Thinking",
+        createdAt: message.createdAt,
+        kind: "reasoning",
+        tone: "muted"
+      });
+      continue;
+    }
+    if (part.type === "tool-call") {
+      const detail = summarizeToolInput(part.input);
+      const status = toolMetadata.toolStatus ?? "running";
+      lines.push({
+        id: makeLineId(message.id, lines.length),
+        role: "tool",
+        text: detail ? `${part.toolName} (${detail})` : part.toolName,
+        title: part.toolName,
+        detail,
+        toolName: part.toolName,
+        toolCallId: part.toolCallId,
+        toolStatus: status,
+        durationMs: toolMetadata.durationMs,
+        sourceType: toolMetadata.sourceType,
+        createdAt: message.createdAt,
+        kind: "tool",
+        tone: status === "failed" ? "error" : "muted"
+      });
+      continue;
+    }
+    if (part.type === "tool-result") {
+      const output = toolOutputToText(part.output);
+      const status = output.denied ? "denied" : output.failed ? "failed" : (toolMetadata.toolStatus ?? "completed");
+      const duration = formatDuration(toolMetadata.durationMs);
+      lines.push({
+        id: makeLineId(message.id, lines.length),
+        role: "tool",
+        text: output.text,
+        title: part.toolName,
+        detail: duration,
+        toolName: part.toolName,
+        toolCallId: part.toolCallId,
+        toolStatus: status,
+        durationMs: toolMetadata.durationMs,
+        sourceType: toolMetadata.sourceType,
+        createdAt: message.createdAt,
+        kind: "tool",
+        tone: status === "failed" || status === "denied" ? "error" : "muted"
+      });
+      continue;
+    }
+    if (part.type === "file") {
+      const filename = part.filename ?? "file";
+      lines.push({
+        id: makeLineId(message.id, lines.length),
+        role: message.role,
+        text: filename,
+        title: `Read ${filename}`,
+        detail: part.mediaType,
+        createdAt: message.createdAt,
+        kind: "attachment",
+        tone: "muted"
+      });
+      continue;
+    }
+    if (part.type === "image") {
+      lines.push({
+        id: makeLineId(message.id, lines.length),
+        role: message.role,
+        text: part.mediaType ?? "image",
+        title: "Attached image",
+        detail: part.mediaType,
+        createdAt: message.createdAt,
+        kind: "attachment",
+        tone: "muted"
+      });
+      continue;
+    }
+    if (part.type === "tool-approval-request") {
+      lines.push({
+        id: makeLineId(message.id, lines.length),
+        role: "tool",
+        text: `Approval requested for ${part.toolCallId}`,
+        title: "Approval requested",
+        detail: part.toolCallId,
+        toolCallId: part.toolCallId,
+        toolStatus: "waiting",
+        createdAt: message.createdAt,
+        kind: "approval",
+        tone: "muted"
+      });
+      continue;
+    }
+    if (part.type === "tool-approval-response") {
+      lines.push({
+        id: makeLineId(message.id, lines.length),
+        role: "tool",
+        text: part.reason ?? (part.approved ? "Approved" : "Denied"),
+        title: part.approved ? "Approved" : "Denied",
+        detail: part.reason,
+        toolStatus: part.approved ? "completed" : "denied",
+        createdAt: message.createdAt,
+        kind: "approval",
+        tone: part.approved ? "muted" : "error"
+      });
+    }
+    if (partIndex === message.content.length - 1 && lines.length === 0) {
+      lines.push({
+        id: message.id,
+        role: message.role,
+        text: stringifyMessageContent(message.content),
+        createdAt: message.createdAt,
+        kind: "message"
+      });
+    }
+  }
+
+  return lines.length > 0
+    ? lines
+    : [
+        {
+          id: message.id,
+          role: message.role,
+          text: stringifyMessageContent(message.content),
+          createdAt: message.createdAt,
+          kind: "message"
+        }
+      ];
 }
 
 export function messageToChatLine(message: Message): ChatLine {
-  return {
+  return messageToChatLines(message)[0] ?? {
     id: message.id,
     role: message.role,
     text: stringifyMessageContent(message.content),
-    createdAt: message.createdAt
+    createdAt: message.createdAt,
+    kind: "message"
   };
 }
 
@@ -161,31 +479,61 @@ export function runFailureToChatLine(run: Run): ChatLine | null {
 
 function eventChatLine(event: SessionEventContract): ChatLine | null {
   const toolName = typeof event.data.toolName === "string" ? event.data.toolName : undefined;
+  const toolCallId = typeof event.data.toolCallId === "string" ? event.data.toolCallId : undefined;
   const errorMessage = typeof event.data.errorMessage === "string" ? event.data.errorMessage : undefined;
+  const durationMs = typeof event.data.durationMs === "number" ? event.data.durationMs : undefined;
+  const sourceType = typeof event.data.sourceType === "string" ? event.data.sourceType : undefined;
   switch (event.event) {
     case "tool.started":
       return {
-        id: `event:${event.id}`,
+        id: toolCallId ? `tool:${toolCallId}` : `event:${event.id}`,
         role: "tool",
-        text: toolName ? `Using ${toolName}` : "Using tool",
+        text: toolName ? `${toolName}${event.data.input !== undefined ? ` (${summarizeToolInput(event.data.input)})` : ""}` : "Using tool",
+        title: toolName ?? "Tool",
+        detail: event.data.input !== undefined ? summarizeToolInput(event.data.input) : "",
+        toolName,
+        toolCallId,
+        toolStatus: "running",
+        sourceType,
         createdAt: event.createdAt,
-        tone: "muted"
+        tone: "muted",
+        kind: "tool"
       };
     case "tool.completed":
-      return {
-        id: `event:${event.id}`,
-        role: "tool",
-        text: toolName ? `Done ${toolName}` : "Tool completed",
-        createdAt: event.createdAt,
-        tone: "muted"
-      };
+      {
+        const output = toolOutputToText(event.data.output);
+        const detail = formatDuration(durationMs);
+        return {
+          id: toolCallId ? `tool:${toolCallId}` : `event:${event.id}`,
+          role: "tool",
+          text: output.text || (toolName ? `Done ${toolName}` : "Tool completed"),
+          title: toolName ?? "Tool",
+          detail,
+          toolName,
+          toolCallId,
+          toolStatus: output.failed ? "failed" : "completed",
+          durationMs,
+          sourceType,
+          createdAt: event.createdAt,
+          tone: output.failed ? "error" : "muted",
+          kind: "tool"
+        };
+      }
     case "tool.failed":
       return {
-        id: `event:${event.id}`,
+        id: toolCallId ? `tool:${toolCallId}` : `event:${event.id}`,
         role: "tool",
         text: errorMessage ?? (toolName ? `Failed ${toolName}` : "Tool failed"),
+        title: toolName ?? "Tool failed",
+        detail: formatDuration(durationMs),
+        toolName,
+        toolCallId,
+        toolStatus: "failed",
+        durationMs,
+        sourceType,
         createdAt: event.createdAt,
-        tone: "error"
+        tone: "error",
+        kind: "tool"
       };
     case "agent.switched":
       return {
@@ -197,7 +545,7 @@ function eventChatLine(event: SessionEventContract): ChatLine | null {
       };
     case "run.failed":
       return {
-        id: `event:${event.id}`,
+        id: `run-error:${event.runId ?? event.id}`,
         role: "system",
         text: errorMessage ?? "Run failed",
         createdAt: event.createdAt,
@@ -220,8 +568,22 @@ export function updateChatLinesFromEvent(lines: ChatLine[], event: SessionEventC
   const messageId = typeof event.data.messageId === "string" ? event.data.messageId : undefined;
   if (!messageId) {
     const line = eventChatLine(event);
-    if (!line || lines.some((item) => item.id === line.id)) {
+    if (!line) {
       return lines;
+    }
+    if (lines.some((item) => item.id === line.id)) {
+      return lines.map((item) =>
+        item.id === line.id
+          ? {
+              ...item,
+              ...line,
+              detail: line.detail || item.detail,
+              text: line.text || item.text,
+              title: line.title || item.title,
+              createdAt: item.createdAt ?? line.createdAt
+            }
+          : item
+      );
     }
     return [...lines, line];
   }
@@ -260,15 +622,17 @@ export function updateChatLinesFromEvent(lines: ChatLine[], event: SessionEventC
 
   if (event.event === "message.completed" && event.data.content !== undefined) {
     const role = typeof event.data.role === "string" ? event.data.role : "assistant";
-    const completed: ChatLine = {
+    const completed = messageToChatLines({
       id: messageId,
+      sessionId: event.sessionId,
+      ...(event.runId ? { runId: event.runId } : {}),
       role,
-      text: stringifyMessageContent(event.data.content),
+      content: event.data.content as Message["content"],
+      ...(isRecord(event.data.metadata) ? { metadata: event.data.metadata } : {}),
       createdAt: event.createdAt
-    };
-    return lines.some((line) => line.id === messageId)
-      ? lines.map((line) => (line.id === messageId ? completed : line))
-      : [...lines, completed];
+    } as Message);
+    const cleaned = lines.filter((line) => line.id !== messageId && !line.id.startsWith(`${messageId}:part:`));
+    return [...cleaned, ...completed].sort(compareChatLines);
   }
 
   return lines;
@@ -280,6 +644,7 @@ export function mergeRefreshedChatLines(current: ChatLine[], refreshed: ChatLine
   }
 
   const refreshedById = new Map(refreshed.map((line) => [line.id, line] as const));
+  const refreshedToolCallIds = new Set(refreshed.map((line) => line.toolCallId).filter((value): value is string => Boolean(value)));
   const refreshedUserTexts = new Set(
     refreshed.filter((line) => line.role === "user").map((line) => line.text.trim()).filter(Boolean)
   );
@@ -293,6 +658,9 @@ export function mergeRefreshedChatLines(current: ChatLine[], refreshed: ChatLine
 
   for (const line of current) {
     if (refreshedById.has(line.id)) {
+      continue;
+    }
+    if (line.toolCallId && refreshedToolCallIds.has(line.toolCallId)) {
       continue;
     }
     if (line.id.startsWith("pending:") && refreshedUserTexts.has(line.text.trim())) {

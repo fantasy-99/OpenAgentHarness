@@ -1,36 +1,44 @@
-import React, { useRef } from "react";
-import { Box, Text, useBoxMetrics, useCursor, type DOMElement } from "ink";
+import React from "react";
+import { Box, Text, useCursor, useWindowSize } from "ink";
+import type { Run, Session, Workspace } from "@oah/api-contracts";
 
-import { clampIndex, getSlashCommandMatches } from "../domain/utils.js";
+import type { Notice } from "../domain/types.js";
+import { clampIndex, getSlashCommandMatches, shortId } from "../domain/utils.js";
 
-export function PromptInput(props: { value: string; cursor: number; disabled?: boolean; running: boolean }) {
+export function PromptInput(props: {
+  value: string;
+  cursor: number;
+  disabled?: boolean;
+  running: boolean;
+  workspace: Workspace | null;
+  session: Session | null;
+  run: Run | null;
+  notice: Notice;
+  streamState: string;
+}) {
   const beforeCursor = props.value.slice(0, props.cursor);
   const afterCursor = props.value.slice(props.cursor);
-  const promptRef = useRef<DOMElement>(null!);
-  const promptMetrics = useBoxMetrics(promptRef);
   const { setCursorPosition } = useCursor();
+  const { columns, rows } = useWindowSize();
+  const prompt = "❯ ";
+  const cursorX = Math.min(Math.max(0, columns - 1), terminalWidth(prompt) + terminalWidth(beforeCursor));
+  const cursorY = Math.max(0, rows - 2);
 
   setCursorPosition(
-    !props.disabled && promptMetrics.hasMeasured
+    !props.disabled
       ? {
-          x: promptMetrics.left + 4 + terminalWidth(beforeCursor),
-          y: promptMetrics.top + 1
+          x: cursorX,
+          y: cursorY
         }
       : undefined
   );
 
   return (
-    <Box ref={promptRef} flexDirection="column">
-      <Box
-        flexDirection="row"
-        alignItems="flex-start"
-        borderStyle="round"
-        borderColor={props.disabled ? "gray" : "cyan"}
-        paddingX={1}
-        width="100%"
-      >
+    <Box flexDirection="column" height={4} overflow="hidden">
+      <Text dimColor>{"─".repeat(Math.max(0, columns))}</Text>
+      <Box flexDirection="row" width="100%" height={1}>
         <Text {...(props.disabled ? { color: "gray" } : {})} dimColor={Boolean(props.disabled)}>
-          ❯{" "}
+          {prompt}
         </Text>
         {props.value ? (
           <Text wrap="truncate-end">
@@ -41,7 +49,15 @@ export function PromptInput(props: { value: string; cursor: number; disabled?: b
           <Text> </Text>
         )}
       </Box>
-      <PromptFooter {...(props.disabled === undefined ? {} : { disabled: props.disabled })} />
+      <Text dimColor>{"─".repeat(Math.max(0, columns))}</Text>
+      <PromptFooter
+        {...(props.disabled === undefined ? {} : { disabled: props.disabled })}
+        workspace={props.workspace}
+        session={props.session}
+        run={props.run}
+        notice={props.notice}
+        streamState={props.streamState}
+      />
     </Box>
   );
 }
@@ -76,15 +92,54 @@ function characterWidth(char: string) {
   return 1;
 }
 
-function PromptFooter(props: { disabled?: boolean }) {
-  const help = props.disabled ? "modal active" : "? help";
+function PromptFooter(props: {
+  disabled?: boolean;
+  workspace: Workspace | null;
+  session: Session | null;
+  run: Run | null;
+  notice: Notice;
+  streamState: string;
+}) {
+  const sessionLabel = props.session?.title ?? shortId(props.session?.id);
+  const location = props.session ? `${props.workspace?.name ?? "no workspace"} / ${sessionLabel}` : props.workspace?.name ?? "no workspace";
+  const activity = footerActivity(props.run, props.session, props.streamState);
+  const shortcuts = props.disabled ? "modal · esc" : "? · ^W ws · ^O sess · ^C";
+
   return (
-    <Box paddingX={1}>
-      <Text dimColor wrap="truncate-end">
-        {help} · /workspace · /session · ctrl+c quit
-      </Text>
+    <Box paddingX={2} flexDirection="row" width="100%">
+      <Box flexShrink={1} flexGrow={1}>
+        <Text dimColor wrap="truncate-end">
+          <Text color="cyan" bold>
+            OAH
+          </Text>{" "}
+          {location}
+        </Text>
+      </Box>
+      <Box flexShrink={0} marginLeft={1}>
+        {props.notice.level === "error" ? (
+          <Text color="red" wrap="truncate-start">
+            {props.notice.message}
+          </Text>
+        ) : (
+          <Text dimColor wrap="truncate-start">
+            {activity ? `${activity} · ` : ""}
+            {shortcuts}
+          </Text>
+        )}
+      </Box>
     </Box>
   );
+}
+
+function footerActivity(run: Run | null, session: Session | null, streamState: string) {
+  const runStatus = run?.status;
+  if (runStatus && runStatus !== "completed") {
+    return `${session?.activeAgentName ?? "agent"} · ${runStatus}`;
+  }
+  if (!session || streamState === "idle") {
+    return "";
+  }
+  return streamState === "open" ? "connected" : streamState;
 }
 
 export function SlashSuggestions(props: { value: string; selectedIndex: number }) {

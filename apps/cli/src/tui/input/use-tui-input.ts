@@ -97,14 +97,26 @@ function handleDialogInput(input: { value: string; key: TuiInputKey; state: OahR
     }
     return;
   }
-  if (key.downArrow || value === "j") {
+  const cleanInput = cleanControlInput(value);
+  const moveDelta = key.downArrow || cleanInput === "j" ? 1 : key.upArrow || cleanInput === "k" ? -1 : 0;
+  if (moveDelta !== 0) {
     const length = dialog.kind === "workspace-list" ? state.workspaces.length : state.sessions.length;
-    state.setDialog({ ...dialog, selectedIndex: clampIndex(dialog.selectedIndex + 1, length) });
-    return;
-  }
-  if (key.upArrow || value === "k") {
-    const length = dialog.kind === "workspace-list" ? state.workspaces.length : state.sessions.length;
-    state.setDialog({ ...dialog, selectedIndex: clampIndex(dialog.selectedIndex - 1, length) });
+    const selectedIndex = clampIndex(dialog.selectedIndex + moveDelta, length);
+    if (isReturnInput(value, key)) {
+      if (dialog.kind === "workspace-list") {
+        const workspace = state.workspaces[selectedIndex];
+        if (workspace) {
+          void state.loadWorkspace(workspace);
+        }
+      } else {
+        const session = state.sessions[selectedIndex];
+        if (session) {
+          state.selectSession(session);
+        }
+      }
+    } else {
+      state.setDialog({ ...dialog, selectedIndex });
+    }
     return;
   }
   if (isReturnInput(value, key)) {

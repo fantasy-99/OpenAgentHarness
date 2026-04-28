@@ -273,6 +273,33 @@ export function useNavigationActions(params: {
     params.navigation.setExpandedWorkspaceIds((current) => current.filter((entry) => entry !== workspaceToRemoveId));
   }
 
+  function forgetWorkspaces(workspaceIdsToRemove: string[]) {
+    const workspaceIdsToRemoveSet = new Set(workspaceIdsToRemove.filter((entry) => entry.trim().length > 0));
+    if (workspaceIdsToRemoveSet.size === 0) {
+      return;
+    }
+
+    if (params.navigation.workspaceId && workspaceIdsToRemoveSet.has(params.navigation.workspaceId)) {
+      clearSessionSelection();
+      params.navigation.setWorkspaceId("");
+      params.navigation.setWorkspace(null);
+      params.navigation.setCatalog(null);
+    }
+
+    params.navigation.setSavedWorkspaces((current) => current.filter((entry) => !workspaceIdsToRemoveSet.has(entry.id)));
+    params.navigation.setSavedSessions((current) => current.filter((entry) => !workspaceIdsToRemoveSet.has(entry.workspaceId)));
+    params.navigation.setRecentWorkspaces((current) => current.filter((entry) => !workspaceIdsToRemoveSet.has(entry)));
+    params.navigation.setRecentSessions((current) =>
+      current.filter(
+        (entryId) =>
+          !params.navigation.savedSessions.some(
+            (entry) => entry.id === entryId && workspaceIdsToRemoveSet.has(entry.workspaceId)
+          )
+      )
+    );
+    params.navigation.setExpandedWorkspaceIds((current) => current.filter((entry) => !workspaceIdsToRemoveSet.has(entry)));
+  }
+
   async function deleteWorkspace(workspaceToRemoveId: string) {
     const targetWorkspace = params.navigation.savedWorkspaces.find((entry) => entry.id === workspaceToRemoveId);
     const confirmed = window.confirm(
@@ -301,6 +328,63 @@ export function useNavigationActions(params: {
 
       params.setErrorMessage(toErrorMessage(error));
     }
+  }
+
+  async function deleteWorkspacesForRuntime(runtimeName: string, workspaceIds: string[]): Promise<boolean> {
+    const normalizedRuntimeName = runtimeName.trim();
+    const workspaceIdsToRemove = Array.from(new Set(workspaceIds.map((entry) => entry.trim()).filter(Boolean)));
+    if (!normalizedRuntimeName) {
+      params.setErrorMessage("请先选择一个 runtime。");
+      return false;
+    }
+    if (workspaceIdsToRemove.length === 0) {
+      params.setActivity(`Runtime "${normalizedRuntimeName}" 下没有可删除的 workspace`);
+      params.setErrorMessage("");
+      return false;
+    }
+
+    const confirmed = window.confirm(
+      `确认删除 runtime "${normalizedRuntimeName}" 下的 ${workspaceIdsToRemove.length} 个 workspace 吗？这会删除服务端记录，并同步清理受管目录中的 workspace 文件夹。`
+    );
+    if (!confirmed) {
+      return false;
+    }
+
+    const results = await Promise.all(
+      workspaceIdsToRemove.map(async (workspaceId) => {
+        try {
+          await params.request<void>(`/api/v1/workspaces/${workspaceId}`, {
+            method: "DELETE"
+          });
+          return { workspaceId, ok: true as const };
+        } catch (error) {
+          if (isNotFoundError(error)) {
+            return { workspaceId, ok: true as const };
+          }
+          return { workspaceId, error, ok: false as const };
+        }
+      })
+    );
+
+    const deletedWorkspaceIds = results.filter((result) => result.ok).map((result) => result.workspaceId);
+    const failedResults = results.filter((result): result is Extract<(typeof results)[number], { ok: false }> => !result.ok);
+
+    if (deletedWorkspaceIds.length > 0) {
+      forgetWorkspaces(deletedWorkspaceIds);
+      void refreshWorkspaceIndex(true);
+    }
+
+    if (failedResults.length > 0) {
+      params.setActivity(
+        `Runtime "${normalizedRuntimeName}" 下已删除 ${deletedWorkspaceIds.length} 个 workspace，${failedResults.length} 个删除失败`
+      );
+      params.setErrorMessage(failedResults.map((result) => `${result.workspaceId}: ${toErrorMessage(result.error)}`).join(" | "));
+      return false;
+    }
+
+    params.setActivity(`Runtime "${normalizedRuntimeName}" 下的 ${deletedWorkspaceIds.length} 个 workspace 已删除`);
+    params.setErrorMessage("");
+    return true;
   }
 
   async function removeSavedSession(sessionToRemoveId: string) {
@@ -905,6 +989,7 @@ export function useNavigationActions(params: {
     expandWorkspaceInSidebar,
     toggleWorkspaceExpansion,
     deleteWorkspace,
+    deleteWorkspacesForRuntime,
     removeSavedSession,
     renameSession,
     switchSessionAgent,
