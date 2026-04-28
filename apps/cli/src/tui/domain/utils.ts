@@ -1,4 +1,4 @@
-import type { Message, SessionEventContract, WorkspaceRuntime } from "@oah/api-contracts";
+import type { Message, Run, SessionEventContract, WorkspaceRuntime } from "@oah/api-contracts";
 
 import type { ChatLine, VisibleWindow, WorkspaceCreateDialog, WorkspaceCreateField } from "./types.js";
 
@@ -106,6 +106,19 @@ export function messageToChatLine(message: Message): ChatLine {
     role: message.role,
     text: stringifyPart(message.content),
     createdAt: message.createdAt
+  };
+}
+
+export function runFailureToChatLine(run: Run): ChatLine | null {
+  if (run.status !== "failed" && run.status !== "timed_out") {
+    return null;
+  }
+  return {
+    id: `run-error:${run.id}`,
+    role: "system",
+    text: run.errorMessage ?? (run.status === "timed_out" ? "Run timed out" : "Run failed"),
+    createdAt: run.endedAt ?? run.createdAt,
+    tone: "error"
   };
 }
 

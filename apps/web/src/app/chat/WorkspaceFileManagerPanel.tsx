@@ -459,9 +459,9 @@ export function WorkspaceFileManagerPanel(props: { fileManager: FileManagerProps
       />
 
       {!fileManager.open ? (
-        <div className="pointer-events-none absolute bottom-24 right-4 z-30 md:bottom-28 md:right-6">
+        <div className="workspace-file-dock pointer-events-none absolute bottom-24 right-4 z-30 md:bottom-28 md:right-6">
           <Button
-            className="pointer-events-auto h-12 rounded-2xl px-4 shadow-[0_22px_48px_-28px_rgba(15,23,42,0.55)]"
+            className="workspace-file-dock-button pointer-events-auto h-12 rounded-2xl px-4 shadow-[0_22px_48px_-28px_rgba(15,23,42,0.55)]"
             onClick={() => fileManager.setOpen(true)}
           >
             <PanelRightOpen className="h-4 w-4" />
@@ -469,7 +469,7 @@ export function WorkspaceFileManagerPanel(props: { fileManager: FileManagerProps
           </Button>
         </div>
       ) : (
-        <div className="absolute inset-x-3 bottom-24 z-30 top-4 md:inset-x-auto md:bottom-28 md:right-6 md:top-6 md:w-[min(940px,calc(100%-3rem))]">
+        <div className="workspace-file-panel-shell absolute inset-x-3 bottom-24 z-30 top-4 md:inset-x-auto md:bottom-28 md:right-6 md:top-6 md:w-[min(940px,calc(100%-3rem))]">
           <div
             className={cn(
               "relative flex h-full flex-col overflow-hidden rounded-[28px] border bg-background/92 shadow-[0_32px_90px_-42px_rgba(15,23,42,0.55)] backdrop-blur-xl transition",

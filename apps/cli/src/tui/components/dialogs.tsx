@@ -14,7 +14,7 @@ export function WorkspaceDialog(props: {
 }) {
   if (props.dialog.kind === "workspace-create") {
     return (
-      <DialogBox title="New Workspace" rows={props.rows}>
+      <DialogBox title="Create workspace" rows={props.rows}>
         <WorkspaceCreateFieldRow label="Name" value={props.dialog.name} placeholder="Workspace name" selected={props.dialog.field === "name"} />
         <WorkspaceCreateFieldRow
           label="Runtime"
@@ -26,7 +26,7 @@ export function WorkspaceDialog(props: {
         <WorkspaceCreateFieldRow label="Root path" value={props.dialog.rootPath} placeholder="Managed workspace" selected={props.dialog.field === "rootPath"} />
         <WorkspaceCreateFieldRow label="Owner ID" value={props.dialog.ownerId} placeholder="optional" selected={props.dialog.field === "ownerId"} />
         <WorkspaceCreateFieldRow label="Service" value={props.dialog.serviceName} placeholder="optional" selected={props.dialog.field === "serviceName"} />
-        <Text dimColor>tab/up/down field · ←/→ runtime · ctrl+r refresh · enter create · esc back</Text>
+        <Text dimColor>tab fields · arrows choose runtime · enter create · esc back</Text>
       </DialogBox>
     );
   }
@@ -35,7 +35,7 @@ export function WorkspaceDialog(props: {
   const window = visibleWindow(props.workspaces, selectedIndex, limit);
 
   return (
-    <DialogBox title={`Workspaces ${props.workspaces.length > 0 ? `${selectedIndex + 1}/${props.workspaces.length}` : ""}`} rows={props.rows}>
+    <DialogBox title={`Switch workspace ${props.workspaces.length > 0 ? `${selectedIndex + 1}/${props.workspaces.length}` : ""}`} rows={props.rows}>
       {props.workspaces.length === 0 ? (
         <Text dimColor>No workspaces. Press n to create one.</Text>
       ) : (
@@ -53,7 +53,7 @@ export function WorkspaceDialog(props: {
           );
         })
       )}
-      <Text dimColor>enter switch · n new · r refresh · esc close</Text>
+      <Text dimColor>enter switch · n create · r refresh · esc close</Text>
     </DialogBox>
   );
 }
@@ -96,14 +96,14 @@ export function SessionDialog(props: {
 }) {
   if (props.dialog.kind === "session-create") {
     return (
-      <DialogBox title="New Session" rows={props.rows}>
-        <Text>Session title optional</Text>
+      <DialogBox title="Create session" rows={props.rows}>
+        <Text dimColor>Optional title</Text>
         <Box borderStyle="single" borderColor="cyan" paddingX={1} marginTop={1}>
           <Text color="cyan">{"> "}</Text>
           <Text>{props.dialog.draft}</Text>
           <Text inverse> </Text>
         </Box>
-        <Text dimColor>Enter creates for {props.workspace?.name ?? "current workspace"}. Esc returns. ctrl+u clears.</Text>
+        <Text dimColor>enter create · esc back · ctrl+u clear</Text>
       </DialogBox>
     );
   }
@@ -112,7 +112,7 @@ export function SessionDialog(props: {
   const window = visibleWindow(props.sessions, selectedIndex, limit);
 
   return (
-    <DialogBox title={`Sessions ${props.sessions.length > 0 ? `${selectedIndex + 1}/${props.sessions.length}` : ""}`} rows={props.rows}>
+    <DialogBox title={`Switch session ${props.sessions.length > 0 ? `${selectedIndex + 1}/${props.sessions.length}` : ""}`} rows={props.rows}>
       {props.sessions.length === 0 ? (
         <Text dimColor>No sessions in this workspace. Press n to create one.</Text>
       ) : (
@@ -129,19 +129,18 @@ export function SessionDialog(props: {
           );
         })
       )}
-      <Text dimColor>enter switch · n new · r refresh · esc close</Text>
+      <Text dimColor>enter switch · n create · r refresh · esc close</Text>
     </DialogBox>
   );
 }
 
 export function HelpDialog(props: { rows: number }) {
   return (
-    <DialogBox title="Shortcuts" rows={props.rows}>
-      <Text>Enter sends the current prompt.</Text>
-      <Text>ctrl+w opens workspace switcher.</Text>
-      <Text>ctrl+o opens session switcher.</Text>
-      <Text>? opens this help pane.</Text>
-      <Text>Esc closes panes. j/k or arrows move selection.</Text>
+    <DialogBox title="Help" rows={props.rows}>
+      <Text>enter send</Text>
+      <Text>ctrl+w workspace</Text>
+      <Text>ctrl+o session</Text>
+      <Text>j/k or arrows move</Text>
       <Box marginTop={1} flexDirection="column">
         {SLASH_COMMANDS.map((item) => (
           <Text key={item.command}>
@@ -160,12 +159,11 @@ function DialogBox(props: { title: string; rows: number; children: React.ReactNo
       <Text dimColor>{"─".repeat(Math.max(0, columns))}</Text>
       <Box justifyContent="space-between">
         <Text color="cyan" bold>
-          {"  "}
           {props.title}
         </Text>
-        <Text dimColor>Esc close  </Text>
+        <Text dimColor>Esc</Text>
       </Box>
-      <Box flexDirection="column" paddingX={2}>
+      <Box flexDirection="column" paddingX={1}>
         {props.children}
       </Box>
     </Box>

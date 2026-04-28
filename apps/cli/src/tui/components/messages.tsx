@@ -6,7 +6,16 @@ import type { ChatLine, Notice } from "../domain/types.js";
 import { shortId, SPINNER_FRAMES } from "../domain/utils.js";
 
 export function StatusLine(props: { workspace: Workspace | null; session: Session | null; run: Run | null; notice: Notice; streamState: string }) {
-  const runStatus = props.run ? props.run.status : "idle";
+  const runStatus = props.run?.status;
+  const sessionLabel = props.session?.title ?? shortId(props.session?.id);
+  const showRunStatus = runStatus && runStatus !== "completed";
+  const rightStatus = showRunStatus
+    ? `${props.session?.activeAgentName ?? "agent"} · ${runStatus}`
+    : props.session && props.streamState !== "idle"
+      ? props.streamState === "open"
+        ? "connected"
+        : props.streamState
+      : "";
   return (
     <Box flexDirection="column">
       <Box justifyContent="space-between">
@@ -15,10 +24,9 @@ export function StatusLine(props: { workspace: Workspace | null; session: Sessio
             OAH
           </Text>{" "}
           <Text dimColor>{props.workspace?.name ?? "no workspace"}</Text>
+          {props.session ? <Text dimColor> / {sessionLabel}</Text> : null}
         </Text>
-        <Text dimColor>
-          {props.session?.title ?? shortId(props.session?.id)} · {props.session?.activeAgentName ?? "no session"} · {runStatus} · {props.streamState}
-        </Text>
+        <Text dimColor>{rightStatus}</Text>
       </Box>
       {props.notice.level === "error" ? (
         <Text color="red" wrap="truncate-end">
@@ -34,7 +42,7 @@ export function Messages(props: { lines: ChatLine[]; session: Session | null; he
   if (!props.session) {
     return (
       <Box flexDirection="column" height={props.height} flexShrink={1} justifyContent="flex-end" overflow="hidden">
-        <Text dimColor>Welcome. Press ctrl+w to choose a workspace, then ctrl+o to choose or create a session.</Text>
+        <Text dimColor>No session selected. Press ctrl+o to create or switch.</Text>
       </Box>
     );
   }
@@ -42,7 +50,7 @@ export function Messages(props: { lines: ChatLine[]; session: Session | null; he
   if (visibleLines.length === 0) {
     return (
       <Box flexDirection="column" height={props.height} flexShrink={1} justifyContent="flex-end" overflow="hidden">
-        <Text dimColor>Start typing. Enter sends. /workspace and /session open switchers.</Text>
+        <Text dimColor>Start typing or use / for commands.</Text>
       </Box>
     );
   }
@@ -60,9 +68,17 @@ function MessageRow(props: { line: ChatLine }) {
   if (props.line.role === "user") {
     return (
       <Box flexDirection="column" marginBottom={1}>
-        <Text color="cyan" bold>
+        <Text color="cyan">
           ❯ <Text>{props.line.text}</Text>
         </Text>
+      </Box>
+    );
+  }
+
+  if (props.line.role === "assistant") {
+    return (
+      <Box flexDirection="column" marginBottom={1} paddingLeft={2}>
+        <Text wrap="wrap">{props.line.text}</Text>
       </Box>
     );
   }
@@ -101,10 +117,10 @@ export function SpinnerLine(props: { run: Run | null }) {
   const verb = props.run?.status === "waiting_tool" ? "Waiting for tool" : props.run?.status === "queued" ? "Queued" : "Working";
   return (
     <Box marginTop={1}>
-      <Text color="cyan">{SPINNER_FRAMES[frame]} </Text>
-      <Text dimColor>
-        {verb}… {shortId(props.run?.id)}
-      </Text>
+      <Text color="cyan">✻ </Text>
+      <Text dimColor>{verb}… </Text>
+      <Text dimColor>{shortId(props.run?.id)}</Text>
+      <Text dimColor> {SPINNER_FRAMES[frame]}</Text>
     </Box>
   );
 }

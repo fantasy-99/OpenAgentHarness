@@ -997,7 +997,7 @@ const ConversationComposer = memo(function ConversationComposer(props: Conversat
 
   return (
     <div
-      className={`pointer-events-auto relative rounded-2xl px-3 pb-3 pt-2 shadow-lg transition ${isDraggingFiles ? "ring-2 ring-sky-400/60" : ""} ${
+      className={`conversation-composer pointer-events-auto relative rounded-2xl px-3 pb-3 pt-2 shadow-lg transition ${isDraggingFiles ? "ring-2 ring-sky-400/60" : ""} ${
         draftAttachments.length > 0 ? "mt-28" : ""
       }`}
       style={{
@@ -1326,7 +1326,7 @@ const ConversationMessageRow = memo(function ConversationMessageRow(props: Conve
       style={deferredRenderStyle}
     >
       <div
-        className={`flex-shrink-0 w-8 h-8 md:w-9 md:h-9 rounded-full flex items-center justify-center text-sm shadow-elegant overflow-hidden ${
+        className={`conversation-avatar flex-shrink-0 w-8 h-8 md:w-9 md:h-9 rounded-full flex items-center justify-center text-sm shadow-elegant overflow-hidden ${
           isUser ? "bg-foreground text-background text-xs font-medium" : "bg-muted"
         }`}
       >
@@ -1339,8 +1339,8 @@ const ConversationMessageRow = memo(function ConversationMessageRow(props: Conve
             isToolOnly
               ? "selection-surface"
               : isUser
-              ? "selection-inverse inline-block select-text text-left rounded-2xl px-4 py-3 bg-foreground text-background shadow-elegant border-elegant"
-              : "selection-surface select-text rounded-2xl px-4 py-3 shadow-elegant border-elegant hover-lift bg-card"
+              ? "conversation-message-bubble conversation-message-bubble-user selection-inverse inline-block select-text text-left rounded-2xl px-4 py-3 bg-foreground text-background shadow-elegant border-elegant"
+              : "conversation-message-bubble conversation-message-bubble-assistant selection-surface select-text rounded-2xl px-4 py-3 shadow-elegant border-elegant hover-lift bg-card"
           }
         >
           <MessageContent content={message.content} isUser={isUser} messageMetadata={message.metadata} isStreaming={isStreaming} />
@@ -1394,7 +1394,7 @@ const QueuedRunsPanel = memo(function QueuedRunsPanel(props: QueuedRunsPanelProp
 
   return (
     <div
-      className="pointer-events-auto mb-3 rounded-2xl border px-3 py-3 shadow-lg"
+      className="conversation-queued-panel pointer-events-auto mb-3 rounded-2xl border px-3 py-3 shadow-lg"
       style={{
         background: "color-mix(in srgb, var(--background) 88%, transparent)",
         backdropFilter: "blur(12px)",

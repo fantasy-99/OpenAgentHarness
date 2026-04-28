@@ -13,12 +13,10 @@ export function PromptInput(props: { value: string; cursor: number; disabled?: b
         alignItems="flex-start"
         borderStyle="round"
         borderColor={props.disabled ? "gray" : "cyan"}
-        borderLeft={false}
-        borderRight={false}
-        borderBottom
+        paddingX={1}
         width="100%"
       >
-        <Text {...(props.disabled ? { color: "gray" } : {})} dimColor={Boolean(props.running || props.disabled)}>
+        <Text {...(props.disabled ? { color: "gray" } : {})} dimColor={Boolean(props.disabled)}>
           ❯{" "}
         </Text>
         {props.value ? (
@@ -29,7 +27,7 @@ export function PromptInput(props: { value: string; cursor: number; disabled?: b
           </Text>
         ) : (
           <Text dimColor>
-            message OAH, or type /workspace{!props.disabled ? <Text inverse> </Text> : null}
+            message OAH{!props.disabled ? <Text inverse> </Text> : null}
           </Text>
         )}
       </Box>
@@ -39,11 +37,11 @@ export function PromptInput(props: { value: string; cursor: number; disabled?: b
 }
 
 function PromptFooter(props: { disabled?: boolean }) {
-  const help = props.disabled ? "modal active" : "? for shortcuts";
+  const help = props.disabled ? "modal active" : "? help";
   return (
-    <Box paddingX={2}>
+    <Box paddingX={1}>
       <Text dimColor wrap="truncate-end">
-        {help} · ctrl+w workspace · ctrl+o session · enter send · ctrl+c quit
+        {help} · /workspace · /session · ctrl+c quit
       </Text>
     </Box>
   );
@@ -58,7 +56,7 @@ export function SlashSuggestions(props: { value: string }) {
     return null;
   }
   return (
-    <Box flexDirection="column" paddingX={2}>
+    <Box flexDirection="column" paddingX={1} marginBottom={1}>
       {matches.map((item, index) => (
         <Text key={item.command} {...(index === 0 ? { color: "cyan" } : {})} dimColor={index !== 0}>
           {index === 0 ? "❯" : " "} {item.command} <Text dimColor>{item.description}</Text>
