@@ -680,6 +680,13 @@ describe("server runtime process modes", () => {
     });
   });
 
+  it("defaults workspace materialization idle ttl to fifteen minutes", () => {
+    expect(resolveWorkspaceMaterializationConfig({})).toEqual({
+      idleTtlMs: 900_000,
+      maintenanceIntervalMs: 5_000
+    });
+  });
+
   it("lets env vars override workspace materialization timings", () => {
     vi.stubEnv("OAH_WORKSPACE_MATERIALIZATION_IDLE_TTL_MS", "900000");
     vi.stubEnv("OAH_WORKSPACE_MATERIALIZATION_MAINTENANCE_INTERVAL_MS", "12000");

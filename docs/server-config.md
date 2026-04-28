@@ -166,7 +166,7 @@ llm:
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `materialization.idle_ttl_ms` | number | Active Workspace Copy 空闲多久后触发 flush / 回收。默认 `1800000` |
+| `materialization.idle_ttl_ms` | number | Active Workspace Copy 空闲多久后触发 flush / 回收。默认 `900000` |
 | `materialization.maintenance_interval_ms` | number | workspace materialization 后台维护周期。默认 `5000` |
 
 > **tip**

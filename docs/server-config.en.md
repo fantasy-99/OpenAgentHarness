@@ -166,7 +166,7 @@ llm:
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `materialization.idle_ttl_ms` | number | How long an active workspace copy may stay idle before flush / cleanup is considered. Default `1800000`. |
+| `materialization.idle_ttl_ms` | number | How long an active workspace copy may stay idle before flush / cleanup is considered. Default `900000`. |
 | `materialization.maintenance_interval_ms` | number | Background maintenance interval for workspace materialization. Default `5000`. |
 
 > **tip**

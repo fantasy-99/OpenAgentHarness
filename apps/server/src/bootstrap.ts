@@ -473,7 +473,7 @@ export function resolveWorkspaceMaterializationConfig(
   return {
     idleTtlMs: parsePositiveIntEnv(
       "OAH_WORKSPACE_MATERIALIZATION_IDLE_TTL_MS",
-      config.workspace?.materialization?.idle_ttl_ms ?? 1_800_000
+      config.workspace?.materialization?.idle_ttl_ms ?? 900_000
     ),
     maintenanceIntervalMs: parsePositiveIntEnv(
       "OAH_WORKSPACE_MATERIALIZATION_MAINTENANCE_INTERVAL_MS",
