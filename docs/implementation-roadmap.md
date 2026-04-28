@@ -131,13 +131,14 @@
 
 ### Phase 7: 调试 CLI / TUI
 
-- 实现 `oah workspace list`
-- 实现 `oah catalog show`
+- 已有初版 `oah tui` 作为终端调试入口
+- 已有初版 `oah workspace:list` / `oah workspaces`
+- 已有初版 `oah catalog:show`
 - 实现统一的 `oah session inspect`
 - 实现 `oah action run`
 - 实现 `oah model generate`
 - 实现 `oah run inspect`
-- 在上述 CLI 能力基础上实现 `oah tui`
+- 继续增强 TUI 的 run timeline、tool call、prompt compose 和 catalog 检视
 
 ### Phase 8: Hook 与治理能力
 

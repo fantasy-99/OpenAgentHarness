@@ -3,9 +3,8 @@ import { Box, useApp, useWindowSize } from "ink";
 
 import type { OahConnection } from "../api/oah-api.js";
 import { HelpDialog, SessionDialog, WorkspaceDialog } from "./components/dialogs.js";
-import { Messages, SpinnerLine } from "./components/messages.js";
-import { PromptInput, SlashSuggestions } from "./components/prompt.js";
-import { getSlashCommandMatches } from "./domain/utils.js";
+import { getMessagesRowCount, Messages, SpinnerLine } from "./components/messages.js";
+import { getPromptInputRowCount, getSlashSuggestionRowCount, PromptInput } from "./components/prompt.js";
 import { useTuiInput } from "./input/use-tui-input.js";
 import { useOahReplState } from "./state/use-oah-repl-state.js";
 
@@ -22,12 +21,19 @@ function OahRepl({ connection }: { connection: OahConnection }) {
 
   const latestRun = state.runs[0] ?? null;
   const runActive = latestRun?.status === "queued" || latestRun?.status === "running" || latestRun?.status === "waiting_tool";
-  const slashMatches = !state.dialog ? getSlashCommandMatches(state.composer) : [];
-  const suggestionRows = slashMatches.length > 0 ? slashMatches.length + 1 : 0;
+  const suggestionRows = !state.dialog ? getSlashSuggestionRowCount(state.composer) : 0;
   const spinnerRows = runActive ? 2 : 0;
-  const chromeRows = 5 + suggestionRows + spinnerRows;
+  const promptRows = getPromptInputRowCount(state.composer, columns) + suggestionRows + 4;
+  const chromeRows = promptRows + spinnerRows;
   const dialogRows = state.dialog ? Math.max(8, Math.min(Math.floor(height * 0.66), height - chromeRows - 3)) : 0;
   const transcriptHeight = Math.max(3, height - dialogRows - chromeRows);
+  const messageRows = getMessagesRowCount({
+    lines: state.messages,
+    session: state.currentSession,
+    height: transcriptHeight,
+    columns
+  });
+  const promptCursorY = messageRows + spinnerRows + dialogRows + 1;
   const agentMode =
     state.catalog?.agents.find((agent) => agent.name === state.currentSession?.activeAgentName)?.mode ??
     (state.currentSession ? "unknown" : "");
@@ -62,16 +68,15 @@ function OahRepl({ connection }: { connection: OahConnection }) {
           serviceUrl={connection.baseUrl}
           height={transcriptHeight}
           columns={columns}
-          scrollOffset={state.transcriptScroll}
-          onScrollOffsetChange={state.setTranscriptScrollOffset}
         />
         <SpinnerLine run={latestRun} />
       </Box>
       {activeDialog}
-      {!state.dialog ? <SlashSuggestions value={state.composer} selectedIndex={state.slashSelection} /> : null}
       <PromptInput
         value={state.composer}
         cursor={state.composerCursor}
+        slashSelection={state.slashSelection}
+        cursorY={promptCursorY}
         disabled={state.dialog !== null}
         running={runActive}
         workspace={state.currentWorkspace}
@@ -80,7 +85,6 @@ function OahRepl({ connection }: { connection: OahConnection }) {
         notice={state.notice}
         streamState={state.streamState}
         agentMode={agentMode}
-        transcriptScroll={state.transcriptScroll}
       />
     </Box>
   );

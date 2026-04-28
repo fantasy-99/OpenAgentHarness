@@ -1,10 +1,10 @@
-# Debug CLI And TUI
+# Debug CLI 与 TUI
 
 ## 定位
 
 OpenAgentHarness 本身仍然是 headless runtime，不提供正式产品 UI。
 
-但为了调试、开发和排障，建议提供一个轻量的调试工具：
+但为了调试、开发和排障，仓库提供了一个轻量的终端调试入口：
 
 - `oah` CLI
 - `oah tui`
@@ -21,6 +21,26 @@ OpenAgentHarness 本身仍然是 headless runtime，不提供正式产品 UI。
 - 面向最终用户的聊天客户端
 - 配置后台或管理平台
 
+## 当前入口
+
+本地 stack 启动后，可以直接连接本地 API：
+
+```bash
+pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui
+```
+
+当前 CLI 已包含：
+
+```text
+oah
+  tui
+  workspace:list
+  workspaces
+  catalog:show --workspace <id>
+```
+
+`workspace:list` / `workspaces` 用于列出可见 workspace，`catalog:show` 用于查看指定 workspace 的 catalog JSON，`tui` 则进入交互式调试界面。
+
 ## 为什么优先 TUI
 
 相比 Web UI，TUI 更适合当前系统：
@@ -32,7 +52,7 @@ OpenAgentHarness 本身仍然是 headless runtime，不提供正式产品 UI。
 
 ## 工具形态
 
-建议采用同一个二进制入口：
+采用同一个二进制入口：
 
 - `oah`
 
@@ -45,7 +65,7 @@ OpenAgentHarness 本身仍然是 headless runtime，不提供正式产品 UI。
 
 ## CLI 命令结构
 
-建议命令树：
+长期命令树可以继续朝下面扩展：
 
 ```text
 oah
@@ -62,16 +82,16 @@ oah
   run cancel
 ```
 
-### 推荐首批命令
+### 首批命令与后续补齐
 
 - `oah tui`
   - 启动调试 TUI
-- `oah workspace list`
+- `oah workspace:list` / `oah workspaces`
   - 列出已发现 workspace
-- `oah catalog show --workspace <id>`
+- `oah catalog:show --workspace <id>`
   - 查看当前 workspace 的 agents / models / actions / skills / tools / hooks
 - `oah session inspect --workspace <id>`
-  - 直接发起交互式对话
+  - 后续可补成脚本化或非 TUI 的 session 调试入口
 - `oah action run --workspace <id> --action <name>`
   - 手动触发 action
 - `oah model generate --model <name>`
@@ -81,7 +101,7 @@ oah
 
 ## TUI 页面建议
 
-建议最少包含以下区域：
+当前 TUI 的默认工作流围绕“当前 workspace 的当前 session”展开，避免把 workspace、catalog、session 三套概念同时铺满屏幕。后续能力可以按需展开以下区域：
 
 - Workspace 列表
 - Catalog 面板
@@ -160,7 +180,7 @@ oah
 
 ## 特别有价值的调试能力
 
-建议优先支持：
+后续建议优先补强：
 
 - 查看最终可见 model catalog
 - 查看最终可见 agent catalog
@@ -214,18 +234,18 @@ CLI/TUI 不负责：
 
 ## 实现建议
 
-技术上建议：
+当前技术选型与演进方向：
 
-- CLI 参数层：`commander` 或 `cac`
-- TUI：`ink` 或 `blessed`
+- CLI 参数层：`commander`
+- TUI：`ink`
 - SSE：直接复用现有事件流协议
 - 本地模型调用：复用内部模型运行时
 
 ## 实施优先级
 
-建议顺序：
+建议后续顺序：
 
-1. 先做 CLI
-2. 在 CLI 基础上补 `oah tui`
-3. 先保证 catalog、session inspect、run inspect、model generate 可用
-4. 再补 hooks、subagent、prompt compose 可视化
+1. 稳定现有 `workspace:list`、`catalog:show` 和 `oah tui`
+2. 补齐非交互式 `session inspect`、`run inspect`、`model generate`
+3. 在 TUI 内增强 run timeline、tool call、prompt compose 与 catalog 检视
+4. 再补 hooks、subagent、action 环境变量摘要等深层排障视图

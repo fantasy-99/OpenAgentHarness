@@ -38,14 +38,23 @@ pnpm dev:web
 
 Open [http://localhost:5174](http://localhost:5174).
 
+If you prefer to stay in the terminal, start the TUI instead:
+
+```bash
+pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui
+```
+
+The TUI connects to the same `oah-api` and lets you select a workspace, enter a session, send messages, and watch streaming output.
+
 ## Verify It Works
 
 After startup, check:
 
 1. `oah-api`, `oah-controller`, `oah-compose-scaler`, and `oah-sandbox` all start successfully
 2. Browser opens `http://localhost:5174`
-3. Send a message in the console. The run should move from `queued` to executing.
-4. While a run is still active, sending another message should place it into the server-side queue surfaced above the input box through `/api/v1/sessions/{sessionId}/queue`. Use the `Guide` button to call `/api/v1/runs/{runId}/guide` if you want to interrupt the active run immediately.
+3. Or the TUI can connect to `http://127.0.0.1:8787` and list workspaces
+4. Send a message in the console or TUI. The run should move from `queued` to executing.
+5. While a run is still active, sending another message should place it into the server-side queue surfaced above the input box through `/api/v1/sessions/{sessionId}/queue`. Use the `Guide` button to call `/api/v1/runs/{runId}/guide` if you want to interrupt the active run immediately.
 
 !!! tip
     If the backend is not at the default address, set the proxy target:
@@ -85,6 +94,7 @@ Optional flags: `--tool-dir`, `--skill-dir`, `--host`, `--port`
 | `pnpm exec tsx --tsconfig ./apps/controller/tsconfig.json ./apps/controller/src/index.ts -- --config ./server.example.yaml` | Start `oah-controller` only |
 | `pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/worker.ts -- --config ./server.example.yaml` | Start a standalone worker (typically inside `oah-sandbox`) |
 | `pnpm dev:web` | Start debug console |
+| `pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui` | Start the terminal debug TUI |
 | `pnpm build` | Full build |
 | `pnpm test` | Run tests |
 | `mkdocs serve` | Preview docs locally |
@@ -94,6 +104,7 @@ Optional flags: `--tool-dir`, `--skill-dir`, `--host`, `--port`
 - [Architecture Overview](./architecture-overview.md) — Understand the system structure
 - [Workspace Guide](./workspace/README.md) — Configure agents, skills, and tools
 - [Deploy and Run](./deploy.md) — Unified local vs split production deployment
+- [Debug CLI and TUI](./debug-cli-tui.md) — Use the terminal debug surface
 - [Design Overview](./design-overview.md) — Core design decisions
 
 ## Local Object Storage Startup Tuning

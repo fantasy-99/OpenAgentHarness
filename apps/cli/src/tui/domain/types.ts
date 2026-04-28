@@ -15,6 +15,9 @@ export type ChatLine = {
   toolName?: string | undefined;
   toolCallId?: string | undefined;
   toolStatus?: "queued" | "running" | "completed" | "failed" | "denied" | "waiting" | undefined;
+  toolInput?: unknown;
+  toolOutput?: unknown;
+  toolOutputText?: string | undefined;
   durationMs?: number | undefined;
   sourceType?: string | undefined;
 };

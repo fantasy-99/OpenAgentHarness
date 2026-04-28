@@ -2,7 +2,7 @@
 
 ## 1. 定位
 
-Open Agent Harness 是一个 headless Agent Engine。不提供 UI，通过 OpenAPI + SSE 暴露能力，供 Web、桌面、CLI 或自动化系统接入。
+Open Agent Harness 是一个 headless Agent Engine。不提供正式产品 UI，通过 OpenAPI + SSE 暴露能力，供 Web、桌面、CLI、TUI 或自动化系统接入。仓库里的 Web 控制台和 `oah tui` 都是调试界面，用来观察 runtime、session、run 和存储状态。
 
 两类使用者：
 
@@ -105,7 +105,7 @@ Open Agent Harness 是一个 headless Agent Engine。不提供 UI，通过 OpenA
 
 ```mermaid
 flowchart TD
-    A[Clients\nWeb / Desktop / CLI / API Consumers] --> B[Identity / Access Service]
+    A[Clients\nWeb / Desktop / CLI / TUI / API Consumers] --> B[Identity / Access Service]
     B --> C[API Server]
     C --> D[Controller]
     C --> E[Worker Routing / Owner Proxy]

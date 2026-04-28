@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { SetStateAction } from "react";
 import type { Run, Session, SessionEventContract, Workspace, WorkspaceCatalog, WorkspaceRuntime } from "@oah/api-contracts";
 
 import { OahApiClient, type OahConnection } from "../../api/oah-api.js";
@@ -31,11 +32,12 @@ export function useOahReplState(connection: OahConnection) {
   const [composer, setComposer] = useState("");
   const [composerCursor, setComposerCursor] = useState(0);
   const [slashSelection, setSlashSelection] = useState(0);
-  const [transcriptScroll, setTranscriptScroll] = useState(0);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [notice, setNotice] = useState<Notice>({ level: "info", message: "Loading workspaces..." });
   const [streamState, setStreamState] = useState("idle");
   const lastCursorRef = useRef<string | undefined>(undefined);
+  const composerRef = useRef("");
+  const composerCursorRef = useRef(0);
 
   const setError = useCallback((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -46,7 +48,6 @@ export function useOahReplState(connection: OahConnection) {
     setMessages([]);
     setRuns([]);
     setEvents([]);
-    setTranscriptScroll(0);
     lastCursorRef.current = undefined;
   }, []);
 
@@ -201,42 +202,46 @@ export function useOahReplState(connection: OahConnection) {
     [resetSessionView]
   );
 
-  const setComposerValue = useCallback((value: string) => {
+  const applyComposerValue = useCallback((value: string, cursor: number) => {
+    const nextCursor = Math.max(0, Math.min(cursor, value.length));
+    composerRef.current = value;
+    composerCursorRef.current = nextCursor;
     setComposer(value);
-    setComposerCursor(value.length);
+    setComposerCursor(nextCursor);
     setSlashSelection(0);
   }, []);
 
-  const scrollTranscript = useCallback((delta: number) => {
-    setTranscriptScroll((current) => Math.max(0, current + delta));
+  const setComposerCursorValue = useCallback((value: SetStateAction<number>) => {
+    const nextCursor = typeof value === "function" ? value(composerCursorRef.current) : value;
+    const clampedCursor = Math.max(0, Math.min(nextCursor, composerRef.current.length));
+    composerCursorRef.current = clampedCursor;
+    setComposerCursor(clampedCursor);
   }, []);
 
-  const resetTranscriptScroll = useCallback(() => {
-    setTranscriptScroll(0);
-  }, []);
-
-  const setTranscriptScrollOffset = useCallback((offset: number) => {
-    setTranscriptScroll(Math.max(0, offset));
-  }, []);
+  const setComposerValue = useCallback(
+    (value: string) => {
+      applyComposerValue(value, value.length);
+    },
+    [applyComposerValue]
+  );
 
   const insertComposerInput = useCallback(
     (input: string) => {
-      const cursor = composerCursor;
-      setComposer((current) => insertTextAt(current, cursor, input));
-      setComposerCursor(cursor + input.length);
-      setSlashSelection(0);
+      const current = composerRef.current;
+      const cursor = composerCursorRef.current;
+      applyComposerValue(insertTextAt(current, cursor, input), cursor + input.length);
     },
-    [composerCursor]
+    [applyComposerValue]
   );
 
   const deleteComposerInput = useCallback(() => {
-    if (composerCursor <= 0) {
+    const current = composerRef.current;
+    const cursor = composerCursorRef.current;
+    if (cursor <= 0) {
       return;
     }
-    setComposer((current) => `${current.slice(0, composerCursor - 1)}${current.slice(composerCursor)}`);
-    setComposerCursor((cursor) => Math.max(0, cursor - 1));
-    setSlashSelection(0);
-  }, [composerCursor]);
+    applyComposerValue(`${current.slice(0, cursor - 1)}${current.slice(cursor)}`, cursor - 1);
+  }, [applyComposerValue]);
 
   const openWorkspaceCreator = useCallback(() => {
     setDialog(createWorkspaceDialog(currentWorkspace?.runtime ?? runtimes[0]?.name, runtimes));
@@ -244,7 +249,7 @@ export function useOahReplState(connection: OahConnection) {
 
   const sendComposer = useCallback(
     async (override?: string) => {
-      const content = (override ?? composer).trim();
+      const content = (override ?? composerRef.current).trim();
       if (!content) {
         return;
       }
@@ -286,7 +291,6 @@ export function useOahReplState(connection: OahConnection) {
       }
 
       setComposerValue("");
-      resetTranscriptScroll();
       const optimistic: ChatLine = {
         id: `pending:${Date.now()}`,
         role: "user",
@@ -303,7 +307,7 @@ export function useOahReplState(connection: OahConnection) {
         setError(error);
       }
     },
-    [client, composer, currentSession, openWorkspaceCreator, refreshSession, resetTranscriptScroll, setComposerValue, setError]
+    [client, currentSession, openWorkspaceCreator, refreshSession, setComposerValue, setError]
   );
 
   useEffect(() => {
@@ -387,17 +391,13 @@ export function useOahReplState(connection: OahConnection) {
     composer,
     composerCursor,
     slashSelection,
-    transcriptScroll,
     dialog,
     notice,
     streamState,
-    setComposerCursor,
+    setComposerCursor: setComposerCursorValue,
     setComposerValue,
     setSlashSelection,
     setDialog,
-    scrollTranscript,
-    resetTranscriptScroll,
-    setTranscriptScrollOffset,
     insertComposerInput,
     deleteComposerInput,
     refreshRuntimes,

@@ -2,7 +2,7 @@
 
 ## 1. What This Is
 
-Open Agent Harness is a headless agent runtime. It has no UI -- it exposes capabilities through OpenAPI + SSE for web apps, desktop clients, CLIs, and automation systems.
+Open Agent Harness is a headless agent runtime. It has no product UI -- it exposes capabilities through OpenAPI + SSE for web apps, desktop clients, CLIs, TUIs, and automation systems. The shipped web console and `oah tui` are debug surfaces for observing runtime, session, run, and storage state.
 
 Two types of users:
 
@@ -103,7 +103,7 @@ In other words:
 
 ```mermaid
 flowchart TD
-    A[Clients\nWeb / Desktop / CLI / API Consumers] --> B[Identity / Access Service]
+    A[Clients\nWeb / Desktop / CLI / TUI / API Consumers] --> B[Identity / Access Service]
     B --> C[API Server]
     C --> D[Controller]
     C --> E[Worker Routing / Owner Proxy]

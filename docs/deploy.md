@@ -36,9 +36,14 @@ pnpm local:up
 
 # 终端 3 — 前端
 pnpm dev:web
+
+# 可选 — 终端 TUI
+pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui
 ```
 
 前端默认地址：`http://localhost:5174`
+
+TUI 连接同一个本地 API：`http://127.0.0.1:8787`
 
 > **info**
 > 首次运行前先执行 `pnpm install` 安装依赖。
@@ -67,9 +72,14 @@ pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/worker.ts
 
 # 终端 5 — 前端
 pnpm dev:web
+
+# 可选 — 终端 TUI
+pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui
 ```
 
 `oah-api` 只负责 HTTP 请求与 owner 路由；`oah-controller` 负责控制面；standalone worker 通常运行在 `oah-sandbox` 或 E2B sandbox 内，消费 Redis 队列并执行 Run。
+
+调试时 Web 控制台和 TUI 都只通过 `oah-api` 访问系统能力；TUI 更适合在服务器或本地 shell 内快速切换 workspace/session、查看流式输出。
 
 ### Kubernetes Split 部署
 

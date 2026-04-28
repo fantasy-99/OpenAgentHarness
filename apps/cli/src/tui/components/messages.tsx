@@ -4,12 +4,15 @@ import type { Run, Session, Workspace } from "@oah/api-contracts";
 
 import type { ChatLine } from "../domain/types.js";
 import { shortId, SPINNER_FRAMES } from "../domain/utils.js";
+import { Markdown, getMarkdownRowCount } from "./markdown.js";
+import { MessageResponse } from "./message-response.js";
 import { StartBanner } from "./start-banner.js";
+import { rowCountForText, wrapTerminalRows } from "./terminal-text.js";
+import { getToolLineRowCount, ToolLine } from "./tool-renderers.js";
 
 type VisibleChatLine = ChatLine & {
   displayText: string;
   marginBottom: number;
-  clipped?: boolean;
 };
 
 export function Messages(props: {
@@ -19,24 +22,14 @@ export function Messages(props: {
   serviceUrl: string;
   height: number;
   columns: number;
-  scrollOffset: number;
-  onScrollOffsetChange: (offset: number) => void;
 }) {
-  const { onScrollOffsetChange, scrollOffset } = props;
   const hasMessages = props.session !== null && props.lines.length > 0;
-  const viewport = hasMessages ? getViewportLines(props.lines, props.height, props.columns, scrollOffset) : { lines: [], scrollOffset: 0 };
-  const visibleLines = viewport.lines;
+  const visibleLines = hasMessages ? getTranscriptLines(props.lines) : [];
   const bannerSubtitle = !props.session
     ? "Create or switch to a session with ^O"
     : hasMessages
       ? "Resuming your session"
       : "Start typing or use / for commands";
-
-  useEffect(() => {
-    if (hasMessages && viewport.scrollOffset !== scrollOffset) {
-      onScrollOffsetChange(viewport.scrollOffset);
-    }
-  }, [hasMessages, onScrollOffsetChange, scrollOffset, viewport.scrollOffset]);
 
   if (!props.session) {
     return (
@@ -71,161 +64,74 @@ export function Messages(props: {
   }
 
   return (
-    <Box flexDirection="column" height={props.height} flexShrink={1} overflow="hidden">
-      <Box flexDirection="column" height={props.height} flexShrink={1} justifyContent="flex-end" overflow="hidden">
+    <Box flexDirection="column">
+      <Box marginBottom={1}>
+        <StartBanner
+          height={props.columns >= 70 ? 12 : 7}
+          columns={props.columns}
+          subtitle={bannerSubtitle}
+          serviceUrl={props.serviceUrl}
+          workspaceName={props.workspace?.name}
+          sessionTitle={props.session.title}
+          sessionId={props.session.id}
+          compact={props.columns < 70}
+        />
+      </Box>
+      <Box flexDirection="column">
         {visibleLines.map((line) => (
-          <MessageRow key={line.id} line={line} />
+          <MessageRow key={line.id} line={line} columns={props.columns} />
         ))}
       </Box>
     </Box>
   );
 }
 
-function MessageRow(props: { line: VisibleChatLine }) {
-  if (props.line.clipped) {
-    return <ClippedLine line={props.line} />;
+export function getMessagesRowCount(input: { lines: ChatLine[]; session: Session | null; height: number; columns: number }) {
+  const hasMessages = input.session !== null && input.lines.length > 0;
+  if (!input.session || !hasMessages) {
+    return input.height;
   }
 
+  const bannerRows = input.columns >= 70 ? 12 : 7;
+  const bannerMargin = 1;
+  return bannerRows + bannerMargin + input.lines.reduce((rows, line, index) => rows + lineRowCount(line, input.columns, index === input.lines.length - 1), 0);
+}
+
+function MessageRow(props: { line: VisibleChatLine; columns: number }) {
   if (props.line.role === "user") {
     return (
       <Box flexDirection="column" marginBottom={props.line.marginBottom}>
         <Text color="cyan">
-          ❯ <Text>{props.line.displayText}</Text>
+          ❯ <Text wrap="wrap">{props.line.displayText}</Text>
         </Text>
       </Box>
     );
   }
 
+  if (props.line.kind === "tool") {
+    return <ToolLine line={props.line} columns={props.columns} />;
+  }
+
   if (props.line.role === "assistant") {
     return (
       <Box flexDirection="column" marginBottom={props.line.marginBottom} paddingLeft={2}>
-        <MarkdownLite text={props.line.displayText} />
+        <Markdown text={props.line.displayText} />
       </Box>
     );
-  }
-
-  if (props.line.kind === "tool") {
-    return <ToolLine line={props.line} />;
   }
 
   if (props.line.kind === "attachment" || props.line.kind === "approval" || props.line.kind === "reasoning") {
     return <DecoratedLine line={props.line} />;
   }
 
-  const color = props.line.tone === "error" ? "red" : props.line.role === "assistant" ? undefined : "gray";
+  const color = props.line.tone === "error" ? "red" : undefined;
   return (
-    <Box flexDirection="row" marginBottom={props.line.marginBottom}>
-      <Box flexShrink={0}>
-        <Text dimColor>{"  "}⎿  </Text>
-      </Box>
-      <Box flexGrow={1} flexDirection="column">
+    <Box flexDirection="column" marginBottom={props.line.marginBottom}>
+      <MessageResponse>
         <Text {...(color ? { color } : {})} dimColor={props.line.tone === "muted"} wrap="wrap">
           {props.line.displayText}
         </Text>
-      </Box>
-    </Box>
-  );
-}
-
-function MarkdownLite(props: { text: string }) {
-  const rows = props.text.split("\n");
-  let inFence = false;
-  return (
-    <Box flexDirection="column">
-      {rows.map((row, index) => {
-        const trimmed = row.trim();
-        if (trimmed.startsWith("```")) {
-          inFence = !inFence;
-          return (
-            <Text key={index} dimColor>
-              {row}
-            </Text>
-          );
-        }
-        if (inFence) {
-          return (
-            <Text key={index} color="gray">
-              {row}
-            </Text>
-          );
-        }
-        if (/^#{1,4}\s/u.test(trimmed)) {
-          return (
-            <Text key={index} color="cyan" bold>
-              {trimmed.replace(/^#{1,4}\s/u, "")}
-            </Text>
-          );
-        }
-        const bullet = row.match(/^(\s*)([-*+])\s+(.*)$/u);
-        if (bullet) {
-          return (
-            <Text key={index}>
-              {bullet[1]}
-              <Text dimColor>{bullet[2]}</Text> {bullet[3]}
-            </Text>
-          );
-        }
-        const numbered = row.match(/^(\s*)(\d+\.)\s+(.*)$/u);
-        if (numbered) {
-          return (
-            <Text key={index}>
-              {numbered[1]}
-              <Text dimColor>{numbered[2]}</Text> {numbered[3]}
-            </Text>
-          );
-        }
-        return <Text key={index}>{row}</Text>;
-      })}
-    </Box>
-  );
-}
-
-function ToolLine(props: { line: VisibleChatLine }) {
-  const status = props.line.toolStatus ?? (props.line.tone === "error" ? "failed" : "completed");
-  const isError = status === "failed" || status === "denied";
-  const response = toolResponseText(props.line);
-  return (
-    <Box flexDirection="column" marginBottom={props.line.marginBottom}>
-      <Box flexDirection="row" flexWrap="nowrap">
-        <ToolStatusDot status={status} />
-        <Text bold wrap="truncate-end" {...(isError ? { color: "red" } : {})}>
-          {props.line.title ?? props.line.toolName ?? "Tool"}
-        </Text>
-        {props.line.detail ? <Text dimColor> ({props.line.detail})</Text> : null}
-        {props.line.sourceType ? <Text dimColor> · {props.line.sourceType}</Text> : null}
-      </Box>
-      {response ? (
-        <MessageResponse>
-          <CappedText text={response} {...(isError ? { color: "red" } : {})} />
-        </MessageResponse>
-      ) : status === "running" ? (
-        <MessageResponse>
-          <Text dimColor>Running…</Text>
-        </MessageResponse>
-      ) : null}
-    </Box>
-  );
-}
-
-function ToolStatusDot(props: { status: NonNullable<ChatLine["toolStatus"]> }) {
-  const [visible, setVisible] = useState(true);
-  const running = props.status === "running" || props.status === "queued" || props.status === "waiting";
-
-  useEffect(() => {
-    if (!running) {
-      setVisible(true);
-      return;
-    }
-    const timer = setInterval(() => setVisible((current) => !current), 420);
-    return () => clearInterval(timer);
-  }, [running]);
-
-  const color = props.status === "failed" || props.status === "denied" ? "red" : props.status === "completed" ? "green" : "cyan";
-  return (
-    <Box minWidth={2}>
-      <Text color={color} dimColor={running}>
-        {running && !visible ? " " : "●"}
-      </Text>
+      </MessageResponse>
     </Box>
   );
 }
@@ -241,7 +147,7 @@ function DecoratedLine(props: { line: VisibleChatLine }) {
             {props.line.detail ? <Text dimColor> ({props.line.detail})</Text> : null}
           </Text>
           {props.line.title && props.line.displayText !== props.line.title ? (
-            <Text {...(color ? { color } : {})} dimColor={props.line.tone === "muted"}>
+            <Text {...(color ? { color } : {})} dimColor={props.line.tone === "muted"} wrap="wrap">
               {props.line.displayText}
             </Text>
           ) : null}
@@ -251,151 +157,28 @@ function DecoratedLine(props: { line: VisibleChatLine }) {
   );
 }
 
-function ClippedLine(props: { line: VisibleChatLine }) {
-  if (props.line.role === "user") {
-    return (
-      <Box flexDirection="column" marginBottom={props.line.marginBottom}>
-        <Text color="cyan">
-          ❯ <Text>{props.line.displayText}</Text>
-        </Text>
-      </Box>
-    );
-  }
-
-  if (props.line.role === "assistant") {
-    return (
-      <Box flexDirection="column" marginBottom={props.line.marginBottom} paddingLeft={2}>
-        <MarkdownLite text={props.line.displayText} />
-      </Box>
-    );
-  }
-
-  const color = props.line.tone === "error" ? "red" : undefined;
-  return (
-    <Box flexDirection="column" marginBottom={props.line.marginBottom}>
-      <MessageResponse>
-        <Text {...(color ? { color } : {})} dimColor={props.line.tone === "muted"} wrap="wrap">
-          {props.line.displayText}
-        </Text>
-      </MessageResponse>
-    </Box>
-  );
+function getTranscriptLines(lines: ChatLine[]): VisibleChatLine[] {
+  return lines.map((line, index) => ({
+    ...line,
+    displayText: linePlainText(line),
+    marginBottom: index === lines.length - 1 ? 0 : 1
+  }));
 }
 
-function MessageResponse(props: { children: React.ReactNode }) {
-  return (
-    <Box flexDirection="row">
-      <Box flexShrink={0}>
-        <Text dimColor>{"  "}⎿  </Text>
-      </Box>
-      <Box flexGrow={1} flexShrink={1} flexDirection="column">
-        {props.children}
-      </Box>
-    </Box>
-  );
-}
-
-function CappedText(props: { text: string; color?: string | undefined }) {
-  const lines = props.text.split("\n");
-  const maxLines = 8;
-  const visible = lines.slice(0, maxLines);
-  const hidden = lines.length - visible.length;
-  return (
-    <Box flexDirection="column">
-      <Text {...(props.color ? { color: props.color } : {})}>{visible.join("\n")}</Text>
-      {hidden > 0 ? (
-        <Text dimColor>
-          … +{hidden} {hidden === 1 ? "line" : "lines"}
-        </Text>
-      ) : null}
-    </Box>
-  );
-}
-
-function toolResponseText(line: ChatLine) {
-  const title = line.title ?? line.toolName;
-  if (!line.text.trim()) {
-    return "";
+function lineRowCount(line: ChatLine, columns: number, isLast: boolean) {
+  const marginBottom = isLast ? 0 : 1;
+  if (line.kind === "tool") {
+    return getToolLineRowCount(line, columns) + marginBottom;
   }
-  if (title && line.text.trim() === title.trim()) {
-    return "";
+  if (line.kind === "attachment" || line.kind === "approval" || line.kind === "reasoning") {
+    const titleRows = 1;
+    const detailRows = line.title && line.text && line.text !== line.title ? wrapTerminalRows(line.text, Math.max(1, columns - 5)).length : 0;
+    return titleRows + detailRows + marginBottom;
   }
-  const compactHeader = title && line.detail ? `${title} (${line.detail})` : title;
-  if (compactHeader && line.text.trim() === compactHeader.trim()) {
-    return "";
+  if (line.role === "assistant") {
+    return getMarkdownRowCount(line.text, columns) + marginBottom;
   }
-  return line.text;
-}
-
-type LaidOutChatLine = {
-  line: ChatLine;
-  rows: string[];
-  top: number;
-  marginBottom: number;
-  height: number;
-};
-
-function getViewportLines(
-  lines: ChatLine[],
-  height: number,
-  columns: number,
-  scrollOffset: number
-): { lines: VisibleChatLine[]; scrollOffset: number } {
-  const maxRows = Math.max(1, height);
-  const layout = layoutChatLines(lines, columns);
-  const totalRows = layout.reduce((sum, item) => sum + item.height, 0);
-  const maxScrollOffset = Math.max(0, totalRows - maxRows);
-  const offset = Math.max(0, Math.min(scrollOffset, maxScrollOffset));
-  const viewportStart = Math.max(0, totalRows - maxRows - offset);
-  const viewportEnd = viewportStart + maxRows;
-  const visible: VisibleChatLine[] = [];
-
-  for (const item of layout) {
-    const itemEnd = item.top + item.height;
-    if (itemEnd <= viewportStart) {
-      continue;
-    }
-    if (item.top >= viewportEnd) {
-      break;
-    }
-
-    const textStart = Math.max(0, viewportStart - item.top);
-    const textEnd = Math.min(item.rows.length, viewportEnd - item.top);
-    if (textEnd <= textStart) {
-      continue;
-    }
-
-    const marginTop = item.top + item.rows.length;
-    const marginBottom = item.marginBottom > 0 && viewportEnd > marginTop ? 1 : 0;
-    visible.push({
-      ...item.line,
-      id: `${item.line.id}:view:${textStart}:${textEnd}:${marginBottom}`,
-      displayText: item.rows.slice(textStart, textEnd).join("\n"),
-      marginBottom,
-      clipped: textStart > 0 || textEnd < item.rows.length
-    });
-  }
-
-  return { lines: visible, scrollOffset: offset };
-}
-
-function layoutChatLines(lines: ChatLine[], columns: number): LaidOutChatLine[] {
-  let top = 0;
-  return lines.map((line, index) => {
-    const textWidth = lineTextWidth(line, columns);
-    const rows = wrapTerminalRows(linePlainText(line), textWidth);
-    const marginBottom = index === lines.length - 1 ? 0 : 1;
-    const height = rows.length + marginBottom;
-    const item = {
-      line,
-      rows,
-      top,
-      marginBottom,
-      height
-    };
-    top += height;
-    return item;
-  });
+  return rowCountForText(linePlainText(line), lineTextWidth(line, columns)) + marginBottom;
 }
 
 function lineTextWidth(line: ChatLine, columns: number) {
@@ -411,64 +194,13 @@ function lineTextWidth(line: ChatLine, columns: number) {
 function linePlainText(line: ChatLine) {
   if (line.kind === "tool") {
     const header = `${line.title ?? line.toolName ?? "Tool"}${line.detail ? ` (${line.detail})` : ""}`;
-    const response = toolResponseText(line);
-    return response ? `${header}\n${response}` : header;
+    const response = line.toolOutputText ?? line.text;
+    return response && response.trim() !== header.trim() ? `${header}\n${response}` : header;
   }
   if (line.title && line.text && line.text !== line.title) {
     return `${line.title}${line.detail ? ` (${line.detail})` : ""}\n${line.text}`;
   }
   return line.text;
-}
-
-function wrapTerminalRows(value: string, width: number) {
-  const rows: string[] = [];
-  for (const rawLine of value.split("\n")) {
-    if (!rawLine) {
-      rows.push("");
-      continue;
-    }
-
-    let row = "";
-    let rowWidth = 0;
-    for (const char of Array.from(rawLine)) {
-      const charWidth = characterWidth(char);
-      if (row && rowWidth + charWidth > width) {
-        rows.push(row);
-        row = "";
-        rowWidth = 0;
-      }
-      row += char;
-      rowWidth += charWidth;
-    }
-    rows.push(row);
-  }
-  return rows.length > 0 ? rows : [""];
-}
-
-function characterWidth(char: string) {
-  const codePoint = char.codePointAt(0) ?? 0;
-  if (codePoint === 0 || codePoint < 32 || (codePoint >= 0x7f && codePoint < 0xa0)) {
-    return 0;
-  }
-  if (
-    codePoint >= 0x1100 &&
-    (codePoint <= 0x115f ||
-      codePoint === 0x2329 ||
-      codePoint === 0x232a ||
-      (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
-      (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
-      (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
-      (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
-      (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
-      (codePoint >= 0xff00 && codePoint <= 0xff60) ||
-      (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
-      (codePoint >= 0x1f300 && codePoint <= 0x1f64f) ||
-      (codePoint >= 0x1f900 && codePoint <= 0x1f9ff) ||
-      (codePoint >= 0x20000 && codePoint <= 0x3fffd))
-  ) {
-    return 2;
-  }
-  return 1;
 }
 
 export function SpinnerLine(props: { run: Run | null }) {

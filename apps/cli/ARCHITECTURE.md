@@ -2,6 +2,8 @@
 
 这份文档约定 `@oah/cli` 的长期代码边界。目标是让命令行能力、API 通信、TUI 状态机和 Ink 展示组件可以持续演进，同时继续向 Claude Code 的极简 TUI 体验靠近。
 
+CLI/TUI 是 OpenAgentHarness 的调试端，不是正式产品 UI。它通过现有 OpenAPI + SSE 连接 `oah-api`，用于本地选择 workspace、进入 session、查看流式输出和排查 runtime 状态。
+
 ## 当前目录
 
 ```text
@@ -62,6 +64,12 @@ tui/components/* -> tui/domain/*
 2. 简单命令可以直接 lazy import `src/api/oah-api.ts`。
 3. 命令逻辑超过约 80 行时，拆到 `src/cli/commands/<name>.ts`，`program.ts` 只负责注册。
 4. 输出纯文本的命令保持稳定、可脚本化；需要交互时进入 TUI，不在普通命令里混入 Ink。
+
+当前本地调试入口：
+
+```bash
+pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui
+```
 
 ## 新增 TUI 功能
 

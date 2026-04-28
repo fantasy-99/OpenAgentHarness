@@ -40,6 +40,7 @@ The repository is no longer just an architecture sketch. Today it already includ
 - A working HTTP API for workspaces, sessions, runs, actions, sandboxes, models, storage inspection, and SSE streaming
 - A multi-process topology with `oah-api`, `oah-controller`, and sandbox-hosted standalone workers
 - A debug web console for conversation flow, trace inspection, and storage troubleshooting
+- A terminal TUI for workspace selection, session chat, streaming output, and local runtime debugging
 - Workspace auto-discovery for agents, models, skills, tools, actions, hooks, prompts, and project instructions
 - A deploy-root template with starter runtimes and object-storage sync flow
 - Local Docker Compose startup and a Kubernetes/Helm split-deployment skeleton
@@ -107,6 +108,7 @@ This makes the workspace the real customization boundary instead of global proce
 - Inspector panels for messages, run steps, system prompt, provider calls, catalog snapshots, and records
 - Storage workbench for PostgreSQL and Redis, including `messages.content` inspection and manual queue/recovery operations
 - Health/readiness endpoints and controller metrics/snapshot surfaces
+- Debug TUI for terminal-first workspace/session inspection and streaming conversations
 
 ## Web Console
 
@@ -123,6 +125,20 @@ It is intentionally built for runtime visibility, not just chatting:
 - run-step and tool-call inspection
 - raw message / run / session record views
 - storage debugging for PostgreSQL and Redis
+
+## Debug TUI
+
+For terminal-first development, OAH also ships an Ink-based debug TUI:
+
+<p align="center">
+  <img src="assets/tui-screenshot.png" width="820" alt="OAH Debug TUI Screenshot" />
+</p>
+
+The TUI talks to the same API and SSE surfaces as the web console. It is useful when you are already working inside a repository or shell and want to select a workspace, create or resume a session, stream assistant output, and inspect local run state without opening the browser.
+
+```bash
+pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui
+```
 
 ## Architecture At A Glance
 
@@ -221,11 +237,18 @@ The startup flow also runs one storage sync automatically. In the local split to
 pnpm dev:web
 ```
 
-Default local addresses:
+Or start the terminal TUI:
 
-| Service | URL |
+```bash
+pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui
+```
+
+Default local addresses and debug commands:
+
+| Service | URL / Command |
 | --- | --- |
 | Web Console | `http://localhost:5174` |
+| Debug TUI | `pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui` |
 | API | `http://127.0.0.1:8787` |
 | Sandbox worker host | `http://127.0.0.1:8788` |
 | Controller metrics | `http://127.0.0.1:8789` |
@@ -277,6 +300,7 @@ These are initialization templates for new workspaces, not the active runtime co
 pnpm build
 pnpm test
 pnpm dev:web
+pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui
 OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync
 OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync -- --include-workspaces
 OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm local:up

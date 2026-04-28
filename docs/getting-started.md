@@ -38,14 +38,23 @@ pnpm dev:web
 
 打开 [http://localhost:5174](http://localhost:5174)。
 
+如果你希望留在终端内调试，可以改用 TUI：
+
+```bash
+pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui
+```
+
+TUI 会连接同一个 `oah-api`，用于选择 workspace、进入 session、发送消息并查看流式输出。
+
 ## 验证是否正常
 
 启动成功后检查以下几点：
 
 1. `oah-api`、`oah-controller`、`oah-compose-scaler`、`oah-sandbox` 都启动成功
 2. 浏览器能打开 `http://localhost:5174`
-3. 在控制台发送消息，Run 从 `queued` 进入执行状态
-4. 如果当前 Run 还在执行，再发一条消息会先通过服务端 `/api/v1/sessions/{sessionId}/queue` 出现在输入框上方的队列里；如果希望立即打断当前 Run，可以点击 `引导`，底层会调用 `/api/v1/runs/{runId}/guide`
+3. 或者 TUI 能连接 `http://127.0.0.1:8787` 并列出 workspace
+4. 在控制台或 TUI 里发送消息，Run 从 `queued` 进入执行状态
+5. 如果当前 Run 还在执行，再发一条消息会先通过服务端 `/api/v1/sessions/{sessionId}/queue` 出现在输入框上方的队列里；如果希望立即打断当前 Run，可以点击 `引导`，底层会调用 `/api/v1/runs/{runId}/guide`
 
 !!! tip
     如果后端地址不是默认值，启动前端时指定代理目标：
@@ -85,6 +94,7 @@ pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts 
 | `pnpm exec tsx --tsconfig ./apps/controller/tsconfig.json ./apps/controller/src/index.ts -- --config ./server.example.yaml` | 单独启动 `oah-controller` |
 | `pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/worker.ts -- --config ./server.example.yaml` | 单独启动 standalone worker（通常跑在 `oah-sandbox`） |
 | `pnpm dev:web` | 启动调试控制台 |
+| `pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui` | 启动终端调试 TUI |
 | `pnpm build` | 全量构建 |
 | `pnpm test` | 运行测试 |
 | `mkdocs serve` | 本地预览文档站 |
@@ -94,6 +104,7 @@ pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts 
 - [架构总览](./architecture-overview.md) — 理解系统整体结构
 - [Workspace 配置](./workspace/README.md) — 配置 Agent、Skill、Tool
 - [部署与运行](./deploy.md) — 本地一体 vs 生产拆分部署
+- [Debug CLI 与 TUI](./debug-cli-tui.md) — 了解终端调试入口
 - [设计总览](./design-overview.md) — 理解核心设计决策
 
 ## 常见故障

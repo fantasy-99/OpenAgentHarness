@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs";
 import { useInput } from "ink";
 
 import type { Dialog, WorkspaceCreateDialog } from "../domain/types.js";
@@ -19,6 +20,7 @@ type OahReplState = ReturnType<typeof useOahReplState>;
 
 type TuiInputKey = {
   ctrl?: boolean;
+  shift?: boolean;
   meta?: boolean;
   tab?: boolean;
   escape?: boolean;
@@ -26,8 +28,6 @@ type TuiInputKey = {
   downArrow?: boolean;
   leftArrow?: boolean;
   rightArrow?: boolean;
-  pageUp?: boolean;
-  pageDown?: boolean;
   home?: boolean;
   end?: boolean;
   backspace?: boolean;
@@ -39,11 +39,114 @@ function isTabInput(value: string, key: TuiInputKey) {
   return key.tab === true || hasRawControl(value, "\t");
 }
 
+const KITTY_SHIFT_ENTER = "\u001b[13;2u";
+const KITTY_SHIFT_ENTER_STRIPPED = "[13;2u";
+const KITTY_QUERY_RESPONSE_RE = /(?:\u001b)?\[\?\d+u/gu;
+const XTERM_SHIFT_ENTER = "\u001b[27;2;13~";
+const XTERM_SHIFT_ENTER_STRIPPED = "[27;2;13~";
+const XTERM_MODIFY_OTHER_KEYS_RE = /(?:\u001b)?\[27;(\d+);(\d+)~/gu;
+const KITTY_MODIFIED_KEY_RE = /(?:\u001b)?\[(\d+);(\d+(?::[\d:]+)?)u/gu;
+const CSI_SHIFT_ENTER = "\u001b[13;2~";
+const CSI_SHIFT_ENTER_STRIPPED = "[13;2~";
+
+function isShiftReturnInput(value: string, key: TuiInputKey) {
+  return (
+    (key.shift === true && isReturnInput(value, key)) ||
+    (key.meta === true && isReturnInput(value, key)) ||
+    isLineFeedTextInput(value, key) ||
+    isLikelyShiftReturnFallback(value, key) ||
+    hasRawControl(value, KITTY_SHIFT_ENTER) ||
+    hasRawControl(value, KITTY_SHIFT_ENTER_STRIPPED) ||
+    hasRawControl(value, XTERM_SHIFT_ENTER) ||
+    hasRawControl(value, XTERM_SHIFT_ENTER_STRIPPED) ||
+    hasRawControl(value, CSI_SHIFT_ENTER) ||
+    hasRawControl(value, CSI_SHIFT_ENTER_STRIPPED)
+  );
+}
+
+function isLineFeedTextInput(value: string, key: TuiInputKey) {
+  return value.includes("\n") && key.return !== true;
+}
+
+function isLikelyShiftReturnFallback(value: string, key: TuiInputKey) {
+  // Ink 7 parses CSI 13;2~ as an unnamed shifted function key, losing the raw sequence.
+  return (
+    value.length === 0 &&
+    key.shift === true &&
+    !key.ctrl &&
+    !key.meta &&
+    !key.tab &&
+    !key.escape &&
+    !key.upArrow &&
+    !key.downArrow &&
+    !key.leftArrow &&
+    !key.rightArrow &&
+    !key.home &&
+    !key.end &&
+    !key.backspace &&
+    !key.delete
+  );
+}
+
+function cleanComposerTextInput(value: string) {
+  return value
+    .replace(KITTY_QUERY_RESPONSE_RE, "")
+    .replace(/\u001b\[13;2u/gu, "\n")
+    .replace(/\[13;2u/gu, "\n")
+    .replace(KITTY_MODIFIED_KEY_RE, "")
+    .replace(XTERM_MODIFY_OTHER_KEYS_RE, (_match, modifier: string, keycode: string) => (modifier === "2" && keycode === "13" ? "\n" : ""))
+    .replace(/\u001b\[13;2~/gu, "\n")
+    .replace(/\[13;2~/gu, "\n")
+    .replace(/\r/gu, "\n")
+    .replace(/[\u0000-\u0009\u000b-\u001f\u007f]/gu, "");
+}
+
+function isOnlyTerminalProtocolResponse(value: string) {
+  return value.length > 0 && cleanComposerTextInput(value).length === 0 && /^(?:\u001b)?\[\?\d+u$/u.test(value);
+}
+
+function isCtrlInput(value: string, key: TuiInputKey, char: string, controlCode: string) {
+  const codePoint = char.codePointAt(0);
+  return (
+    (value.toLowerCase() === char && key.ctrl === true) ||
+    hasRawControl(value, controlCode) ||
+    (codePoint !== undefined && hasModifiedControlKey(value, codePoint))
+  );
+}
+
+function hasModifiedControlKey(value: string, codePoint: number) {
+  for (const match of value.matchAll(KITTY_MODIFIED_KEY_RE)) {
+    const keyCode = Number(match[1]);
+    const modifier = Number(match[2]?.split(":")[0]);
+    if (keyCode === codePoint && hasCtrlModifier(modifier)) {
+      return true;
+    }
+  }
+  for (const match of value.matchAll(XTERM_MODIFY_OTHER_KEYS_RE)) {
+    const modifier = Number(match[1]);
+    const keyCode = Number(match[2]);
+    if (keyCode === codePoint && hasCtrlModifier(modifier)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasCtrlModifier(modifier: number) {
+  return Number.isFinite(modifier) && ((modifier - 1) & 4) !== 0;
+}
+
 export function useTuiInput(input: { state: OahReplState; exit: () => void }) {
   const state = input.state;
 
   useInput((value, key) => {
-    if ((value === "c" && key.ctrl) || hasRawControl(value, "\u0003")) {
+    logKeypressForDebug(value, key);
+
+    if (isOnlyTerminalProtocolResponse(value)) {
+      return;
+    }
+
+    if (isCtrlInput(value, key, "c", "\u0003")) {
       input.exit();
       return;
     }
@@ -55,6 +158,25 @@ export function useTuiInput(input: { state: OahReplState; exit: () => void }) {
 
     handleComposerInput({ value, key, state, exit: input.exit });
   });
+}
+
+function logKeypressForDebug(value: string, key: TuiInputKey) {
+  const path = process.env.OAH_TUI_KEYLOG;
+  if (!path) {
+    return;
+  }
+  try {
+    appendFileSync(
+      path,
+      `${JSON.stringify({
+        value,
+        codepoints: Array.from(value).map((char) => char.codePointAt(0)?.toString(16).padStart(4, "0")),
+        key
+      })}\n`
+    );
+  } catch {
+    // Debug logging must never affect interactive input.
+  }
 }
 
 function handleDialogInput(input: { value: string; key: TuiInputKey; state: OahReplState }) {
@@ -145,11 +267,11 @@ function handleWorkspaceCreateInput(input: {
   state: OahReplState;
 }) {
   const { dialog, key, state, value } = input;
-  if ((value === "u" && key.ctrl) || hasRawControl(value, "\u0015")) {
+  if (isCtrlInput(value, key, "u", "\u0015")) {
     state.setDialog(dialog.field === "runtime" ? { ...dialog, runtime: "", runtimeQuery: "", runtimeSelectedIndex: 0 } : { ...dialog, [dialog.field]: "" });
     return;
   }
-  if ((value === "r" && key.ctrl) || hasRawControl(value, "\u0012")) {
+  if (isCtrlInput(value, key, "r", "\u0012")) {
     void state.refreshRuntimes();
     return;
   }
@@ -246,7 +368,7 @@ function handleSessionCreateInput(input: {
   state: OahReplState;
 }) {
   const { value, key, dialog, state } = input;
-  if ((value === "u" && key.ctrl) || hasRawControl(value, "\u0015")) {
+  if (isCtrlInput(value, key, "u", "\u0015")) {
     state.setDialog({ ...dialog, draft: "" });
     return;
   }
@@ -270,28 +392,11 @@ function handleComposerInput(input: { value: string; key: TuiInputKey; state: Oa
   const { value, key, state } = input;
   const slashMatches = getSlashCommandMatches(state.composer);
   const slashSuggestionsActive = slashMatches.length > 0;
-  const composerEmpty = state.composer.length === 0;
-  if (key.pageUp || (composerEmpty && ((value === "u" && key.ctrl) || hasRawControl(value, "\u0015")))) {
-    state.scrollTranscript(12);
-    return;
-  }
-  if (key.pageDown || (composerEmpty && ((value === "d" && key.ctrl) || hasRawControl(value, "\u0004")))) {
-    state.scrollTranscript(-12);
-    return;
-  }
-  if (key.home && composerEmpty) {
-    state.scrollTranscript(Number.MAX_SAFE_INTEGER);
-    return;
-  }
-  if (key.end && composerEmpty) {
-    state.resetTranscriptScroll();
-    return;
-  }
-  if ((value === "w" && key.ctrl) || hasRawControl(value, "\u0017")) {
+  if (isCtrlInput(value, key, "w", "\u0017")) {
     state.setDialog({ kind: "workspace-list", selectedIndex: Math.max(0, state.workspaces.findIndex((item) => item.id === state.currentWorkspace?.id)) });
     return;
   }
-  if ((value === "o" && key.ctrl) || hasRawControl(value, "\u000f")) {
+  if (isCtrlInput(value, key, "o", "\u000f")) {
     state.setDialog({ kind: "session-list", selectedIndex: Math.max(0, state.sessions.findIndex((item) => item.id === state.currentSession?.id)) });
     return;
   }
@@ -307,6 +412,10 @@ function handleComposerInput(input: { value: string; key: TuiInputKey; state: Oa
     state.setSlashSelection((current) => clampIndex(current - 1, slashMatches.length));
     return;
   }
+  if (isShiftReturnInput(value, key)) {
+    state.insertComposerInput(cleanComposerTextInput(value) || "\n");
+    return;
+  }
   if (isReturnInput(value, key)) {
     const cleanInput = cleanControlInput(value);
     if (cleanInput) {
@@ -315,7 +424,6 @@ function handleComposerInput(input: { value: string; key: TuiInputKey; state: Oa
         input.exit();
         return;
       }
-      state.resetTranscriptScroll();
       state.setComposerValue(nextComposer);
       void state.sendComposer(nextComposer);
     } else if (slashSuggestionsActive) {
@@ -324,14 +432,12 @@ function handleComposerInput(input: { value: string; key: TuiInputKey; state: Oa
         input.exit();
         return;
       }
-      state.resetTranscriptScroll();
       void state.sendComposer(selectedCommand ?? state.composer);
     } else {
       if (state.composer.trim() === "/quit") {
         input.exit();
         return;
       }
-      state.resetTranscriptScroll();
       void state.sendComposer();
     }
     return;
@@ -359,15 +465,15 @@ function handleComposerInput(input: { value: string; key: TuiInputKey; state: Oa
     state.setComposerCursor(state.composer.length);
     return;
   }
-  if (value === "a" && key.ctrl) {
+  if (isCtrlInput(value, key, "a", "\u0001")) {
     state.setComposerCursor(0);
     return;
   }
-  if (value === "e" && key.ctrl) {
+  if (isCtrlInput(value, key, "e", "\u0005")) {
     state.setComposerCursor(state.composer.length);
     return;
   }
-  if ((value === "u" && key.ctrl) || hasRawControl(value, "\u0015")) {
+  if (isCtrlInput(value, key, "u", "\u0015")) {
     state.setComposerValue("");
     return;
   }
@@ -376,7 +482,7 @@ function handleComposerInput(input: { value: string; key: TuiInputKey; state: Oa
     return;
   }
   if (value && !key.ctrl && !key.meta) {
-    const cleanInput = cleanControlInput(value);
+    const cleanInput = cleanComposerTextInput(value);
     if (cleanInput) {
       state.insertComposerInput(cleanInput);
     }
