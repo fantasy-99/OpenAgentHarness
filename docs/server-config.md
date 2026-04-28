@@ -20,6 +20,9 @@ sandbox:
   # fleet:
   #   min_count: 1
   #   max_count: 32
+  #   warm_empty_count: 1
+  #   resource_cpu_pressure_threshold: 0.8
+  #   resource_memory_pressure_threshold: 0.8
   #   max_workspaces_per_sandbox: 32
   #   ownerless_pool: shared          # shared | dedicated
   # self_hosted:
@@ -115,6 +118,9 @@ llm:
 | `provider` | string | sandbox provider，支持 `embedded`、`self_hosted` 和 `e2b`。默认 `embedded`。`embedded` 表示 worker 直接内嵌在 `oah-api`；`self_hosted / e2b` 表示 standalone worker 运行在真实 sandbox 内 |
 | `fleet.min_count` | number | self-hosted / e2b 模式下 controller 保持的最小 sandbox 数。默认远端 provider 为 `1`，embedded 为 `0` |
 | `fleet.max_count` | number | controller 允许的最大 sandbox 数；默认 `64` |
+| `fleet.warm_empty_count` | number | 额外保持的空 sandbox 数，用于让新 workspace 随时快速绑定。远端 provider 默认 `1`，embedded 默认 `0` |
+| `fleet.resource_cpu_pressure_threshold` | number | sandbox 资源压力阈值；CPU load ratio 超过该值时会优先把新 ownerless workspace 放到空 sandbox。默认 `0.8` |
+| `fleet.resource_memory_pressure_threshold` | number | sandbox 内存压力阈值；memory used ratio 超过该值时会优先把新 ownerless workspace 放到空 sandbox。默认 `0.8` |
 | `fleet.max_workspaces_per_sandbox` | number | 单个真实 sandbox 内允许承载的 workspace 上限；默认 `32` |
 | `fleet.ownerless_pool` | string | 无 `ownerId` 的 workspace 如何落入 sandbox。`shared` 表示共享池，`dedicated` 表示每个 workspace 独立 sandbox |
 | `self_hosted.base_url` | string | `provider=self_hosted` 时必填。指向 self-hosted sandbox 内 standalone worker 暴露的 `/internal/v1` 根地址 |
@@ -137,10 +143,10 @@ llm:
 > `self_hosted` 和 `e2b` 的共同语义是：`oah-api` 不直接执行业务 run，而是把 workspace 路由到真实 sandbox；standalone worker 在 sandbox 内部持有活跃 workspace、本地文件状态和命令执行上下文。
 
 > **tip**
-> 当前 controller 已经开始把 sandbox fleet 视为一等调度对象：同一 `ownerId` 会优先复用同一真实 sandbox；未提供 `ownerId` 的 workspace 默认进入共享池。`fleet.*` 负责描述这层容量边界，后续可继续接到真实的 sandbox autoscaling target。
+> 当前 controller 已经开始把 sandbox fleet 视为一等调度对象：同一 `ownerId` 会优先复用同一真实 sandbox；未提供 `ownerId` 的 workspace 默认进入共享池。ownerless workspace 会先复用资源未压线的已有 sandbox，CPU 或内存超过阈值后才使用 `warm_empty_count` 额外保留的空 sandbox。
 
 > **tip**
-> 从当前版本开始，`createSession` 成功后会异步预热对应 workspace：如果配置了远端 sandbox，会提前触发 sandbox 绑定；如果启用了 workspace materialization，也会提前拿到 active workspace copy。配合远端 provider 默认的 `fleet.min_count = 1`，可以显著缩短首条消息的冷启动等待，但首次 materialization 很重时仍会受到 workspace 体积影响。
+> 从当前版本开始，`createSession` 成功后会异步预热对应 workspace：如果配置了远端 sandbox，会提前触发 sandbox 绑定；如果启用了 workspace materialization，也会提前拿到 active workspace copy。配合远端 provider 默认的 `fleet.warm_empty_count = 1`，可以显著缩短首条消息的冷启动等待，但首次 materialization 很重时仍会受到 workspace 体积影响。
 
 > **tip**
 > 这里的 `sandbox` 是宿主层，不是项目层。一个 sandbox 可以承载多个活跃 workspace，本质上表示“worker 在哪里运行”；workspace 则表示“agent 正在处理哪个项目与能力集合”。

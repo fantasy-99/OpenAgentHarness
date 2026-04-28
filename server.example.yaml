@@ -37,6 +37,9 @@ storage: {}
 #   fleet:
 #     min_count: 1
 #     max_count: 32
+#     warm_empty_count: 1
+#     resource_cpu_pressure_threshold: 0.8
+#     resource_memory_pressure_threshold: 0.8
 #     max_workspaces_per_sandbox: 32
 #     ownerless_pool: shared
 #   # embedded: local materialization-backed sandbox host for single-node development

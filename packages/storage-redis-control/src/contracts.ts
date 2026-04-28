@@ -49,6 +49,12 @@ export interface WorkerLeaseInput {
   processKind: "embedded" | "standalone";
   state: "starting" | "idle" | "busy" | "stopping";
   lastSeenAt: string;
+  resourceCpuLoadRatio?: number | undefined;
+  resourceMemoryUsedRatio?: number | undefined;
+  resourceLoadAverage1m?: number | undefined;
+  resourceMemoryUsedBytes?: number | undefined;
+  resourceMemoryTotalBytes?: number | undefined;
+  processMemoryRssBytes?: number | undefined;
   currentSessionId?: string | undefined;
   currentRunId?: string | undefined;
   currentWorkspaceId?: string | undefined;

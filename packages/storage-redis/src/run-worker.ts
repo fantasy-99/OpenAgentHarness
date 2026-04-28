@@ -1,6 +1,26 @@
+import os from "node:os";
+
 import { createId } from "@oah/engine-core";
 import { calculateWorkerLeaseTtlMs } from "./worker-registry.js";
 import type { RedisRunWorkerLogger, RedisRunWorkerOptions } from "./worker-types.js";
+
+function readWorkerResourceMetrics() {
+  const cpuCount = Math.max(1, typeof os.availableParallelism === "function" ? os.availableParallelism() : os.cpus().length);
+  const loadAverage1m = os.loadavg()[0] ?? 0;
+  const totalMemoryBytes = os.totalmem();
+  const freeMemoryBytes = os.freemem();
+  const usedMemoryBytes = Math.max(0, totalMemoryBytes - freeMemoryBytes);
+  const rssBytes = process.memoryUsage().rss;
+
+  return {
+    resourceCpuLoadRatio: Math.max(0, loadAverage1m / cpuCount),
+    resourceMemoryUsedRatio: totalMemoryBytes > 0 ? Math.max(0, Math.min(1, usedMemoryBytes / totalMemoryBytes)) : 0,
+    resourceLoadAverage1m: Math.max(0, loadAverage1m),
+    resourceMemoryUsedBytes: usedMemoryBytes,
+    resourceMemoryTotalBytes: totalMemoryBytes,
+    processMemoryRssBytes: rssBytes
+  };
+}
 
 export class RedisRunWorker {
   readonly #queue: RedisRunWorkerOptions["queue"];
@@ -180,6 +200,7 @@ export class RedisRunWorker {
           processKind: this.#processKind,
           state: this.#state,
           lastSeenAt: new Date().toISOString(),
+          ...readWorkerResourceMetrics(),
           ...(this.#currentSessionId ? { currentSessionId: this.#currentSessionId } : {}),
           ...(this.#currentRunId ? { currentRunId: this.#currentRunId } : {}),
           ...(this.#currentWorkspaceId ? { currentWorkspaceId: this.#currentWorkspaceId } : {})

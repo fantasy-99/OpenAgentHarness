@@ -34,6 +34,9 @@ export interface SandboxFleetConfig {
   maxCount: number;
   maxWorkspacesPerSandbox: number;
   ownerlessPool: "shared" | "dedicated";
+  warmEmptyCount: number;
+  resourceCpuPressureThreshold: number;
+  resourceMemoryPressureThreshold: number;
 }
 
 export interface StandaloneWorkerFleetSummary {
@@ -158,6 +161,9 @@ export interface ControllerSandboxFleetSummary {
   maxSandboxes: number;
   maxWorkspacesPerSandbox: number;
   ownerlessPool: SandboxFleetConfig["ownerlessPool"];
+  warmEmptySandboxes: number;
+  resourceCpuPressureThreshold: number;
+  resourceMemoryPressureThreshold: number;
   trackedWorkspaces: number;
   ownerScopedWorkspaces: number;
   ownerlessWorkspaces: number;
@@ -602,6 +608,14 @@ export function resolveSandboxFleetConfig(config: ServerConfig): SandboxFleetCon
   const managedByController = providerKind !== "embedded";
   const configuredMinCount = config.sandbox?.fleet?.min_count;
   const configuredMaxCount = config.sandbox?.fleet?.max_count;
+  const configuredWarmEmptyCount = (config.sandbox?.fleet as { warm_empty_count?: number | undefined } | undefined)
+    ?.warm_empty_count;
+  const configuredCpuPressureThreshold = (
+    config.sandbox?.fleet as { resource_cpu_pressure_threshold?: number | undefined } | undefined
+  )?.resource_cpu_pressure_threshold;
+  const configuredMemoryPressureThreshold = (
+    config.sandbox?.fleet as { resource_memory_pressure_threshold?: number | undefined } | undefined
+  )?.resource_memory_pressure_threshold;
   const minCount = readNonNegativeIntEnv(
     "OAH_SANDBOX_FLEET_MIN_COUNT",
     configuredMinCount ?? (managedByController ? 1 : 0)
@@ -610,6 +624,10 @@ export function resolveSandboxFleetConfig(config: ServerConfig): SandboxFleetCon
   const maxCount = Math.max(
     minCount,
     readPositiveIntEnv("OAH_SANDBOX_FLEET_MAX_COUNT", configuredMaxCount ?? defaultMaxCount)
+  );
+  const warmEmptyCount = readNonNegativeIntEnv(
+    "OAH_SANDBOX_FLEET_WARM_EMPTY_COUNT",
+    configuredWarmEmptyCount ?? (managedByController ? 1 : 0)
   );
 
   return {
@@ -625,6 +643,15 @@ export function resolveSandboxFleetConfig(config: ServerConfig): SandboxFleetCon
       "OAH_SANDBOX_FLEET_OWNERLESS_POOL",
       ["shared", "dedicated"],
       config.sandbox?.fleet?.ownerless_pool ?? "shared"
+    ),
+    warmEmptyCount,
+    resourceCpuPressureThreshold: readRatioEnv(
+      "OAH_SANDBOX_FLEET_RESOURCE_CPU_PRESSURE_THRESHOLD",
+      configuredCpuPressureThreshold ?? 0.8
+    ),
+    resourceMemoryPressureThreshold: readRatioEnv(
+      "OAH_SANDBOX_FLEET_RESOURCE_MEMORY_PRESSURE_THRESHOLD",
+      configuredMemoryPressureThreshold ?? 0.8
     )
   };
 }
@@ -671,6 +698,42 @@ export function summarizeStandaloneWorkerFleet(activeWorkers: RedisWorkerRegistr
 
 function workerPlacementReference(worker: Pick<RedisWorkerRegistryEntry, "workerId" | "runtimeInstanceId">): string {
   return worker.runtimeInstanceId ?? worker.workerId;
+}
+
+function workspacePlacementLoad(placement: Pick<RedisWorkspacePlacementEntry, "refCount" | "state">): number {
+  if (placement.state === "evicted" || placement.state === "unassigned") {
+    return 0;
+  }
+
+  if (typeof placement.refCount === "number") {
+    return Math.max(0, placement.refCount);
+  }
+
+  return 1;
+}
+
+function workerResourcePressure(
+  worker: Pick<RedisWorkerRegistryEntry, "resourceCpuLoadRatio" | "resourceMemoryUsedRatio">,
+  config: Pick<SandboxFleetConfig, "resourceCpuPressureThreshold" | "resourceMemoryPressureThreshold">
+): { pressure: number; pressureExceeded: boolean; hasMetrics: boolean } {
+  const cpuThreshold = Math.max(0.01, config.resourceCpuPressureThreshold);
+  const memoryThreshold = Math.max(0.01, config.resourceMemoryPressureThreshold);
+  const cpuPressure =
+    typeof worker.resourceCpuLoadRatio === "number" && Number.isFinite(worker.resourceCpuLoadRatio)
+      ? worker.resourceCpuLoadRatio / cpuThreshold
+      : undefined;
+  const memoryPressure =
+    typeof worker.resourceMemoryUsedRatio === "number" && Number.isFinite(worker.resourceMemoryUsedRatio)
+      ? worker.resourceMemoryUsedRatio / memoryThreshold
+      : undefined;
+  const pressures = [cpuPressure, memoryPressure].filter((value): value is number => typeof value === "number");
+  const pressure = pressures.length > 0 ? Math.max(...pressures) : 0;
+
+  return {
+    pressure,
+    pressureExceeded: pressure > 1,
+    hasMetrics: pressures.length > 0
+  };
 }
 
 export function calculateStandaloneWorkerReplicas(input: {
@@ -820,8 +883,10 @@ export function summarizeSandboxFleet(input: {
         ? ownerlessWorkspaces
         : Math.ceil(ownerlessWorkspaces / input.config.maxWorkspacesPerSandbox);
   const logicalSandboxes = ownerScopedSandboxes + ownerlessSandboxes;
+  const warmEmptySandboxes = input.config.managedByController ? Math.max(0, input.config.warmEmptyCount ?? 0) : 0;
+  const targetSandboxes = logicalSandboxes + warmEmptySandboxes;
   const desiredSandboxes = input.config.managedByController
-    ? Math.max(input.config.minCount, Math.min(input.config.maxCount, logicalSandboxes))
+    ? Math.max(input.config.minCount, Math.min(input.config.maxCount, targetSandboxes))
     : 0;
 
   return {
@@ -831,6 +896,9 @@ export function summarizeSandboxFleet(input: {
     maxSandboxes: input.config.maxCount,
     maxWorkspacesPerSandbox: input.config.maxWorkspacesPerSandbox,
     ownerlessPool: input.config.ownerlessPool,
+    warmEmptySandboxes,
+    resourceCpuPressureThreshold: input.config.resourceCpuPressureThreshold,
+    resourceMemoryPressureThreshold: input.config.resourceMemoryPressureThreshold,
     trackedWorkspaces: trackedPlacements.length,
     ownerScopedWorkspaces,
     ownerlessWorkspaces,
@@ -840,7 +908,7 @@ export function summarizeSandboxFleet(input: {
     sharedSandboxes: input.config.ownerlessPool === "shared" ? ownerlessSandboxes : 0,
     logicalSandboxes,
     desiredSandboxes,
-    capped: input.config.managedByController && logicalSandboxes > input.config.maxCount
+    capped: input.config.managedByController && targetSandboxes > input.config.maxCount
   };
 }
 
@@ -892,9 +960,7 @@ export function summarizePlacementPolicy(input: {
       ownerAffinityWorkers.set(ownerId, workers);
     }
 
-    const refLoad =
-      typeof placement.refCount === "number" ? Math.max(0, placement.refCount) : placement.state === "active" ? 1 : 0;
-    workerRefLoads.set(placement.ownerWorkerId, (workerRefLoads.get(placement.ownerWorkerId) ?? 0) + refLoad);
+    workerRefLoads.set(placement.ownerWorkerId, (workerRefLoads.get(placement.ownerWorkerId) ?? 0) + workspacePlacementLoad(placement));
   }
 
   const ownerWorkerCounts = [...ownerAffinityWorkers.values()].map((workers) => workers.size);
@@ -950,9 +1016,7 @@ export function summarizePlacementRecommendations(input: {
       ownerAffinityWorkers.set(ownerId, workers);
     }
     if (placement.ownerWorkerId && placement.state !== "evicted" && placement.state !== "unassigned") {
-      const refLoad =
-        typeof placement.refCount === "number" ? Math.max(0, placement.refCount) : placement.state === "active" ? 1 : 0;
-      workerRefLoads.set(placement.ownerWorkerId, (workerRefLoads.get(placement.ownerWorkerId) ?? 0) + refLoad);
+      workerRefLoads.set(placement.ownerWorkerId, (workerRefLoads.get(placement.ownerWorkerId) ?? 0) + workspacePlacementLoad(placement));
     }
   }
 
@@ -1124,6 +1188,8 @@ export function buildPlacementExecutionOperations(input: {
   placements?: RedisWorkspacePlacementEntry[] | undefined;
   activeWorkers?: RedisWorkerRegistryEntry[] | undefined;
   maxWorkspacesPerSandbox?: number | undefined;
+  resourceCpuPressureThreshold?: number | undefined;
+  resourceMemoryPressureThreshold?: number | undefined;
 }): ControllerPlacementExecutionOperation[] {
   const placements = (input.placements ?? []) as ControllerWorkspacePlacementEntry[];
   if (placements.length === 0) {
@@ -1136,7 +1202,12 @@ export function buildPlacementExecutionOperations(input: {
   const scheduledWorkspaceIds = new Set<string>();
   const operations: ControllerPlacementExecutionOperation[] = [];
   const workspaceCapacity = Math.max(1, input.maxWorkspacesPerSandbox ?? 1);
+  const resourceThresholds = {
+    resourceCpuPressureThreshold: Math.max(0.01, input.resourceCpuPressureThreshold ?? 0.8),
+    resourceMemoryPressureThreshold: Math.max(0.01, input.resourceMemoryPressureThreshold ?? 0.8)
+  };
   const workerRefLoads = new Map<string, number>();
+  const scheduledWorkerLoads = new Map<string, number>();
   const ownerAffinityWorkers = new Map<string, Set<string>>();
 
   for (const placement of nonEvictedPlacements) {
@@ -1147,9 +1218,7 @@ export function buildPlacementExecutionOperations(input: {
       ownerAffinityWorkers.set(ownerId, workers);
     }
     if (placement.ownerWorkerId && placement.state !== "unassigned") {
-      const refLoad =
-        typeof placement.refCount === "number" ? Math.max(0, placement.refCount) : placement.state === "active" ? 1 : 0;
-      workerRefLoads.set(placement.ownerWorkerId, (workerRefLoads.get(placement.ownerWorkerId) ?? 0) + refLoad);
+      workerRefLoads.set(placement.ownerWorkerId, (workerRefLoads.get(placement.ownerWorkerId) ?? 0) + workspacePlacementLoad(placement));
     }
   }
 
@@ -1157,7 +1226,11 @@ export function buildPlacementExecutionOperations(input: {
     [...workerRefLoads.entries()].filter(([, load]) => load > workspaceCapacity).map(([workerId]) => workerId)
   );
 
-  const selectTargetWorker = (placement: RedisWorkspacePlacementEntry, excludeWorkerIds?: Iterable<string>) => {
+  const selectTargetWorker = (
+    placement: RedisWorkspacePlacementEntry,
+    excludeWorkerIds?: Iterable<string>,
+    options?: { loadAware?: boolean | undefined }
+  ) => {
     const excluded = new Set(excludeWorkerIds ?? []);
     const candidateWorkers = (input.activeWorkers ?? []).filter(
       (worker) =>
@@ -1171,6 +1244,8 @@ export function buildPlacementExecutionOperations(input: {
     }
 
     const ownerId = placementOwnerAffinityId(placement);
+    const loadAware = options?.loadAware ?? !ownerId;
+    const reserveEmptyForOwnerless = loadAware && !ownerId;
     const workerOwnerAffinities = ownerId
       ? candidateWorkers
           .map((worker) => ({
@@ -1205,9 +1280,47 @@ export function buildPlacementExecutionOperations(input: {
       ...(ownerId ? { ownerId } : {}),
       ...(workerOwnerAffinities && workerOwnerAffinities.length > 0 ? { workerOwnerAffinities } : {})
     });
-    const preferredCandidate = affinity.candidates.find(
-      (candidate) => candidate.health === "healthy" && candidate.state !== "stopping"
-    );
+    const preferredCandidate = affinity.candidates
+      .filter((candidate) => candidate.health === "healthy" && candidate.state !== "stopping")
+      .map((candidate) => {
+        const worker = candidateWorkers.find((item) => item.workerId === candidate.workerId);
+        const placementReference = worker ? workerPlacementReference(worker) : candidate.workerId;
+        const placementLoad = (workerRefLoads.get(placementReference) ?? 0) + (scheduledWorkerLoads.get(placementReference) ?? 0);
+        const projectedLoad = placementLoad + 1;
+        const capacityPressure = Math.max(0, projectedLoad - workspaceCapacity);
+        const resource = worker ? workerResourcePressure(worker, resourceThresholds) : { pressure: 0, pressureExceeded: false, hasMetrics: false };
+        const loadAdjustedScore = loadAware ? candidate.score - placementLoad * 35 - capacityPressure * 160 : candidate.score;
+        const warmReserveRank = !reserveEmptyForOwnerless
+          ? 0
+          : placementLoad > 0 && capacityPressure === 0 && !resource.pressureExceeded
+            ? 2
+            : placementLoad === 0
+              ? 1
+              : 0;
+        return {
+          ...candidate,
+          placementReference,
+          placementLoad,
+          projectedLoad,
+          capacityPressure,
+          resourcePressure: resource.pressure,
+          resourcePressureExceeded: resource.pressureExceeded,
+          hasResourceMetrics: resource.hasMetrics,
+          warmReserveRank,
+          loadAdjustedScore
+        };
+      })
+      .sort(
+        (left, right) =>
+          right.warmReserveRank - left.warmReserveRank ||
+          (loadAware ? left.resourcePressure - right.resourcePressure : 0) ||
+          right.loadAdjustedScore - left.loadAdjustedScore ||
+          (loadAware ? left.capacityPressure - right.capacityPressure : 0) ||
+          (loadAware ? left.projectedLoad - right.projectedLoad : 0) ||
+          right.matchingOwnerWorkspaces - left.matchingOwnerWorkspaces ||
+          (right.idleSlots ?? 0) - (left.idleSlots ?? 0) ||
+          left.workerId.localeCompare(right.workerId)
+      )[0];
     if (!preferredCandidate) {
       return undefined;
     }
@@ -1220,7 +1333,16 @@ export function buildPlacementExecutionOperations(input: {
     return {
       workerId: preferredCandidate.workerId,
       placementReference: workerPlacementReference(selectedWorker),
-      reasons: preferredCandidate.reasons
+      reasons: [
+        ...preferredCandidate.reasons,
+        preferredCandidate.hasResourceMetrics
+          ? preferredCandidate.resourcePressureExceeded
+            ? "resource_pressure"
+            : "resource_available"
+          : "resource_unknown",
+        preferredCandidate.capacityPressure > 0 ? "workspace_capacity_pressure" : "workspace_capacity_available",
+        preferredCandidate.placementLoad === 0 ? "empty_sandbox" : "lower_workspace_load"
+      ]
     };
   };
 
@@ -1243,6 +1365,7 @@ export function buildPlacementExecutionOperations(input: {
           targetWorkerReasons: target.reasons
         });
         scheduledWorkspaceIds.add(placement.workspaceId);
+        scheduledWorkerLoads.set(target.placementReference, (scheduledWorkerLoads.get(target.placementReference) ?? 0) + 1);
       }
       continue;
     }
@@ -1310,6 +1433,9 @@ export function buildPlacementExecutionOperations(input: {
 
     operations.push(operation);
     scheduledWorkspaceIds.add(placement.workspaceId);
+    if (target) {
+      scheduledWorkerLoads.set(target.placementReference, (scheduledWorkerLoads.get(target.placementReference) ?? 0) + 1);
+    }
   }
 
   for (const placement of nonEvictedPlacements) {
@@ -1344,6 +1470,7 @@ export function buildPlacementExecutionOperations(input: {
       targetWorkerReasons: target.reasons
     });
     scheduledWorkspaceIds.add(placement.workspaceId);
+    scheduledWorkerLoads.set(target.placementReference, (scheduledWorkerLoads.get(target.placementReference) ?? 0) + 1);
   }
 
   for (const placement of nonEvictedPlacements) {
@@ -1356,7 +1483,9 @@ export function buildPlacementExecutionOperations(input: {
       continue;
     }
 
-    const target = selectTargetWorker(placement, new Set([...overloadedWorkers, placement.ownerWorkerId]));
+    const target = selectTargetWorker(placement, new Set([...overloadedWorkers, placement.ownerWorkerId]), {
+      loadAware: true
+    });
     if (!target || target.placementReference === placement.preferredWorkerId || target.workerId === placement.preferredWorkerId) {
       continue;
     }
@@ -1372,6 +1501,7 @@ export function buildPlacementExecutionOperations(input: {
       targetWorkerId: target.placementReference,
       targetWorkerReasons: target.reasons
     });
+    scheduledWorkerLoads.set(target.placementReference, (scheduledWorkerLoads.get(target.placementReference) ?? 0) + 1);
   }
 
   return operations.sort((left, right) => left.id.localeCompare(right.id));
@@ -1380,6 +1510,8 @@ export function buildPlacementExecutionOperations(input: {
 export function createPlacementRegistryActionExecutor(options: {
   placementRegistry: ControllerPlacementOwnershipRegistry;
   maxWorkspacesPerSandbox?: number | undefined;
+  resourceCpuPressureThreshold?: number | undefined;
+  resourceMemoryPressureThreshold?: number | undefined;
   logger?: ControllerLogger | undefined;
 }): ControllerPlacementExecutor {
   return {
@@ -1387,7 +1519,9 @@ export function createPlacementRegistryActionExecutor(options: {
       const operations = buildPlacementExecutionOperations({
         placements: input.placements,
         activeWorkers: input.activeWorkers,
-        maxWorkspacesPerSandbox: options.maxWorkspacesPerSandbox
+        maxWorkspacesPerSandbox: options.maxWorkspacesPerSandbox,
+        resourceCpuPressureThreshold: options.resourceCpuPressureThreshold,
+        resourceMemoryPressureThreshold: options.resourceMemoryPressureThreshold
       });
       if (operations.length === 0) {
         return undefined;
@@ -1501,7 +1635,10 @@ export class RedisController {
       minCount: 0,
       maxCount: 1,
       maxWorkspacesPerSandbox: 32,
-      ownerlessPool: "shared"
+      ownerlessPool: "shared",
+      warmEmptyCount: 0,
+      resourceCpuPressureThreshold: 0.8,
+      resourceMemoryPressureThreshold: 0.8
     };
     this.#scaleTarget = options.scaleTarget;
     this.#logger = options.logger;

@@ -1434,7 +1434,18 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
                     ? {
                         selfHosted: {
                           baseUrl: config.sandbox.self_hosted.base_url.trim(),
-                          headers: config.sandbox.self_hosted.headers
+                          headers: config.sandbox.self_hosted.headers,
+                          maxWorkspacesPerSandbox: config.sandbox.fleet?.max_workspaces_per_sandbox,
+                          resourceCpuPressureThreshold: (
+                            config.sandbox.fleet as { resource_cpu_pressure_threshold?: number | undefined } | undefined
+                          )?.resource_cpu_pressure_threshold,
+                          resourceMemoryPressureThreshold: (
+                            config.sandbox.fleet as { resource_memory_pressure_threshold?: number | undefined } | undefined
+                          )?.resource_memory_pressure_threshold,
+                          ...(redisWorkspacePlacementRegistry
+                            ? { workspacePlacementRegistry: redisWorkspacePlacementRegistry }
+                            : {}),
+                          ...(redisWorkerRegistry ? { workerRegistry: redisWorkerRegistry } : {})
                         }
                       }
                     : {})

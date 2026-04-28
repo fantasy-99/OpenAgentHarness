@@ -146,7 +146,10 @@ describe("controller", () => {
         minCount: 1,
         maxCount: 8,
         maxWorkspacesPerSandbox: 2,
-        ownerlessPool: "shared"
+        ownerlessPool: "shared",
+        warmEmptyCount: 0,
+        resourceCpuPressureThreshold: 0.8,
+        resourceMemoryPressureThreshold: 0.8
       },
       placements: [
         {
@@ -199,6 +202,9 @@ describe("controller", () => {
       maxSandboxes: 8,
       maxWorkspacesPerSandbox: 2,
       ownerlessPool: "shared",
+      warmEmptySandboxes: 0,
+      resourceCpuPressureThreshold: 0.8,
+      resourceMemoryPressureThreshold: 0.8,
       trackedWorkspaces: 6,
       ownerScopedWorkspaces: 4,
       ownerlessWorkspaces: 2,
@@ -249,7 +255,10 @@ describe("controller", () => {
       minCount: 2,
       maxCount: 10,
       maxWorkspacesPerSandbox: 5,
-      ownerlessPool: "dedicated"
+      ownerlessPool: "dedicated",
+      warmEmptyCount: 1,
+      resourceCpuPressureThreshold: 0.8,
+      resourceMemoryPressureThreshold: 0.8
     });
   });
 
@@ -281,7 +290,48 @@ describe("controller", () => {
       minCount: 1,
       maxCount: 64,
       maxWorkspacesPerSandbox: 32,
-      ownerlessPool: "shared"
+      ownerlessPool: "shared",
+      warmEmptyCount: 1,
+      resourceCpuPressureThreshold: 0.8,
+      resourceMemoryPressureThreshold: 0.8
+    });
+  });
+
+  it("adds configured warm empty sandboxes to managed sandbox demand", () => {
+    const fleet = summarizeSandboxFleet({
+      config: {
+        providerKind: "self_hosted",
+        managedByController: true,
+        minCount: 1,
+        maxCount: 8,
+        maxWorkspacesPerSandbox: 2,
+        ownerlessPool: "shared",
+        warmEmptyCount: 1,
+        resourceCpuPressureThreshold: 0.8,
+        resourceMemoryPressureThreshold: 0.8
+      },
+      placements: [
+        {
+          workspaceId: "ws_1",
+          version: "live",
+          ownerId: "owner_1",
+          state: "active",
+          updatedAt: "2026-04-15T00:00:00.000Z"
+        },
+        {
+          workspaceId: "ws_2",
+          version: "live",
+          state: "idle",
+          updatedAt: "2026-04-15T00:00:01.000Z"
+        }
+      ] satisfies RedisWorkspacePlacementEntry[]
+    });
+
+    expect(fleet).toMatchObject({
+      logicalSandboxes: 2,
+      warmEmptySandboxes: 1,
+      desiredSandboxes: 3,
+      capped: false
     });
   });
 
@@ -910,6 +960,129 @@ describe("controller", () => {
           action: "set_preferred_worker",
           reason: "owner_affinity_split",
           targetWorkerId: "worker_1"
+        })
+      ])
+    );
+  });
+
+  it("keeps ownerless warm-empty sandboxes in reserve until existing sandboxes reach capacity", () => {
+    const operations = buildPlacementExecutionOperations({
+      placements: [
+        {
+          workspaceId: "ws_existing",
+          version: "live",
+          ownerWorkerId: "worker_1",
+          state: "idle",
+          updatedAt: "2026-04-15T00:00:00.000Z"
+        },
+        {
+          workspaceId: "ws_ownerless_1",
+          version: "live",
+          state: "unassigned",
+          updatedAt: "2026-04-15T00:00:01.000Z"
+        },
+        {
+          workspaceId: "ws_ownerless_2",
+          version: "live",
+          state: "unassigned",
+          updatedAt: "2026-04-15T00:00:02.000Z"
+        }
+      ] satisfies RedisWorkspacePlacementEntry[],
+      activeWorkers: [
+        {
+          workerId: "worker_1",
+          processKind: "standalone",
+          state: "idle",
+          health: "healthy",
+          lastSeenAt: "2026-04-15T00:00:00.000Z",
+          leaseTtlMs: 5_000,
+          expiresAt: "2026-04-15T00:00:05.000Z",
+          lastSeenAgeMs: 0
+        },
+        {
+          workerId: "worker_2",
+          processKind: "standalone",
+          state: "idle",
+          health: "healthy",
+          lastSeenAt: "2026-04-15T00:00:00.000Z",
+          leaseTtlMs: 5_000,
+          expiresAt: "2026-04-15T00:00:05.000Z",
+          lastSeenAgeMs: 0
+        }
+      ] satisfies RedisWorkerRegistryEntry[],
+      maxWorkspacesPerSandbox: 2
+    });
+
+    expect(operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "assign_unassigned:ws_ownerless_1",
+          targetWorkerId: "worker_1",
+          targetWorkerReasons: expect.arrayContaining(["lower_workspace_load"])
+        }),
+        expect.objectContaining({
+          id: "assign_unassigned:ws_ownerless_2",
+          targetWorkerId: "worker_2",
+          targetWorkerReasons: expect.arrayContaining(["empty_sandbox"])
+        })
+      ])
+    );
+  });
+
+  it("routes ownerless placement to a warm empty sandbox when existing sandboxes are resource pressured", () => {
+    const operations = buildPlacementExecutionOperations({
+      placements: [
+        {
+          workspaceId: "ws_existing",
+          version: "live",
+          ownerWorkerId: "worker_1",
+          state: "idle",
+          updatedAt: "2026-04-15T00:00:00.000Z"
+        },
+        {
+          workspaceId: "ws_ownerless_new",
+          version: "live",
+          state: "unassigned",
+          updatedAt: "2026-04-15T00:00:01.000Z"
+        }
+      ] satisfies RedisWorkspacePlacementEntry[],
+      activeWorkers: [
+        {
+          workerId: "worker_1",
+          processKind: "standalone",
+          state: "idle",
+          health: "healthy",
+          resourceCpuLoadRatio: 0.92,
+          resourceMemoryUsedRatio: 0.4,
+          lastSeenAt: "2026-04-15T00:00:00.000Z",
+          leaseTtlMs: 5_000,
+          expiresAt: "2026-04-15T00:00:05.000Z",
+          lastSeenAgeMs: 0
+        },
+        {
+          workerId: "worker_2",
+          processKind: "standalone",
+          state: "idle",
+          health: "healthy",
+          resourceCpuLoadRatio: 0.1,
+          resourceMemoryUsedRatio: 0.2,
+          lastSeenAt: "2026-04-15T00:00:00.000Z",
+          leaseTtlMs: 5_000,
+          expiresAt: "2026-04-15T00:00:05.000Z",
+          lastSeenAgeMs: 0
+        }
+      ] satisfies RedisWorkerRegistryEntry[],
+      maxWorkspacesPerSandbox: 4,
+      resourceCpuPressureThreshold: 0.8,
+      resourceMemoryPressureThreshold: 0.8
+    });
+
+    expect(operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "assign_unassigned:ws_ownerless_new",
+          targetWorkerId: "worker_2",
+          targetWorkerReasons: expect.arrayContaining(["resource_available", "empty_sandbox"])
         })
       ])
     );
@@ -1785,7 +1958,7 @@ describe("controller", () => {
           reason: "owner_missing",
           status: "applied",
           targetWorkerId: "worker_1",
-          targetWorkerReasons: ["healthy", "idle_slot_capacity"],
+          targetWorkerReasons: ["healthy", "idle_slot_capacity", "resource_unknown", "workspace_capacity_available", "empty_sandbox"],
           message: "workspace ownership was released for controller-driven reassignment toward worker_1"
         }
       ]
@@ -3241,6 +3414,7 @@ describe("controller", () => {
           maxSandboxes: 12,
           maxWorkspacesPerSandbox: 4,
           ownerlessPool: "shared",
+          warmEmptySandboxes: 1,
           trackedWorkspaces: 5,
           ownerScopedWorkspaces: 4,
           ownerlessWorkspaces: 1,
@@ -3249,7 +3423,7 @@ describe("controller", () => {
           ownerlessSandboxes: 1,
           sharedSandboxes: 1,
           logicalSandboxes: 3,
-          desiredSandboxes: 3,
+          desiredSandboxes: 4,
           capped: false
         },
         placement: {
@@ -3427,11 +3601,12 @@ describe("controller", () => {
     expect(metrics).toContain("oah_controller_scale_target_applied 1");
     expect(metrics).toContain("oah_controller_scale_target_ready_replicas 2");
     expect(metrics).toContain("oah_controller_scale_target_phase_progressing 1");
-    expect(metrics).toContain("oah_controller_sandbox_desired 3");
+    expect(metrics).toContain("oah_controller_sandbox_desired 4");
     expect(metrics).toContain("oah_controller_sandbox_logical 3");
     expect(metrics).toContain("oah_controller_sandbox_owner_groups 2");
     expect(metrics).toContain("oah_controller_sandbox_ownerless_workspaces 1");
     expect(metrics).toContain("oah_controller_sandbox_shared 1");
+    expect(metrics).toContain("oah_controller_sandbox_warm_empty 1");
     expect(metrics).toContain("oah_controller_sandbox_capped 0");
     expect(metrics).toContain("oah_controller_placement_owned_by_active_workers 2");
     expect(metrics).toContain("oah_controller_placement_owned_by_late_workers 1");

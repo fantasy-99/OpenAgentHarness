@@ -93,6 +93,8 @@ async function main() {
       ? createPlacementRegistryActionExecutor({
           placementRegistry: placementRegistry as unknown as ControllerPlacementOwnershipRegistry,
           maxWorkspacesPerSandbox: sandboxConfig.maxWorkspacesPerSandbox,
+          resourceCpuPressureThreshold: sandboxConfig.resourceCpuPressureThreshold,
+          resourceMemoryPressureThreshold: sandboxConfig.resourceMemoryPressureThreshold,
           logger
         })
       : undefined,

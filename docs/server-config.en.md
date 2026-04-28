@@ -20,6 +20,9 @@ sandbox:
   # fleet:
   #   min_count: 1
   #   max_count: 32
+  #   warm_empty_count: 1
+  #   resource_cpu_pressure_threshold: 0.8
+  #   resource_memory_pressure_threshold: 0.8
   #   max_workspaces_per_sandbox: 32
   #   ownerless_pool: shared          # shared | dedicated
   # self_hosted:
@@ -115,6 +118,9 @@ llm:
 | `provider` | string | Sandbox provider. Supports `embedded`, `self_hosted`, and `e2b`. Defaults to `embedded`. `embedded` means the worker is hosted inside `oah-api`; `self_hosted / e2b` mean a standalone worker runs inside a real sandbox. |
 | `fleet.min_count` | number | Minimum sandbox count the controller should maintain for self-hosted / e2b providers. Defaults to `1` for remote providers and `0` for embedded. |
 | `fleet.max_count` | number | Maximum sandbox count the controller may target. Defaults to `64`. |
+| `fleet.warm_empty_count` | number | Extra empty sandboxes to keep warm so new workspaces can bind quickly at any time. Defaults to `1` for remote providers and `0` for embedded. |
+| `fleet.resource_cpu_pressure_threshold` | number | Sandbox resource pressure threshold. Ownerless workspaces prefer an empty sandbox when CPU load ratio exceeds this value. Defaults to `0.8`. |
+| `fleet.resource_memory_pressure_threshold` | number | Sandbox memory pressure threshold. Ownerless workspaces prefer an empty sandbox when memory used ratio exceeds this value. Defaults to `0.8`. |
 | `fleet.max_workspaces_per_sandbox` | number | Capacity limit for how many workspaces a single real sandbox should carry. Defaults to `32`. |
 | `fleet.ownerless_pool` | string | How workspaces without `ownerId` are grouped into sandboxes. `shared` uses a shared pool; `dedicated` gives each workspace its own sandbox. |
 | `self_hosted.base_url` | string | Required when `provider=self_hosted`. Base `/internal/v1` URL exposed by the sandbox-resident standalone worker. |
@@ -137,10 +143,10 @@ llm:
 > `self_hosted` and `e2b` share the same execution semantics: `oah-api` routes workspaces into a real sandbox, while the standalone worker inside that sandbox owns the live workspace copy, local file state, and command execution context.
 
 > **tip**
-> The controller now treats sandbox fleet demand as a first-class signal: the same `ownerId` prefers the same real sandbox, while ownerless workspaces fall into a shared pool by default. `fleet.*` defines that capacity boundary and is the contract we can later wire into real sandbox autoscaling targets.
+> The controller now treats sandbox fleet demand as a first-class signal: the same `ownerId` prefers the same real sandbox, while ownerless workspaces fall into a shared pool by default. Ownerless workspaces first reuse existing sandboxes whose CPU and memory are below threshold, then fall back to the empty sandboxes reserved by `warm_empty_count`.
 
 > **tip**
-> Starting with the current version, `createSession` asynchronously prewarms the target workspace after the session is created. With a remote sandbox provider, that eagerly binds the workspace to a sandbox; with workspace materialization enabled, it also prepares the active workspace copy ahead of the first user message. Combined with the remote-provider default `fleet.min_count = 1`, this removes most first-message cold-start latency, although very large first-time materializations can still dominate.
+> Starting with the current version, `createSession` asynchronously prewarms the target workspace after the session is created. With a remote sandbox provider, that eagerly binds the workspace to a sandbox; with workspace materialization enabled, it also prepares the active workspace copy ahead of the first user message. Combined with the remote-provider default `fleet.warm_empty_count = 1`, this removes most first-message cold-start latency, although very large first-time materializations can still dominate.
 
 > **tip**
 > `sandbox` is a host-layer concept, not a project-layer concept. One sandbox may carry multiple active workspaces. It answers “where does the worker run?”, while a workspace answers “which project and capability set is being executed?”

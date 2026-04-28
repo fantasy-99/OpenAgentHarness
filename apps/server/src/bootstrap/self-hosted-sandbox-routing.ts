@@ -89,13 +89,8 @@ async function expandCandidateBaseUrls(
 
 async function expandCandidateBaseUrlsFromActiveWorkers(
   baseUrl: string,
-  workerRegistry: Pick<WorkerRegistry, "listActive">
+  activeWorkers: WorkerRegistryEntry[]
 ): Promise<string[]> {
-  if (typeof workerRegistry.listActive !== "function") {
-    return [];
-  }
-
-  const activeWorkers = await workerRegistry.listActive();
   const candidates = new Set<string>();
   for (const worker of activeWorkers) {
     if (worker.processKind !== "standalone" || worker.health !== "healthy") {
@@ -127,11 +122,26 @@ interface CandidateScore {
   baseUrl: string;
   foreignOwnerCount: number;
   workspaceCount: number;
+  resourcePressure: number;
+  resourcePressureExceeded: boolean;
+  ownerlessReuseRank: number;
   tieBreak: number;
 }
 
 function placementOwnerId(placement: Pick<WorkspacePlacementEntry, "ownerId">): string | undefined {
   return trimToUndefined(placement.ownerId);
+}
+
+function placementLoad(placement: Pick<WorkspacePlacementEntry, "refCount" | "state">): number {
+  if (placement.state === "evicted" || placement.state === "unassigned") {
+    return 0;
+  }
+
+  if (typeof placement.refCount === "number") {
+    return Math.max(0, placement.refCount);
+  }
+
+  return 1;
 }
 
 async function mapPinnedOwnerCandidates(options: {
@@ -214,9 +224,13 @@ function assignPendingOwnerCandidate(input: {
 
 async function scoreCandidateBaseUrls(options: {
   baseUrl: string;
-  ownerId: string;
+  ownerId?: string | undefined;
   placements: WorkspacePlacementEntry[];
   candidateBaseUrls: string[];
+  maxWorkspacesPerSandbox?: number | undefined;
+  activeWorkers?: WorkerRegistryEntry[] | undefined;
+  resourceCpuPressureThreshold?: number | undefined;
+  resourceMemoryPressureThreshold?: number | undefined;
   resolveHostAddresses: (hostname: string) => Promise<string[]>;
 }): Promise<CandidateScore[]> {
   const placementEndpoints = new Map<string, Set<string>>();
@@ -237,6 +251,25 @@ async function scoreCandidateBaseUrls(options: {
   return Promise.all(
     options.candidateBaseUrls.map(async (candidateBaseUrl) => {
       const endpoints = await resolveBaseUrlEndpoints(candidateBaseUrl, options.resolveHostAddresses);
+      const resourcePressures = (options.activeWorkers ?? [])
+        .filter((worker) => {
+          const workerBaseUrl = mergeSandboxBaseUrl(options.baseUrl, worker.ownerBaseUrl ?? "");
+          return workerBaseUrl ? workerBaseUrl.replace(/\/+$/u, "") === candidateBaseUrl.replace(/\/+$/u, "") : false;
+        })
+        .map((worker) => {
+          const cpuThreshold = Math.max(0.01, options.resourceCpuPressureThreshold ?? 0.8);
+          const memoryThreshold = Math.max(0.01, options.resourceMemoryPressureThreshold ?? 0.8);
+          const cpuPressure =
+            typeof worker.resourceCpuLoadRatio === "number" && Number.isFinite(worker.resourceCpuLoadRatio)
+              ? worker.resourceCpuLoadRatio / cpuThreshold
+              : undefined;
+          const memoryPressure =
+            typeof worker.resourceMemoryUsedRatio === "number" && Number.isFinite(worker.resourceMemoryUsedRatio)
+              ? worker.resourceMemoryUsedRatio / memoryThreshold
+              : undefined;
+          return Math.max(cpuPressure ?? 0, memoryPressure ?? 0);
+        });
+      const resourcePressure = resourcePressures.length > 0 ? Math.max(...resourcePressures) : 0;
       const foreignOwners = new Set<string>();
       let workspaceCount = 0;
 
@@ -252,8 +285,8 @@ async function scoreCandidateBaseUrls(options: {
           continue;
         }
 
-        workspaceCount += 1;
-        if (affinityOwnerId && affinityOwnerId !== options.ownerId) {
+        workspaceCount += placementLoad(placement);
+        if (options.ownerId && affinityOwnerId && affinityOwnerId !== options.ownerId) {
           foreignOwners.add(affinityOwnerId);
         }
       }
@@ -262,6 +295,15 @@ async function scoreCandidateBaseUrls(options: {
         baseUrl: candidateBaseUrl,
         foreignOwnerCount: foreignOwners.size,
         workspaceCount,
+        resourcePressure,
+        resourcePressureExceeded: resourcePressure > 1,
+        ownerlessReuseRank: options.ownerId
+          ? 0
+          : workspaceCount > 0 && workspaceCount < Math.max(1, options.maxWorkspacesPerSandbox ?? 32) && resourcePressure <= 1
+            ? 2
+            : workspaceCount === 0
+              ? 1
+              : 0,
         tieBreak: stableHash(`${options.ownerId}:${candidateBaseUrl}`)
       } satisfies CandidateScore;
     })
@@ -270,11 +312,17 @@ async function scoreCandidateBaseUrls(options: {
 
 function selectBestCandidate(scoredCandidates: CandidateScore[]): CandidateScore | undefined {
   return [...scoredCandidates].sort((left, right) => {
+    if (left.ownerlessReuseRank !== right.ownerlessReuseRank) {
+      return right.ownerlessReuseRank - left.ownerlessReuseRank;
+    }
     if (left.foreignOwnerCount !== right.foreignOwnerCount) {
       return left.foreignOwnerCount - right.foreignOwnerCount;
     }
     if (left.workspaceCount !== right.workspaceCount) {
       return left.workspaceCount - right.workspaceCount;
+    }
+    if (left.resourcePressure !== right.resourcePressure) {
+      return left.resourcePressure - right.resourcePressure;
     }
     if (left.tieBreak !== right.tieBreak) {
       return left.tieBreak - right.tieBreak;
@@ -303,19 +351,22 @@ export async function resolveSelfHostedSandboxCreateBaseUrl(options: {
   workspace: Pick<WorkspaceRecord, "ownerId"> & { id?: string | undefined };
   workspacePlacementRegistry?: Pick<WorkspacePlacementRegistry, "listAll" | "assignOwnerAffinity"> | undefined;
   workerRegistry?: Pick<WorkerRegistry, "listActive"> | undefined;
+  maxWorkspacesPerSandbox?: number | undefined;
+  resourceCpuPressureThreshold?: number | undefined;
+  resourceMemoryPressureThreshold?: number | undefined;
   resolveHostAddresses?: ((hostname: string) => Promise<string[]>) | undefined;
   waitForAvailableReplicaMs?: number | undefined;
   pollIntervalMs?: number | undefined;
   sleepFn?: ((ms: number) => Promise<unknown>) | undefined;
 }): Promise<string | undefined> {
   const ownerId = trimToUndefined(options.workspace.ownerId);
-  if (!ownerId || !options.workspacePlacementRegistry) {
+  if (!options.workspacePlacementRegistry) {
     return undefined;
   }
 
   const resolveHostAddresses = options.resolveHostAddresses ?? defaultResolveHostAddresses;
   const workspaceId = trimToUndefined(options.workspace.id);
-  if (workspaceId) {
+  if (ownerId && workspaceId) {
     await options.workspacePlacementRegistry.assignOwnerAffinity(workspaceId, ownerId, {
       overwrite: false,
       updatedAt: new Date().toISOString()
@@ -336,8 +387,11 @@ export async function resolveSelfHostedSandboxCreateBaseUrl(options: {
     | undefined;
 
   while (true) {
+    const activeWorkers = options.workerRegistry && typeof options.workerRegistry.listActive === "function"
+      ? await options.workerRegistry.listActive()
+      : [];
     const workerRegistryCandidates = options.workerRegistry
-      ? await expandCandidateBaseUrlsFromActiveWorkers(options.baseUrl, options.workerRegistry)
+      ? await expandCandidateBaseUrlsFromActiveWorkers(options.baseUrl, activeWorkers)
       : [];
     const candidateBaseUrls =
       workerRegistryCandidates.length > 0
@@ -345,18 +399,24 @@ export async function resolveSelfHostedSandboxCreateBaseUrl(options: {
         : await expandCandidateBaseUrls(options.baseUrl, resolveHostAddresses);
     const source = workerRegistryCandidates.length > 0 ? "worker_registry" : "dns";
     const placements = (await options.workspacePlacementRegistry.listAll()).filter((placement) => placement.state !== "evicted");
-    const existingOwnerPlacement = placements
-      .filter((placement) => placementOwnerId(placement) === ownerId && trimToUndefined(placement.ownerBaseUrl))
-      .sort(placementPriority)[0];
+    const existingOwnerPlacement = ownerId
+      ? placements
+          .filter((placement) => placementOwnerId(placement) === ownerId && trimToUndefined(placement.ownerBaseUrl))
+          .sort(placementPriority)[0]
+      : undefined;
     if (existingOwnerPlacement?.ownerBaseUrl) {
       return mergeSandboxBaseUrl(options.baseUrl, existingOwnerPlacement.ownerBaseUrl) ?? undefined;
     }
 
     const scoredCandidates = await scoreCandidateBaseUrls({
       baseUrl: options.baseUrl,
-      ownerId,
+      ...(ownerId ? { ownerId } : {}),
       placements,
       candidateBaseUrls,
+      maxWorkspacesPerSandbox: options.maxWorkspacesPerSandbox,
+      activeWorkers,
+      resourceCpuPressureThreshold: options.resourceCpuPressureThreshold,
+      resourceMemoryPressureThreshold: options.resourceMemoryPressureThreshold,
       resolveHostAddresses
     });
     const pinnedOwners = await mapPinnedOwnerCandidates({
@@ -365,12 +425,17 @@ export async function resolveSelfHostedSandboxCreateBaseUrl(options: {
       candidateBaseUrls,
       resolveHostAddresses
     });
-    const pendingOwnerSelection = assignPendingOwnerCandidate({
-      ownerId,
-      trackedOwnerIds: listTrackedOwnerIds(placements),
-      pinnedOwners,
-      candidateBaseUrls
-    });
+    const pendingOwnerSelection = ownerId
+      ? assignPendingOwnerCandidate({
+          ownerId,
+          trackedOwnerIds: listTrackedOwnerIds(placements),
+          pinnedOwners,
+          candidateBaseUrls
+        })
+      : {
+          baseUrl: undefined,
+          waitForReplica: false
+        };
     const assignedPendingBaseUrl =
       pendingOwnerSelection.baseUrl &&
       (source === "worker_registry" || candidateBaseUrls.length > 1)

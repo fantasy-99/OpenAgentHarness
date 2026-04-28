@@ -51,12 +51,14 @@ export interface NativeE2BSandboxServiceOptions {
   requestTimeoutMs?: number | undefined;
   template?: string | undefined;
   timeoutMs?: number | undefined;
+  maxWorkspacesPerSandbox?: number | undefined;
+  ownerlessPool?: "shared" | "dedicated" | undefined;
   sdk?: NativeE2BSandboxSdk | undefined;
 }
 
-function buildSandboxGroupKey(workspace: WorkspaceRecord): string {
+function buildOwnerSandboxGroupKey(workspace: WorkspaceRecord): string | undefined {
   const ownerId = trimToUndefined(workspace.ownerId);
-  return ownerId ? `owner:${ownerId}` : "shared";
+  return ownerId ? `owner:${ownerId}` : undefined;
 }
 
 function buildWorkspaceSandboxRoot(workspace: WorkspaceRecord): string {
@@ -152,6 +154,8 @@ export function createNativeE2BSandboxService(options: NativeE2BSandboxServiceOp
   const sdk = options.sdk ?? (E2BSandbox as unknown as NativeE2BSandboxSdk);
   const sandboxIdsByGroupKey = new Map<string, string>();
   const sandboxesById = new Map<string, NativeE2BSandboxInstance>();
+  const ownerlessWorkspaceGroups = new Map<string, string>();
+  const ownerlessWorkspaceIdsByGroupKey = new Map<string, Set<string>>();
 
   const connectionOpts: ConnectionOpts = {
     ...(options.apiKey ? { apiKey: options.apiKey } : {}),
@@ -161,11 +165,51 @@ export function createNativeE2BSandboxService(options: NativeE2BSandboxServiceOp
     ...(options.requestTimeoutMs !== undefined ? { requestTimeoutMs: options.requestTimeoutMs } : {})
   };
   const sandboxTimeoutMs = options.timeoutMs ?? DEFAULT_E2B_TIMEOUT_MS;
+  const maxWorkspacesPerSandbox = Math.max(1, Math.floor(options.maxWorkspacesPerSandbox ?? 32));
+  const ownerlessPool = options.ownerlessPool ?? "shared";
 
   function rememberSandbox(groupKey: string, sandbox: NativeE2BSandboxInstance): NativeE2BSandboxInstance {
     sandboxIdsByGroupKey.set(groupKey, sandbox.sandboxId);
     sandboxesById.set(sandbox.sandboxId, sandbox);
     return sandbox;
+  }
+
+  function rememberOwnerlessWorkspace(groupKey: string, workspaceId: string): string {
+    ownerlessWorkspaceGroups.set(workspaceId, groupKey);
+    const workspaceIds = ownerlessWorkspaceIdsByGroupKey.get(groupKey) ?? new Set<string>();
+    workspaceIds.add(workspaceId);
+    ownerlessWorkspaceIdsByGroupKey.set(groupKey, workspaceIds);
+    return groupKey;
+  }
+
+  function resolveOwnerlessSandboxGroupKey(workspace: WorkspaceRecord): string {
+    if (ownerlessPool === "dedicated") {
+      return rememberOwnerlessWorkspace(`workspace:${workspace.id}`, workspace.id);
+    }
+
+    const existingGroupKey = ownerlessWorkspaceGroups.get(workspace.id);
+    if (existingGroupKey) {
+      return existingGroupKey;
+    }
+
+    const existingGroupKeys = [...ownerlessWorkspaceIdsByGroupKey.keys()].sort((left, right) => {
+      const leftCount = ownerlessWorkspaceIdsByGroupKey.get(left)?.size ?? 0;
+      const rightCount = ownerlessWorkspaceIdsByGroupKey.get(right)?.size ?? 0;
+      return leftCount - rightCount || left.localeCompare(right);
+    });
+    const availableGroupKey = existingGroupKeys.find(
+      (groupKey) => (ownerlessWorkspaceIdsByGroupKey.get(groupKey)?.size ?? 0) < maxWorkspacesPerSandbox
+    );
+    if (availableGroupKey) {
+      return rememberOwnerlessWorkspace(availableGroupKey, workspace.id);
+    }
+
+    const nextGroupKey = existingGroupKeys.length === 0 ? "shared" : `shared:${existingGroupKeys.length + 1}`;
+    return rememberOwnerlessWorkspace(nextGroupKey, workspace.id);
+  }
+
+  function resolveSandboxGroupKey(workspace: WorkspaceRecord): string {
+    return buildOwnerSandboxGroupKey(workspace) ?? resolveOwnerlessSandboxGroupKey(workspace);
   }
 
   async function connectSandbox(groupKey: string, sandboxId: string): Promise<NativeE2BSandboxInstance> {
@@ -226,7 +270,7 @@ export function createNativeE2BSandboxService(options: NativeE2BSandboxServiceOp
   }
 
   async function resolveSandbox(workspace: WorkspaceRecord): Promise<{ sandbox: NativeE2BSandboxInstance; rootPath: string }> {
-    const groupKey = buildSandboxGroupKey(workspace);
+    const groupKey = resolveSandboxGroupKey(workspace);
     const cachedSandboxId = sandboxIdsByGroupKey.get(groupKey);
     if (cachedSandboxId) {
       try {

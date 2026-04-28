@@ -5,6 +5,11 @@ import type { CreateRedisWorkerRegistryOptions } from "./registry-types.js";
 
 const DEFAULT_WORKER_LEASE_TTL_MS = 5_000;
 
+function optionalFiniteNumber(value: unknown): number | undefined {
+  const parsed = typeof value === "number" ? value : typeof value === "string" && value.length > 0 ? Number(value) : NaN;
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 function deriveRedisWorkerRegistryEntry(
   entry: WorkerLeaseInput & {
     leaseTtlMs?: number | undefined;
@@ -35,6 +40,12 @@ function deriveRedisWorkerRegistryEntry(
     expiresAt: new Date(expiresAtMs).toISOString(),
     lastSeenAgeMs,
     health: expiresAtMs - nowMs <= lateThresholdMs ? "late" : "healthy",
+    ...(typeof entry.resourceCpuLoadRatio === "number" ? { resourceCpuLoadRatio: entry.resourceCpuLoadRatio } : {}),
+    ...(typeof entry.resourceMemoryUsedRatio === "number" ? { resourceMemoryUsedRatio: entry.resourceMemoryUsedRatio } : {}),
+    ...(typeof entry.resourceLoadAverage1m === "number" ? { resourceLoadAverage1m: entry.resourceLoadAverage1m } : {}),
+    ...(typeof entry.resourceMemoryUsedBytes === "number" ? { resourceMemoryUsedBytes: entry.resourceMemoryUsedBytes } : {}),
+    ...(typeof entry.resourceMemoryTotalBytes === "number" ? { resourceMemoryTotalBytes: entry.resourceMemoryTotalBytes } : {}),
+    ...(typeof entry.processMemoryRssBytes === "number" ? { processMemoryRssBytes: entry.processMemoryRssBytes } : {}),
     ...(entry.currentSessionId ? { currentSessionId: entry.currentSessionId } : {}),
     ...(entry.currentRunId ? { currentRunId: entry.currentRunId } : {}),
     ...(entry.currentWorkspaceId ? { currentWorkspaceId: entry.currentWorkspaceId } : {})
@@ -78,6 +89,18 @@ export class RedisWorkerRegistry implements WorkerRegistry {
         lastSeenAt: entry.lastSeenAt,
         leaseTtlMs: String(leaseTtlMs),
         expiresAt,
+        ...(typeof entry.resourceCpuLoadRatio === "number" ? { resourceCpuLoadRatio: String(entry.resourceCpuLoadRatio) } : {}),
+        ...(typeof entry.resourceMemoryUsedRatio === "number"
+          ? { resourceMemoryUsedRatio: String(entry.resourceMemoryUsedRatio) }
+          : {}),
+        ...(typeof entry.resourceLoadAverage1m === "number" ? { resourceLoadAverage1m: String(entry.resourceLoadAverage1m) } : {}),
+        ...(typeof entry.resourceMemoryUsedBytes === "number"
+          ? { resourceMemoryUsedBytes: String(entry.resourceMemoryUsedBytes) }
+          : {}),
+        ...(typeof entry.resourceMemoryTotalBytes === "number"
+          ? { resourceMemoryTotalBytes: String(entry.resourceMemoryTotalBytes) }
+          : {}),
+        ...(typeof entry.processMemoryRssBytes === "number" ? { processMemoryRssBytes: String(entry.processMemoryRssBytes) } : {}),
         ...(entry.currentSessionId ? { currentSessionId: entry.currentSessionId } : {}),
         ...(entry.currentRunId ? { currentRunId: entry.currentRunId } : {}),
         ...(entry.currentWorkspaceId ? { currentWorkspaceId: entry.currentWorkspaceId } : {})
@@ -96,6 +119,24 @@ export class RedisWorkerRegistry implements WorkerRegistry {
     }
     if (!entry.ownerBaseUrl) {
       transaction.hDel(this.#workerKey(entry.workerId), "ownerBaseUrl");
+    }
+    if (typeof entry.resourceCpuLoadRatio !== "number") {
+      transaction.hDel(this.#workerKey(entry.workerId), "resourceCpuLoadRatio");
+    }
+    if (typeof entry.resourceMemoryUsedRatio !== "number") {
+      transaction.hDel(this.#workerKey(entry.workerId), "resourceMemoryUsedRatio");
+    }
+    if (typeof entry.resourceLoadAverage1m !== "number") {
+      transaction.hDel(this.#workerKey(entry.workerId), "resourceLoadAverage1m");
+    }
+    if (typeof entry.resourceMemoryUsedBytes !== "number") {
+      transaction.hDel(this.#workerKey(entry.workerId), "resourceMemoryUsedBytes");
+    }
+    if (typeof entry.resourceMemoryTotalBytes !== "number") {
+      transaction.hDel(this.#workerKey(entry.workerId), "resourceMemoryTotalBytes");
+    }
+    if (typeof entry.processMemoryRssBytes !== "number") {
+      transaction.hDel(this.#workerKey(entry.workerId), "processMemoryRssBytes");
     }
     await transaction.pExpire(this.#workerKey(entry.workerId), leaseTtlMs).exec();
   }
@@ -142,6 +183,12 @@ export class RedisWorkerRegistry implements WorkerRegistry {
             lastSeenAt: record.fields.lastSeenAt ?? new Date(0).toISOString(),
             leaseTtlMs: record.fields.leaseTtlMs ? Number(record.fields.leaseTtlMs) : undefined,
             expiresAt: record.fields.expiresAt,
+            resourceCpuLoadRatio: optionalFiniteNumber(record.fields.resourceCpuLoadRatio),
+            resourceMemoryUsedRatio: optionalFiniteNumber(record.fields.resourceMemoryUsedRatio),
+            resourceLoadAverage1m: optionalFiniteNumber(record.fields.resourceLoadAverage1m),
+            resourceMemoryUsedBytes: optionalFiniteNumber(record.fields.resourceMemoryUsedBytes),
+            resourceMemoryTotalBytes: optionalFiniteNumber(record.fields.resourceMemoryTotalBytes),
+            processMemoryRssBytes: optionalFiniteNumber(record.fields.processMemoryRssBytes),
             ...(record.fields.currentSessionId ? { currentSessionId: record.fields.currentSessionId } : {}),
             ...(record.fields.currentRunId ? { currentRunId: record.fields.currentRunId } : {}),
             ...(record.fields.currentWorkspaceId ? { currentWorkspaceId: record.fields.currentWorkspaceId } : {})

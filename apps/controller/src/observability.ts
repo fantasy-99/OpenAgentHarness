@@ -137,6 +137,11 @@ export function renderControllerMetrics(input: {
       value: input.controller.sandboxFleet?.sharedSandboxes ?? 0
     },
     {
+      name: "sandbox_warm_empty",
+      help: "Number of extra empty sandboxes the controller keeps warm for fast workspace creation.",
+      value: input.controller.sandboxFleet?.warmEmptySandboxes ?? 0
+    },
+    {
       name: "sandbox_capped",
       help: "Whether desired sandbox count is currently capped by sandbox fleet max_count.",
       value: input.controller.sandboxFleet?.capped ? 1 : 0

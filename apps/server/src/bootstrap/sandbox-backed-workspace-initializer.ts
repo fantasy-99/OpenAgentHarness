@@ -6,7 +6,13 @@ import path from "node:path";
 
 import { sandboxSchema, type CreateWorkspaceRequest } from "@oah/api-contracts";
 import { discoverWorkspace, initializeWorkspaceFromRuntime, type DiscoveredAgent, type PlatformModelRegistry } from "@oah/config";
-import { createId, type WorkspaceInitializationResult, type WorkspaceRecord } from "@oah/engine-core";
+import {
+  createId,
+  type WorkerRegistry,
+  type WorkspaceInitializationResult,
+  type WorkspacePlacementRegistry,
+  type WorkspaceRecord
+} from "@oah/engine-core";
 import * as nativeBridge from "@oah/native-bridge";
 
 import {
@@ -15,6 +21,7 @@ import {
 } from "../observability/native-workspace-sync.js";
 import type { SandboxHost } from "./sandbox-host.js";
 import { enrichWorkspaceModelsWithDiscoveredMetadata } from "./model-metadata-discovery.js";
+import { resolveSelfHostedSandboxCreateBaseUrl } from "./self-hosted-sandbox-routing.js";
 
 const SANDBOX_WORKSPACE_ROOT = "/workspace";
 const DEFAULT_SEED_UPLOAD_CONCURRENCY = 8;
@@ -956,10 +963,29 @@ function createSandboxSeedWorkspace(input: {
 
 async function createSelfHostedSandbox(input: {
   request: CreateWorkspaceRequest;
+  workspaceId: string;
   baseUrl: string;
   headers?: Record<string, string> | undefined;
+  maxWorkspacesPerSandbox?: number | undefined;
+  resourceCpuPressureThreshold?: number | undefined;
+  resourceMemoryPressureThreshold?: number | undefined;
+  workspacePlacementRegistry?: Pick<WorkspacePlacementRegistry, "listAll" | "assignOwnerAffinity"> | undefined;
+  workerRegistry?: Pick<WorkerRegistry, "listActive"> | undefined;
 }) {
-  const response = await fetch(`${input.baseUrl.replace(/\/$/, "")}/sandboxes`, {
+  const targetBaseUrl =
+    (await resolveSelfHostedSandboxCreateBaseUrl({
+      baseUrl: input.baseUrl,
+      workspace: {
+        ...(input.request.ownerId ? { ownerId: input.request.ownerId } : {}),
+        id: input.workspaceId
+      },
+      maxWorkspacesPerSandbox: input.maxWorkspacesPerSandbox,
+      resourceCpuPressureThreshold: input.resourceCpuPressureThreshold,
+      resourceMemoryPressureThreshold: input.resourceMemoryPressureThreshold,
+      ...(input.workspacePlacementRegistry ? { workspacePlacementRegistry: input.workspacePlacementRegistry } : {}),
+      ...(input.workerRegistry ? { workerRegistry: input.workerRegistry } : {})
+    })) ?? input.baseUrl;
+  const response = await fetch(`${targetBaseUrl.replace(/\/$/, "")}/sandboxes`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -993,6 +1019,11 @@ export function createSandboxBackedWorkspaceInitializer(options: {
   selfHosted?: {
     baseUrl: string;
     headers?: Record<string, string> | undefined;
+    maxWorkspacesPerSandbox?: number | undefined;
+    resourceCpuPressureThreshold?: number | undefined;
+    resourceMemoryPressureThreshold?: number | undefined;
+    workspacePlacementRegistry?: Pick<WorkspacePlacementRegistry, "listAll" | "assignOwnerAffinity"> | undefined;
+    workerRegistry?: Pick<WorkerRegistry, "listActive"> | undefined;
   } | undefined;
 }) {
   async function prepareSeed(
@@ -1110,8 +1141,16 @@ export function createSandboxBackedWorkspaceInitializer(options: {
       if (options.selfHosted) {
         const sandbox = await createSelfHostedSandbox({
           request: input,
+          workspaceId,
           baseUrl: options.selfHosted.baseUrl,
-          headers: options.selfHosted.headers
+          headers: options.selfHosted.headers,
+          maxWorkspacesPerSandbox: options.selfHosted.maxWorkspacesPerSandbox,
+          resourceCpuPressureThreshold: options.selfHosted.resourceCpuPressureThreshold,
+          resourceMemoryPressureThreshold: options.selfHosted.resourceMemoryPressureThreshold,
+          ...(options.selfHosted.workspacePlacementRegistry
+            ? { workspacePlacementRegistry: options.selfHosted.workspacePlacementRegistry }
+            : {}),
+          ...(options.selfHosted.workerRegistry ? { workerRegistry: options.selfHosted.workerRegistry } : {})
         });
         remoteRootPath = sandbox.rootPath;
         selfHostedSandbox = {

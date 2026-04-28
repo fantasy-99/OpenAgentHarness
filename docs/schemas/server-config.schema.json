@@ -264,6 +264,20 @@
               "type": "integer",
               "minimum": 1
             },
+            "warm_empty_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "resource_cpu_pressure_threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "resource_memory_pressure_threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
             "max_workspaces_per_sandbox": {
               "type": "integer",
               "minimum": 1

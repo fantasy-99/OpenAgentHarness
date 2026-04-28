@@ -77,6 +77,13 @@ export async function createConfiguredSandboxHost(options: {
                   baseUrl,
                   workspace,
                   workspacePlacementRegistry: options.workspacePlacementRegistry,
+                  maxWorkspacesPerSandbox: options.config.sandbox?.fleet?.max_workspaces_per_sandbox,
+                  resourceCpuPressureThreshold: (
+                    options.config.sandbox?.fleet as { resource_cpu_pressure_threshold?: number | undefined } | undefined
+                  )?.resource_cpu_pressure_threshold,
+                  resourceMemoryPressureThreshold: (
+                    options.config.sandbox?.fleet as { resource_memory_pressure_threshold?: number | undefined } | undefined
+                  )?.resource_memory_pressure_threshold,
                   ...(options.workerRegistry ? { workerRegistry: options.workerRegistry } : {})
                 })
             }
@@ -99,7 +106,9 @@ export async function createConfiguredSandboxHost(options: {
       headers: options.config.sandbox?.e2b?.headers,
       template: trimToUndefined(options.config.sandbox?.e2b?.template),
       timeoutMs: options.config.sandbox?.e2b?.timeout_ms,
-      requestTimeoutMs: options.config.sandbox?.e2b?.request_timeout_ms
+      requestTimeoutMs: options.config.sandbox?.e2b?.request_timeout_ms,
+      maxWorkspacesPerSandbox: options.config.sandbox?.fleet?.max_workspaces_per_sandbox,
+      ownerlessPool: options.config.sandbox?.fleet?.ownerless_pool
     })
   });
 }

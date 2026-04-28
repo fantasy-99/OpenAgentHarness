@@ -32,6 +32,12 @@ export const workerLeaseSchema = z.object({
   expiresAt: timestampSchema,
   lastSeenAgeMs: z.number().int().min(0),
   health: workerHealthSchema,
+  resourceCpuLoadRatio: z.number().min(0).optional(),
+  resourceMemoryUsedRatio: z.number().min(0).max(1).optional(),
+  resourceLoadAverage1m: z.number().min(0).optional(),
+  resourceMemoryUsedBytes: z.number().int().min(0).optional(),
+  resourceMemoryTotalBytes: z.number().int().min(0).optional(),
+  processMemoryRssBytes: z.number().int().min(0).optional(),
   currentSessionId: z.string().optional(),
   currentRunId: z.string().optional(),
   currentWorkspaceId: z.string().optional()

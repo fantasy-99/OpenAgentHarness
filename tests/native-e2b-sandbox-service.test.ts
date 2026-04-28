@@ -528,6 +528,87 @@ describe("native e2b sandbox service", () => {
     );
   });
 
+  it("opens a new ownerless shared sandbox bucket when the current bucket is full", async () => {
+    const sandboxes = ["sb-ownerless-1", "sb-ownerless-2"].map((sandboxId) => ({
+      sandboxId,
+      files: {
+        makeDir: vi.fn(async () => true),
+        write: vi.fn(async () => ({ name: "README.md", path: "/workspace/README.md" })),
+        read: vi.fn(async () => new Uint8Array()),
+        getInfo: vi.fn(async () => ({
+          name: "README.md",
+          path: "/workspace/README.md",
+          type: "file",
+          size: 0,
+          mode: 0o644,
+          permissions: "rw-r--r--",
+          owner: "user",
+          group: "group"
+        })),
+        list: vi.fn(async () => []),
+        remove: vi.fn(async () => undefined),
+        rename: vi.fn(async () => ({ name: "README.md", path: "/workspace/README.md", type: "file" }))
+      },
+      commands: {
+        run: vi.fn(async () => ({
+          stdout: "",
+          stderr: "",
+          exitCode: 0
+        }))
+      }
+    }));
+
+    const create = vi.fn(async () => sandboxes[create.mock.calls.length - 1] ?? sandboxes[0]);
+
+    const service = createNativeE2BSandboxService({
+      apiKey: "secret",
+      maxWorkspacesPerSandbox: 1,
+      sdk: {
+        connect: vi.fn(async () => sandboxes[0]),
+        create,
+        list: vi.fn(() => ({
+          hasNext: false,
+          async nextItems() {
+            return [];
+          }
+        }))
+      } as never
+    });
+
+    const firstLease = await service.acquireFileAccess({
+      workspace: buildWorkspace({
+        id: "ws_public_1"
+      }),
+      access: "write"
+    });
+    const secondLease = await service.acquireFileAccess({
+      workspace: buildWorkspace({
+        id: "ws_public_2"
+      }),
+      access: "write"
+    });
+
+    expect(firstLease.sandboxId).toBe("sb-ownerless-1");
+    expect(secondLease.sandboxId).toBe("sb-ownerless-2");
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(create).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        metadata: {
+          oahSandboxGroup: "shared"
+        }
+      })
+    );
+    expect(create).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        metadata: {
+          oahSandboxGroup: "shared:2"
+        }
+      })
+    );
+  });
+
   it("normalizes legacy internal sandbox gateway URLs into E2B apiUrl values", () => {
     expect(normalizeE2BApiUrl("https://sandbox-gateway.example.com/internal/v1")).toBe("https://sandbox-gateway.example.com");
     expect(normalizeE2BApiUrl("https://sandbox-gateway.example.com/custom/api")).toBe("https://sandbox-gateway.example.com/custom/api");
