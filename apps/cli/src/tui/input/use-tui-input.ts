@@ -26,6 +26,10 @@ type TuiInputKey = {
   downArrow?: boolean;
   leftArrow?: boolean;
   rightArrow?: boolean;
+  pageUp?: boolean;
+  pageDown?: boolean;
+  home?: boolean;
+  end?: boolean;
   backspace?: boolean;
   delete?: boolean;
   return?: boolean;
@@ -266,6 +270,23 @@ function handleComposerInput(input: { value: string; key: TuiInputKey; state: Oa
   const { value, key, state } = input;
   const slashMatches = getSlashCommandMatches(state.composer);
   const slashSuggestionsActive = slashMatches.length > 0;
+  const composerEmpty = state.composer.length === 0;
+  if (key.pageUp || (composerEmpty && ((value === "u" && key.ctrl) || hasRawControl(value, "\u0015")))) {
+    state.scrollTranscript(12);
+    return;
+  }
+  if (key.pageDown || (composerEmpty && ((value === "d" && key.ctrl) || hasRawControl(value, "\u0004")))) {
+    state.scrollTranscript(-12);
+    return;
+  }
+  if (key.home && composerEmpty) {
+    state.scrollTranscript(Number.MAX_SAFE_INTEGER);
+    return;
+  }
+  if (key.end && composerEmpty) {
+    state.resetTranscriptScroll();
+    return;
+  }
   if ((value === "w" && key.ctrl) || hasRawControl(value, "\u0017")) {
     state.setDialog({ kind: "workspace-list", selectedIndex: Math.max(0, state.workspaces.findIndex((item) => item.id === state.currentWorkspace?.id)) });
     return;
@@ -294,6 +315,7 @@ function handleComposerInput(input: { value: string; key: TuiInputKey; state: Oa
         input.exit();
         return;
       }
+      state.resetTranscriptScroll();
       state.setComposerValue(nextComposer);
       void state.sendComposer(nextComposer);
     } else if (slashSuggestionsActive) {
@@ -302,12 +324,14 @@ function handleComposerInput(input: { value: string; key: TuiInputKey; state: Oa
         input.exit();
         return;
       }
+      state.resetTranscriptScroll();
       void state.sendComposer(selectedCommand ?? state.composer);
     } else {
       if (state.composer.trim() === "/quit") {
         input.exit();
         return;
       }
+      state.resetTranscriptScroll();
       void state.sendComposer();
     }
     return;
@@ -325,6 +349,14 @@ function handleComposerInput(input: { value: string; key: TuiInputKey; state: Oa
   }
   if (key.rightArrow) {
     state.setComposerCursor((current) => Math.min(state.composer.length, current + 1));
+    return;
+  }
+  if (key.home) {
+    state.setComposerCursor(0);
+    return;
+  }
+  if (key.end) {
+    state.setComposerCursor(state.composer.length);
     return;
   }
   if (value === "a" && key.ctrl) {

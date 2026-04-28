@@ -31,6 +31,7 @@ export function useOahReplState(connection: OahConnection) {
   const [composer, setComposer] = useState("");
   const [composerCursor, setComposerCursor] = useState(0);
   const [slashSelection, setSlashSelection] = useState(0);
+  const [transcriptScroll, setTranscriptScroll] = useState(0);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [notice, setNotice] = useState<Notice>({ level: "info", message: "Loading workspaces..." });
   const [streamState, setStreamState] = useState("idle");
@@ -45,6 +46,7 @@ export function useOahReplState(connection: OahConnection) {
     setMessages([]);
     setRuns([]);
     setEvents([]);
+    setTranscriptScroll(0);
     lastCursorRef.current = undefined;
   }, []);
 
@@ -205,6 +207,18 @@ export function useOahReplState(connection: OahConnection) {
     setSlashSelection(0);
   }, []);
 
+  const scrollTranscript = useCallback((delta: number) => {
+    setTranscriptScroll((current) => Math.max(0, current + delta));
+  }, []);
+
+  const resetTranscriptScroll = useCallback(() => {
+    setTranscriptScroll(0);
+  }, []);
+
+  const setTranscriptScrollOffset = useCallback((offset: number) => {
+    setTranscriptScroll(Math.max(0, offset));
+  }, []);
+
   const insertComposerInput = useCallback(
     (input: string) => {
       const cursor = composerCursor;
@@ -272,6 +286,7 @@ export function useOahReplState(connection: OahConnection) {
       }
 
       setComposerValue("");
+      resetTranscriptScroll();
       const optimistic: ChatLine = {
         id: `pending:${Date.now()}`,
         role: "user",
@@ -288,7 +303,7 @@ export function useOahReplState(connection: OahConnection) {
         setError(error);
       }
     },
-    [client, composer, currentSession, openWorkspaceCreator, refreshSession, setComposerValue, setError]
+    [client, composer, currentSession, openWorkspaceCreator, refreshSession, resetTranscriptScroll, setComposerValue, setError]
   );
 
   useEffect(() => {
@@ -372,6 +387,7 @@ export function useOahReplState(connection: OahConnection) {
     composer,
     composerCursor,
     slashSelection,
+    transcriptScroll,
     dialog,
     notice,
     streamState,
@@ -379,6 +395,9 @@ export function useOahReplState(connection: OahConnection) {
     setComposerValue,
     setSlashSelection,
     setDialog,
+    scrollTranscript,
+    resetTranscriptScroll,
+    setTranscriptScrollOffset,
     insertComposerInput,
     deleteComposerInput,
     refreshRuntimes,

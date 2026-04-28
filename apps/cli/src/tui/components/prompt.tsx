@@ -16,6 +16,7 @@ export function PromptInput(props: {
   notice: Notice;
   streamState: string;
   agentMode: string;
+  transcriptScroll: number;
 }) {
   const beforeCursor = props.value.slice(0, props.cursor);
   const afterCursor = props.value.slice(props.cursor);
@@ -59,6 +60,7 @@ export function PromptInput(props: {
         notice={props.notice}
         streamState={props.streamState}
         agentMode={props.agentMode}
+        transcriptScroll={props.transcriptScroll}
       />
     </Box>
   );
@@ -102,10 +104,11 @@ function PromptFooter(props: {
   notice: Notice;
   streamState: string;
   agentMode: string;
+  transcriptScroll: number;
 }) {
   const sessionLabel = props.session?.title ?? shortId(props.session?.id);
   const location = props.session ? `${props.workspace?.name ?? "no workspace"} / ${sessionLabel}` : props.workspace?.name ?? "no workspace";
-  const activity = footerActivity(props.run, props.session, props.streamState);
+  const activity = footerActivity(props.run, props.session, props.streamState, props.transcriptScroll);
   const shortcuts = props.disabled ? "modal · esc" : "? · ^W ws · ^O sess · ^C";
   const modelAgent = footerModelAgent(props.session, props.agentMode);
 
@@ -154,7 +157,10 @@ function footerModelAgent(session: Session | null, agentMode: string) {
   return `model ${model} · agent ${agent} · mode ${mode}`;
 }
 
-function footerActivity(run: Run | null, session: Session | null, streamState: string) {
+function footerActivity(run: Run | null, session: Session | null, streamState: string, transcriptScroll: number) {
+  if (transcriptScroll > 0) {
+    return "history";
+  }
   const runStatus = run?.status;
   if (runStatus && runStatus !== "completed") {
     return `${session?.activeAgentName ?? "agent"} · ${runStatus}`;

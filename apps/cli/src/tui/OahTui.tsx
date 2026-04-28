@@ -53,8 +53,8 @@ function OahRepl({ connection }: { connection: OahConnection }) {
     ) : null;
 
   return (
-    <Box flexDirection="column" height={height}>
-      <Box flexDirection="column" flexGrow={1}>
+    <Box flexDirection="column">
+      <Box flexDirection="column">
         <Messages
           lines={state.messages}
           workspace={state.currentWorkspace}
@@ -62,6 +62,8 @@ function OahRepl({ connection }: { connection: OahConnection }) {
           serviceUrl={connection.baseUrl}
           height={transcriptHeight}
           columns={columns}
+          scrollOffset={state.transcriptScroll}
+          onScrollOffsetChange={state.setTranscriptScrollOffset}
         />
         <SpinnerLine run={latestRun} />
       </Box>
@@ -78,6 +80,7 @@ function OahRepl({ connection }: { connection: OahConnection }) {
         notice={state.notice}
         streamState={state.streamState}
         agentMode={agentMode}
+        transcriptScroll={state.transcriptScroll}
       />
     </Box>
   );

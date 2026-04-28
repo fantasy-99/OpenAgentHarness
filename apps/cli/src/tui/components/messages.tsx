@@ -4,7 +4,7 @@ import type { Run, Session, Workspace } from "@oah/api-contracts";
 
 import type { ChatLine } from "../domain/types.js";
 import { shortId, SPINNER_FRAMES } from "../domain/utils.js";
-import { StartBanner, startBannerRows } from "./start-banner.js";
+import { StartBanner } from "./start-banner.js";
 
 type VisibleChatLine = ChatLine & {
   displayText: string;
@@ -19,16 +19,24 @@ export function Messages(props: {
   serviceUrl: string;
   height: number;
   columns: number;
+  scrollOffset: number;
+  onScrollOffsetChange: (offset: number) => void;
 }) {
+  const { onScrollOffsetChange, scrollOffset } = props;
   const hasMessages = props.session !== null && props.lines.length > 0;
-  const bannerRows = startBannerRows({ height: props.height, columns: props.columns, hasMessages });
-  const messageRows = hasMessages ? Math.max(1, props.height - bannerRows) : 0;
-  const visibleLines = hasMessages ? getBottomAnchoredLines(props.lines, messageRows, props.columns) : [];
+  const viewport = hasMessages ? getViewportLines(props.lines, props.height, props.columns, scrollOffset) : { lines: [], scrollOffset: 0 };
+  const visibleLines = viewport.lines;
   const bannerSubtitle = !props.session
     ? "Create or switch to a session with ^O"
     : hasMessages
       ? "Resuming your session"
       : "Start typing or use / for commands";
+
+  useEffect(() => {
+    if (hasMessages && viewport.scrollOffset !== scrollOffset) {
+      onScrollOffsetChange(viewport.scrollOffset);
+    }
+  }, [hasMessages, onScrollOffsetChange, scrollOffset, viewport.scrollOffset]);
 
   if (!props.session) {
     return (
@@ -64,19 +72,7 @@ export function Messages(props: {
 
   return (
     <Box flexDirection="column" height={props.height} flexShrink={1} overflow="hidden">
-      {bannerRows > 0 ? (
-        <StartBanner
-          height={bannerRows}
-          columns={props.columns}
-          subtitle={bannerSubtitle}
-          serviceUrl={props.serviceUrl}
-          workspaceName={props.workspace?.name}
-          sessionTitle={props.session.title}
-          sessionId={props.session.id}
-          compact={bannerRows < 9}
-        />
-      ) : null}
-      <Box flexDirection="column" height={messageRows} flexShrink={1} justifyContent="flex-end" overflow="hidden">
+      <Box flexDirection="column" height={props.height} flexShrink={1} justifyContent="flex-end" overflow="hidden">
         {visibleLines.map((line) => (
           <MessageRow key={line.id} line={line} />
         ))}
@@ -331,51 +327,75 @@ function toolResponseText(line: ChatLine) {
   return line.text;
 }
 
-function getBottomAnchoredLines(lines: ChatLine[], height: number, columns: number): VisibleChatLine[] {
+type LaidOutChatLine = {
+  line: ChatLine;
+  rows: string[];
+  top: number;
+  marginBottom: number;
+  height: number;
+};
+
+function getViewportLines(
+  lines: ChatLine[],
+  height: number,
+  columns: number,
+  scrollOffset: number
+): { lines: VisibleChatLine[]; scrollOffset: number } {
   const maxRows = Math.max(1, height);
+  const layout = layoutChatLines(lines, columns);
+  const totalRows = layout.reduce((sum, item) => sum + item.height, 0);
+  const maxScrollOffset = Math.max(0, totalRows - maxRows);
+  const offset = Math.max(0, Math.min(scrollOffset, maxScrollOffset));
+  const viewportStart = Math.max(0, totalRows - maxRows - offset);
+  const viewportEnd = viewportStart + maxRows;
   const visible: VisibleChatLine[] = [];
-  let remainingRows = maxRows;
 
-  for (let index = lines.length - 1; index >= 0 && remainingRows > 0; index -= 1) {
-    const line = lines[index];
-    if (!line) {
+  for (const item of layout) {
+    const itemEnd = item.top + item.height;
+    if (itemEnd <= viewportStart) {
       continue;
     }
-    const textWidth = lineTextWidth(line, columns);
-    const rows = wrapTerminalRows(linePlainText(line), textWidth);
-    const marginBottom = visible.length === 0 ? 0 : 1;
-    const fullHeight = rows.length + marginBottom;
+    if (item.top >= viewportEnd) {
+      break;
+    }
 
-    if (fullHeight <= remainingRows) {
-      visible.unshift({
-        ...line,
-        displayText: rows.join("\n"),
-        marginBottom
-      });
-      remainingRows -= fullHeight;
+    const textStart = Math.max(0, viewportStart - item.top);
+    const textEnd = Math.min(item.rows.length, viewportEnd - item.top);
+    if (textEnd <= textStart) {
       continue;
     }
 
-    const availableTextRows = remainingRows - marginBottom;
-    if (availableTextRows > 0) {
-      visible.unshift({
-        ...line,
-        displayText: rows.slice(-availableTextRows).join("\n"),
-        marginBottom,
-        clipped: true
-      });
-    } else if (visible.length === 0 && remainingRows > 0) {
-      visible.unshift({
-        ...line,
-        displayText: rows.slice(-remainingRows).join("\n"),
-        marginBottom: 0,
-        clipped: true
-      });
-    }
-    break;
+    const marginTop = item.top + item.rows.length;
+    const marginBottom = item.marginBottom > 0 && viewportEnd > marginTop ? 1 : 0;
+    visible.push({
+      ...item.line,
+      id: `${item.line.id}:view:${textStart}:${textEnd}:${marginBottom}`,
+      displayText: item.rows.slice(textStart, textEnd).join("\n"),
+      marginBottom,
+      clipped: textStart > 0 || textEnd < item.rows.length
+    });
   }
 
-  return visible;
+  return { lines: visible, scrollOffset: offset };
+}
+
+function layoutChatLines(lines: ChatLine[], columns: number): LaidOutChatLine[] {
+  let top = 0;
+  return lines.map((line, index) => {
+    const textWidth = lineTextWidth(line, columns);
+    const rows = wrapTerminalRows(linePlainText(line), textWidth);
+    const marginBottom = index === lines.length - 1 ? 0 : 1;
+    const height = rows.length + marginBottom;
+    const item = {
+      line,
+      rows,
+      top,
+      marginBottom,
+      height
+    };
+    top += height;
+    return item;
+  });
 }
 
 function lineTextWidth(line: ChatLine, columns: number) {
