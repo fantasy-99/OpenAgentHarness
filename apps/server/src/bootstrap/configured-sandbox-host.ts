@@ -108,7 +108,8 @@ export async function createConfiguredSandboxHost(options: {
       timeoutMs: options.config.sandbox?.e2b?.timeout_ms,
       requestTimeoutMs: options.config.sandbox?.e2b?.request_timeout_ms,
       maxWorkspacesPerSandbox: options.config.sandbox?.fleet?.max_workspaces_per_sandbox,
-      ownerlessPool: options.config.sandbox?.fleet?.ownerless_pool
+      ownerlessPool: options.config.sandbox?.fleet?.ownerless_pool,
+      warmEmptyCount: options.config.sandbox?.fleet?.warm_empty_count
     })
   });
 }

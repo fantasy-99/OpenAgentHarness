@@ -1,4 +1,5 @@
 import type { FSWatcher } from "node:fs";
+import path from "node:path";
 import type { ServerConfig } from "@oah/config";
 
 import { ControlPlaneEngineService, type ControlPlaneRuntimeOperations } from "../../../../packages/engine-core/src/control-plane-engine-service.js";
@@ -14,12 +15,14 @@ import type {
 import { cleanupWorkspaceLocalArtifacts } from "./engine-state-paths.js";
 import { ScopedRunRepository, ScopedSessionRepository, ScopedWorkspaceRepository } from "./scoped-repositories.js";
 import type { SandboxHost } from "./sandbox-host.js";
+import { objectStorageBacksManagedWorkspaces } from "./object-storage-policy.js";
 import {
   discoverProjectWorkspaces,
   findManagedWorkspaceIdsToDelete,
   isManagedWorkspace,
   isManagedWorkspaceRoot,
   openFsWatcher,
+  pruneOrphanedManagedWorkspaceRootShells,
   reconcileDiscoveredWorkspaces,
   type PlatformAgentRegistry
 } from "./workspace-registry.js";
@@ -122,14 +125,34 @@ export async function prepareControlPlaneRuntime(options: {
       : typeof options.persistence.listWorkspaceSnapshots === "function"
         ? await options.persistence.listWorkspaceSnapshots(options.discoveredWorkspaces)
         : await options.listRepositoryWorkspaces(options.persistence.workspaceRepository);
+  const pruneManagedWorkspaceRootShells =
+    options.managesWorkspaceRegistry && !options.singleWorkspaceDefined && objectStorageBacksManagedWorkspaces(options.config);
+  const bootPrunedWorkspaceRootPaths = pruneManagedWorkspaceRootShells
+    ? new Set(
+        await pruneOrphanedManagedWorkspaceRootShells({
+          workspaceDir: options.config.paths.workspace_dir,
+          persistedWorkspaces: persistedWorkspaceSnapshots
+        })
+      )
+    : new Set<string>();
+  if (bootPrunedWorkspaceRootPaths.size > 0) {
+    console.info(
+      `[oah-bootstrap] Pruned ${bootPrunedWorkspaceRootPaths.size} orphaned managed workspace root shell(s): ${[
+        ...bootPrunedWorkspaceRootPaths
+      ].join(", ")}`
+    );
+  }
+  const bootDiscoveredWorkspaces = options.discoveredWorkspaces.filter(
+    (workspace) => !bootPrunedWorkspaceRootPaths.has(path.resolve(workspace.rootPath))
+  );
 
   const bootWorkspaceCandidates =
     options.singleWorkspaceDefined
-      ? options.discoveredWorkspaces
+      ? bootDiscoveredWorkspaces
       : !options.managesWorkspaceRegistry
         ? persistedWorkspaceSnapshots
         : [
-            ...options.discoveredWorkspaces,
+            ...bootDiscoveredWorkspaces,
             ...persistedWorkspaceSnapshots.filter((workspace) => !isManagedWorkspace(workspace, options.config.paths))
           ];
 
@@ -391,8 +414,26 @@ export async function prepareControlPlaneRuntime(options: {
         })
       ).map((workspace) => options.applyManagedWorkspaceExternalRef(workspace as WorkspaceRecord));
       const persistedWorkspaces = await options.listRepositoryWorkspaces(options.persistence.workspaceRepository);
+      const prunedWorkspaceRootPaths = pruneManagedWorkspaceRootShells
+        ? new Set(
+            await pruneOrphanedManagedWorkspaceRootShells({
+              workspaceDir: options.config.paths.workspace_dir,
+              persistedWorkspaces
+            })
+          )
+        : new Set<string>();
+      if (prunedWorkspaceRootPaths.size > 0) {
+        console.info(
+          `[oah-bootstrap] Pruned ${prunedWorkspaceRootPaths.size} orphaned managed workspace root shell(s) during workspace registry sync: ${[
+            ...prunedWorkspaceRootPaths
+          ].join(", ")}`
+        );
+      }
+      const retainedProjectWorkspaces = latestProjectWorkspaces.filter(
+        (workspace) => !prunedWorkspaceRootPaths.has(path.resolve(workspace.rootPath))
+      );
       const staticWorkspaces = persistedWorkspaces.filter((workspace) => !isManagedWorkspace(workspace, options.config.paths));
-      const latestDiscoveredWorkspaces = [...latestProjectWorkspaces, ...staticWorkspaces];
+      const latestDiscoveredWorkspaces = [...retainedProjectWorkspaces, ...staticWorkspaces];
       const staleWorkspaceIds = findManagedWorkspaceIdsToDelete(
         latestDiscoveredWorkspaces,
         persistedWorkspaces,

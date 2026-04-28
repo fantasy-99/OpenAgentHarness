@@ -1317,16 +1317,18 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         };
   if (sandboxHost) {
     const workspaceMaterializationConfig = resolveWorkspaceMaterializationConfig(config);
-    workspaceMaterializationMaintenanceTimer = setInterval(() => {
+    const runSandboxHostMaintenance = () => {
       const idleBefore = new Date(
         Date.now() - workspaceMaterializationConfig.idleTtlMs
       ).toISOString();
       void sandboxHost
         .maintain({ idleBefore })
         .catch((error: unknown) => {
-          console.warn("Workspace materialization maintenance failed.", error);
+          console.warn("Sandbox host maintenance failed.", error);
         });
-    }, workspaceMaterializationConfig.maintenanceIntervalMs);
+    };
+    runSandboxHostMaintenance();
+    workspaceMaterializationMaintenanceTimer = setInterval(runSandboxHostMaintenance, workspaceMaterializationConfig.maintenanceIntervalMs);
     workspaceMaterializationMaintenanceTimer.unref?.();
   }
   const runtimeService = new EngineService({

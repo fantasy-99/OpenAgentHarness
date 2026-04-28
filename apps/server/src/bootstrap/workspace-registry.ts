@@ -1,6 +1,6 @@
 import path from "node:path";
 import { watch, type FSWatcher } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { readdir, rm } from "node:fs/promises";
 
 import type { ServerConfig } from "@oah/config";
 import { parseCursor } from "../../../../packages/engine-core/src/utils.js";
@@ -127,6 +127,48 @@ export function findManagedWorkspaceIdsToDelete(
 export function isManagedWorkspaceRoot(workspaceRoot: string, managedWorkspaceDir: string): boolean {
   const relativePath = path.relative(path.resolve(managedWorkspaceDir), path.resolve(workspaceRoot));
   return relativePath.length > 0 && !relativePath.startsWith("..") && !path.isAbsolute(relativePath);
+}
+
+const PRUNABLE_MANAGED_WORKSPACE_ROOT_TOP_LEVEL_NAMES = new Set([".openharness", "AGENTS.md"]);
+
+export async function isPrunableManagedWorkspaceRootShell(workspaceRoot: string): Promise<boolean> {
+  const entries = await readdir(workspaceRoot, { withFileTypes: true }).catch(() => []);
+  return entries.every((entry) => PRUNABLE_MANAGED_WORKSPACE_ROOT_TOP_LEVEL_NAMES.has(entry.name));
+}
+
+export async function pruneOrphanedManagedWorkspaceRootShells(input: {
+  workspaceDir: string;
+  persistedWorkspaces: Pick<WorkspaceRecord, "id" | "rootPath">[];
+}): Promise<string[]> {
+  const workspaceDir = path.resolve(input.workspaceDir);
+  const persistedRootPaths = new Set(
+    input.persistedWorkspaces
+      .filter((workspace) => isManagedWorkspaceRoot(workspace.rootPath, workspaceDir))
+      .map((workspace) => path.resolve(workspace.rootPath))
+  );
+  const persistedWorkspaceIds = new Set(input.persistedWorkspaces.map((workspace) => workspace.id));
+  const entries = await readdir(workspaceDir, { withFileTypes: true }).catch(() => []);
+  const removedPaths: string[] = [];
+
+  await Promise.all(
+    entries
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith("ws_"))
+      .map(async (entry) => {
+        const rootPath = path.join(workspaceDir, entry.name);
+        if (persistedRootPaths.has(path.resolve(rootPath)) || persistedWorkspaceIds.has(entry.name)) {
+          return;
+        }
+
+        if (!(await isPrunableManagedWorkspaceRootShell(rootPath))) {
+          return;
+        }
+
+        await rm(rootPath, { recursive: true, force: true });
+        removedPaths.push(rootPath);
+      })
+  );
+
+  return removedPaths.sort((left, right) => left.localeCompare(right));
 }
 
 export async function discoverProjectWorkspaces(input: {

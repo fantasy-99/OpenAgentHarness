@@ -14,6 +14,7 @@ import {
 } from "../apps/server/src/bootstrap.ts";
 import {
   findManagedWorkspaceIdsToDelete,
+  pruneOrphanedManagedWorkspaceRootShells,
   reconcileDiscoveredWorkspaces
 } from "../apps/server/src/bootstrap/workspace-registry.ts";
 
@@ -307,6 +308,46 @@ describe("bootstrap single workspace mode", () => {
     await expect(access(currentMaterializedRoot)).rejects.toBeDefined();
     await expect(access(legacyMaterializedRoot)).rejects.toBeDefined();
     await expect(access(shadowDbPath)).rejects.toBeDefined();
+  });
+
+  it("prunes orphaned managed workspace root shells while keeping persisted and content roots", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-workspace-prune-shells-"));
+    tempDirs.push(tempDir);
+
+    const workspaceDir = path.join(tempDir, "workspaces");
+    const activeRoot = path.join(workspaceDir, "ws_active");
+    const staleShellRoot = path.join(workspaceDir, "ws_stale_shell");
+    const staleAgentsRoot = path.join(workspaceDir, "ws_stale_agents");
+    const contentRoot = path.join(workspaceDir, "ws_content");
+
+    await Promise.all([
+      mkdir(path.join(activeRoot, ".openharness"), { recursive: true }),
+      mkdir(path.join(staleShellRoot, ".openharness"), { recursive: true }),
+      mkdir(path.join(staleAgentsRoot, ".openharness"), { recursive: true }),
+      mkdir(contentRoot, { recursive: true })
+    ]);
+    await Promise.all([
+      writeFile(path.join(activeRoot, ".openharness", "settings.yaml"), "default_agent: assistant\n", "utf8"),
+      writeFile(path.join(staleShellRoot, ".openharness", "settings.yaml"), "default_agent: assistant\n", "utf8"),
+      writeFile(path.join(staleAgentsRoot, "AGENTS.md"), "You are helpful.\n", "utf8"),
+      writeFile(path.join(contentRoot, "README.md"), "real content\n", "utf8")
+    ]);
+
+    const removed = await pruneOrphanedManagedWorkspaceRootShells({
+      workspaceDir,
+      persistedWorkspaces: [
+        {
+          id: "ws_active",
+          rootPath: activeRoot
+        }
+      ]
+    });
+
+    expect(removed).toEqual([staleAgentsRoot, staleShellRoot].sort((left, right) => left.localeCompare(right)));
+    await expect(access(activeRoot)).resolves.toBeUndefined();
+    await expect(access(contentRoot)).resolves.toBeUndefined();
+    await expect(access(staleShellRoot)).rejects.toBeDefined();
+    await expect(access(staleAgentsRoot)).rejects.toBeDefined();
   });
 
   it("reuses persisted workspace ids for rediscovered roots", async () => {

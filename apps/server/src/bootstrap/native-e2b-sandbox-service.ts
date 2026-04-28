@@ -53,6 +53,7 @@ export interface NativeE2BSandboxServiceOptions {
   timeoutMs?: number | undefined;
   maxWorkspacesPerSandbox?: number | undefined;
   ownerlessPool?: "shared" | "dedicated" | undefined;
+  warmEmptyCount?: number | undefined;
   sdk?: NativeE2BSandboxSdk | undefined;
 }
 
@@ -156,6 +157,9 @@ export function createNativeE2BSandboxService(options: NativeE2BSandboxServiceOp
   const sandboxesById = new Map<string, NativeE2BSandboxInstance>();
   const ownerlessWorkspaceGroups = new Map<string, string>();
   const ownerlessWorkspaceIdsByGroupKey = new Map<string, Set<string>>();
+  const warmOwnerlessGroupKeys = new Set<string>();
+  const sandboxCreationByGroupKey = new Map<string, Promise<NativeE2BSandboxInstance>>();
+  let warmOwnerlessEnsurePromise: Promise<void> | undefined;
 
   const connectionOpts: ConnectionOpts = {
     ...(options.apiKey ? { apiKey: options.apiKey } : {}),
@@ -167,6 +171,7 @@ export function createNativeE2BSandboxService(options: NativeE2BSandboxServiceOp
   const sandboxTimeoutMs = options.timeoutMs ?? DEFAULT_E2B_TIMEOUT_MS;
   const maxWorkspacesPerSandbox = Math.max(1, Math.floor(options.maxWorkspacesPerSandbox ?? 32));
   const ownerlessPool = options.ownerlessPool ?? "shared";
+  const warmEmptyCount = Math.max(0, Math.floor(options.warmEmptyCount ?? 0));
 
   function rememberSandbox(groupKey: string, sandbox: NativeE2BSandboxInstance): NativeE2BSandboxInstance {
     sandboxIdsByGroupKey.set(groupKey, sandbox.sandboxId);
@@ -175,11 +180,53 @@ export function createNativeE2BSandboxService(options: NativeE2BSandboxServiceOp
   }
 
   function rememberOwnerlessWorkspace(groupKey: string, workspaceId: string): string {
+    warmOwnerlessGroupKeys.delete(groupKey);
     ownerlessWorkspaceGroups.set(workspaceId, groupKey);
     const workspaceIds = ownerlessWorkspaceIdsByGroupKey.get(groupKey) ?? new Set<string>();
     workspaceIds.add(workspaceId);
     ownerlessWorkspaceIdsByGroupKey.set(groupKey, workspaceIds);
     return groupKey;
+  }
+
+  function ownerlessSharedGroupOrdinal(groupKey: string): number | undefined {
+    if (groupKey === "shared") {
+      return 1;
+    }
+
+    const match = /^shared:(\d+)$/u.exec(groupKey);
+    if (!match) {
+      return undefined;
+    }
+
+    const value = Number.parseInt(match[1]!, 10);
+    return Number.isFinite(value) && value > 1 ? value : undefined;
+  }
+
+  function isOwnerlessSharedGroupKey(groupKey: string): boolean {
+    return ownerlessSharedGroupOrdinal(groupKey) !== undefined;
+  }
+
+  function ownerlessSharedGroupKeyForOrdinal(ordinal: number): string {
+    return ordinal <= 1 ? "shared" : `shared:${ordinal}`;
+  }
+
+  function allOwnerlessSharedGroupKeys(): string[] {
+    return [
+      ...new Set([
+        ...ownerlessWorkspaceIdsByGroupKey.keys(),
+        ...warmOwnerlessGroupKeys,
+        ...sandboxCreationByGroupKey.keys(),
+        ...sandboxIdsByGroupKey.keys()
+      ])
+    ].filter(isOwnerlessSharedGroupKey);
+  }
+
+  function nextOwnerlessSharedGroupKey(): string {
+    const ordinals = allOwnerlessSharedGroupKeys()
+      .map((groupKey) => ownerlessSharedGroupOrdinal(groupKey))
+      .filter((value): value is number => typeof value === "number");
+    const nextOrdinal = ordinals.length === 0 ? 1 : Math.max(...ordinals) + 1;
+    return ownerlessSharedGroupKeyForOrdinal(nextOrdinal);
   }
 
   function resolveOwnerlessSandboxGroupKey(workspace: WorkspaceRecord): string {
@@ -192,7 +239,9 @@ export function createNativeE2BSandboxService(options: NativeE2BSandboxServiceOp
       return existingGroupKey;
     }
 
-    const existingGroupKeys = [...ownerlessWorkspaceIdsByGroupKey.keys()].sort((left, right) => {
+    const existingGroupKeys = [...ownerlessWorkspaceIdsByGroupKey.keys()]
+      .filter((groupKey) => (ownerlessWorkspaceIdsByGroupKey.get(groupKey)?.size ?? 0) > 0)
+      .sort((left, right) => {
       const leftCount = ownerlessWorkspaceIdsByGroupKey.get(left)?.size ?? 0;
       const rightCount = ownerlessWorkspaceIdsByGroupKey.get(right)?.size ?? 0;
       return leftCount - rightCount || left.localeCompare(right);
@@ -204,8 +253,10 @@ export function createNativeE2BSandboxService(options: NativeE2BSandboxServiceOp
       return rememberOwnerlessWorkspace(availableGroupKey, workspace.id);
     }
 
-    const nextGroupKey = existingGroupKeys.length === 0 ? "shared" : `shared:${existingGroupKeys.length + 1}`;
-    return rememberOwnerlessWorkspace(nextGroupKey, workspace.id);
+    const warmGroupKey = [...new Set([...warmOwnerlessGroupKeys, ...sandboxCreationByGroupKey.keys()])]
+      .filter((groupKey) => isOwnerlessSharedGroupKey(groupKey) && (ownerlessWorkspaceIdsByGroupKey.get(groupKey)?.size ?? 0) === 0)
+      .sort((left, right) => (ownerlessSharedGroupOrdinal(left) ?? 0) - (ownerlessSharedGroupOrdinal(right) ?? 0))[0];
+    return rememberOwnerlessWorkspace(warmGroupKey ?? nextOwnerlessSharedGroupKey(), workspace.id);
   }
 
   function resolveSandboxGroupKey(workspace: WorkspaceRecord): string {
@@ -249,11 +300,11 @@ export function createNativeE2BSandboxService(options: NativeE2BSandboxServiceOp
     return connectSandbox(groupKey, listed.sandboxId);
   }
 
-  async function createSandbox(groupKey: string, workspace: WorkspaceRecord): Promise<NativeE2BSandboxInstance> {
+  async function createSandbox(groupKey: string, workspace?: WorkspaceRecord | undefined): Promise<NativeE2BSandboxInstance> {
     const metadata: Record<string, string> = {
       [SANDBOX_GROUP_METADATA_KEY]: groupKey
     };
-    const ownerId = trimToUndefined(workspace.ownerId);
+    const ownerId = workspace ? trimToUndefined(workspace.ownerId) : undefined;
     if (ownerId) {
       metadata[OWNER_METADATA_KEY] = ownerId;
     }
@@ -269,26 +320,66 @@ export function createNativeE2BSandboxService(options: NativeE2BSandboxServiceOp
     return rememberSandbox(groupKey, sandbox);
   }
 
-  async function resolveSandbox(workspace: WorkspaceRecord): Promise<{ sandbox: NativeE2BSandboxInstance; rootPath: string }> {
-    const groupKey = resolveSandboxGroupKey(workspace);
+  async function loadOrCreateSandbox(groupKey: string, workspace?: WorkspaceRecord | undefined): Promise<NativeE2BSandboxInstance> {
     const cachedSandboxId = sandboxIdsByGroupKey.get(groupKey);
     if (cachedSandboxId) {
       try {
-        const cachedSandbox = sandboxesById.get(cachedSandboxId) ?? (await connectSandbox(groupKey, cachedSandboxId));
-        return {
-          sandbox: cachedSandbox,
-          rootPath: await ensureWorkspaceRoot(cachedSandbox, workspace)
-        };
+        return sandboxesById.get(cachedSandboxId) ?? (await connectSandbox(groupKey, cachedSandboxId));
       } catch {
         sandboxIdsByGroupKey.delete(groupKey);
         sandboxesById.delete(cachedSandboxId);
       }
     }
 
-    const sandbox = (await loadListedSandbox(groupKey)) ?? (await createSandbox(groupKey, workspace));
+    const pending = sandboxCreationByGroupKey.get(groupKey);
+    if (pending) {
+      return pending;
+    }
+
+    const created = (async () => (await loadListedSandbox(groupKey)) ?? (await createSandbox(groupKey, workspace)))();
+    sandboxCreationByGroupKey.set(groupKey, created);
+    try {
+      return await created;
+    } finally {
+      sandboxCreationByGroupKey.delete(groupKey);
+    }
+  }
+
+  async function ensureWarmOwnerlessSandboxes(): Promise<void> {
+    if (warmOwnerlessEnsurePromise) {
+      return warmOwnerlessEnsurePromise;
+    }
+
+    warmOwnerlessEnsurePromise = ensureWarmOwnerlessSandboxesOnce().finally(() => {
+      warmOwnerlessEnsurePromise = undefined;
+    });
+    return warmOwnerlessEnsurePromise;
+  }
+
+  async function ensureWarmOwnerlessSandboxesOnce(): Promise<void> {
+    if (ownerlessPool !== "shared" || warmEmptyCount <= 0) {
+      return;
+    }
+
+    while (warmOwnerlessGroupKeys.size < warmEmptyCount) {
+      const groupKey = nextOwnerlessSharedGroupKey();
+      await loadOrCreateSandbox(groupKey);
+      if ((ownerlessWorkspaceIdsByGroupKey.get(groupKey)?.size ?? 0) === 0) {
+        warmOwnerlessGroupKeys.add(groupKey);
+      }
+    }
+  }
+
+  async function resolveSandbox(workspace: WorkspaceRecord): Promise<{ sandbox: NativeE2BSandboxInstance; rootPath: string }> {
+    const groupKey = resolveSandboxGroupKey(workspace);
+    const sandbox = await loadOrCreateSandbox(groupKey, workspace);
+    const rootPath = await ensureWorkspaceRoot(sandbox, workspace);
+    if (!buildOwnerSandboxGroupKey(workspace) && ownerlessPool === "shared") {
+      void ensureWarmOwnerlessSandboxes().catch(() => undefined);
+    }
     return {
       sandbox,
-      rootPath: await ensureWorkspaceRoot(sandbox, workspace)
+      rootPath
     };
   }
 
@@ -450,11 +541,13 @@ export function createNativeE2BSandboxService(options: NativeE2BSandboxServiceOp
         ...(options.apiUrl ? { apiUrl: options.apiUrl } : {}),
         ...(options.domain ? { domain: options.domain } : {}),
         ...(options.template ? { template: options.template } : {}),
-        timeoutMs: sandboxTimeoutMs
+        timeoutMs: sandboxTimeoutMs,
+        warmEmptyCount,
+        warmOwnerlessSandboxes: warmOwnerlessGroupKeys.size
       };
     },
     async maintain() {
-      return undefined;
+      await ensureWarmOwnerlessSandboxes();
     },
     async beginDrain() {
       return undefined;
@@ -462,6 +555,8 @@ export function createNativeE2BSandboxService(options: NativeE2BSandboxServiceOp
     async close() {
       sandboxesById.clear();
       sandboxIdsByGroupKey.clear();
+      warmOwnerlessGroupKeys.clear();
+      sandboxCreationByGroupKey.clear();
     }
   };
 }
