@@ -85,6 +85,17 @@ export function useOahReplState(connection: OahConnection) {
     [client, setError]
   );
 
+  const refreshSessionRuns = useCallback(
+    async (session: Session) => {
+      try {
+        setRuns(await client.listSessionRuns(session.id));
+      } catch (error) {
+        setError(error);
+      }
+    },
+    [client, setError]
+  );
+
   const loadWorkspace = useCallback(
     async (workspace: Workspace) => {
       try {
@@ -314,6 +325,10 @@ export function useOahReplState(connection: OahConnection) {
             event.event === "message.completed"
           ) {
             void refreshSession(currentSession);
+            return;
+          }
+          if (event.event === "run.started" || event.event.startsWith("tool.")) {
+            void refreshSessionRuns(currentSession);
           }
         }
       })
@@ -332,7 +347,7 @@ export function useOahReplState(connection: OahConnection) {
     return () => {
       controller.abort();
     };
-  }, [client, currentSession?.id, refreshSession, setError]);
+  }, [client, currentSession?.id, refreshSession, refreshSessionRuns, setError]);
 
   return {
     workspaces,
