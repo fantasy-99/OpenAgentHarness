@@ -3,7 +3,15 @@ import type { Run, Session, SessionEventContract, Workspace, WorkspaceRuntime } 
 
 import { OahApiClient, type OahConnection } from "../../api/oah-api.js";
 import type { ChatLine, Dialog, Notice, WorkspaceCreateDialog } from "../domain/types.js";
-import { createWorkspaceDialog, insertTextAt, messageToChatLine, runFailureToChatLine, shortId, updateChatLinesFromEvent } from "../domain/utils.js";
+import {
+  createWorkspaceDialog,
+  insertTextAt,
+  mergeRefreshedChatLines,
+  messageToChatLine,
+  runFailureToChatLine,
+  shortId,
+  updateChatLinesFromEvent
+} from "../domain/utils.js";
 
 function useOahClient(connection: OahConnection) {
   return useMemo(() => new OahApiClient(connection), [connection.baseUrl, connection.token]);
@@ -21,6 +29,7 @@ export function useOahReplState(connection: OahConnection) {
   const [, setEvents] = useState<SessionEventContract[]>([]);
   const [composer, setComposer] = useState("");
   const [composerCursor, setComposerCursor] = useState(0);
+  const [slashSelection, setSlashSelection] = useState(0);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [notice, setNotice] = useState<Notice>({ level: "info", message: "Loading workspaces..." });
   const [streamState, setStreamState] = useState("idle");
@@ -66,7 +75,8 @@ export function useOahReplState(connection: OahConnection) {
         const [nextMessages, nextRuns] = await Promise.all([client.listSessionMessages(session.id), client.listSessionRuns(session.id)]);
         const nextLines = nextMessages.map(messageToChatLine);
         const runFailureLine = nextRuns[0] ? runFailureToChatLine(nextRuns[0]) : null;
-        setMessages(runFailureLine ? [...nextLines, runFailureLine] : nextLines);
+        const refreshedLines = runFailureLine ? [...nextLines, runFailureLine] : nextLines;
+        setMessages((current) => mergeRefreshedChatLines(current, refreshedLines));
         setRuns(nextRuns);
       } catch (error) {
         setError(error);
@@ -175,6 +185,7 @@ export function useOahReplState(connection: OahConnection) {
   const setComposerValue = useCallback((value: string) => {
     setComposer(value);
     setComposerCursor(value.length);
+    setSlashSelection(0);
   }, []);
 
   const insertComposerInput = useCallback(
@@ -182,6 +193,7 @@ export function useOahReplState(connection: OahConnection) {
       const cursor = composerCursor;
       setComposer((current) => insertTextAt(current, cursor, input));
       setComposerCursor(cursor + input.length);
+      setSlashSelection(0);
     },
     [composerCursor]
   );
@@ -192,16 +204,29 @@ export function useOahReplState(connection: OahConnection) {
     }
     setComposer((current) => `${current.slice(0, composerCursor - 1)}${current.slice(composerCursor)}`);
     setComposerCursor((cursor) => Math.max(0, cursor - 1));
+    setSlashSelection(0);
   }, [composerCursor]);
 
   const openWorkspaceCreator = useCallback(() => {
-    setDialog(createWorkspaceDialog(currentWorkspace?.runtime ?? runtimes[0]?.name));
+    setDialog(createWorkspaceDialog(currentWorkspace?.runtime ?? runtimes[0]?.name, runtimes));
   }, [currentWorkspace?.runtime, runtimes]);
 
   const sendComposer = useCallback(
     async (override?: string) => {
       const content = (override ?? composer).trim();
       if (!content) {
+        return;
+      }
+      if (content === "/help") {
+        setComposerValue("");
+        setDialog({ kind: "help" });
+        return;
+      }
+      if (content === "/clear") {
+        setComposerValue("");
+        setMessages([]);
+        setRuns([]);
+        setNotice({ level: "info", message: "Cleared transcript." });
         return;
       }
       if (content === "/workspace") {
@@ -283,11 +308,10 @@ export function useOahReplState(connection: OahConnection) {
           setMessages((current) => updateChatLinesFromEvent(current, event));
           if (
             event.event === "run.queued" ||
-            event.event === "run.started" ||
             event.event === "run.completed" ||
             event.event === "run.failed" ||
             event.event === "run.cancelled" ||
-            event.event.startsWith("tool.")
+            event.event === "message.completed"
           ) {
             void refreshSession(currentSession);
           }
@@ -320,11 +344,13 @@ export function useOahReplState(connection: OahConnection) {
     runs,
     composer,
     composerCursor,
+    slashSelection,
     dialog,
     notice,
     streamState,
     setComposerCursor,
     setComposerValue,
+    setSlashSelection,
     setDialog,
     insertComposerInput,
     deleteComposerInput,

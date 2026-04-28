@@ -1,7 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 
-import { SLASH_COMMANDS } from "../domain/utils.js";
+import { clampIndex, getSlashCommandMatches } from "../domain/utils.js";
 
 export function PromptInput(props: { value: string; cursor: number; disabled?: boolean; running: boolean }) {
   const beforeCursor = props.value.slice(0, props.cursor);
@@ -26,9 +26,7 @@ export function PromptInput(props: { value: string; cursor: number; disabled?: b
             {afterCursor.slice(1)}
           </Text>
         ) : (
-          <Text dimColor>
-            message OAH{!props.disabled ? <Text inverse> </Text> : null}
-          </Text>
+          <Text>{!props.disabled ? <Text inverse> </Text> : " "}</Text>
         )}
       </Box>
       <PromptFooter {...(props.disabled === undefined ? {} : { disabled: props.disabled })} />
@@ -47,19 +45,17 @@ function PromptFooter(props: { disabled?: boolean }) {
   );
 }
 
-export function SlashSuggestions(props: { value: string }) {
-  if (!props.value.startsWith("/") || props.value.includes(" ")) {
-    return null;
-  }
-  const matches = SLASH_COMMANDS.filter((item) => item.command.startsWith(props.value)).slice(0, 4);
+export function SlashSuggestions(props: { value: string; selectedIndex: number }) {
+  const matches = getSlashCommandMatches(props.value);
   if (matches.length === 0) {
     return null;
   }
+  const selectedIndex = clampIndex(props.selectedIndex, matches.length);
   return (
     <Box flexDirection="column" paddingX={1} marginBottom={1}>
       {matches.map((item, index) => (
-        <Text key={item.command} {...(index === 0 ? { color: "cyan" } : {})} dimColor={index !== 0}>
-          {index === 0 ? "❯" : " "} {item.command} <Text dimColor>{item.description}</Text>
+        <Text key={item.command} {...(index === selectedIndex ? { color: "cyan" } : {})} dimColor={index !== selectedIndex}>
+          {index === selectedIndex ? "❯" : " "} {item.command} <Text dimColor>{item.description}</Text>
         </Text>
       ))}
     </Box>

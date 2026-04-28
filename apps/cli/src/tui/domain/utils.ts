@@ -19,11 +19,21 @@ export const STATUS_COLORS: Record<string, string> = {
 export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 export const SLASH_COMMANDS = [
+  { command: "/help", description: "Show shortcuts" },
+  { command: "/clear", description: "Clear the current transcript view" },
   { command: "/workspace", description: "Switch workspace" },
   { command: "/session", description: "Switch session in current workspace" },
   { command: "/new-workspace", description: "Create workspace" },
-  { command: "/new-session", description: "Create session" }
+  { command: "/new-session", description: "Create session" },
+  { command: "/quit", description: "Exit OAH" }
 ] as const;
+
+export function getSlashCommandMatches(value: string) {
+  if (!value.startsWith("/") || value.includes(" ")) {
+    return [];
+  }
+  return SLASH_COMMANDS.filter((item) => item.command.startsWith(value));
+}
 
 const WORKSPACE_CREATE_FIELDS: WorkspaceCreateField[] = ["name", "runtime", "rootPath", "ownerId", "serviceName"];
 
@@ -50,6 +60,23 @@ export function visibleWindow<T>(items: T[], selectedIndex: number, limit: numbe
   };
 }
 
+export function getRuntimeMatches(runtimes: WorkspaceRuntime[], query: string) {
+  const needle = query.trim().toLowerCase();
+  if (!needle) {
+    return runtimes;
+  }
+  return runtimes
+    .filter((runtime) => runtime.name.toLowerCase().includes(needle))
+    .sort((left, right) => {
+      const leftStarts = left.name.toLowerCase().startsWith(needle);
+      const rightStarts = right.name.toLowerCase().startsWith(needle);
+      if (leftStarts === rightStarts) {
+        return left.name.localeCompare(right.name);
+      }
+      return leftStarts ? -1 : 1;
+    });
+}
+
 export function shortId(id: string | undefined) {
   if (!id) {
     return "-";
@@ -72,19 +99,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function stringifyPart(value: unknown): string {
+export function stringifyMessageContent(value: unknown): string {
   if (typeof value === "string") {
     return value;
   }
   if (Array.isArray(value)) {
-    return value
+    const parts = value
       .map((part) => {
         if (isRecord(part)) {
           if (part.type === "text" && typeof part.text === "string") {
             return part.text;
           }
-          if (part.type === "reasoning" && typeof part.text === "string") {
-            return `[reasoning] ${part.text}`;
+          if (part.type === "reasoning") {
+            return "";
           }
           if (part.type === "tool-call" && typeof part.toolName === "string") {
             return `[tool-call] ${part.toolName}`;
@@ -92,10 +119,20 @@ function stringifyPart(value: unknown): string {
           if (part.type === "tool-result" && typeof part.toolName === "string") {
             return `[tool-result] ${part.toolName}`;
           }
+          if (part.type === "file" && typeof part.filename === "string") {
+            return `[file] ${part.filename}`;
+          }
+          if (part.type === "image") {
+            return "[image]";
+          }
+          if (part.type === "tool-approval-request" && typeof part.toolCallId === "string") {
+            return `[approval] ${part.toolCallId}`;
+          }
         }
         return JSON.stringify(part);
       })
-      .join("\n");
+      .filter(Boolean);
+    return parts.join("\n");
   }
   return JSON.stringify(value);
 }
@@ -104,7 +141,7 @@ export function messageToChatLine(message: Message): ChatLine {
   return {
     id: message.id,
     role: message.role,
-    text: stringifyPart(message.content),
+    text: stringifyMessageContent(message.content),
     createdAt: message.createdAt
   };
 }
@@ -189,7 +226,16 @@ export function updateChatLinesFromEvent(lines: ChatLine[], event: SessionEventC
     return [...lines, line];
   }
 
-  if (event.event === "message.delta" && typeof event.data.delta === "string") {
+  if (event.event === "message.delta") {
+    const nextText =
+      event.data.content !== undefined
+        ? stringifyMessageContent(event.data.content)
+        : typeof event.data.delta === "string"
+          ? event.data.delta
+          : "";
+    if (!nextText) {
+      return lines;
+    }
     const existing = lines.find((line) => line.id === messageId);
     if (!existing) {
       return [
@@ -197,12 +243,19 @@ export function updateChatLinesFromEvent(lines: ChatLine[], event: SessionEventC
         {
           id: messageId,
           role: "assistant",
-          text: event.data.delta,
+          text: nextText,
           createdAt: event.createdAt
         }
       ];
     }
-    return lines.map((line) => (line.id === messageId ? { ...line, text: `${line.text}${event.data.delta}` } : line));
+    return lines.map((line) =>
+      line.id === messageId
+        ? {
+            ...line,
+            text: event.data.content !== undefined ? nextText : `${line.text}${nextText}`
+          }
+        : line
+    );
   }
 
   if (event.event === "message.completed" && event.data.content !== undefined) {
@@ -210,7 +263,7 @@ export function updateChatLinesFromEvent(lines: ChatLine[], event: SessionEventC
     const completed: ChatLine = {
       id: messageId,
       role,
-      text: stringifyPart(event.data.content),
+      text: stringifyMessageContent(event.data.content),
       createdAt: event.createdAt
     };
     return lines.some((line) => line.id === messageId)
@@ -219,6 +272,54 @@ export function updateChatLinesFromEvent(lines: ChatLine[], event: SessionEventC
   }
 
   return lines;
+}
+
+export function mergeRefreshedChatLines(current: ChatLine[], refreshed: ChatLine[]): ChatLine[] {
+  if (current.length === 0) {
+    return refreshed;
+  }
+
+  const refreshedById = new Map(refreshed.map((line) => [line.id, line] as const));
+  const refreshedUserTexts = new Set(
+    refreshed.filter((line) => line.role === "user").map((line) => line.text.trim()).filter(Boolean)
+  );
+  const merged = refreshed.map((line) => {
+    const existing = current.find((item) => item.id === line.id);
+    if (!existing || existing.role !== "assistant" || line.role !== "assistant") {
+      return line;
+    }
+    return existing.text.length > line.text.length ? { ...line, text: existing.text } : line;
+  });
+
+  for (const line of current) {
+    if (refreshedById.has(line.id)) {
+      continue;
+    }
+    if (line.id.startsWith("pending:") && refreshedUserTexts.has(line.text.trim())) {
+      continue;
+    }
+    if (line.id.startsWith("event:") || line.id.startsWith("pending:")) {
+      merged.push(line);
+      continue;
+    }
+    if (line.role === "assistant" && line.text.trim().length > 0) {
+      merged.push(line);
+    }
+  }
+
+  return merged.sort(compareChatLines);
+}
+
+function compareChatLines(left: ChatLine, right: ChatLine) {
+  const leftTime = Date.parse(left.createdAt ?? "");
+  const rightTime = Date.parse(right.createdAt ?? "");
+  if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+  if (Number.isFinite(leftTime) !== Number.isFinite(rightTime)) {
+    return Number.isFinite(leftTime) ? -1 : 1;
+  }
+  return left.id.localeCompare(right.id);
 }
 
 export function isReturnInput(input: string, key: { return?: boolean }) {
@@ -237,12 +338,19 @@ export function hasRawControl(input: string, code: string) {
   return input.includes(code);
 }
 
-export function createWorkspaceDialog(defaultRuntime: string | undefined): WorkspaceCreateDialog {
+export function createWorkspaceDialog(defaultRuntime: string | undefined, runtimes: WorkspaceRuntime[] = []): WorkspaceCreateDialog {
+  const runtime = defaultRuntime ?? "";
+  const runtimeSelectedIndex = Math.max(
+    0,
+    runtimes.findIndex((item) => item.name === runtime)
+  );
   return {
     kind: "workspace-create",
     field: "name",
     name: "",
-    runtime: defaultRuntime ?? "",
+    runtime,
+    runtimeQuery: "",
+    runtimeSelectedIndex,
     rootPath: "",
     ownerId: "",
     serviceName: ""

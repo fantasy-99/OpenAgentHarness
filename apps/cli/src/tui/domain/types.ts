@@ -18,6 +18,8 @@ export type WorkspaceCreateDialog = {
   field: WorkspaceCreateField;
   name: string;
   runtime: string;
+  runtimeQuery: string;
+  runtimeSelectedIndex: number;
   rootPath: string;
   ownerId: string;
   serviceName: string;

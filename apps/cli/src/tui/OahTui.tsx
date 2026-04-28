@@ -5,6 +5,7 @@ import type { OahConnection } from "../api/oah-api.js";
 import { HelpDialog, SessionDialog, WorkspaceDialog } from "./components/dialogs.js";
 import { Messages, SpinnerLine, StatusLine } from "./components/messages.js";
 import { PromptInput, SlashSuggestions } from "./components/prompt.js";
+import { getSlashCommandMatches } from "./domain/utils.js";
 import { useTuiInput } from "./input/use-tui-input.js";
 import { useOahReplState } from "./state/use-oah-repl-state.js";
 
@@ -20,7 +21,9 @@ function OahRepl({ connection }: { connection: OahConnection }) {
   useTuiInput({ state, exit: app.exit });
 
   const latestRun = state.runs[0] ?? null;
-  const chromeRows = state.notice.level === "error" ? 6 : 5;
+  const slashMatches = !state.dialog ? getSlashCommandMatches(state.composer) : [];
+  const suggestionRows = slashMatches.length > 0 ? slashMatches.length + 1 : 0;
+  const chromeRows = (state.notice.level === "error" ? 6 : 5) + suggestionRows;
   const dialogRows = state.dialog ? Math.max(8, Math.min(Math.floor(height * 0.66), height - chromeRows - 3)) : 0;
   const transcriptHeight = Math.max(3, height - dialogRows - chromeRows);
   const activeDialog =
@@ -52,7 +55,7 @@ function OahRepl({ connection }: { connection: OahConnection }) {
         <SpinnerLine run={latestRun} />
       </Box>
       {activeDialog}
-      {!state.dialog ? <SlashSuggestions value={state.composer} /> : null}
+      {!state.dialog ? <SlashSuggestions value={state.composer} selectedIndex={state.slashSelection} /> : null}
       <PromptInput
         value={state.composer}
         cursor={state.composerCursor}

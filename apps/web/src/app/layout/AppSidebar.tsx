@@ -90,10 +90,10 @@ function SidebarHero(props: {
   children?: ReactNode;
 }) {
   return (
-    <section className={`border-b border-black/8 pb-4 ${props.accentClassName ?? ""}`}>
+    <section className={`sidebar-hero border-b border-black/8 pb-4 ${props.accentClassName ?? ""}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-black/10 bg-white/55 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)]">
+          <div className="sidebar-hero-icon flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-black/10 bg-white/55 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)]">
             {props.icon}
           </div>
           {props.eyebrow || props.title || props.description ? (
@@ -155,7 +155,7 @@ function SidebarModeToggle(props: {
 }) {
   return (
     <div
-      className="info-panel grid gap-1.5 rounded-[1.7rem] p-1.5"
+      className="sidebar-mode-toggle info-panel grid gap-1.5 rounded-[1.7rem] p-1.5"
       style={{ gridTemplateColumns: `repeat(${Math.max(1, props.items.length)}, minmax(0, 1fr))` }}
     >
       {props.items.map((item) => (
@@ -918,10 +918,10 @@ function AppSidebarImpl(props: SidebarProps) {
   return (
     <>
       <aside className="app-sidebar-surface flex min-h-0 w-[288px] shrink-0 flex-col border-r border-black/10">
-        <div className="border-b border-black/8 bg-gradient-to-b from-white/34 to-transparent px-3 py-3">
+        <div className="sidebar-surface-hero border-b border-black/8 bg-gradient-to-b from-white/34 to-transparent px-3 py-3">
           <div className="flex items-start justify-between gap-3">
             <div className="flex min-w-0 items-start gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-black/10 bg-white/72 shadow-[inset_0_1px_0_rgba(255,255,255,0.74),0_14px_24px_-22px_rgba(17,17,17,0.42)]">
+              <div className="sidebar-surface-hero-icon flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-black/10 bg-white/72 shadow-[inset_0_1px_0_rgba(255,255,255,0.74),0_14px_24px_-22px_rgba(17,17,17,0.42)]">
                 {icon}
               </div>
               <div className="min-w-0">

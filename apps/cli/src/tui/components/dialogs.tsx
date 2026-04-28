@@ -3,7 +3,7 @@ import { Box, Text, useWindowSize } from "ink";
 import type { Session, Workspace, WorkspaceRuntime } from "@oah/api-contracts";
 
 import type { Dialog } from "../domain/types.js";
-import { formatTime, shortId, SLASH_COMMANDS, STATUS_COLORS, visibleWindow } from "../domain/utils.js";
+import { clampIndex, formatTime, getRuntimeMatches, shortId, SLASH_COMMANDS, STATUS_COLORS, visibleWindow } from "../domain/utils.js";
 
 export function WorkspaceDialog(props: {
   dialog: Extract<Dialog, { kind: "workspace-list" | "workspace-create" }>;
@@ -18,15 +18,15 @@ export function WorkspaceDialog(props: {
         <WorkspaceCreateFieldRow label="Name" value={props.dialog.name} placeholder="Workspace name" selected={props.dialog.field === "name"} />
         <WorkspaceCreateFieldRow
           label="Runtime"
-          value={props.dialog.runtime}
-          placeholder={props.runtimes.length > 0 ? "Select runtime" : "No runtimes available"}
+          value={props.dialog.runtimeQuery}
+          placeholder={props.dialog.runtime || (props.runtimes.length > 0 ? "Type to search" : "No runtimes available")}
           selected={props.dialog.field === "runtime"}
         />
-        <RuntimeChoiceLine runtimes={props.runtimes} selectedRuntime={props.dialog.runtime} active={props.dialog.field === "runtime"} />
+        <RuntimeChoiceLine dialog={props.dialog} runtimes={props.runtimes} />
         <WorkspaceCreateFieldRow label="Root path" value={props.dialog.rootPath} placeholder="Managed workspace" selected={props.dialog.field === "rootPath"} />
         <WorkspaceCreateFieldRow label="Owner ID" value={props.dialog.ownerId} placeholder="optional" selected={props.dialog.field === "ownerId"} />
         <WorkspaceCreateFieldRow label="Service" value={props.dialog.serviceName} placeholder="optional" selected={props.dialog.field === "serviceName"} />
-        <Text dimColor>tab fields · arrows choose runtime · enter create · esc back</Text>
+        <Text dimColor>tab fields · type to filter runtime · enter select/create · esc back</Text>
       </DialogBox>
     );
   }
@@ -70,19 +70,36 @@ function WorkspaceCreateFieldRow(props: { label: string; value: string; placehol
   );
 }
 
-function RuntimeChoiceLine(props: { runtimes: WorkspaceRuntime[]; selectedRuntime: string; active: boolean }) {
-  if (props.runtimes.length === 0) {
-    return <Text dimColor>{"  "}No runtimes. Press r to refresh.</Text>;
+function RuntimeChoiceLine(props: { dialog: Extract<Dialog, { kind: "workspace-create" }>; runtimes: WorkspaceRuntime[] }) {
+  if (props.dialog.field !== "runtime") {
+    return null;
   }
-  const selectedIndex = Math.max(0, props.runtimes.findIndex((runtime) => runtime.name === props.selectedRuntime));
-  const window = visibleWindow(props.runtimes, selectedIndex, 3);
+  if (props.runtimes.length === 0) {
+    return <Text dimColor>{"  "}No runtimes. Press ctrl+r to refresh.</Text>;
+  }
+  const matches = getRuntimeMatches(props.runtimes, props.dialog.runtimeQuery);
+  if (matches.length === 0) {
+    return (
+      <Box paddingLeft={12}>
+        <Text dimColor>No matches. Press ctrl+u to clear.</Text>
+      </Box>
+    );
+  }
+  const selectedIndex = clampIndex(props.dialog.runtimeSelectedIndex, matches.length);
+  const window = visibleWindow(matches, selectedIndex, 5);
   return (
-    <Box paddingLeft={12}>
-      <Text dimColor>
-        {props.active ? "← " : ""}
-        {window.items.map((runtime) => (runtime.name === props.selectedRuntime ? `[${runtime.name}]` : runtime.name)).join("  ")}
-        {props.active ? " →" : ""}
-      </Text>
+    <Box flexDirection="column" paddingLeft={12}>
+      {window.items.map((runtime, index) => {
+        const absoluteIndex = window.offset + index;
+        const selected = absoluteIndex === selectedIndex;
+        const current = runtime.name === props.dialog.runtime;
+        const color = selected ? "cyan" : current ? "green" : undefined;
+        return (
+          <Text key={runtime.name} {...(color ? { color } : {})} dimColor={!selected && !current} wrap="truncate-end">
+            {selected ? "❯" : current ? "•" : " "} {runtime.name}
+          </Text>
+        );
+      })}
     </Box>
   );
 }
