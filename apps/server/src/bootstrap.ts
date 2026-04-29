@@ -1038,7 +1038,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
               }
             } as Parameters<typeof discoverWorkspaces>[0]);
           })().then(async (workspaces) => {
-            if (workspaceModelMetadataDiscoveryMode === "eager") {
+            if (workspaceModelMetadataDiscoveryMode === "eager" || workspaces.length === 1) {
               return enrichBootWorkspaceModels(workspaces as WorkspaceRecord[]);
             }
 
