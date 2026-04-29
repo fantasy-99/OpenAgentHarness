@@ -266,8 +266,8 @@ export class ControlPlaneEngineService implements ControlPlaneRuntimeOperations 
       await this.#touchSessionWorkspace(input.sessionId);
       return message;
     };
-    this.listSessionEvents = async (sessionId, cursor, runId) => {
-      const events = await kernel.listSessionEvents(sessionId, cursor, runId);
+    this.listSessionEvents = async (sessionId, cursor, runId, limit) => {
+      const events = await kernel.listSessionEvents(sessionId, cursor, runId, limit);
       await this.#touchSessionWorkspace(sessionId);
       return events;
     };

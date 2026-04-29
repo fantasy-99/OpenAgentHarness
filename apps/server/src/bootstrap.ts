@@ -1042,9 +1042,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
               return enrichBootWorkspaceModels(workspaces as WorkspaceRecord[]);
             }
 
-            // Keep multi-workspace control planes on manual refresh after boot, but
-            // still capture workspace-local model metadata for the initial catalog.
-            return enrichBootWorkspaceModels(workspaces as WorkspaceRecord[]);
+            return workspaces as WorkspaceRecord[];
           })
         ).map((workspace) =>
           withManagedWorkspaceExternalRef(workspace as WorkspaceRecord, config, objectStorageMirror)

@@ -660,28 +660,31 @@ export class SQLiteSessionEventStore implements SessionEventStore {
     return event;
   }
 
-  async listSince(sessionId: string, cursor?: string, runId?: string): Promise<SessionEvent[]> {
+  async listSince(sessionId: string, cursor?: string, runId?: string, limit?: number): Promise<SessionEvent[]> {
     const handle = await this.#coordinator.getSessionHandle(sessionId);
     const parsedCursor = cursor ? Number.parseInt(cursor, 10) : -1;
     const normalizedCursor = Number.isFinite(parsedCursor) && parsedCursor >= -1 ? parsedCursor : -1;
+    const readLimit = Number.isFinite(limit) && limit !== undefined ? Math.max(1, Math.floor(limit)) : undefined;
     const rows = runId
       ? coerceRows<JsonRow>(
           handle.db
             .prepare(
               `select payload from session_events
                where session_id = ? and cursor > ? and run_id = ?
-               order by cursor asc`
+               order by cursor asc
+               ${readLimit ? "limit ?" : ""}`
             )
-            .all(sessionId, normalizedCursor, runId)
+            .all(...(readLimit ? [sessionId, normalizedCursor, runId, readLimit] : [sessionId, normalizedCursor, runId]))
         )
       : coerceRows<JsonRow>(
           handle.db
             .prepare(
               `select payload from session_events
                where session_id = ? and cursor > ?
-               order by cursor asc`
+               order by cursor asc
+               ${readLimit ? "limit ?" : ""}`
             )
-            .all(sessionId, normalizedCursor)
+            .all(...(readLimit ? [sessionId, normalizedCursor, readLimit] : [sessionId, normalizedCursor]))
         );
     return rows.map((row) => parseJson<SessionEvent>(row.payload));
   }

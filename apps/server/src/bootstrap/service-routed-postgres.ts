@@ -59,12 +59,16 @@ export interface ServiceRoutedPostgresRuntimePersistence {
   hookRunAuditRepository: HookRunAuditRepository;
   artifactRepository: ArtifactRepository;
   historyEventRepository: HistoryEventRepository;
+  listWorkspaceSnapshots(candidates: WorkspaceRecord[]): Promise<WorkspaceRecord[]>;
   close(): Promise<void>;
 }
 
 interface PostgresPersistenceFactory {
   (options: CreatePostgresRuntimePersistenceOptions): Promise<PostgresRuntimePersistence>;
 }
+
+const DEFAULT_SERVICE_ROUTING_REGISTRY_READ_LIMIT = 5_000;
+const MAX_SERVICE_ROUTING_REGISTRY_READ_LIMIT = 100_000;
 
 export interface CreateServiceRoutedPostgresRuntimePersistenceOptions {
   connectionString: string;
@@ -74,6 +78,16 @@ export interface CreateServiceRoutedPostgresRuntimePersistenceOptions {
 function normalizeServiceName(serviceName: string | undefined): string | undefined {
   const normalized = serviceName?.trim().toLowerCase();
   return normalized && normalized.length > 0 ? normalized : undefined;
+}
+
+function resolveServiceRoutingRegistryReadLimit(envName: string, fallback = DEFAULT_SERVICE_ROUTING_REGISTRY_READ_LIMIT): number {
+  const raw = process.env[envName]?.trim() || process.env.OAH_SERVICE_ROUTING_REGISTRY_READ_LIMIT?.trim();
+  const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return Math.min(Math.floor(parsed), MAX_SERVICE_ROUTING_REGISTRY_READ_LIMIT);
 }
 
 function assertDatabaseName(pathname: string): string {
@@ -171,6 +185,15 @@ function toRunRegistryEntry(row: RecordRow): Run {
   };
 }
 
+function resolveServiceRoutingRegistryBackfillMode(): "auto" | "full" | "missing" | "none" {
+  const raw = process.env.OAH_SERVICE_ROUTING_REGISTRY_BACKFILL?.trim().toLowerCase();
+  if (raw === "full" || raw === "missing" || raw === "none" || raw === "auto") {
+    return raw;
+  }
+
+  return "auto";
+}
+
 async function ensureServiceRoutingRegistrySchema(pool: Pool): Promise<void> {
   const statements = [
     `create table if not exists workspace_registry (
@@ -230,6 +253,9 @@ async function ensureServiceRoutingRegistrySchema(pool: Pool): Promise<void> {
 }
 
 async function migrateServiceRoutingRegistry(pool: Pool): Promise<void> {
+  const backfillMode = resolveServiceRoutingRegistryBackfillMode();
+  const upsertExistingRows = backfillMode === "full";
+  const insertMissingRowsOnly = !upsertExistingRows;
   await pool.query(
     `insert into workspace_registry (workspace_id, service_name, created_at, updated_at)
      select
@@ -243,8 +269,61 @@ async function migrateServiceRoutingRegistry(pool: Pool): Promise<void> {
        created_at = excluded.created_at,
        updated_at = excluded.updated_at`
   );
-  await pool.query(
-    `insert into session_registry (
+
+  if (backfillMode === "none") {
+    await pool.query(`delete from workspaces where nullif(lower(btrim(service_name)), '') is not null`);
+    return;
+  }
+
+  const shouldBackfillSessions =
+    backfillMode === "full" ||
+    backfillMode === "missing" ||
+    !(await pool.query(`select exists(select 1 from session_registry limit 1) as exists`)).rows[0]?.exists;
+  const shouldBackfillRuns =
+    backfillMode === "full" ||
+    backfillMode === "missing" ||
+    !(await pool.query(`select exists(select 1 from run_registry limit 1) as exists`)).rows[0]?.exists;
+
+  const sessionConflictClause = upsertExistingRows
+    ? `do update set
+       workspace_id = excluded.workspace_id,
+       service_name = excluded.service_name,
+       subject_ref = excluded.subject_ref,
+       model_ref = excluded.model_ref,
+       agent_name = excluded.agent_name,
+       active_agent_name = excluded.active_agent_name,
+       title = excluded.title,
+       status = excluded.status,
+       last_run_at = excluded.last_run_at,
+       created_at = excluded.created_at,
+       updated_at = excluded.updated_at`
+    : "do nothing";
+  const runConflictClause = upsertExistingRows
+    ? `do update set
+       workspace_id = excluded.workspace_id,
+       session_id = excluded.session_id,
+       service_name = excluded.service_name,
+       parent_run_id = excluded.parent_run_id,
+       initiator_ref = excluded.initiator_ref,
+       trigger_type = excluded.trigger_type,
+       trigger_ref = excluded.trigger_ref,
+       agent_name = excluded.agent_name,
+       effective_agent_name = excluded.effective_agent_name,
+       switch_count = excluded.switch_count,
+       status = excluded.status,
+       cancel_requested_at = excluded.cancel_requested_at,
+       started_at = excluded.started_at,
+       heartbeat_at = excluded.heartbeat_at,
+       ended_at = excluded.ended_at,
+       error_code = excluded.error_code,
+       error_message = excluded.error_message,
+       metadata = excluded.metadata,
+       created_at = excluded.created_at`
+    : "do nothing";
+
+  if (shouldBackfillSessions) {
+    await pool.query(
+      `insert into session_registry (
        id,
        workspace_id,
        service_name,
@@ -273,21 +352,14 @@ async function migrateServiceRoutingRegistry(pool: Pool): Promise<void> {
        s.updated_at
      from sessions s
      join workspaces w on w.id = s.workspace_id
-     on conflict (id) do update set
-       workspace_id = excluded.workspace_id,
-       service_name = excluded.service_name,
-       subject_ref = excluded.subject_ref,
-       model_ref = excluded.model_ref,
-       agent_name = excluded.agent_name,
-       active_agent_name = excluded.active_agent_name,
-       title = excluded.title,
-       status = excluded.status,
-       last_run_at = excluded.last_run_at,
-       created_at = excluded.created_at,
-       updated_at = excluded.updated_at`
-  );
-  await pool.query(
-    `insert into run_registry (
+     ${insertMissingRowsOnly ? "where not exists (select 1 from session_registry sr where sr.id = s.id)" : ""}
+     on conflict (id) ${sessionConflictClause}`
+    );
+  }
+
+  if (shouldBackfillRuns) {
+    await pool.query(
+      `insert into run_registry (
        id,
        workspace_id,
        session_id,
@@ -332,27 +404,11 @@ async function migrateServiceRoutingRegistry(pool: Pool): Promise<void> {
        r.created_at
      from runs r
      join workspaces w on w.id = r.workspace_id
-     on conflict (id) do update set
-       workspace_id = excluded.workspace_id,
-       session_id = excluded.session_id,
-       service_name = excluded.service_name,
-       parent_run_id = excluded.parent_run_id,
-       initiator_ref = excluded.initiator_ref,
-       trigger_type = excluded.trigger_type,
-       trigger_ref = excluded.trigger_ref,
-       agent_name = excluded.agent_name,
-       effective_agent_name = excluded.effective_agent_name,
-       switch_count = excluded.switch_count,
-       status = excluded.status,
-       cancel_requested_at = excluded.cancel_requested_at,
-       started_at = excluded.started_at,
-       heartbeat_at = excluded.heartbeat_at,
-       ended_at = excluded.ended_at,
-       error_code = excluded.error_code,
-       error_message = excluded.error_message,
-       metadata = excluded.metadata,
-       created_at = excluded.created_at`
-  );
+     ${insertMissingRowsOnly ? "where not exists (select 1 from run_registry rr where rr.id = r.id)" : ""}
+     on conflict (id) ${runConflictClause}`
+    );
+  }
+
   await pool.query(`delete from workspaces where nullif(lower(btrim(service_name)), '') is not null`);
 }
 
@@ -570,6 +626,7 @@ class PostgresServiceRoutingRegistry {
   }
 
   async listRunsBySessionId(sessionId: string): Promise<Run[]> {
+    const limit = resolveServiceRoutingRegistryReadLimit("OAH_SERVICE_ROUTING_SESSION_RUN_READ_LIMIT");
     const result = await this.pool.query(
       `select
          id,
@@ -593,8 +650,9 @@ class PostgresServiceRoutingRegistry {
          created_at::text
        from run_registry
        where session_id = $1
-       order by created_at desc, id desc`,
-      [sessionId]
+       order by created_at desc, id desc
+       limit $2`,
+      [sessionId, limit]
     );
 
     return result.rows.map((row) => toRunRegistryEntry(row as RecordRow));
@@ -1091,8 +1149,8 @@ class RoutedSessionEventStore implements SessionEventStore {
     await this.router.fanOutKnownBackends((backend) => backend.sessionEventStore.deleteById(eventId));
   }
 
-  async listSince(sessionId: string, cursor?: string, runId?: string): Promise<SessionEvent[]> {
-    return (await this.router.getBackendForSessionId(sessionId)).sessionEventStore.listSince(sessionId, cursor, runId);
+  async listSince(sessionId: string, cursor?: string, runId?: string, limit?: number): Promise<SessionEvent[]> {
+    return (await this.router.getBackendForSessionId(sessionId)).sessionEventStore.listSince(sessionId, cursor, runId, limit);
   }
 
   subscribe(sessionId: string, listener: (event: SessionEvent) => void): () => void {
@@ -1302,6 +1360,26 @@ export async function createServiceRoutedPostgresRuntimePersistence(
     hookRunAuditRepository: new RoutedHookRunAuditRepository(router),
     artifactRepository: new RoutedArtifactRepository(router),
     historyEventRepository: new RoutedHistoryEventRepository(router),
+    async listWorkspaceSnapshots(candidates) {
+      const snapshots = new Map<string, WorkspaceRecord>();
+
+      for (const candidate of candidates) {
+        const registryEntry = await router.getWorkspaceRegistry(candidate.id);
+        const backend = await router.getBackendForServiceName(registryEntry?.serviceName ?? candidate.serviceName);
+        const backendSnapshots =
+          typeof backend.listWorkspaceSnapshots === "function"
+            ? await backend.listWorkspaceSnapshots([candidate])
+            : [await backend.workspaceRepository.getById(candidate.id)].filter(
+                (workspace): workspace is WorkspaceRecord => workspace !== null
+              );
+
+        for (const snapshot of backendSnapshots) {
+          snapshots.set(snapshot.id, snapshot);
+        }
+      }
+
+      return [...snapshots.values()];
+    },
     close() {
       return router.close();
     }

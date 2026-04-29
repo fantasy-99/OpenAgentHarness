@@ -26,6 +26,8 @@ import type { SessionEvent } from "@oah/engine-core";
 import { assertWorkspaceAccess, createParamsSchema, toCallerContext, writeSseEvent } from "../context.js";
 import type { AppDependencies } from "../types.js";
 
+const SESSION_EVENT_BACKLOG_PAGE_SIZE = 500;
+
 function parseEventCursor(value: string | undefined): number {
   if (!value) {
     return -1;
@@ -187,9 +189,26 @@ export async function dispatchRegisteredSessionRoute(
         forwardEvent(event);
       });
 
-      const backlog = await dependencies.runtimeService.listSessionEvents(params.sessionId, query.cursor, query.runId);
-      for (const event of backlog) {
-        forwardEvent(event);
+      let backlogCursor = query.cursor;
+      while (!request.raw.destroyed) {
+        const backlog = await dependencies.runtimeService.listSessionEvents(
+          params.sessionId,
+          backlogCursor,
+          query.runId,
+          SESSION_EVENT_BACKLOG_PAGE_SIZE
+        );
+        if (backlog.length === 0) {
+          break;
+        }
+
+        for (const event of backlog) {
+          forwardEvent(event);
+        }
+
+        if (backlog.length < SESSION_EVENT_BACKLOG_PAGE_SIZE) {
+          break;
+        }
+        backlogCursor = backlog.at(-1)?.cursor ?? backlogCursor;
       }
 
       pendingEvents

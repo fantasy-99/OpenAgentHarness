@@ -76,6 +76,20 @@ import {
   toWorkspaceRecord
 } from "./row-mappers.js";
 
+const DEFAULT_POSTGRES_BOUNDED_READ_LIMIT = 5_000;
+const DEFAULT_POSTGRES_EVENT_READ_LIMIT = 1_000;
+const MAX_POSTGRES_BOUNDED_READ_LIMIT = 100_000;
+
+function resolvePostgresBoundedReadLimit(envName: string, fallback: number): number {
+  const raw = process.env[envName]?.trim() || process.env.OAH_POSTGRES_BOUNDED_READ_LIMIT?.trim();
+  const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return Math.min(Math.floor(parsed), MAX_POSTGRES_BOUNDED_READ_LIMIT);
+}
+
 export class PostgresWorkspaceRepository implements WorkspaceRepository {
   constructor(private readonly db: OahDatabase) {}
 
@@ -299,13 +313,18 @@ export class PostgresMessageRepository implements MessageRepository {
   }
 
   async listBySessionId(sessionId: string): Promise<Message[]> {
+    const limit = resolvePostgresBoundedReadLimit(
+      "OAH_POSTGRES_SESSION_MESSAGE_READ_LIMIT",
+      DEFAULT_POSTGRES_BOUNDED_READ_LIMIT
+    );
     const rows = await this.db
       .select()
       .from(messages)
       .where(eq(messages.sessionId, sessionId))
-      .orderBy(asc(messages.createdAt), asc(messages.id));
+      .orderBy(desc(messages.createdAt), desc(messages.id))
+      .limit(limit);
 
-    return rows.map(toMessage);
+    return rows.map(toMessage).reverse();
   }
 
   async listPageBySessionId(input: {
@@ -355,13 +374,18 @@ export class PostgresEngineMessageRepository implements EngineMessageRepository 
   }
 
   async listBySessionId(sessionId: string): Promise<EngineMessage[]> {
+    const limit = resolvePostgresBoundedReadLimit(
+      "OAH_POSTGRES_SESSION_ENGINE_MESSAGE_READ_LIMIT",
+      DEFAULT_POSTGRES_BOUNDED_READ_LIMIT
+    );
     const rows = await this.db
       .select()
       .from(engineMessages)
       .where(eq(engineMessages.sessionId, sessionId))
-      .orderBy(asc(engineMessages.createdAt), asc(engineMessages.id));
+      .orderBy(desc(engineMessages.createdAt), desc(engineMessages.id))
+      .limit(limit);
 
-    return rows.map(toEngineMessageRecord);
+    return rows.map(toEngineMessageRecord).reverse();
   }
 }
 
@@ -410,7 +434,13 @@ export class PostgresRunRepository implements RunRepository {
   }
 
   async listBySessionId(sessionId: string): Promise<Run[]> {
-    const rows = await this.db.select().from(runs).where(eq(runs.sessionId, sessionId)).orderBy(desc(runs.createdAt), desc(runs.id));
+    const limit = resolvePostgresBoundedReadLimit("OAH_POSTGRES_SESSION_RUN_READ_LIMIT", DEFAULT_POSTGRES_BOUNDED_READ_LIMIT);
+    const rows = await this.db
+      .select()
+      .from(runs)
+      .where(eq(runs.sessionId, sessionId))
+      .orderBy(desc(runs.createdAt), desc(runs.id))
+      .limit(limit);
     return rows.map(toRun);
   }
 
@@ -515,11 +545,13 @@ export class PostgresSessionPendingRunQueueRepository implements SessionPendingR
   }
 
   async listBySessionId(sessionId: string): Promise<SessionPendingRunQueueEntry[]> {
+    const limit = resolvePostgresBoundedReadLimit("OAH_POSTGRES_PENDING_RUN_READ_LIMIT", DEFAULT_POSTGRES_BOUNDED_READ_LIMIT);
     const rows = await this.db
       .select()
       .from(sessionPendingRuns)
       .where(eq(sessionPendingRuns.sessionId, sessionId))
-      .orderBy(asc(sessionPendingRuns.position), asc(sessionPendingRuns.createdAt), asc(sessionPendingRuns.runId));
+      .orderBy(asc(sessionPendingRuns.position), asc(sessionPendingRuns.createdAt), asc(sessionPendingRuns.runId))
+      .limit(limit);
 
     return rows.map((row) => ({
       sessionId: row.sessionId,
@@ -628,15 +660,27 @@ export class PostgresSessionEventStore implements SessionEventStore {
     return event;
   }
 
-  async listSince(sessionId: string, cursor?: string, runId?: string): Promise<SessionEvent[]> {
+  async listSince(sessionId: string, cursor?: string, runId?: string, limit?: number): Promise<SessionEvent[]> {
     const parsedCursor = cursor ? Number.parseInt(cursor, 10) : -1;
     const normalizedCursor = Number.isFinite(parsedCursor) && parsedCursor >= -1 ? parsedCursor : -1;
+    const readLimit = Math.max(
+      1,
+      Math.min(
+        limit ?? resolvePostgresBoundedReadLimit("OAH_POSTGRES_SESSION_EVENT_READ_LIMIT", DEFAULT_POSTGRES_EVENT_READ_LIMIT),
+        MAX_POSTGRES_BOUNDED_READ_LIMIT
+      )
+    );
     const filters = [eq(sessionEvents.sessionId, sessionId), gt(sessionEvents.cursor, normalizedCursor)];
     if (runId) {
       filters.push(eq(sessionEvents.runId, runId));
     }
 
-    const rows = await this.db.select().from(sessionEvents).where(and(...filters)).orderBy(asc(sessionEvents.cursor));
+    const rows = await this.db
+      .select()
+      .from(sessionEvents)
+      .where(and(...filters))
+      .orderBy(asc(sessionEvents.cursor))
+      .limit(readLimit);
     return rows.map(toSessionEvent);
   }
 
@@ -951,11 +995,13 @@ export class PostgresWorkspaceArchiveRepository implements WorkspaceArchiveRepos
   }
 
   async listByArchiveDate(archiveDate: string): Promise<WorkspaceArchiveRecord[]> {
+    const limit = resolvePostgresBoundedReadLimit("OAH_POSTGRES_ARCHIVE_DATE_READ_LIMIT", DEFAULT_POSTGRES_BOUNDED_READ_LIMIT);
     const rows = await this.db
       .select()
       .from(archives)
       .where(eq(archives.archiveDate, archiveDate))
-      .orderBy(asc(archives.archivedAt), asc(archives.id));
+      .orderBy(asc(archives.archivedAt), asc(archives.id))
+      .limit(limit);
 
     return rows.map(toWorkspaceArchiveRecord);
   }

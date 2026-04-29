@@ -119,12 +119,21 @@ export async function prepareControlPlaneRuntime(options: {
   withWorkspaceDefinitionTimestamp(workspace: WorkspaceRecord): Promise<WorkspaceRecord>;
   listRepositoryWorkspaces(repository: WorkspaceRepository): Promise<WorkspaceRecord[]>;
 }): Promise<PreparedControlPlaneRuntime> {
+  const useScopedWorkspaceVisibility = options.singleWorkspaceDefined || options.managesWorkspaceRegistry;
+  const preferCandidateWorkspaceSnapshots =
+    useScopedWorkspaceVisibility &&
+    options.managesWorkspaceRegistry &&
+    !options.singleWorkspaceDefined &&
+    options.discoveredWorkspaces.length > 0 &&
+    typeof options.persistence.listWorkspaceSnapshots === "function";
   const persistedWorkspaceSnapshots =
-    typeof options.persistence.listPersistedWorkspaces === "function"
-      ? await options.persistence.listPersistedWorkspaces()
-      : typeof options.persistence.listWorkspaceSnapshots === "function"
-        ? await options.persistence.listWorkspaceSnapshots(options.discoveredWorkspaces)
-        : await options.listRepositoryWorkspaces(options.persistence.workspaceRepository);
+    !useScopedWorkspaceVisibility
+      ? []
+      : preferCandidateWorkspaceSnapshots || typeof options.persistence.listPersistedWorkspaces !== "function"
+        ? typeof options.persistence.listWorkspaceSnapshots === "function"
+          ? await options.persistence.listWorkspaceSnapshots(options.discoveredWorkspaces)
+          : await options.listRepositoryWorkspaces(options.persistence.workspaceRepository)
+        : await options.persistence.listPersistedWorkspaces();
   const pruneManagedWorkspaceRootShells =
     options.managesWorkspaceRegistry && !options.singleWorkspaceDefined && objectStorageBacksManagedWorkspaces(options.config);
   const bootPrunedWorkspaceRootPaths = pruneManagedWorkspaceRootShells
@@ -162,9 +171,15 @@ export async function prepareControlPlaneRuntime(options: {
   ).map((workspace) => options.applyManagedWorkspaceExternalRef(workspace));
 
   const visibleWorkspaceIds = new Set<string>();
-  const workspaceRepository = new ScopedWorkspaceRepository(options.persistence.workspaceRepository, visibleWorkspaceIds);
-  const sessionRepository = new ScopedSessionRepository(options.persistence.sessionRepository, visibleWorkspaceIds);
-  const runRepository = new ScopedRunRepository(options.persistence.runRepository, visibleWorkspaceIds);
+  const workspaceRepository = useScopedWorkspaceVisibility
+    ? new ScopedWorkspaceRepository(options.persistence.workspaceRepository, visibleWorkspaceIds)
+    : options.persistence.workspaceRepository;
+  const sessionRepository = useScopedWorkspaceVisibility
+    ? new ScopedSessionRepository(options.persistence.sessionRepository, visibleWorkspaceIds)
+    : options.persistence.sessionRepository;
+  const runRepository = useScopedWorkspaceVisibility
+    ? new ScopedRunRepository(options.persistence.runRepository, visibleWorkspaceIds)
+    : options.persistence.runRepository;
   const workspaceDefinitionRefreshes = new Map<string, Promise<void>>();
   const workspaceRegistrySyncDebounceMs = 200;
   let workspaceRegistrySyncPromise: Promise<void> | undefined;
@@ -549,12 +564,14 @@ export async function prepareControlPlaneRuntime(options: {
     runRepository,
     reconciledWorkspaces,
     async initialize() {
-      reconciledWorkspaces.forEach((workspace) => {
-        visibleWorkspaceIds.add(workspace.id);
-      });
-      await Promise.all(reconciledWorkspaces.map((workspace) => workspaceRepository.upsert(workspace)));
-      await clearOrphanedWorkspaceCoordination(reconciledWorkspaces, "bootstrap");
-      updateWatchedProjectRoots(reconciledWorkspaces);
+      if (useScopedWorkspaceVisibility) {
+        reconciledWorkspaces.forEach((workspace) => {
+          visibleWorkspaceIds.add(workspace.id);
+        });
+        await Promise.all(reconciledWorkspaces.map((workspace) => workspaceRepository.upsert(workspace)));
+        await clearOrphanedWorkspaceCoordination(reconciledWorkspaces, "bootstrap");
+        updateWatchedProjectRoots(reconciledWorkspaces);
+      }
 
       if (options.managesWorkspaceRegistry) {
         if (options.workspaceModelMetadataDiscovery === "background") {

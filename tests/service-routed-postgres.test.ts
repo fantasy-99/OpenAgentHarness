@@ -53,6 +53,14 @@ function createInMemoryPostgresPersistence(label: string, options?: { supportRou
       return { rows: [] };
     }
 
+    if (sql.startsWith("select exists(select 1 from session_registry")) {
+      return { rows: [{ exists: sessionRegistry.size > 0 }] };
+    }
+
+    if (sql.startsWith("select exists(select 1 from run_registry")) {
+      return { rows: [{ exists: runRegistry.size > 0 }] };
+    }
+
     if (sql.startsWith("insert into workspace_registry") && sql.includes("select")) {
       for (const workspace of workspaces.values()) {
         workspaceRegistry.set(workspace.id, {
@@ -650,6 +658,89 @@ describe("service routed postgres persistence", () => {
     expect(buildServiceDatabaseConnectionString("postgres://oah:oah@127.0.0.1:5432/OAH?sslmode=disable", "Acme-App")).toBe(
       "postgres://oah:oah@127.0.0.1:5432/OAH-acme-app?sslmode=disable"
     );
+  });
+
+  it("does not scan historical sessions and runs on boot when routing registries are already populated", async () => {
+    const defaultBackend = createInMemoryPostgresPersistence("default", { supportRoutingRegistry: true });
+    const workspace: WorkspaceRecord = {
+      id: "ws_existing_history",
+      name: "existing history",
+      rootPath: "/tmp/ws_existing_history",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: true,
+      settings: {},
+      workspaceModels: {},
+      agents: {},
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "ws_existing_history",
+        actions: [],
+        agents: [],
+        hooks: [],
+        models: [],
+        skills: [],
+        tools: []
+      }
+    };
+    const session: Session = {
+      id: "ses_existing_history",
+      workspaceId: workspace.id,
+      subjectRef: "dev:test",
+      activeAgentName: "assistant",
+      status: "active",
+      createdAt: "2026-01-01T00:01:00.000Z",
+      updatedAt: "2026-01-01T00:01:00.000Z"
+    };
+    const run: Run = {
+      id: "run_existing_history",
+      workspaceId: workspace.id,
+      sessionId: session.id,
+      triggerType: "message",
+      effectiveAgentName: "assistant",
+      status: "completed",
+      createdAt: "2026-01-01T00:02:00.000Z"
+    };
+
+    defaultBackend.state.workspaces.set(workspace.id, workspace);
+    defaultBackend.state.sessions.set(session.id, session);
+    defaultBackend.state.runs.set(run.id, run);
+    defaultBackend.state.sessionRegistry.set("ses_already_indexed", {
+      ...session,
+      id: "ses_already_indexed"
+    });
+    defaultBackend.state.runRegistry.set("run_already_indexed", {
+      ...run,
+      id: "run_already_indexed"
+    });
+
+    const persistence = await createServiceRoutedPostgresRuntimePersistence({
+      connectionString: "postgres://oah:oah@127.0.0.1:5432/OAH",
+      async persistenceFactory(options) {
+        if (options.connectionString === "postgres://oah:oah@127.0.0.1:5432/OAH") {
+          return defaultBackend as never;
+        }
+
+        throw new Error(`Unexpected connection string: ${options.connectionString}`);
+      }
+    });
+
+    const startupQueries = vi.mocked(defaultBackend.pool.query).mock.calls.map(([statement]) => String(statement).trim().toLowerCase());
+    expect(startupQueries.some((sql) => sql.startsWith("insert into session_registry") && sql.includes("select"))).toBe(
+      false
+    );
+    expect(startupQueries.some((sql) => sql.startsWith("insert into run_registry") && sql.includes("select"))).toBe(false);
+    expect(defaultBackend.state.sessionRegistry.has(session.id)).toBe(false);
+    expect(defaultBackend.state.runRegistry.has(run.id)).toBe(false);
+
+    await persistence.close();
   });
 
   it("dual writes workspace/session/run while routing message detail into the service database", async () => {

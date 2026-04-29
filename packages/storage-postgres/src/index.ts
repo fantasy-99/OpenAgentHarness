@@ -1,9 +1,12 @@
 import { Pool, type PoolConfig } from "pg";
 
+import type { WorkspaceRecord } from "@oah/engine-core";
 import { drizzle } from "drizzle-orm/node-postgres";
+import { and, eq } from "drizzle-orm";
 
 import { ensurePostgresSchema } from "./schema-management.js";
-import { oahPostgresSchema, type OahDatabase } from "./schema.js";
+import { oahPostgresSchema, type OahDatabase, workspaces } from "./schema.js";
+import { toWorkspaceRecord } from "./row-mappers.js";
 import {
   PostgresArtifactRepository,
   PostgresHistoryEventRepository,
@@ -36,6 +39,7 @@ export interface PostgresRuntimePersistence {
   hookRunAuditRepository: PostgresHookRunAuditRepository;
   artifactRepository: PostgresArtifactRepository;
   historyEventRepository: PostgresHistoryEventRepository;
+  listWorkspaceSnapshots(candidates: WorkspaceRecord[]): Promise<WorkspaceRecord[]>;
   close(): Promise<void>;
 }
 
@@ -81,6 +85,28 @@ export async function createPostgresRuntimePersistence(
     hookRunAuditRepository: new PostgresHookRunAuditRepository(db),
     artifactRepository: new PostgresArtifactRepository(db),
     historyEventRepository: new PostgresHistoryEventRepository(db),
+    async listWorkspaceSnapshots(candidates) {
+      const snapshots = new Map<string, WorkspaceRecord>();
+
+      for (const candidate of candidates) {
+        const [byId] = await db.select().from(workspaces).where(eq(workspaces.id, candidate.id)).limit(1);
+        const row =
+          byId ??
+          (
+            await db
+              .select()
+              .from(workspaces)
+              .where(and(eq(workspaces.rootPath, candidate.rootPath), eq(workspaces.kind, candidate.kind)))
+              .limit(1)
+          )[0];
+
+        if (row) {
+          snapshots.set(row.id, toWorkspaceRecord(row));
+        }
+      }
+
+      return [...snapshots.values()];
+    },
     async close() {
       if (ownPool) {
         await pool.end();

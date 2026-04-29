@@ -444,15 +444,17 @@ export class InMemorySessionEventStore implements SessionEventStore {
     return event;
   }
 
-  async listSince(sessionId: string, cursor?: string, runId?: string): Promise<SessionEvent[]> {
+  async listSince(sessionId: string, cursor?: string, runId?: string, limit?: number): Promise<SessionEvent[]> {
     const parsedCursor = cursor ? Number.parseInt(cursor, 10) : -1;
     const normalizedCursor = Number.isFinite(parsedCursor) && parsedCursor >= -1 ? parsedCursor : -1;
     const events = this.#eventsBySession.get(sessionId) ?? [];
+    const readLimit = Number.isFinite(limit) && limit !== undefined ? Math.max(1, Math.floor(limit)) : undefined;
 
-    return events.filter((event) => {
+    const filtered = events.filter((event) => {
       const eventCursor = Number.parseInt(event.cursor, 10);
       return Number.isFinite(eventCursor) && eventCursor > normalizedCursor && (!runId || event.runId === runId);
     });
+    return readLimit ? filtered.slice(0, readLimit) : filtered;
   }
 
   async deleteById(eventId: string): Promise<void> {

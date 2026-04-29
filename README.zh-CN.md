@@ -247,7 +247,7 @@ pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui
 
 | 服务 | 地址 / 命令 |
 | --- | --- |
-| Web Console | `http://localhost:5174` |
+| Web Console | `http://localhost:5173` |
 | Debug TUI | `pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui` |
 | API | `http://127.0.0.1:8787` |
 | Sandbox worker host | `http://127.0.0.1:8788` |

@@ -733,9 +733,9 @@ export class EngineService {
     return (await this.#ensureRuntimeKernel()).runRecovery.recoverRunAfterDrainTimeout(runId, strategy);
   }
 
-  async listSessionEvents(sessionId: string, cursor?: string, runId?: string): Promise<SessionEvent[]> {
+  async listSessionEvents(sessionId: string, cursor?: string, runId?: string, limit?: number): Promise<SessionEvent[]> {
     await this.getSession(sessionId);
-    return this.#sessionEventStore.listSince(sessionId, cursor, runId);
+    return this.#sessionEventStore.listSince(sessionId, cursor, runId, limit);
   }
 
   subscribeSessionEvents(sessionId: string, listener: (event: SessionEvent) => void): () => void {
