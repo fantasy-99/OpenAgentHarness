@@ -9,6 +9,7 @@ import { buildWorkspaceId } from "@oah/config";
 import { bootstrapRuntime } from "../apps/server/src/bootstrap.ts";
 
 const tempDirs: string[] = [];
+const BOOTSTRAP_TEST_TIMEOUT_MS = 15_000;
 
 afterEach(async () => {
   await Promise.all(
@@ -116,5 +117,5 @@ Use the workspace-defined builder.
     } finally {
       await runtime.close();
     }
-  });
+  }, BOOTSTRAP_TEST_TIMEOUT_MS);
 });

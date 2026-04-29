@@ -9,6 +9,8 @@ const appThemes = [defaultTheme, blueVioletTheme, cyberpunkTheme] satisfies AppT
 
 export const appThemeOptions: AppThemeOption[] = appThemes.map(({ value, label }) => ({ value, label }));
 
-export const appThemePresets = Object.fromEntries(
-  appThemes.map(({ value, preset }) => [value, preset])
-) as Record<AppThemeName, AppThemePreset>;
+export const appThemePresets: Record<AppThemeName, AppThemePreset> = {
+  default: defaultTheme.preset,
+  "blue-violet": blueVioletTheme.preset,
+  cyberpunk: cyberpunkTheme.preset
+};

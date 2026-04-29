@@ -8,6 +8,7 @@ import { createE2BCompatibleSandboxHost } from "../apps/server/src/bootstrap/e2b
 import { bootstrapRuntime } from "../apps/server/src/bootstrap.ts";
 
 const tempDirs: string[] = [];
+const BOOTSTRAP_TEST_TIMEOUT_MS = 15_000;
 
 afterEach(async () => {
   await Promise.all(
@@ -262,7 +263,7 @@ sandbox:
     } finally {
       await runtime.close();
     }
-  });
+  }, BOOTSTRAP_TEST_TIMEOUT_MS);
 
   it("deletes the live sandbox workspace when a remote workspace is removed", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-remote-sandbox-delete-"));

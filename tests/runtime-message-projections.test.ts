@@ -279,7 +279,362 @@ describe("runtime message projections", () => {
     expect(engineMessages[1]).toMatchObject({
       role: "assistant",
       kind: "assistant_text",
-      content: "The user answered B.\n\nCorrect: B means Pod is the smallest K8S management unit."
+      content: messages[1]!.content
+    });
+  });
+
+  it("replaces structured snapshots after text deltas without duplicating assistant text", () => {
+    const messages: Message[] = [
+      {
+        id: "msg_user",
+        sessionId: "sess_1",
+        runId: "run_1",
+        role: "user",
+        content: "start",
+        createdAt: "2026-04-08T00:00:00.000Z"
+      },
+      {
+        id: "msg_streamed",
+        sessionId: "sess_1",
+        runId: "run_1",
+        role: "assistant",
+        content: [
+          {
+            type: "reasoning",
+            text: "I should answer briefly."
+          },
+          {
+            type: "text",
+            text: "Hello there"
+          }
+        ],
+        createdAt: "2026-04-08T00:00:01.000Z"
+      }
+    ];
+    const events: SessionEvent[] = [
+      {
+        id: "evt_1",
+        cursor: "1",
+        sessionId: "sess_1",
+        runId: "run_1",
+        event: "message.delta",
+        data: {
+          messageId: "msg_streamed",
+          delta: "Hello "
+        },
+        createdAt: "2026-04-08T00:00:01.100Z"
+      },
+      {
+        id: "evt_2",
+        cursor: "2",
+        sessionId: "sess_1",
+        runId: "run_1",
+        event: "message.delta",
+        data: {
+          messageId: "msg_streamed",
+          delta: "there"
+        },
+        createdAt: "2026-04-08T00:00:01.200Z"
+      },
+      {
+        id: "evt_3",
+        cursor: "3",
+        sessionId: "sess_1",
+        runId: "run_1",
+        event: "message.delta",
+        data: {
+          messageId: "msg_streamed",
+          content: messages[1]!.content
+        },
+        createdAt: "2026-04-08T00:00:01.300Z"
+      },
+      {
+        id: "evt_4",
+        cursor: "4",
+        sessionId: "sess_1",
+        runId: "run_1",
+        event: "message.completed",
+        data: {
+          messageId: "msg_streamed",
+          content: messages[1]!.content
+        },
+        createdAt: "2026-04-08T00:00:02.000Z"
+      }
+    ];
+
+    const engineMessages = buildSessionEngineMessages({
+      messages,
+      events
+    });
+
+    expect(engineMessages.map((message) => message.content)).toEqual(["start", messages[1]!.content]);
+  });
+
+  it("keeps structured assistant segments around tool calls in model order", () => {
+    const messages: Message[] = [
+      {
+        id: "msg_user",
+        sessionId: "sess_1",
+        runId: "run_1",
+        role: "user",
+        content: "use a tool",
+        createdAt: "2026-04-08T00:00:00.000Z"
+      },
+      {
+        id: "msg_before_tool",
+        sessionId: "sess_1",
+        runId: "run_1",
+        role: "assistant",
+        content: [
+          {
+            type: "reasoning",
+            text: "I need a tool."
+          },
+          {
+            type: "text",
+            text: "Let me check that."
+          }
+        ],
+        createdAt: "2026-04-08T00:00:01.000Z"
+      },
+      {
+        id: "msg_tool_call",
+        sessionId: "sess_1",
+        runId: "run_1",
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "call_1",
+            toolName: "Read",
+            input: {
+              path: "README.md"
+            }
+          }
+        ],
+        createdAt: "2026-04-08T00:00:02.000Z"
+      },
+      {
+        id: "msg_tool_result",
+        sessionId: "sess_1",
+        runId: "run_1",
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call_1",
+            toolName: "Read",
+            output: {
+              type: "text",
+              value: "README"
+            }
+          }
+        ],
+        createdAt: "2026-04-08T00:00:03.000Z"
+      },
+      {
+        id: "msg_after_tool",
+        sessionId: "sess_1",
+        runId: "run_1",
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: "The file says README."
+          }
+        ],
+        createdAt: "2026-04-08T00:00:04.000Z"
+      }
+    ];
+    const events: SessionEvent[] = [
+      {
+        id: "evt_1",
+        cursor: "1",
+        sessionId: "sess_1",
+        runId: "run_1",
+        event: "message.delta",
+        data: {
+          messageId: "msg_before_tool",
+          content: messages[1]!.content
+        },
+        createdAt: "2026-04-08T00:00:01.100Z"
+      },
+      {
+        id: "evt_2",
+        cursor: "2",
+        sessionId: "sess_1",
+        runId: "run_1",
+        event: "message.completed",
+        data: {
+          messageId: "msg_tool_call",
+          content: messages[2]!.content
+        },
+        createdAt: "2026-04-08T00:00:02.100Z"
+      },
+      {
+        id: "evt_3",
+        cursor: "3",
+        sessionId: "sess_1",
+        runId: "run_1",
+        event: "message.completed",
+        data: {
+          messageId: "msg_tool_result",
+          content: messages[3]!.content
+        },
+        createdAt: "2026-04-08T00:00:03.100Z"
+      },
+      {
+        id: "evt_4",
+        cursor: "4",
+        sessionId: "sess_1",
+        runId: "run_1",
+        event: "message.delta",
+        data: {
+          messageId: "msg_after_tool",
+          content: messages[4]!.content
+        },
+        createdAt: "2026-04-08T00:00:04.100Z"
+      },
+      {
+        id: "evt_5",
+        cursor: "5",
+        sessionId: "sess_1",
+        runId: "run_1",
+        event: "run.completed",
+        data: {
+          runId: "run_1",
+          status: "completed"
+        },
+        createdAt: "2026-04-08T00:00:05.000Z"
+      }
+    ];
+
+    const engineMessages = buildSessionEngineMessages({
+      messages,
+      events
+    });
+
+    expect(engineMessages.map((message) => message.id)).toEqual([
+      "msg_user",
+      "msg_before_tool:segment:1",
+      "msg_tool_call",
+      "msg_tool_result",
+      "msg_after_tool:segment:1"
+    ]);
+    expect(engineMessages.map((message) => message.content)).toEqual([
+      "use a tool",
+      messages[1]!.content,
+      messages[2]!.content,
+      messages[3]!.content,
+      messages[4]!.content
+    ]);
+  });
+
+  it("projects rebuilt streamed assistant checks into the next model context", async () => {
+    const messages: Message[] = [
+      {
+        id: "msg_initial_user",
+        sessionId: "sess_1",
+        runId: "run_1",
+        role: "user",
+        content: "你好，我想学习K8S",
+        createdAt: "2026-04-08T00:00:00.000Z"
+      },
+      {
+        id: "msg_check",
+        sessionId: "sess_1",
+        runId: "run_1",
+        role: "assistant",
+        content: [
+          {
+            type: "reasoning",
+            text: "Ask a short check before continuing."
+          },
+          {
+            type: "text",
+            text: "小检查：Pod 的核心作用更接近哪一个？\nA. 让容器能互相通信\nB. 作为 K8S 管理容器的最小单位\nC. 自动扩展应用实例数量"
+          }
+        ],
+        createdAt: "2026-04-08T00:00:01.000Z"
+      },
+      {
+        id: "msg_answer",
+        sessionId: "sess_1",
+        runId: "run_2",
+        role: "user",
+        content: "B",
+        createdAt: "2026-04-08T00:00:02.000Z"
+      }
+    ];
+    const events: SessionEvent[] = [
+      {
+        id: "evt_1",
+        cursor: "1",
+        sessionId: "sess_1",
+        runId: "run_1",
+        event: "message.delta",
+        data: {
+          messageId: "msg_check",
+          content: messages[1]!.content
+        },
+        createdAt: "2026-04-08T00:00:01.100Z"
+      },
+      {
+        id: "evt_2",
+        cursor: "2",
+        sessionId: "sess_1",
+        runId: "run_1",
+        event: "message.completed",
+        data: {
+          messageId: "msg_check",
+          content: messages[1]!.content
+        },
+        createdAt: "2026-04-08T00:00:01.200Z"
+      },
+      {
+        id: "evt_3",
+        cursor: "3",
+        sessionId: "sess_1",
+        runId: "run_1",
+        event: "run.completed",
+        data: {
+          runId: "run_1",
+          status: "completed"
+        },
+        createdAt: "2026-04-08T00:00:01.300Z"
+      },
+      {
+        id: "evt_4",
+        cursor: "4",
+        sessionId: "sess_1",
+        runId: "run_2",
+        event: "run.queued",
+        data: {
+          runId: "run_2",
+          status: "queued"
+        },
+        createdAt: "2026-04-08T00:00:02.000Z"
+      }
+    ];
+
+    const engineMessages = buildSessionEngineMessages({
+      messages,
+      events
+    });
+    const modelProjection = new EngineMessageProjector().projectToModel(engineMessages, {
+      sessionId: "sess_1",
+      activeAgentName: "learn",
+      includeReasoning: true,
+      includeToolResults: true
+    });
+    const serialized = await new ModelMessageSerializer().toAiSdkMessages(modelProjection.messages);
+
+    expect(serialized.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
+    expect(JSON.stringify(serialized[1])).toContain("Pod 的核心作用");
+    expect(JSON.stringify(serialized[1])).toContain("作为 K8S 管理容器的最小单位");
+    expect(serialized[2]).toMatchObject({
+      role: "user",
+      content: "B"
     });
   });
 

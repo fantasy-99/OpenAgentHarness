@@ -202,17 +202,59 @@ function contentText(content: Message["content"]): string {
     .join("\n\n");
 }
 
-function readDeltaText(event: SessionEvent): { mode: "append" | "replace"; text: string } {
+function readDeltaContent(event: SessionEvent): { mode: "append" | "replace"; content: Message["content"] } {
   if (typeof event.data.delta === "string") {
-    return { mode: "append", text: event.data.delta };
+    return { mode: "append", content: event.data.delta };
   }
 
   const content = event.data.content;
   if (typeof content === "string" || Array.isArray(content)) {
-    return { mode: "replace", text: contentText(content as Message["content"]) };
+    return { mode: "replace", content: content as Message["content"] };
   }
 
-  return { mode: "append", text: "" };
+  return { mode: "append", content: "" };
+}
+
+function appendDeltaContent(existing: Message["content"], delta: Message["content"]): Message["content"] {
+  if (typeof existing === "string" && typeof delta === "string") {
+    return `${existing}${delta}`;
+  }
+
+  if (Array.isArray(existing) && typeof delta === "string") {
+    const next = [...existing];
+    const lastPart = next[next.length - 1];
+    if (lastPart?.type === "text") {
+      next[next.length - 1] = {
+        ...lastPart,
+        text: `${lastPart.text}${delta}`
+      };
+      return next as Message["content"];
+    }
+
+    return [
+      ...next,
+      {
+        type: "text",
+        text: delta
+      }
+    ] as Message["content"];
+  }
+
+  if (typeof existing === "string" && Array.isArray(delta)) {
+    return [
+      ...(existing.length > 0
+        ? [
+            {
+              type: "text" as const,
+              text: existing
+            }
+          ]
+        : []),
+      ...delta
+    ] as Message["content"];
+  }
+
+  return (Array.isArray(existing) && Array.isArray(delta) ? [...existing, ...delta] : delta) as Message["content"];
 }
 
 function isStreamedAssistantTextMessage(message: Message, deltaMessageIds: Set<string>) {
@@ -222,7 +264,7 @@ function isStreamedAssistantTextMessage(message: Message, deltaMessageIds: Set<s
 function buildSegmentEngineMessage(input: {
   sourceMessage: Message;
   segmentIndex: number;
-  content: string;
+  content: Message["content"];
   createdAt: string;
   startCursor?: string | undefined;
   endCursor?: string | undefined;
@@ -274,7 +316,7 @@ function projectRunEngineMessages(messages: Message[], events: SessionEvent[]): 
     string,
     {
       index: number;
-      content: string;
+      content: Message["content"];
       createdAt: string;
       startCursor: string;
       endCursor: string;
@@ -293,7 +335,7 @@ function projectRunEngineMessages(messages: Message[], events: SessionEvent[]): 
   const flushSegment = (messageId: string) => {
     const activeSegment = activeSegments.get(messageId);
     const sourceMessage = messagesById.get(messageId);
-    if (!activeSegment || !sourceMessage || activeSegment.content.trim().length === 0) {
+    if (!activeSegment || !sourceMessage || contentText(activeSegment.content).trim().length === 0) {
       activeSegments.delete(messageId);
       return;
     }
@@ -321,11 +363,13 @@ function projectRunEngineMessages(messages: Message[], events: SessionEvent[]): 
     const messageId = readSessionEventMessageId(event);
 
     if (event.event === "message.delta" && messageId && messagesById.has(messageId)) {
-      const deltaText = readDeltaText(event);
+      const deltaContent = readDeltaContent(event);
       const existingSegment = activeSegments.get(messageId);
       if (existingSegment) {
         existingSegment.content =
-          deltaText.mode === "replace" ? deltaText.text : `${existingSegment.content}${deltaText.text}`;
+          deltaContent.mode === "replace"
+            ? deltaContent.content
+            : appendDeltaContent(existingSegment.content, deltaContent.content);
         existingSegment.endCursor = event.cursor;
         continue;
       }
@@ -334,7 +378,7 @@ function projectRunEngineMessages(messages: Message[], events: SessionEvent[]): 
       segmentCounts.set(messageId, nextIndex);
       activeSegments.set(messageId, {
         index: nextIndex,
-        content: deltaText.text,
+        content: deltaContent.content,
         createdAt: event.createdAt,
         startCursor: event.cursor,
         endCursor: event.cursor
