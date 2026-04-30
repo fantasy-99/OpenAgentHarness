@@ -5,7 +5,6 @@
 建议把它和下面这些材料一起看：
 
 - [部署文档](/Users/wumengsong/Code/OpenAgentHarness/docs/deploy.md)
-- [K8S 路线图](/Users/wumengsong/Code/OpenAgentHarness/ROADMAP_K8S.md)
 - [Helm Chart README](/Users/wumengsong/Code/OpenAgentHarness/deploy/charts/open-agent-harness/README.md)
 - [prod.values.yaml](/Users/wumengsong/Code/OpenAgentHarness/deploy/charts/open-agent-harness/examples/prod.values.yaml)
 - [prod-hardening.values.yaml](/Users/wumengsong/Code/OpenAgentHarness/deploy/charts/open-agent-harness/examples/prod-hardening.values.yaml)
@@ -18,11 +17,13 @@
   - `storage.redis_url`
   - `workers.controller.leader_election.kubernetes.*`
   - `workers.controller.scale_target.kubernetes.*`
-- `scale_target.kubernetes.label_selector` 只会命中当前 release 的 `oah-sandbox` Deployment。
+- `scale_target.kubernetes.label_selector` 只会命中当前 release 的同类型 `oah-sandbox` workload。
 - `oah-controller` 的 ServiceAccount / RBAC 已应用，并确认具备：
   - `leases get/create/patch`
   - `deployments get/list`
   - `deployments/scale get/patch`
+  - `statefulsets get/list`
+  - `statefulsets/scale get/patch`
 - `worker.drain.timeoutMs < worker.terminationGracePeriodSeconds * 1000`。
 - `worker` 的 `preStop` 已开启，确保 Pod 终止前先进入 draining。
 - `PodDisruptionBudget`、`topologySpreadConstraints`、`priorityClassName` 已按目标环境设置。

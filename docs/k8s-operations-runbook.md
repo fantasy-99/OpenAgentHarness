@@ -4,7 +4,6 @@
 
 配套文档：
 
-- [K8S 路线图](/Users/wumengsong/Code/OpenAgentHarness/ROADMAP_K8S.md)
 - [部署文档](/Users/wumengsong/Code/OpenAgentHarness/docs/deploy.md)
 - [Kubernetes Rollout Checklist](/Users/wumengsong/Code/OpenAgentHarness/docs/k8s-rollout-checklist.md)
 - [Helm Chart README](/Users/wumengsong/Code/OpenAgentHarness/deploy/charts/open-agent-harness/README.md)
@@ -65,8 +64,8 @@ kubectl -n <namespace> auth can-i patch leases --as=system:serviceaccount:<names
 
 优先检查：
 
-- `scale_target.kubernetes.label_selector` 是否只命中一个 Deployment
-- controller 是否有 `deployments get/list` 与 `deployments/scale get/patch`
+- `scale_target.kubernetes.label_selector` 是否只命中一个同类型 workload
+- controller 是否有目标 workload 对应的 `get/list` 与 `/scale get/patch`
 - strict egress 是否放行了 Kubernetes API
 
 建议命令：
@@ -75,6 +74,8 @@ kubectl -n <namespace> auth can-i patch leases --as=system:serviceaccount:<names
 kubectl -n <namespace> get deploy -l '<label-selector>'
 kubectl -n <namespace> auth can-i get deployments --as=system:serviceaccount:<namespace>:<service-account>
 kubectl -n <namespace> auth can-i patch deployments/scale --as=system:serviceaccount:<namespace>:<service-account>
+kubectl -n <namespace> auth can-i get statefulsets --as=system:serviceaccount:<namespace>:<service-account>
+kubectl -n <namespace> auth can-i patch statefulsets/scale --as=system:serviceaccount:<namespace>:<service-account>
 kubectl -n <namespace> logs deploy/<controller-deployment> --tail=200
 curl http://<controller-pod-ip>:8788/snapshot
 ```
@@ -82,7 +83,7 @@ curl http://<controller-pod-ip>:8788/snapshot
 常见原因：
 
 - selector 0 命中或多命中
-- target Deployment 名称变化但 values 未同步
+- target workload 名称或类型变化但 values 未同步
 - RBAC 不足
 - API server 超时 / 网络抖动
 

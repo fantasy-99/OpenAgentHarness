@@ -298,12 +298,12 @@ export function renderControllerMetrics(input: {
     },
     {
       name: "scale_target_generation",
-      help: "Deployment generation reported by the latest scale target rollout observation.",
+      help: "Workload generation reported by the latest scale target rollout observation.",
       value: input.controller.scaleTarget?.generation ?? 0
     },
     {
       name: "scale_target_observed_generation",
-      help: "Observed deployment generation reported by the latest scale target rollout observation.",
+      help: "Observed workload generation reported by the latest scale target rollout observation.",
       value: input.controller.scaleTarget?.observedGeneration ?? 0
     },
     {

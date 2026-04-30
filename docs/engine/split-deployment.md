@@ -17,8 +17,8 @@
 - `controller`
   - `oah-controller` 独立控制面入口
   - 当前负责读取 Redis queue / worker registry 并计算 `desiredReplicas`
-  - 当前已可通过可插拔 `scale target` 把目标副本数 reconcile 到 Kubernetes `Deployment /scale`
-  - 当前已支持通过 `label_selector` 自动发现要缩放的 `oah-sandbox` Deployment
+  - 当前已可通过可插拔 `scale target` 把目标副本数 reconcile 到 Kubernetes workload `/scale`
+  - 当前已支持通过 `label_selector` 自动发现要缩放的 `oah-sandbox` Deployment / StatefulSet
   - 当前已可通过 Kubernetes Lease 完成 leader election，仅由 leader 实例执行 reconcile
   - 当前已通过 worker `/healthz` 动态 gating 控制自动缩容
   - 当前已暴露 `/healthz`、`/readyz`、`/snapshot`、`/metrics` observability 面
@@ -91,7 +91,7 @@ worker Pod 侧至少需要保证这些目录可用：
 - `oah-api` 与 standalone worker 的独立 app 包边界
 - owner-worker 文件代理
 - worker internal-only HTTP surface
-- `controller` 的 Kubernetes leader election + `Deployment /scale` reconcile
+- `controller` 的 Kubernetes leader election + workload `/scale` reconcile
 - `controller` 的独立 Service 与基础 metrics/health observability 面
 - `controller` 的 Prometheus Operator `ServiceMonitor` 示例清单
 - `deploy/` 根目录下的 Prometheus Operator kustomization，可直接 `kubectl apply -k ./deploy` 启用 `ServiceMonitor`

@@ -384,7 +384,7 @@ Completion target:
 
 ### Phase 1: Deployment Identity API
 
-Status: planned
+Status: in progress
 
 Objective: 让每个 OAH-compatible server 明确自报当前是 OAH enterprise server 还是 OAP local daemon，并暴露客户端可用能力。
 
@@ -412,6 +412,19 @@ Initial capability flags:
 - `storageInspection`
 - `modelManagement`
 - `localDaemonSupervisor`
+
+Completed:
+
+- `GET /api/v1/system/profile` 已在 API server 暴露。
+- `@oah/api-contracts` 已提供 `systemProfileSchema`。
+- `ServerConfig.deployment` 已支持 `kind`、`runtime_mode`、`display_name`。
+- `template/deploy-root/config/daemon.yaml` 默认声明 `kind=oap`、`runtime_mode=daemon`。
+- `server.docker.yaml` 与 `kubernetes.server.yaml` 默认声明 OAH enterprise profile。
+
+Next:
+
+- WebUI / TUI / Desktop 连接后读取 profile，并用 capabilities 控制本地专属行为。
+- OAP 后续 workspace registration 需要复用 `localWorkspacePaths` capability gate。
 
 Completion target:
 

@@ -216,7 +216,7 @@ llm:
 | `controller.leader_election.kubernetes.*` | object | Kubernetes lease 配置，包括 namespace、lease_name、api_url、token_file、ca_file、skip_tls_verify、identity 等 |
 | `controller.scale_target.type` | string | scale target 类型，支持 `noop`、`kubernetes`、`docker_compose` |
 | `controller.scale_target.allow_scale_down` | boolean | 是否允许 controller 主动缩容 |
-| `controller.scale_target.kubernetes.*` | object | Kubernetes Deployment `/scale` 配置，包括 namespace、deployment、label_selector、api_url、token_file、ca_file、skip_tls_verify |
+| `controller.scale_target.kubernetes.*` | object | Kubernetes workload `/scale` 配置，包括 namespace、workload_kind、workload_name、deployment、statefulset、label_selector、api_url、token_file、ca_file、skip_tls_verify |
 | `controller.scale_target.docker_compose.*` | object | 本地 Docker Compose 缩放配置，包括 compose_file、project_name、service、command，以及可选的远端执行器 endpoint、auth_token、timeout_ms |
 
 > **tip**
@@ -252,8 +252,11 @@ llm:
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
 | `namespace` | 是 | 目标 workload 所在 namespace |
-| `deployment` | 条件必填 | 显式指定要缩放的 Deployment 名称 |
-| `label_selector` | 条件必填 | 用 selector 自动发现目标 Deployment；与 `deployment` 二选一即可 |
+| `workload_kind` | 否 | 目标 workload 类型，支持 `Deployment`、`StatefulSet`；默认 `Deployment` |
+| `workload_name` | 条件必填 | 显式指定要缩放的 workload 名称；可替代旧的 `deployment` 或专用 `statefulset` 字段 |
+| `deployment` | 条件必填 | 兼容旧配置：显式指定要缩放的 Deployment 名称 |
+| `statefulset` | 条件必填 | 显式指定要缩放的 StatefulSet 名称；设置后默认 `workload_kind=StatefulSet` |
+| `label_selector` | 条件必填 | 用 selector 自动发现目标 workload；与显式名称二选一即可 |
 | `api_url` | 否 | Kubernetes API 地址；省略时优先使用 in-cluster `KUBERNETES_SERVICE_*` |
 | `token_file` | 否 | ServiceAccount token 路径 |
 | `ca_file` | 否 | Kubernetes CA 证书路径 |
@@ -261,9 +264,9 @@ llm:
 
 约束：
 
-- `deployment` 与 `label_selector` 至少要有一个
-- 若使用 `label_selector`，它必须稳定且只能命中一个 worker Deployment
-- 当前 target 仍以 `Deployment` 为正式目标模型；后续若扩到 `StatefulSet`，会单独扩展配置结构
+- `workload_name` / `deployment` / `statefulset` 与 `label_selector` 至少要有一个
+- 若使用 `label_selector`，它必须稳定且只能命中一个同类型 worker workload
+- `deployment` 是兼容字段；新配置优先使用 `workload_kind + workload_name`
 
 环境变量覆盖关系：
 
@@ -280,7 +283,10 @@ llm:
 - `OAH_CONTROLLER_LEASE_IDENTITY`
 - `OAH_CONTROLLER_TARGET_TYPE`
 - `OAH_CONTROLLER_TARGET_NAMESPACE`
+- `OAH_CONTROLLER_TARGET_WORKLOAD_KIND`
+- `OAH_CONTROLLER_TARGET_WORKLOAD_NAME`
 - `OAH_CONTROLLER_TARGET_DEPLOYMENT`
+- `OAH_CONTROLLER_TARGET_STATEFULSET`
 - `OAH_CONTROLLER_TARGET_LABEL_SELECTOR`
 - `OAH_CONTROLLER_KUBE_API_URL`
 - `OAH_CONTROLLER_KUBE_TOKEN_FILE`
@@ -290,7 +296,7 @@ llm:
 运行时语义：
 
 - controller 计算 `desiredReplicas`
-- `scale_target.kubernetes` 负责把目标值 patch 到 `Deployment /scale`
+- `scale_target.kubernetes` 负责把目标值 patch 到目标 workload 的 `/scale` 子资源，目前支持 `Deployment` 与 `StatefulSet`
 - 最新 reconcile 结果会区分：
   - 目标已接受但 rollout 仍未收敛
   - rollout 正在进行

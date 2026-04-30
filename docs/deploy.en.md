@@ -143,10 +143,10 @@ This baseline already includes:
 - `oah-api` does not need a workspace volume; `oah-sandbox` owns writable active workspace copies, ideally paired with object-storage backing for idle / drain flushes
 - A dedicated ClusterIP Service for `controller` exposing `/healthz`, `/readyz`, `/snapshot`, and `/metrics`
 - Kubernetes Lease based leader election for `controller`
-- Replica reconciliation through the `Deployment /scale` subresource for `oah-sandbox`, with optional target discovery via `label_selector`
+- Replica reconciliation through the Kubernetes workload `/scale` subresource for `oah-sandbox`, with optional target discovery via `label_selector`; the target supports `Deployment` and `StatefulSet`
 - The shipped `server.yaml` examples set `sandbox.provider=self_hosted` and route sandbox requests through the `oah-sandbox-internal` headless service
 - The default sandbox fleet keeps `warm_empty_count: 1` empty sandbox ready; ownerless workspaces reuse existing sandboxes while CPU, memory, and disk are below threshold, then fall back to the warm empty sandbox when any resource crosses the threshold
-- `controller-rbac.yaml` now includes the `leases`, `deployments`, and `deployments/scale` permissions needed for leader election, label-selector discovery, and replica reconciliation
+- `controller-rbac.yaml` now includes the `leases`, `deployments`, `deployments/scale`, `statefulsets`, and `statefulsets/scale` permissions needed for leader election, label-selector discovery, and replica reconciliation
 - Automatic scale-down is now enabled when safety conditions are met; the real scale-down guardrail comes from controller health probes against standalone worker `/healthz`
 - Standalone workers now enter a drain phase on shutdown so readiness drops before the current run is allowed to finish
 - Drain now also flushes and evicts idle workspace copies and blocks new object-store materialization from starting

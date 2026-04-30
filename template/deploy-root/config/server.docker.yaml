@@ -2,6 +2,11 @@ server:
   host: 0.0.0.0
   port: 8787
 
+deployment:
+  kind: oah
+  runtime_mode: compose
+  display_name: OAH enterprise server
+
 storage:
   # Shared infra services running in the same Docker Compose project.
   postgres_url: postgres://oah:oah@postgres:5432/open_agent_harness

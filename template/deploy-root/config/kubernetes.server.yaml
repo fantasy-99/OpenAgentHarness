@@ -2,6 +2,11 @@ server:
   host: 0.0.0.0
   port: 8787
 
+deployment:
+  kind: oah
+  runtime_mode: kubernetes
+  display_name: OAH enterprise server
+
 storage:
   postgres_url: ${env.DATABASE_URL}
   redis_url: ${env.REDIS_URL}

@@ -1,5 +1,6 @@
 import type { AppDependencies } from "./http/types.js";
 import type { BootstrappedRuntime } from "./bootstrap.js";
+import { buildSystemProfile } from "./system-profile.js";
 
 function normalizeOwnerProxyBaseUrl(input: string | undefined): string | undefined {
   const trimmed = input?.trim();
@@ -25,6 +26,12 @@ function buildSharedAppDependencies(runtime: BootstrappedRuntime): AppDependenci
   return {
     runtimeService: runtime.controlPlaneEngineService,
     defaultModel: runtime.config.llm.default_model,
+    systemProfile: buildSystemProfile({
+      config: runtime.config,
+      process: runtime.process,
+      workspaceMode: runtime.workspaceMode.kind,
+      storageInspection: Boolean(runtime.adminCapabilities?.storageAdmin)
+    }),
     workspaceMode: runtime.workspaceMode.kind,
     healthCheck: () => runtime.healthReport(),
     readinessCheck: () => runtime.readinessReport(),

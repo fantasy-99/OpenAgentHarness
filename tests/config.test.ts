@@ -46,6 +46,10 @@ describe("config loading", () => {
 server:
   host: 127.0.0.1
   port: 8787
+deployment:
+  kind: oap
+  runtime_mode: daemon
+  display_name: OAP local daemon
 storage:
   postgres_url: \${env.DATABASE_URL}
   redis_url: \${env.REDIS_URL}
@@ -62,6 +66,11 @@ llm:
     );
 
     const config = await loadServerConfig(configPath);
+    expect(config.deployment).toEqual({
+      kind: "oap",
+      runtime_mode: "daemon",
+      display_name: "OAP local daemon"
+    });
     expect(config.storage.postgres_url).toBe("postgres://local/test");
     expect(config.paths.model_dir).toBe(path.join(tempDir, "models"));
     expect(config.paths.runtime_state_dir).toBe(path.join(tempDir, ".openharness"));
@@ -530,6 +539,60 @@ llm:
           auth_token: "local-token",
           timeout_ms: 4500
         }
+      }
+    });
+  });
+
+  it("loads kubernetes statefulset scale target settings from server config", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-config-k8s-statefulset-"));
+    tempDirs.push(tempDir);
+
+    for (const dirName of ["workspaces", "runtimes", "models", "tools", "skills"]) {
+      await mkdir(path.join(tempDir, dirName), { recursive: true });
+    }
+
+    const configPath = path.join(tempDir, "server.yaml");
+    await writeFile(
+      configPath,
+      `
+server:
+  host: 127.0.0.1
+  port: 8787
+storage:
+  redis_url: redis://local/0
+paths:
+  workspace_dir: ./workspaces
+  runtime_dir: ./runtimes
+  model_dir: ./models
+  tool_dir: ./tools
+  skill_dir: ./skills
+workers:
+  controller:
+    scale_target:
+      type: kubernetes
+      kubernetes:
+        namespace: open-agent-harness
+        workload_kind: StatefulSet
+        workload_name: oah-worker-pool
+        label_selector: app.kubernetes.io/component=sandbox
+        api_url: https://kubernetes.default.svc
+        token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+llm:
+  default_model: openai-default
+`,
+      "utf8"
+    );
+
+    const config = await loadServerConfig(configPath);
+    expect(config.workers?.controller?.scale_target).toEqual({
+      type: "kubernetes",
+      kubernetes: {
+        namespace: "open-agent-harness",
+        workload_kind: "StatefulSet",
+        workload_name: "oah-worker-pool",
+        label_selector: "app.kubernetes.io/component=sandbox",
+        api_url: "https://kubernetes.default.svc",
+        token_file: "/var/run/secrets/kubernetes.io/serviceaccount/token"
       }
     });
   });

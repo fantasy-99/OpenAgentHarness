@@ -65,7 +65,10 @@ interface ControllerScaleTargetConfigShape {
   kubernetes?:
     | {
         namespace?: string | undefined;
+        workload_kind?: string | undefined;
+        workload_name?: string | undefined;
         deployment?: string | undefined;
+        statefulset?: string | undefined;
         label_selector?: string | undefined;
         api_url?: string | undefined;
         token_file?: string | undefined;
@@ -96,6 +99,8 @@ export type ResolvedWorkerReplicaTargetConfig =
       allowScaleDown: boolean;
       kubernetes: {
         namespace: string;
+        workloadKind?: KubernetesWorkloadKind | undefined;
+        workloadName?: string | undefined;
         deployment?: string | undefined;
         labelSelector?: string | undefined;
         apiUrl: string;
@@ -150,6 +155,14 @@ interface KubernetesDeploymentObservation {
   unavailableReplicas?: number | undefined;
   generation?: number | undefined;
   observedGeneration?: number | undefined;
+}
+
+type KubernetesWorkloadKind = "Deployment" | "StatefulSet";
+
+interface KubernetesWorkloadResource {
+  readonly kind: KubernetesWorkloadKind;
+  readonly plural: "deployments" | "statefulsets";
+  readonly displayName: "deployment" | "statefulset";
 }
 
 class KubernetesReplicaTargetError extends Error {
@@ -266,6 +279,34 @@ function resolveKubernetesApiUrl(raw?: string | undefined): string | undefined {
   return `https://${host}:${port}`;
 }
 
+function resolveKubernetesWorkloadKind(raw?: string | undefined): KubernetesWorkloadKind {
+  const normalized = raw?.trim().toLowerCase();
+  if (!normalized || normalized === "deployment" || normalized === "deployments") {
+    return "Deployment";
+  }
+  if (normalized === "statefulset" || normalized === "statefulsets") {
+    return "StatefulSet";
+  }
+
+  throw new Error(`controller kubernetes scale target workload_kind must be Deployment or StatefulSet, got ${raw}.`);
+}
+
+function kubernetesWorkloadResource(kind: KubernetesWorkloadKind): KubernetesWorkloadResource {
+  if (kind === "StatefulSet") {
+    return {
+      kind,
+      plural: "statefulsets",
+      displayName: "statefulset"
+    };
+  }
+
+  return {
+    kind,
+    plural: "deployments",
+    displayName: "deployment"
+  };
+}
+
 export function resolveWorkerReplicaTargetConfig(config: ServerConfig): ResolvedWorkerReplicaTargetConfig {
   const controllerConfig = (config.workers?.controller ?? {}) as NonNullable<ServerConfig["workers"]>["controller"] & {
     scale_target?: ControllerScaleTargetConfigShape | undefined;
@@ -323,7 +364,17 @@ export function resolveWorkerReplicaTargetConfig(config: ServerConfig): Resolved
 
   const kubernetes = scaleTarget?.kubernetes;
   const namespace = readStringEnv("OAH_CONTROLLER_TARGET_NAMESPACE", kubernetes?.namespace);
+  const workloadKind = resolveKubernetesWorkloadKind(
+    readStringEnv(
+      "OAH_CONTROLLER_TARGET_WORKLOAD_KIND",
+      kubernetes?.workload_kind ?? (kubernetes?.statefulset ? "StatefulSet" : undefined)
+    )
+  );
+  const workloadName = readStringEnv("OAH_CONTROLLER_TARGET_WORKLOAD_NAME", kubernetes?.workload_name);
   const deployment = readStringEnv("OAH_CONTROLLER_TARGET_DEPLOYMENT", kubernetes?.deployment);
+  const statefulset = readStringEnv("OAH_CONTROLLER_TARGET_STATEFULSET", kubernetes?.statefulset);
+  const explicitWorkloadName =
+    workloadName ?? (workloadKind === "StatefulSet" ? statefulset : deployment) ?? undefined;
   const labelSelector = readStringEnv("OAH_CONTROLLER_TARGET_LABEL_SELECTOR", kubernetes?.label_selector);
   const apiUrl = resolveKubernetesApiUrl(readStringEnv("OAH_CONTROLLER_KUBE_API_URL", kubernetes?.api_url));
   const tokenFile = readStringEnv(
@@ -339,8 +390,8 @@ export function resolveWorkerReplicaTargetConfig(config: ServerConfig): Resolved
   if (!namespace) {
     throw new Error("controller kubernetes scale target requires namespace.");
   }
-  if (!deployment && !labelSelector) {
-    throw new Error("controller kubernetes scale target requires deployment or label_selector.");
+  if (!explicitWorkloadName && !labelSelector) {
+    throw new Error("controller kubernetes scale target requires workload_name, deployment, statefulset, or label_selector.");
   }
   if (!apiUrl) {
     throw new Error("controller kubernetes scale target requires api_url or in-cluster service env.");
@@ -354,7 +405,9 @@ export function resolveWorkerReplicaTargetConfig(config: ServerConfig): Resolved
     allowScaleDown,
     kubernetes: {
       namespace,
-      ...(deployment ? { deployment } : {}),
+      workloadKind,
+      ...(explicitWorkloadName ? { workloadName: explicitWorkloadName } : {}),
+      ...(workloadKind === "Deployment" && deployment ? { deployment } : {}),
       ...(labelSelector ? { labelSelector } : {}),
       apiUrl,
       tokenFile,
@@ -423,12 +476,15 @@ export function createKubernetesWorkerReplicaTarget(
       let targetRef: WorkerReplicaTargetRef | undefined;
       let observedState: KubernetesDeploymentObservation | undefined;
       let observedReplicas: number | undefined;
+      const workloadResource = kubernetesWorkloadResource(config.kubernetes.workloadKind ?? "Deployment");
 
       try {
-        const deploymentName =
+        const workloadName =
+          config.kubernetes.workloadName ??
           config.kubernetes.deployment ??
-          (await discoverKubernetesDeploymentName(
+          (await discoverKubernetesWorkloadName(
             {
+              workload: workloadResource,
               namespace: config.kubernetes.namespace,
               labelSelector: config.kubernetes.labelSelector!,
               apiUrl: config.kubernetes.apiUrl,
@@ -440,19 +496,20 @@ export function createKubernetesWorkerReplicaTarget(
           ));
         targetRef = {
           platform: "kubernetes",
-          kind: "Deployment",
+          kind: workloadResource.kind,
           namespace: config.kubernetes.namespace,
-          name: deploymentName,
-          discovery: config.kubernetes.deployment ? "explicit" : "label_selector",
+          name: workloadName,
+          discovery: config.kubernetes.workloadName || config.kubernetes.deployment ? "explicit" : "label_selector",
           ...(config.kubernetes.labelSelector ? { selector: config.kubernetes.labelSelector } : {})
         };
 
         const authHeaders = await buildKubernetesAuthHeaders(config.kubernetes.tokenFile);
         observedState = await readKubernetesDeploymentState(
           {
+            workload: workloadResource,
             apiUrl: config.kubernetes.apiUrl,
             namespace: config.kubernetes.namespace,
-            deployment: deploymentName,
+            name: workloadName,
             headers: authHeaders,
             caFile: config.kubernetes.caFile,
             skipTlsVerify: config.kubernetes.skipTlsVerify
@@ -493,7 +550,7 @@ export function createKubernetesWorkerReplicaTarget(
               ? {
                   reasonCode: "rollout_in_progress",
                   stage: "observe_rollout" as const,
-                  message: "deployment already targets desired replicas but rollout is still progressing"
+                  message: `${workloadResource.displayName} already targets desired replicas but rollout is still progressing`
                 }
               : {}),
             observedState
@@ -501,9 +558,10 @@ export function createKubernetesWorkerReplicaTarget(
         }
 
         const scaleUrl = buildKubernetesDeploymentScaleUrl({
+          workload: workloadResource,
           apiUrl: config.kubernetes.apiUrl,
           namespace: config.kubernetes.namespace,
-          deployment: deploymentName
+          name: workloadName
         });
         const patchResponse = await request({
           url: scaleUrl,
@@ -521,16 +579,17 @@ export function createKubernetesWorkerReplicaTarget(
           caFile: config.kubernetes.caFile,
           skipTlsVerify: config.kubernetes.skipTlsVerify
         });
-        assertKubernetesSuccess("patch deployment scale", patchResponse, "apply_scale");
+        assertKubernetesSuccess(`patch ${workloadResource.displayName} scale`, patchResponse, "apply_scale");
         const appliedReplicas = parseReplicas(patchResponse.body) ?? input.desiredReplicas;
 
         let postPatchState: KubernetesDeploymentObservation | undefined;
         try {
           postPatchState = await readKubernetesDeploymentState(
             {
+              workload: workloadResource,
               apiUrl: config.kubernetes.apiUrl,
               namespace: config.kubernetes.namespace,
-              deployment: deploymentName,
+              name: workloadName,
               headers: authHeaders,
               caFile: config.kubernetes.caFile,
               skipTlsVerify: config.kubernetes.skipTlsVerify
@@ -586,12 +645,12 @@ export function createKubernetesWorkerReplicaTarget(
               ? {
                   reasonCode: "rollout_in_progress",
                   stage: "observe_rollout" as const,
-                  message: "deployment accepted the new replica target and rollout is progressing"
+                  message: `${workloadResource.displayName} accepted the new replica target and rollout is progressing`
                 }
               : {
                   reasonCode: "rollout_ready",
                   stage: "observe_rollout" as const,
-                  message: "deployment reached the desired replica target and is ready"
+                  message: `${workloadResource.displayName} reached the desired replica target and is ready`
                 }),
           observedState: postPatchState
         });
@@ -837,32 +896,35 @@ export function createRemoteDockerComposeWorkerReplicaTarget(
 }
 
 function buildKubernetesDeploymentScaleUrl(input: {
+  workload: KubernetesWorkloadResource;
   apiUrl: string;
   namespace: string;
-  deployment: string;
+  name: string;
 }): string {
   return new URL(
-    `/apis/apps/v1/namespaces/${encodeURIComponent(input.namespace)}/deployments/${encodeURIComponent(input.deployment)}/scale`,
+    `/apis/apps/v1/namespaces/${encodeURIComponent(input.namespace)}/${input.workload.plural}/${encodeURIComponent(input.name)}/scale`,
     appendTrailingSlash(input.apiUrl)
   ).toString();
 }
 
 function buildKubernetesDeploymentUrl(input: {
+  workload: KubernetesWorkloadResource;
   apiUrl: string;
   namespace: string;
-  deployment: string;
+  name: string;
 }): string {
   return new URL(
-    `/apis/apps/v1/namespaces/${encodeURIComponent(input.namespace)}/deployments/${encodeURIComponent(input.deployment)}`,
+    `/apis/apps/v1/namespaces/${encodeURIComponent(input.namespace)}/${input.workload.plural}/${encodeURIComponent(input.name)}`,
     appendTrailingSlash(input.apiUrl)
   ).toString();
 }
 
 async function readKubernetesDeploymentState(
   input: {
+    workload: KubernetesWorkloadResource;
     apiUrl: string;
     namespace: string;
-    deployment: string;
+    name: string;
     headers: Record<string, string>;
     caFile?: string | undefined;
     skipTlsVerify: boolean;
@@ -880,12 +942,13 @@ async function readKubernetesDeploymentState(
     caFile: input.caFile,
     skipTlsVerify: input.skipTlsVerify
   });
-  assertKubernetesSuccess("read deployment state", response, stage);
+  assertKubernetesSuccess(`read ${input.workload.displayName} state`, response, stage);
   return parseKubernetesDeploymentObservation(response.body);
 }
 
-async function discoverKubernetesDeploymentName(
+async function discoverKubernetesWorkloadName(
   input: {
+    workload: KubernetesWorkloadResource;
     namespace: string;
     labelSelector: string;
     apiUrl: string;
@@ -896,14 +959,14 @@ async function discoverKubernetesDeploymentName(
   request: KubernetesJsonRequestFn
 ): Promise<string> {
   const authHeaders = await buildKubernetesAuthHeaders(input.tokenFile);
-  const deploymentsUrl = new URL(
-    `/apis/apps/v1/namespaces/${encodeURIComponent(input.namespace)}/deployments`,
+  const workloadsUrl = new URL(
+    `/apis/apps/v1/namespaces/${encodeURIComponent(input.namespace)}/${input.workload.plural}`,
     appendTrailingSlash(input.apiUrl)
   );
-  deploymentsUrl.searchParams.set("labelSelector", input.labelSelector);
+  workloadsUrl.searchParams.set("labelSelector", input.labelSelector);
 
   const response = await request({
-    url: deploymentsUrl.toString(),
+    url: workloadsUrl.toString(),
     method: "GET",
     headers: {
       ...authHeaders,
@@ -912,24 +975,24 @@ async function discoverKubernetesDeploymentName(
     caFile: input.caFile,
     skipTlsVerify: input.skipTlsVerify
   });
-  assertKubernetesSuccess("discover target deployment", response, "discover_target");
-  const deploymentNames = extractDeploymentNames(response.body);
-  if (deploymentNames.length === 0) {
+  assertKubernetesSuccess(`discover target ${input.workload.displayName}`, response, "discover_target");
+  const workloadNames = extractWorkloadNames(response.body);
+  if (workloadNames.length === 0) {
     throw new KubernetesReplicaTargetError({
-      message: `no deployment matched label selector ${input.labelSelector}`,
+      message: `no ${input.workload.displayName} matched label selector ${input.labelSelector}`,
       code: "selector_no_match",
       stage: "discover_target"
     });
   }
-  if (deploymentNames.length > 1) {
+  if (workloadNames.length > 1) {
     throw new KubernetesReplicaTargetError({
-      message: `label selector ${input.labelSelector} matched multiple deployments: ${deploymentNames.join(", ")}`,
+      message: `label selector ${input.labelSelector} matched multiple ${input.workload.plural}: ${workloadNames.join(", ")}`,
       code: "selector_multiple_matches",
       stage: "discover_target"
     });
   }
 
-  return deploymentNames[0]!;
+  return workloadNames[0]!;
 }
 
 async function buildKubernetesAuthHeaders(tokenFile: string): Promise<Record<string, string>> {
@@ -1104,7 +1167,7 @@ function buildKubernetesErrorResult(input: {
   };
 }
 
-function extractDeploymentNames(payload: unknown): string[] {
+function extractWorkloadNames(payload: unknown): string[] {
   if (!payload || typeof payload !== "object") {
     return [];
   }

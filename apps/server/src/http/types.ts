@@ -11,6 +11,7 @@ import type {
   HealthReport,
   PlatformModelSnapshot,
   ReadinessReport,
+  SystemProfile,
   EngineLogEventContext
 } from "@oah/api-contracts";
 import type { StorageAdmin } from "../storage-admin.js";
@@ -25,6 +26,7 @@ export interface AppDependencies {
   runtimeService: ControlPlaneRuntimeOperations;
   modelGateway?: ModelGateway;
   defaultModel: string;
+  systemProfile?: SystemProfile | undefined;
   logger?: boolean;
   workspaceMode?: "multi" | "single";
   resolveWorkspaceOwnership?: ((workspaceId: string) => Promise<{

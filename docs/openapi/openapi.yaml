@@ -35,6 +35,7 @@ tags:
       the same sandbox-scoped contract as the file APIs.
   - name: Catalog
   - name: Models
+  - name: System
   - name: Sessions
   - name: Messages
   - name: Runs
@@ -71,6 +72,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ReadinessReport'
+  /system/profile:
+    get:
+      tags: [System]
+      summary: Get server deployment profile
+      operationId: getSystemProfile
+      responses:
+        '200':
+          description: OAH-compatible server profile and client capability flags
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemProfile'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
   /runtimes:
     get:
       tags: [Workspaces]
@@ -1551,6 +1566,61 @@ components:
           enum: [ready, not_ready]
         checks:
           $ref: '#/components/schemas/HealthChecks'
+      additionalProperties: false
+    SystemCapabilities:
+      type: object
+      required:
+        - localDaemonControl
+        - localWorkspacePaths
+        - workspaceRegistration
+        - storageInspection
+        - modelManagement
+        - localDaemonSupervisor
+      properties:
+        localDaemonControl:
+          type: boolean
+        localWorkspacePaths:
+          type: boolean
+        workspaceRegistration:
+          type: boolean
+        storageInspection:
+          type: boolean
+        modelManagement:
+          type: boolean
+        localDaemonSupervisor:
+          type: boolean
+      additionalProperties: false
+    SystemProfile:
+      type: object
+      required:
+        - apiCompatibility
+        - product
+        - edition
+        - runtimeMode
+        - deploymentKind
+        - displayName
+        - capabilities
+      properties:
+        apiCompatibility:
+          type: string
+          enum: [oah/v1]
+        product:
+          type: string
+          enum: [open-agent-harness]
+        edition:
+          type: string
+          enum: [enterprise, personal]
+        runtimeMode:
+          type: string
+          enum: [daemon, embedded, compose, kubernetes, split]
+        deploymentKind:
+          type: string
+          enum: [oah, oap]
+        displayName:
+          type: string
+          minLength: 1
+        capabilities:
+          $ref: '#/components/schemas/SystemCapabilities'
       additionalProperties: false
     WorkspaceRuntime:
       type: object

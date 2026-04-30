@@ -154,13 +154,12 @@ helm upgrade --install oah ./deploy/charts/open-agent-harness \
 
 如果要把 K8S 相关材料按使用顺序看，建议走这条线：
 
-1. [ROADMAP_K8S.md](/Users/wumengsong/Code/OpenAgentHarness/ROADMAP_K8S.md)
-2. [deploy.md](/Users/wumengsong/Code/OpenAgentHarness/docs/deploy.md)
-3. [deploy/charts/open-agent-harness/README.md](/Users/wumengsong/Code/OpenAgentHarness/deploy/charts/open-agent-harness/README.md)
-4. [prod-hardening.values.yaml](/Users/wumengsong/Code/OpenAgentHarness/deploy/charts/open-agent-harness/examples/prod-hardening.values.yaml)
-5. [k8s-compose-reuse-matrix.md](/Users/wumengsong/Code/OpenAgentHarness/docs/k8s-compose-reuse-matrix.md)
-6. [k8s-rollout-checklist.md](/Users/wumengsong/Code/OpenAgentHarness/docs/k8s-rollout-checklist.md)
-7. [k8s-operations-runbook.md](/Users/wumengsong/Code/OpenAgentHarness/docs/k8s-operations-runbook.md)
+1. [deploy.md](/Users/wumengsong/Code/OpenAgentHarness/docs/deploy.md)
+2. [deploy/charts/open-agent-harness/README.md](/Users/wumengsong/Code/OpenAgentHarness/deploy/charts/open-agent-harness/README.md)
+3. [prod-hardening.values.yaml](/Users/wumengsong/Code/OpenAgentHarness/deploy/charts/open-agent-harness/examples/prod-hardening.values.yaml)
+4. [k8s-compose-reuse-matrix.md](/Users/wumengsong/Code/OpenAgentHarness/docs/k8s-compose-reuse-matrix.md)
+5. [k8s-rollout-checklist.md](/Users/wumengsong/Code/OpenAgentHarness/docs/k8s-rollout-checklist.md)
+6. [k8s-operations-runbook.md](/Users/wumengsong/Code/OpenAgentHarness/docs/k8s-operations-runbook.md)
 
 如果要发布正式镜像，仓库现在也提供了一条最小 GHCR 发布链路：
 
@@ -181,10 +180,10 @@ git push origin master
 - `oah-api` 不需要挂载 workspace volume；`oah-sandbox` 才承载 writable active workspace copy，推荐配合对象存储 backing store 做 idle / drain flush
 - `controller` 额外暴露一个 ClusterIP Service，提供 `/healthz`、`/readyz`、`/snapshot`、`/metrics`
 - `controller` 使用 Kubernetes Lease 做 leader election
-- `controller` 通过 `Deployment /scale` 子资源改写 `oah-sandbox` 副本数，并已支持通过 `label_selector` 自动发现目标 Deployment
+- `controller` 通过 Kubernetes workload `/scale` 子资源改写 `oah-sandbox` 副本数，并已支持通过 `label_selector` 自动发现目标 Deployment / StatefulSet
 - `server.yaml` 示例已把 `sandbox.provider` 设为 `self_hosted`，并通过 `oah-sandbox-internal` headless service 路由到 sandbox 内 worker
 - 默认 sandbox fleet 保留 `warm_empty_count: 1` 个空 sandbox；ownerless workspace 会先复用 CPU、内存和磁盘均低于阈值的已有 sandbox，任一资源超过阈值后才落到空 sandbox
-- `controller-rbac.yaml` 当前已包含 `leases`、`deployments` 和 `deployments/scale` 所需权限，能够覆盖 leader election、label selector 发现和副本数改写
+- `controller-rbac.yaml` 当前已包含 `leases`、`deployments`、`deployments/scale`、`statefulsets` 和 `statefulsets/scale` 所需权限，能够覆盖 leader election、label selector 发现和副本数改写
 - 默认已经允许在安全前提满足时自动缩容；真正的缩容护栏由 controller 对 standalone worker `/healthz` 的动态探测决定
 - standalone worker 收到退出信号后会先进入 drain，使 readiness 先摘除，再等待当前 run 自然结束
 - drain 开始时会优先 flush + evict 空闲 workspace 副本，并阻止新的 object-store materialization 启动
@@ -209,7 +208,7 @@ git push origin master
 当前建议额外遵循这几条 K8S 部署契约：
 
 - `oah-controller` 多副本时，必须开启 `leader_election.type=kubernetes`
-- `oah-controller` 的 `scale_target.kubernetes.label_selector` 必须只命中当前 release 的 `oah-sandbox` Deployment
+- `oah-controller` 的 `scale_target.kubernetes.label_selector` 必须只命中当前 release 的同类型 `oah-sandbox` workload
 - `oah-sandbox` 的 `terminationGracePeriodSeconds` 要大于 worker drain 超时
 - `oah-sandbox` 需要在 `preStop` 里先触发本地 drain，再等待短暂缓冲时间，让 `/readyz` 先摘除
 - `controller` 对 scale target 的观测应区分：

@@ -305,7 +305,7 @@ sequenceDiagram
 - `Worker` is the unified execution role; `sandbox` is only the worker host environment, not the primary runtime term
 - `Sandbox Host API` is the host compatibility boundary; the first implementation should be the self-hosted sandbox pod, with E2B as a later pluggable backend rather than the primary architecture vocabulary
 - `Controller` is the unified control-plane role; it owns placement, lifecycle, and capacity rather than direct business execution
-- For remote sandbox providers, the controller owns both logical sandbox-fleet sizing and scale-target reconciliation; the local Compose stack applies that through `oah-compose-scaler`, while Kubernetes applies it through `Deployment /scale`
+- For remote sandbox providers, the controller owns both logical sandbox-fleet sizing and scale-target reconciliation; the local Compose stack applies that through `oah-compose-scaler`, while Kubernetes applies it through workload `/scale`, currently supporting `Deployment` and `StatefulSet`
 - `workspace -> owner worker` is the routing truth for execution and file access; `ownerId` is used for affinity scheduling and must not be treated as a second ownership source of truth
 - While active, a workspace's read/write truth lives in the owner worker's `Active Workspace Copy`; after flush / evict, truth returns to OSS / external storage
 - Default trusted intranet environment -- no strong container isolation by default; if the platform is exposed more broadly, sandbox backend hardening should be prioritized

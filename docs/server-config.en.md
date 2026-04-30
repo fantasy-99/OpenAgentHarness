@@ -216,7 +216,7 @@ Production workers should also set:
 | `controller.leader_election.kubernetes.*` | object | Kubernetes lease settings such as namespace, lease name, API URL, token file, CA file, skip TLS verify, and identity. |
 | `controller.scale_target.type` | string | Scale-target backend. Supports `noop`, `kubernetes`, and `docker_compose`. |
 | `controller.scale_target.allow_scale_down` | boolean | Whether the controller may actively scale down replicas. |
-| `controller.scale_target.kubernetes.*` | object | Kubernetes Deployment `/scale` target settings such as namespace, deployment, label selector, API URL, token file, CA file, and skip TLS verify. |
+| `controller.scale_target.kubernetes.*` | object | Kubernetes workload `/scale` target settings such as namespace, workload kind/name, legacy deployment, statefulset, label selector, API URL, token file, CA file, and skip TLS verify. |
 | `controller.scale_target.docker_compose.*` | object | Local Docker Compose scaling settings such as compose file, project name, service, command, plus optional remote executor endpoint, auth token, and timeout. |
 
 > **tip**

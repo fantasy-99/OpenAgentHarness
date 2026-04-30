@@ -2261,6 +2261,8 @@ describe("controller", () => {
       allowScaleDown: false,
       kubernetes: {
         namespace: "open-agent-harness",
+        workloadKind: "Deployment",
+        workloadName: "oah-worker",
         deployment: "oah-worker",
         apiUrl: "https://kubernetes.default.svc",
         tokenFile: "/var/run/secrets/kubernetes.io/serviceaccount/token",
@@ -2304,7 +2306,53 @@ describe("controller", () => {
       allowScaleDown: true,
       kubernetes: {
         namespace: "open-agent-harness",
+        workloadKind: "Deployment",
         labelSelector: "app.kubernetes.io/component=worker",
+        apiUrl: "https://kubernetes.default.svc",
+        tokenFile: "/var/run/secrets/kubernetes.io/serviceaccount/token",
+        caFile: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+        skipTlsVerify: false
+      }
+    });
+  });
+
+  it("resolves kubernetes statefulset scale target settings", () => {
+    const target = resolveWorkerReplicaTargetConfig({
+      server: { host: "127.0.0.1", port: 8787 },
+      storage: { redis_url: "redis://local/0" },
+      paths: {
+        workspace_dir: "/tmp/workspaces",
+        runtime_dir: "/tmp/runtimes",
+        model_dir: "/tmp/models",
+        tool_dir: "/tmp/tools",
+        skill_dir: "/tmp/skills"
+      },
+      workers: {
+        controller: {
+          scale_target: {
+            type: "kubernetes",
+            kubernetes: {
+              namespace: "open-agent-harness",
+              workload_kind: "StatefulSet",
+              workload_name: "oah-worker-pool",
+              api_url: "https://kubernetes.default.svc",
+              token_file: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+            }
+          }
+        }
+      },
+      llm: {
+        default_model: "openai-default"
+      }
+    });
+
+    expect(target).toEqual({
+      type: "kubernetes",
+      allowScaleDown: true,
+      kubernetes: {
+        namespace: "open-agent-harness",
+        workloadKind: "StatefulSet",
+        workloadName: "oah-worker-pool",
         apiUrl: "https://kubernetes.default.svc",
         tokenFile: "/var/run/secrets/kubernetes.io/serviceaccount/token",
         caFile: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
@@ -3105,6 +3153,103 @@ describe("controller", () => {
     expect(requests[1]?.body).toBe(JSON.stringify({ spec: { replicas: 4 } }));
   });
 
+  it("patches kubernetes statefulset scale when desired replicas change", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-controller-target-statefulset-"));
+    tempDirs.push(tempDir);
+    const tokenFile = path.join(tempDir, "token");
+    await writeFile(tokenFile, "test-token", "utf8");
+
+    const requests: Array<{ method: string; url: string; body?: string | undefined }> = [];
+    const target = createKubernetesWorkerReplicaTarget(
+      {
+        type: "kubernetes",
+        allowScaleDown: true,
+        kubernetes: {
+          namespace: "open-agent-harness",
+          workloadKind: "StatefulSet",
+          workloadName: "oah-worker-pool",
+          apiUrl: "https://kubernetes.default.svc",
+          tokenFile,
+          caFile: undefined,
+          skipTlsVerify: true
+        }
+      },
+      {
+        request: async (request) => {
+          requests.push({
+            method: request.method,
+            url: request.url,
+            body: request.body
+          });
+          if (request.method === "GET") {
+            const postPatch = requests.length >= 3;
+            return {
+              status: 200,
+              body: {
+                metadata: {
+                  generation: postPatch ? 5 : 4
+                },
+                spec: {
+                  replicas: postPatch ? 3 : 1
+                },
+                status: {
+                  observedGeneration: postPatch ? 5 : 4,
+                  replicas: postPatch ? 3 : 1,
+                  readyReplicas: postPatch ? 3 : 1,
+                  updatedReplicas: postPatch ? 3 : 1,
+                  availableReplicas: postPatch ? 3 : 1,
+                  unavailableReplicas: 0
+                }
+              },
+              text: "{}"
+            };
+          }
+
+          return {
+            status: 200,
+            body: {
+              spec: {
+                replicas: 3
+              }
+            },
+            text: "{\"spec\":{\"replicas\":3}}"
+          };
+        }
+      }
+    );
+
+    const result = await target.reconcile({
+      timestamp: "2026-04-15T00:00:00.000Z",
+      reason: "scale_up",
+      desiredReplicas: 3,
+      suggestedReplicas: 3,
+      activeReplicas: 1,
+      activeSlots: 1,
+      busySlots: 1
+    });
+
+    expect(result).toMatchObject({
+      kind: "kubernetes",
+      applied: true,
+      desiredReplicas: 3,
+      observedReplicas: 1,
+      appliedReplicas: 3,
+      outcome: "scaled",
+      phase: "ready",
+      targetRef: {
+        platform: "kubernetes",
+        kind: "StatefulSet",
+        namespace: "open-agent-harness",
+        name: "oah-worker-pool",
+        discovery: "explicit"
+      }
+    });
+    expect(requests[0]?.url).toContain("/apis/apps/v1/namespaces/open-agent-harness/statefulsets/oah-worker-pool");
+    expect(requests[1]?.url).toContain("/apis/apps/v1/namespaces/open-agent-harness/statefulsets/oah-worker-pool/scale");
+    expect(requests[1]?.body).toBe(JSON.stringify({ spec: { replicas: 3 } }));
+    expect(requests[2]?.url).toContain("/apis/apps/v1/namespaces/open-agent-harness/statefulsets/oah-worker-pool");
+  });
+
   it("scales docker-compose services up when desired replicas increase", async () => {
     const commands: Array<{ args: string[]; cwd?: string | undefined }> = [];
     const target = createDockerComposeWorkerReplicaTarget(
@@ -3578,6 +3723,115 @@ describe("controller", () => {
     expect(requests[1]?.url).toContain("/deployments/oah-worker");
     expect(requests[2]?.url).toContain("/deployments/oah-worker/scale");
     expect(requests[3]?.url).toContain("/deployments/oah-worker");
+  });
+
+  it("discovers the target statefulset by label selector before scaling", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-controller-target-statefulset-discovery-"));
+    tempDirs.push(tempDir);
+    const tokenFile = path.join(tempDir, "token");
+    await writeFile(tokenFile, "test-token", "utf8");
+
+    const requests: Array<{ method: string; url: string; body?: string | undefined }> = [];
+    const target = createKubernetesWorkerReplicaTarget(
+      {
+        type: "kubernetes",
+        allowScaleDown: true,
+        kubernetes: {
+          namespace: "open-agent-harness",
+          workloadKind: "StatefulSet",
+          labelSelector: "app.kubernetes.io/component=worker-pool",
+          apiUrl: "https://kubernetes.default.svc",
+          tokenFile,
+          caFile: undefined,
+          skipTlsVerify: true
+        }
+      },
+      {
+        request: async (request) => {
+          requests.push({
+            method: request.method,
+            url: request.url,
+            body: request.body
+          });
+          if (request.method === "GET" && request.url.includes("/statefulsets?")) {
+            return {
+              status: 200,
+              body: {
+                items: [
+                  {
+                    metadata: {
+                      name: "oah-worker-pool"
+                    }
+                  }
+                ]
+              },
+              text: "{\"items\":[{\"metadata\":{\"name\":\"oah-worker-pool\"}}]}"
+            };
+          }
+          if (request.method === "GET") {
+            const postPatch = requests.length >= 4;
+            return {
+              status: 200,
+              body: {
+                metadata: {
+                  generation: postPatch ? 3 : 2
+                },
+                spec: {
+                  replicas: postPatch ? 2 : 1
+                },
+                status: {
+                  observedGeneration: postPatch ? 3 : 2,
+                  replicas: postPatch ? 2 : 1,
+                  readyReplicas: postPatch ? 2 : 1,
+                  updatedReplicas: postPatch ? 2 : 1,
+                  availableReplicas: postPatch ? 2 : 1,
+                  unavailableReplicas: 0
+                }
+              },
+              text: "{}"
+            };
+          }
+
+          return {
+            status: 200,
+            body: {
+              spec: {
+                replicas: 2
+              }
+            },
+            text: "{\"spec\":{\"replicas\":2}}"
+          };
+        }
+      }
+    );
+
+    const result = await target.reconcile({
+      timestamp: "2026-04-15T00:00:00.000Z",
+      reason: "scale_up",
+      desiredReplicas: 2,
+      suggestedReplicas: 2,
+      activeReplicas: 1,
+      activeSlots: 1,
+      busySlots: 1
+    });
+
+    expect(result).toMatchObject({
+      kind: "kubernetes",
+      desiredReplicas: 2,
+      observedReplicas: 1,
+      appliedReplicas: 2,
+      outcome: "scaled",
+      phase: "ready",
+      targetRef: {
+        kind: "StatefulSet",
+        discovery: "label_selector",
+        name: "oah-worker-pool"
+      }
+    });
+    expect(requests[0]?.url).toContain("/statefulsets?labelSelector=app.kubernetes.io%2Fcomponent%3Dworker-pool");
+    expect(requests[1]?.url).toContain("/statefulsets/oah-worker-pool");
+    expect(requests[2]?.url).toContain("/statefulsets/oah-worker-pool/scale");
+    expect(requests[3]?.url).toContain("/statefulsets/oah-worker-pool");
   });
 
   it("classifies selector discovery failures for kubernetes scale targets", async () => {

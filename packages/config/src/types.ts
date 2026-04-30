@@ -8,6 +8,11 @@ export interface ServerConfig {
     host: string;
     port: number;
   };
+  deployment?: {
+    kind?: "oah" | "oap" | undefined;
+    runtime_mode?: "daemon" | "embedded" | "compose" | "kubernetes" | "split" | undefined;
+    display_name?: string | undefined;
+  } | undefined;
   storage: {
     postgres_url?: string | undefined;
     redis_url?: string | undefined;
@@ -154,7 +159,10 @@ export interface ServerConfig {
             kubernetes?:
               | {
                   namespace?: string | undefined;
+                  workload_kind?: string | undefined;
+                  workload_name?: string | undefined;
                   deployment?: string | undefined;
+                  statefulset?: string | undefined;
                   label_selector?: string | undefined;
                   api_url?: string | undefined;
                   token_file?: string | undefined;

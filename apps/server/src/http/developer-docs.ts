@@ -142,6 +142,7 @@ export function buildApiIndex(request: FastifyRequest) {
     modelsAndDiagnostics: {
       description: "Discover model/provider configuration and inspect service diagnostics.",
       routes: [
+        "GET /api/v1/system/profile",
         "GET /api/v1/model-providers",
         "GET /api/v1/platform-models",
         "POST /api/v1/platform-models/refresh",
@@ -571,6 +572,7 @@ export function buildDeveloperLandingHtml(request: FastifyRequest): string {
           <h2>First Calls</h2>
           <ul>
             <li><code>GET /healthz</code> and <code>GET /readyz</code> to verify the process and dependencies.</li>
+            <li><code>GET /api/v1/system/profile</code> to identify whether this endpoint is OAH enterprise or OAP personal.</li>
             <li><code>GET /api/v1/workspaces</code> to inspect available workspaces.</li>
             <li><code>GET /api/v1/model-providers</code> and <code>GET /api/v1/platform-models</code> to inspect model configuration.</li>
           </ul>

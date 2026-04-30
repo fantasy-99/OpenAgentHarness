@@ -23,6 +23,36 @@
         }
       }
     },
+    "deployment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "oah",
+            "oap"
+          ],
+          "description": "Deployment family. OAH is enterprise/platform service deployment; OAP is Open Agent Harness Personal."
+        },
+        "runtime_mode": {
+          "type": "string",
+          "enum": [
+            "daemon",
+            "embedded",
+            "compose",
+            "kubernetes",
+            "split"
+          ],
+          "description": "Runtime/deployment mode reported by /api/v1/system/profile."
+        },
+        "display_name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short user-facing name reported by /api/v1/system/profile."
+        }
+      }
+    },
     "storage": {
       "type": "object",
       "additionalProperties": false,
@@ -533,7 +563,24 @@
                       "type": "string",
                       "minLength": 1
                     },
+                    "workload_kind": {
+                      "type": "string",
+                      "enum": [
+                        "Deployment",
+                        "StatefulSet",
+                        "deployment",
+                        "statefulset"
+                      ]
+                    },
+                    "workload_name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
                     "deployment": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "statefulset": {
                       "type": "string",
                       "minLength": 1
                     },

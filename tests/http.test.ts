@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { discoverWorkspace } from "@oah/config";
+import type { SystemProfile } from "@oah/api-contracts";
 import type { CallerContext, WorkspaceRecord } from "@oah/engine-core";
 import { EngineService } from "@oah/engine-core";
 import { createMemoryRuntimePersistence } from "@oah/storage-memory";
@@ -222,6 +223,7 @@ async function createStartedAppWithEngineService(
     refreshPlatformModels?: () => Promise<PlatformModelSnapshot>;
     refreshDistributedPlatformModels?: () => Promise<DistributedPlatformModelRefreshResult>;
     subscribePlatformModelSnapshot?: (listener: (snapshot: PlatformModelSnapshot) => void) => (() => void);
+    systemProfile?: SystemProfile;
     importWorkspace?: (input: {
       rootPath: string;
       kind?: "project";
@@ -263,6 +265,7 @@ async function createStartedAppWithEngineService(
     runtimeService,
     modelGateway: gateway,
     defaultModel: "openai-default",
+    ...(options?.systemProfile ? { systemProfile: options.systemProfile } : {}),
     logger: false,
     listWorkspaceRuntimes: async () => [{ name: "workspace" }],
     ...(options?.listPlatformModels ? { listPlatformModels: options.listPlatformModels } : {}),
@@ -546,6 +549,67 @@ describe("http api", () => {
         postgres: "not_configured",
         redisEvents: "not_configured",
         redisRunQueue: "not_configured"
+      }
+    });
+  });
+
+  it("reports the default enterprise system profile", async () => {
+    activeApp = await createStartedApp();
+
+    const response = await fetch(`${activeApp.baseUrl}/api/v1/system/profile`);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      apiCompatibility: "oah/v1",
+      product: "open-agent-harness",
+      edition: "enterprise",
+      runtimeMode: "embedded",
+      deploymentKind: "oah",
+      displayName: "OAH enterprise server",
+      capabilities: {
+        localDaemonControl: false,
+        localWorkspacePaths: false,
+        workspaceRegistration: true,
+        storageInspection: false,
+        modelManagement: false,
+        localDaemonSupervisor: false
+      }
+    });
+  });
+
+  it("reports an OAP local daemon system profile when configured by the runtime", async () => {
+    activeApp = await createStartedApp({
+      systemProfile: {
+        apiCompatibility: "oah/v1",
+        product: "open-agent-harness",
+        edition: "personal",
+        runtimeMode: "daemon",
+        deploymentKind: "oap",
+        displayName: "OAP local daemon",
+        capabilities: {
+          localDaemonControl: true,
+          localWorkspacePaths: true,
+          workspaceRegistration: true,
+          storageInspection: true,
+          modelManagement: true,
+          localDaemonSupervisor: true
+        }
+      }
+    });
+
+    const response = await fetch(`${activeApp.baseUrl}/api/v1/system/profile`);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      edition: "personal",
+      runtimeMode: "daemon",
+      deploymentKind: "oap",
+      displayName: "OAP local daemon",
+      capabilities: {
+        localDaemonControl: true,
+        localWorkspacePaths: true,
+        modelManagement: true,
+        localDaemonSupervisor: true
       }
     });
   });

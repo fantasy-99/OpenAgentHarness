@@ -149,7 +149,10 @@ export interface ServerConfig {
             kubernetes?:
               | {
                   namespace?: string | undefined;
+                  workload_kind?: string | undefined;
+                  workload_name?: string | undefined;
                   deployment?: string | undefined;
+                  statefulset?: string | undefined;
                   label_selector?: string | undefined;
                   api_url?: string | undefined;
                   token_file?: string | undefined;

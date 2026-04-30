@@ -310,7 +310,7 @@ sequenceDiagram
 - `Workspace` 是逻辑项目边界；`sandbox` 是执行宿主边界，二者不是上下位同类概念
 - `Sandbox Host API` 是宿主兼容边界；首个实现应是自家 sandbox pod，E2B 适合作为后续可插拔后端，而不是先改写 OAH 的主语义
 - `Controller` 是统一控制面角色；负责 placement、lifecycle 与 capacity，不直接执行业务 run
-- 对远端 sandbox provider 而言，controller 同时承担逻辑 sandbox fleet 计算与 scale target reconciliation；Compose 本地栈通过 `oah-compose-scaler` 执行，K8S 通过 `Deployment /scale` 执行
+- 对远端 sandbox provider 而言，controller 同时承担逻辑 sandbox fleet 计算与 scale target reconciliation；Compose 本地栈通过 `oah-compose-scaler` 执行，K8S 通过 workload `/scale` 执行，当前支持 `Deployment` 与 `StatefulSet`
 - `workspace -> owner worker` 是运行与文件访问的路由真值；`ownerId` 用于亲和调度，但不应被当作第二套 ownership 真值
 - 活跃 workspace 以 owner worker 的 `Active Workspace Copy` 为读写真值；flush / evict 后回到 OSS / 外部存储真值
 - `sandbox` API 面向“活跃执行副本”的文件与命令操作；`workspace` API 面向元数据、catalog 与生命周期管理

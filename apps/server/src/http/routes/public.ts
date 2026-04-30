@@ -7,6 +7,7 @@ import {
   platformModelListSchema,
   platformModelSnapshotSchema,
   readinessReportSchema,
+  systemProfileSchema,
   uploadWorkspaceRuntimeRequestSchema,
   uploadWorkspaceRuntimeResponseSchema,
   workspaceRuntimeListSchema
@@ -21,6 +22,7 @@ import type { AppDependencies, AppRouteOptions } from "../types.js";
 import { renderNativeWorkspaceSyncMetrics } from "../../observability/native-workspace-sync.js";
 import { renderObjectStorageMetrics } from "../../observability/object-storage.js";
 import { registerPublicStorageRoutes } from "./public-storage-lazy.js";
+import { buildSystemProfile } from "../../system-profile.js";
 
 let developerDocsModulePromise: Promise<typeof import("../developer-docs.js")> | undefined;
 
@@ -185,6 +187,18 @@ export function registerPublicRoutes(app: FastifyInstance, dependencies: AppDepe
   });
 
   app.get("/api/v1", async (request, reply) => reply.send((await loadDeveloperDocsModule()).buildApiIndex(request)));
+
+  app.get("/api/v1/system/profile", async (_request, reply) =>
+    reply.send(
+      systemProfileSchema.parse(
+        dependencies.systemProfile ??
+          buildSystemProfile({
+            workspaceMode: options.workspaceMode,
+            storageInspection: Boolean(dependencies.storageAdmin)
+          })
+      )
+    )
+  );
 
   app.get("/api/v1/runtimes", listRuntimes);
   app.post("/api/v1/runtimes/upload", uploadRuntime);

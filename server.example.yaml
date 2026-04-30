@@ -104,7 +104,9 @@ workers:
   #     allow_scale_down: false
   #     kubernetes:
   #       namespace: open-agent-harness
-  #       deployment: oah-worker
+  #       workload_kind: Deployment
+  #       workload_name: oah-worker
+  #       # deployment: oah-worker # legacy alias for workload_kind: Deployment
   #       api_url: https://kubernetes.default.svc
   #       token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
   #       ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
