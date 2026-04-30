@@ -306,13 +306,13 @@ export function createPlacementAwareSessionRunQueue<TQueue extends PlacementAwar
   runRepository: {
     getById(runId: string): Promise<{ workspaceId: string } | null>;
   };
-    workspacePlacementRegistry?: {
-      getByWorkspaceId?(workspaceId: string): Promise<{
-        state?: "unassigned" | "active" | "idle" | "draining" | "evicted" | undefined;
-        ownerId?: string | undefined;
-        ownerWorkerId?: string | undefined;
-        preferredWorkerId?: string | undefined;
-      } | undefined>;
+  workspacePlacementRegistry?: {
+    getByWorkspaceId?(workspaceId: string): Promise<{
+      state?: "unassigned" | "active" | "idle" | "draining" | "evicted" | undefined;
+      ownerId?: string | undefined;
+      ownerWorkerId?: string | undefined;
+      preferredWorkerId?: string | undefined;
+    } | undefined>;
   } | undefined;
 }): TQueue {
   const queue = options.queue;
@@ -388,6 +388,12 @@ export function createPlacementAwareSessionRunQueue<TQueue extends PlacementAwar
   };
 
   return wrappedQueue as TQueue;
+}
+
+function ownerBaseUrlMatches(left: string | undefined, right: string | undefined): boolean {
+  const normalizedLeft = left?.trim().replace(/\/+$/u, "");
+  const normalizedRight = right?.trim().replace(/\/+$/u, "");
+  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
 }
 
 export {
@@ -577,7 +583,7 @@ export interface BootstrappedRuntime {
     ownerBaseUrl?: string | undefined;
     health: "healthy" | "late";
     lastActivityAt: string;
-    localPath: string;
+    localPath?: string | undefined;
     remotePrefix?: string | undefined;
     isLocalOwner: boolean;
   } | undefined>;
@@ -1197,8 +1203,29 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       });
     }
   }
+  const selfHostedSandboxOptions =
+    sandboxHost?.providerKind === "self_hosted" && config.sandbox?.self_hosted?.base_url?.trim()
+      ? {
+          baseUrl: config.sandbox.self_hosted.base_url.trim(),
+          headers: config.sandbox.self_hosted.headers,
+          maxWorkspacesPerSandbox: config.sandbox.fleet?.max_workspaces_per_sandbox,
+          resourceCpuPressureThreshold: (
+            config.sandbox.fleet as { resource_cpu_pressure_threshold?: number | undefined } | undefined
+          )?.resource_cpu_pressure_threshold,
+          resourceMemoryPressureThreshold: (
+            config.sandbox.fleet as { resource_memory_pressure_threshold?: number | undefined } | undefined
+          )?.resource_memory_pressure_threshold,
+          ...(redisWorkspacePlacementRegistry ? { workspacePlacementRegistry: redisWorkspacePlacementRegistry } : {}),
+          ...(redisWorkerRegistry ? { workerRegistry: redisWorkerRegistry } : {})
+        }
+      : undefined;
+  const useSelfHostedWorkspaceDelegatingInitializer =
+    processKind === "api" && !startWorker && remoteSandboxProvider && Boolean(selfHostedSandboxOptions);
   const useSandboxBackedWorkspaceInitializer =
-    remoteSandboxProvider && sandboxHost && !objectStorageBacksManagedWorkspaces(config);
+    remoteSandboxProvider &&
+    sandboxHost &&
+    !useSelfHostedWorkspaceDelegatingInitializer &&
+    !objectStorageBacksManagedWorkspaces(config);
   const adminCapabilities = assemblyProfile.enableAdminCapabilities
     ? (await loadAdminCapabilitiesModule()).createEngineAdminCapabilities({
         storageAdmin: createLazyStorageAdmin(async () => {
@@ -1305,12 +1332,12 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   const workspaceMode =
     singleWorkspace !== undefined
       ? {
-        kind: "single" as const,
+          kind: "single" as const,
           workspaceId: reconciledWorkspaces[0]!.id,
           workspaceKind: reconciledWorkspaces[0]!.kind,
           rootPath: reconciledWorkspaces[0]!.rootPath
         }
-        : {
+      : {
           kind: "multi" as const
         };
   if (sandboxHost) {
@@ -1421,36 +1448,23 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     ...(singleWorkspace === undefined
       ? {
           workspaceInitializer: {
-            initialize: useSandboxBackedWorkspaceInitializer
-              ? (await loadSandboxBackedWorkspaceInitializerModule()).createSandboxBackedWorkspaceInitializer({
-                  runtimeDir: config.paths.runtime_dir,
-                  platformToolDir: config.paths.tool_dir,
-                  platformSkillDir: config.paths.skill_dir,
-                  toolDir,
-                  platformModels: models,
-                  platformAgents: await getPlatformAgents(),
-                  sandboxHost: sandboxHost!,
-                  ...(sandboxHost?.providerKind === "self_hosted" && config.sandbox?.self_hosted?.base_url?.trim()
-                    ? {
-                        selfHosted: {
-                          baseUrl: config.sandbox.self_hosted.base_url.trim(),
-                          headers: config.sandbox.self_hosted.headers,
-                          maxWorkspacesPerSandbox: config.sandbox.fleet?.max_workspaces_per_sandbox,
-                          resourceCpuPressureThreshold: (
-                            config.sandbox.fleet as { resource_cpu_pressure_threshold?: number | undefined } | undefined
-                          )?.resource_cpu_pressure_threshold,
-                          resourceMemoryPressureThreshold: (
-                            config.sandbox.fleet as { resource_memory_pressure_threshold?: number | undefined } | undefined
-                          )?.resource_memory_pressure_threshold,
-                          ...(redisWorkspacePlacementRegistry
-                            ? { workspacePlacementRegistry: redisWorkspacePlacementRegistry }
-                            : {}),
-                          ...(redisWorkerRegistry ? { workerRegistry: redisWorkerRegistry } : {})
-                        }
-                      }
-                    : {})
+            initialize: useSelfHostedWorkspaceDelegatingInitializer
+              ? (await loadSandboxBackedWorkspaceInitializerModule()).createSelfHostedWorkspaceDelegatingInitializer({
+                  selfHosted: selfHostedSandboxOptions!,
+                  getWorkspaceRecord: async (workspaceId: string) => (await workspaceRepository.getById(workspaceId)) ?? undefined
                 }).initialize
-              : async (input) => {
+              : useSandboxBackedWorkspaceInitializer
+                ? (await loadSandboxBackedWorkspaceInitializerModule()).createSandboxBackedWorkspaceInitializer({
+                    runtimeDir: config.paths.runtime_dir,
+                    platformToolDir: config.paths.tool_dir,
+                    platformSkillDir: config.paths.skill_dir,
+                    toolDir,
+                    platformModels: models,
+                    platformAgents: await getPlatformAgents(),
+                    sandboxHost: sandboxHost!,
+                    ...(selfHostedSandboxOptions ? { selfHosted: selfHostedSandboxOptions } : {})
+                  }).initialize
+                : async (input) => {
                   const { resolveWorkspaceCreationRoot } = await loadConfigWorkspaceModule();
                   const { initializeWorkspaceFromRuntime } = await loadConfigRuntimesModule();
                   const workspaceId = (
@@ -1479,10 +1493,11 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
                   );
 
                   const inferredExternalRef = resolveManagedWorkspaceExternalRef(workspaceRoot, "project", config);
-                  if (config.object_storage && inferredExternalRef) {
+                  const targetExternalRef = input.externalRef ?? inferredExternalRef;
+                  if (config.object_storage && targetExternalRef) {
                     await objectStorageModule!.seedWorkspaceRootToExternalRef(
                       config.object_storage,
-                      inferredExternalRef,
+                      targetExternalRef,
                       workspaceRoot,
                       (message) => {
                         console.info(`[oah-object-storage] ${message}`);
@@ -1495,7 +1510,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
                   return {
                     ...discovered,
                     id: workspaceId,
-                    ...(inferredExternalRef ? { externalRef: inferredExternalRef } : {})
+                    ...(targetExternalRef ? { externalRef: targetExternalRef } : {})
                   } as WorkspaceRecord;
                 }
           }
@@ -1800,23 +1815,49 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
           clearWorkspaceCoordination
         }
       : {}),
-    ...(redisWorkspaceLeaseRegistry
+    ...((redisWorkspaceLeaseRegistry || redisWorkspacePlacementRegistry)
       ? {
           resolveWorkspaceOwnership: async (workspaceId: string) => {
-            const lease = await redisWorkspaceLeaseRegistry.getByWorkspaceId?.(workspaceId);
-            return lease
-              ? {
-                  workspaceId: lease.workspaceId,
-                  version: lease.version,
-                  ownerWorkerId: lease.ownerWorkerId,
-                  ...(lease.ownerBaseUrl ? { ownerBaseUrl: lease.ownerBaseUrl } : {}),
-                  health: lease.health,
-                  lastActivityAt: lease.lastActivityAt,
-                  localPath: lease.localPath,
-                  ...(lease.remotePrefix ? { remotePrefix: lease.remotePrefix } : {}),
-                  isLocalOwner: lease.ownerWorkerId === currentWorkerId
-                }
-              : undefined;
+            const lease = await redisWorkspaceLeaseRegistry?.getByWorkspaceId?.(workspaceId);
+            if (lease) {
+              return {
+                workspaceId: lease.workspaceId,
+                version: lease.version,
+                ownerWorkerId: lease.ownerWorkerId,
+                ...(lease.ownerBaseUrl ? { ownerBaseUrl: lease.ownerBaseUrl } : {}),
+                health: lease.health,
+                lastActivityAt: lease.lastActivityAt,
+                localPath: lease.localPath,
+                ...(lease.remotePrefix ? { remotePrefix: lease.remotePrefix } : {}),
+                isLocalOwner: lease.ownerWorkerId === currentWorkerId
+              };
+            }
+
+            const placement = await redisWorkspacePlacementRegistry?.getByWorkspaceId?.(workspaceId);
+            const ownerWorkerId = placement?.ownerWorkerId?.trim();
+            const placementOwnerBaseUrl = placement?.ownerBaseUrl?.trim();
+            if (
+              !placement ||
+              !ownerWorkerId ||
+              !placementOwnerBaseUrl ||
+              placement.state === "evicted" ||
+              placement.state === "unassigned"
+            ) {
+              return undefined;
+            }
+
+            return {
+              workspaceId: placement.workspaceId,
+              version: placement.version,
+              ownerWorkerId,
+              ownerBaseUrl: placementOwnerBaseUrl,
+              health: placement.state === "draining" ? "late" : "healthy",
+              lastActivityAt: placement.lastActivityAt ?? placement.updatedAt,
+              ...(placement.localPath ? { localPath: placement.localPath } : {}),
+              ...(placement.remotePrefix ? { remotePrefix: placement.remotePrefix } : {}),
+              isLocalOwner:
+                ownerWorkerId === currentWorkerId || ownerBaseUrlMatches(placementOwnerBaseUrl, ownerBaseUrl)
+            };
           }
         }
       : {}),

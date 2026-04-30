@@ -1,9 +1,12 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { createReadStream, createWriteStream } from "node:fs";
 import { mkdtemp, mkdir, readFile, readdir, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 import type { ServerConfig } from "@oah/config";
 import {
@@ -48,8 +51,11 @@ export interface DirectoryObjectStore {
     key: string
   ): Promise<{ size?: number | undefined; lastModified?: Date | undefined; metadata?: Record<string, string> | undefined }>;
   getObject(key: string): Promise<{ body: Buffer; metadata?: Record<string, string> | undefined }>;
+  getObjectToFile?(key: string, targetPath: string): Promise<{ metadata?: Record<string, string> | undefined }>;
   putObject(key: string, body: Buffer, options?: { mtimeMs?: number | undefined }): Promise<void>;
+  putObjectFromFile?(key: string, filePath: string, options?: { mtimeMs?: number | undefined }): Promise<void>;
   deleteObjects(keys: string[]): Promise<void>;
+  deletePrefix?(prefix: string): Promise<number>;
   getNativeWorkspaceSyncConfig?(): NativeWorkspaceSyncObjectStoreConfig | undefined;
   bucket?: string | undefined;
 }
@@ -595,10 +601,13 @@ async function isDirectoryEmpty(rootDir: string): Promise<boolean> {
   return (await readdir(rootDir)).length === 0;
 }
 
-async function buildObjectStorageBundle(input: {
-  localDir: string;
-  snapshot: LocalDirectorySnapshot;
-}): Promise<Buffer> {
+async function withObjectStorageBundleFile<T>(
+  input: {
+    localDir: string;
+    snapshot: LocalDirectorySnapshot;
+  },
+  useBundle: (bundlePath: string) => Promise<T>
+): Promise<T> {
   const bundleRoot = await mkdtemp(path.join(os.tmpdir(), "oah-object-store-bundle-"));
   const listPath = path.join(bundleRoot, "bundle-files.txt");
   const bundlePath = path.join(bundleRoot, "bundle.tar");
@@ -615,10 +624,35 @@ async function buildObjectStorageBundle(input: {
       args: ["-C", input.localDir, "-cf", bundlePath, "--null", "-T", listPath],
       timeoutMs
     });
-    return readFile(bundlePath);
+    return await useBundle(bundlePath);
   } finally {
     await rm(bundleRoot, { recursive: true, force: true }).catch(() => undefined);
   }
+}
+
+async function putLocalFileObject(input: {
+  store: DirectoryObjectStore;
+  key: string;
+  filePath: string;
+  mtimeMs?: number | undefined;
+}): Promise<boolean> {
+  if (input.store.putObjectFromFile) {
+    await input.store.putObjectFromFile(input.key, input.filePath, { mtimeMs: input.mtimeMs });
+    return true;
+  }
+
+  const body = await readFile(input.filePath).catch((error) => {
+    if (isNotFoundError(error)) {
+      return null;
+    }
+    throw error;
+  });
+  if (!body) {
+    return false;
+  }
+
+  await input.store.putObject(input.key, body, { mtimeMs: input.mtimeMs });
+  return true;
 }
 
 async function maybeWriteObjectStorageBundle(input: {
@@ -645,11 +679,17 @@ async function maybeWriteObjectStorageBundle(input: {
     return;
   }
 
-  const bundleBytes = await buildObjectStorageBundle({
+  await withObjectStorageBundleFile({
     localDir: input.localDir,
     snapshot
+  }, async (bundlePath) => {
+    const bundleKey = buildRemoteKey(input.remotePrefix, INTERNAL_SYNC_BUNDLE_RELATIVE_PATH);
+    if (input.store.putObjectFromFile) {
+      await input.store.putObjectFromFile(bundleKey, bundlePath);
+      return;
+    }
+    await input.store.putObject(bundleKey, await readFile(bundlePath));
   });
-  await input.store.putObject(buildRemoteKey(input.remotePrefix, INTERNAL_SYNC_BUNDLE_RELATIVE_PATH), bundleBytes);
   input.logger?.(
     `[oah-object-storage] wrote sync bundle ${INTERNAL_SYNC_BUNDLE_RELATIVE_PATH} for ${(input.remotePrefix || ".").trim() || "."}`
   );
@@ -686,8 +726,12 @@ async function maybeHydrateFromObjectStorageBundle(input: {
   const timeoutMs = resolveObjectStorageBundleTimeoutMs();
   try {
     await mkdir(input.localDir, { recursive: true });
-    const bundle = await input.store.getObject(bundleEntry.key);
-    await writeFile(bundlePath, bundle.body);
+    if (input.store.getObjectToFile) {
+      await input.store.getObjectToFile(bundleEntry.key, bundlePath);
+    } else {
+      const bundle = await input.store.getObject(bundleEntry.key);
+      await writeFile(bundlePath, bundle.body);
+    }
     await runLocalProcess({
       executable: "tar",
       args: ["-xf", bundlePath, "-C", input.localDir],
@@ -1713,6 +1757,31 @@ async function streamBodyToBuffer(body: unknown): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
+async function writeStreamBodyToFile(body: unknown, targetPath: string): Promise<void> {
+  if (!body) {
+    await writeFile(targetPath, Buffer.alloc(0));
+    return;
+  }
+
+  if (typeof body === "string" || body instanceof Uint8Array) {
+    await writeFile(targetPath, body);
+    return;
+  }
+
+  if (typeof body === "object" && body !== null && "pipe" in body && typeof body.pipe === "function") {
+    await pipeline(body as NodeJS.ReadableStream, createWriteStream(targetPath));
+    return;
+  }
+
+  if (typeof body === "object" && body !== null && "transformToByteArray" in body) {
+    const bytes = await (body as { transformToByteArray(): Promise<Uint8Array> }).transformToByteArray();
+    await writeFile(targetPath, bytes);
+    return;
+  }
+
+  await pipeline(Readable.from(body as AsyncIterable<Uint8Array | Buffer | string>), createWriteStream(targetPath));
+}
+
 class S3DirectoryStore implements DirectoryObjectStore {
   readonly #bucket: string;
   readonly #config: ObjectStorageConfig;
@@ -1820,6 +1889,23 @@ class S3DirectoryStore implements DirectoryObjectStore {
     };
   }
 
+  async getObjectToFile(key: string, targetPath: string): Promise<{ metadata?: Record<string, string> | undefined }> {
+    const [client, { GetObjectCommand }] = await Promise.all([this.#getClient(), loadAwsS3Module()]);
+    const response = (await client.send(
+      new GetObjectCommand({
+        Bucket: this.#bucket,
+        Key: key
+      })
+    )) as {
+      Body?: unknown;
+      Metadata?: Record<string, string> | undefined;
+    };
+    await writeStreamBodyToFile(response.Body, targetPath);
+    return {
+      metadata: response.Metadata
+    };
+  }
+
   async getObjectInfo(
     key: string
   ): Promise<{ size?: number | undefined; lastModified?: Date | undefined; metadata?: Record<string, string> | undefined }> {
@@ -1860,6 +1946,26 @@ class S3DirectoryStore implements DirectoryObjectStore {
     );
   }
 
+  async putObjectFromFile(key: string, filePath: string, options?: { mtimeMs?: number | undefined }): Promise<void> {
+    const [client, { PutObjectCommand }] = await Promise.all([this.#getClient(), loadAwsS3Module()]);
+    const fileStat = await stat(filePath);
+    await client.send(
+      new PutObjectCommand({
+        Bucket: this.#bucket,
+        Key: key,
+        Body: createReadStream(filePath),
+        ContentLength: fileStat.size,
+        ...(typeof options?.mtimeMs === "number" && Number.isFinite(options.mtimeMs) && options.mtimeMs > 0
+          ? {
+              Metadata: {
+                [OBJECT_MTIME_METADATA_KEY]: String(Math.trunc(options.mtimeMs))
+              }
+            }
+          : {})
+      })
+    );
+  }
+
   async deleteObjects(keys: string[]): Promise<void> {
     if (keys.length === 0) {
       return;
@@ -1878,6 +1984,52 @@ class S3DirectoryStore implements DirectoryObjectStore {
         })
       );
     }
+  }
+
+  async deletePrefix(prefix: string): Promise<number> {
+    const normalizedPrefix = normalizePrefix(prefix);
+    if (!normalizedPrefix) {
+      throw new Error("Refusing to delete an empty object storage prefix.");
+    }
+
+    const [client, { DeleteObjectsCommand, ListObjectsV2Command }] = await Promise.all([this.#getClient(), loadAwsS3Module()]);
+    let deletedCount = 0;
+    const deleteChunk = async (keys: string[]): Promise<void> => {
+      if (keys.length === 0) {
+        return;
+      }
+      await client.send(
+        new DeleteObjectsCommand({
+          Bucket: this.#bucket,
+          Delete: {
+            Objects: keys.map((key) => ({ Key: key })),
+            Quiet: true
+          }
+        })
+      );
+      deletedCount += keys.length;
+    };
+
+    let continuationToken: string | undefined;
+    do {
+      const response = (await client.send(
+        new ListObjectsV2Command({
+          Bucket: this.#bucket,
+          Prefix: `${normalizedPrefix}/`,
+          ...(continuationToken ? { ContinuationToken: continuationToken } : {})
+        })
+      )) as {
+        Contents?: Array<{ Key?: string | undefined }>;
+        IsTruncated?: boolean | undefined;
+        NextContinuationToken?: string | undefined;
+      };
+      const keys = (response.Contents ?? []).map((item) => item.Key).filter((key): key is string => Boolean(key));
+      await deleteChunk(keys);
+      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+    } while (continuationToken);
+
+    await deleteChunk([normalizedPrefix, `${normalizedPrefix}/`]);
+    return deletedCount;
   }
 
   async close(): Promise<void> {
@@ -2185,6 +2337,14 @@ export async function deleteRemotePrefixFromObjectStore(
   }
 
   logger?.(`scanning object storage prefix ${(label ?? normalizedPrefix) || "."} for deletion`);
+  if (store.deletePrefix) {
+    const deletedCount = await store.deletePrefix(normalizedPrefix);
+    logger?.(
+      `deleted ${deletedCount} object storage entr${deletedCount === 1 ? "y" : "ies"} from ${(label ?? normalizedPrefix) || "."}`
+    );
+    return;
+  }
+
   const entries = await store.listEntries(normalizedPrefix);
   const keys = [...new Set([normalizedPrefix, `${normalizedPrefix}/`, ...entries.map((entry) => entry.key)])];
   logger?.(
@@ -2471,8 +2631,12 @@ export async function syncRemotePrefixToLocal(
           }
         }
 
-        const object = await store.getObject(input.entry.key);
-        await writeFile(input.targetPath, object.body);
+        const object = store.getObjectToFile
+          ? await store.getObjectToFile(input.entry.key, input.targetPath)
+          : await store.getObject(input.entry.key).then(async (downloaded) => {
+              await writeFile(input.targetPath, downloaded.body);
+              return downloaded;
+            });
         downloadedFileCount += 1;
         resolvedMtimeMs =
           resolveTargetMtimeMs({
@@ -2676,35 +2840,31 @@ export async function syncLocalDirectoryToRemote(
 
       if (nativePlan) {
         await runWithConcurrency(nativePlan.uploadCandidates, concurrency, async (candidate) => {
-          const body = await readFile(candidate.absolutePath).catch((error) => {
-            if (isNotFoundError(error)) {
-              return null;
-            }
-            throw error;
-          });
-          if (!body) {
-            return;
+          if (
+            await putLocalFileObject({
+              store,
+              key: buildRemoteKey(remotePrefix, candidate.relativePath),
+              filePath: candidate.absolutePath,
+              mtimeMs: candidate.mtimeMs
+            })
+          ) {
+            uploadedFileCount += 1;
           }
-
-          await store.putObject(buildRemoteKey(remotePrefix, candidate.relativePath), body, { mtimeMs: candidate.mtimeMs });
-          uploadedFileCount += 1;
         });
 
         await runWithConcurrency(nativePlan.infoCheckCandidates, concurrency, async (candidate) => {
           const remoteEntry = remoteByRelativePath.get(candidate.relativePath);
           if (!remoteEntry || remoteEntry.key.endsWith("/")) {
-            const body = await readFile(candidate.absolutePath).catch((error) => {
-              if (isNotFoundError(error)) {
-                return null;
-              }
-              throw error;
-            });
-            if (!body) {
-              return;
+            if (
+              await putLocalFileObject({
+                store,
+                key: buildRemoteKey(remotePrefix, candidate.relativePath),
+                filePath: candidate.absolutePath,
+                mtimeMs: candidate.mtimeMs
+              })
+            ) {
+              uploadedFileCount += 1;
             }
-
-            await store.putObject(buildRemoteKey(remotePrefix, candidate.relativePath), body, { mtimeMs: candidate.mtimeMs });
-            uploadedFileCount += 1;
             return;
           }
 
@@ -2729,18 +2889,16 @@ export async function syncLocalDirectoryToRemote(
             return;
           }
 
-          const body = await readFile(candidate.absolutePath).catch((error) => {
-            if (isNotFoundError(error)) {
-              return null;
-            }
-            throw error;
-          });
-          if (!body) {
-            return;
+          if (
+            await putLocalFileObject({
+              store,
+              key: buildRemoteKey(remotePrefix, candidate.relativePath),
+              filePath: candidate.absolutePath,
+              mtimeMs: candidate.mtimeMs
+            })
+          ) {
+            uploadedFileCount += 1;
           }
-
-          await store.putObject(buildRemoteKey(remotePrefix, candidate.relativePath), body, { mtimeMs: candidate.mtimeMs });
-          uploadedFileCount += 1;
         });
 
         await runWithConcurrency(nativePlan.emptyDirectoriesToCreate, concurrency, async (relativePath) => {
@@ -2797,18 +2955,16 @@ export async function syncLocalDirectoryToRemote(
           }
         }
 
-        const body = await readFile(file.absolutePath).catch((error) => {
-          if (isNotFoundError(error)) {
-            return null;
-          }
-          throw error;
-        });
-        if (!body) {
-          return;
+        if (
+          await putLocalFileObject({
+            store,
+            key: buildRemoteKey(remotePrefix, relativePath),
+            filePath: file.absolutePath,
+            mtimeMs: file.mtimeMs
+          })
+        ) {
+          uploadedFileCount += 1;
         }
-
-        await store.putObject(buildRemoteKey(remotePrefix, relativePath), body, { mtimeMs: file.mtimeMs });
-        uploadedFileCount += 1;
       });
 
       await runWithConcurrency([...snapshot.emptyDirectories], concurrency, async (relativePath) => {

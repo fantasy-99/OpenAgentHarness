@@ -997,6 +997,35 @@ describe("object storage sync", () => {
     expect([...store.objects.keys()].sort()).toEqual(["workspace/other/README.md"]);
   });
 
+  it("uses store-native prefix deletion when available", async () => {
+    class PrefixDeletingStore extends FakeDirectoryObjectStore {
+      deletePrefixCalls: string[] = [];
+
+      async deletePrefix(prefix: string): Promise<number> {
+        this.deletePrefixCalls.push(prefix);
+        let deletedCount = 0;
+        for (const key of [...this.objects.keys()]) {
+          if (key === prefix || key === `${prefix}/` || key.startsWith(`${prefix}/`)) {
+            this.objects.delete(key);
+            deletedCount += 1;
+          }
+        }
+        return deletedCount;
+      }
+    }
+
+    const store = new PrefixDeletingStore();
+    await store.putObject("workspace/demo/README.md", Buffer.from("# demo\n"));
+    await store.putObject("workspace/demo/src/index.ts", Buffer.from("export {};\n"));
+    await store.putObject("workspace/other/README.md", Buffer.from("# other\n"));
+
+    await deleteRemotePrefixFromObjectStore(store, "workspace/demo");
+
+    expect(store.deletePrefixCalls).toEqual(["workspace/demo"]);
+    expect(store.listEntriesCalls).toBe(0);
+    expect([...store.objects.keys()].sort()).toEqual(["workspace/other/README.md"]);
+  });
+
   it("normalizes bundled AWS SDK default exports", () => {
     class S3Client {}
     class ListObjectsV2Command {}

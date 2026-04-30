@@ -8,11 +8,48 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createSandboxBackedWorkspaceInitializer,
+  createSelfHostedWorkspaceDelegatingInitializer,
   nativeWorkspaceSyncAdapter
 } from "../apps/server/src/bootstrap/sandbox-backed-workspace-initializer.ts";
 import type { SandboxHost } from "../apps/server/src/bootstrap/sandbox-host.ts";
 
 const tempDirs: string[] = [];
+
+function createWorkspaceRecordFixture(input: {
+  id: string;
+  name: string;
+  rootPath?: string | undefined;
+  externalRef?: string | undefined;
+}): WorkspaceRecord {
+  return {
+    id: input.id,
+    kind: "project",
+    readOnly: false,
+    historyMirrorEnabled: true,
+    defaultAgent: "assistant",
+    settings: {
+      defaultAgent: "assistant"
+    },
+    workspaceModels: {},
+    agents: {},
+    actions: {},
+    skills: {},
+    toolServers: {},
+    hooks: {},
+    catalog: {
+      workspaceId: input.id,
+      models: [],
+      actions: []
+    },
+    ...(input.externalRef ? { externalRef: input.externalRef } : {}),
+    name: input.name,
+    rootPath: input.rootPath ?? `/data/workspaces/${input.id}`,
+    executionPolicy: "local",
+    status: "active",
+    createdAt: "2026-04-30T00:00:00.000Z",
+    updatedAt: "2026-04-30T00:00:00.000Z"
+  };
+}
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -27,6 +64,131 @@ afterEach(async () => {
 });
 
 describe("sandbox-backed workspace initializer", () => {
+  it("delegates object-storage backed workspace creation to self-hosted workers", async () => {
+    const workspace = createWorkspaceRecordFixture({
+      id: "ws_worker_created",
+      name: "worker-created",
+      externalRef: "s3://test-bucket/workspace/ws_worker_created"
+    });
+    const getWorkspaceRecord = vi.fn(async (workspaceId: string) => (workspaceId === workspace.id ? workspace : undefined));
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "sandbox-1",
+          workspaceId: workspace.id,
+          provider: "self_hosted",
+          executionModel: "sandbox_hosted",
+          workerPlacement: "inside_sandbox",
+          rootPath: "/data/workspaces/ws_worker_created",
+          name: workspace.name,
+          kind: "project",
+          executionPolicy: "local",
+          createdAt: workspace.createdAt,
+          updatedAt: workspace.updatedAt
+        }),
+        {
+          status: 201,
+          headers: {
+            "content-type": "application/json"
+          }
+        }
+      )
+    );
+
+    const initializer = createSelfHostedWorkspaceDelegatingInitializer({
+      selfHosted: {
+        baseUrl: "http://oah-sandbox:8787/internal/v1",
+        headers: {
+          authorization: "Bearer test-token"
+        }
+      },
+      getWorkspaceRecord
+    });
+
+    await expect(
+      initializer.initialize({
+        name: "worker-created",
+        runtime: "node",
+        executionPolicy: "local",
+        ownerId: "owner-1",
+        workspaceId: workspace.id
+      } as Parameters<typeof initializer.initialize>[0] & { workspaceId: string })
+    ).resolves.toEqual(workspace);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(String(fetchSpy.mock.calls[0]![0])).toBe("http://oah-sandbox:8787/internal/v1/sandboxes");
+    expect(fetchSpy.mock.calls[0]![1]).toEqual(
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "content-type": "application/json",
+          authorization: "Bearer test-token"
+        })
+      })
+    );
+    expect(JSON.parse(String((fetchSpy.mock.calls[0]![1] as RequestInit).body))).toEqual({
+      workspaceId: workspace.id,
+      name: "worker-created",
+      runtime: "node",
+      executionPolicy: "local",
+      ownerId: "owner-1"
+    });
+    expect(getWorkspaceRecord).toHaveBeenCalledWith(workspace.id);
+  });
+
+  it("waits briefly for a delegated self-hosted workspace record to become visible", async () => {
+    vi.stubEnv("OAH_SELF_HOSTED_WORKSPACE_RECORD_WAIT_MS", "200");
+    const workspace = createWorkspaceRecordFixture({
+      id: "ws_worker_eventual",
+      name: "worker-eventual"
+    });
+    const getWorkspaceRecord = vi
+      .fn(async (_workspaceId: string): Promise<WorkspaceRecord | undefined> => undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(workspace);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "sandbox-eventual",
+          workspaceId: workspace.id,
+          provider: "self_hosted",
+          executionModel: "sandbox_hosted",
+          workerPlacement: "inside_sandbox",
+          rootPath: workspace.rootPath,
+          name: workspace.name,
+          kind: "project",
+          executionPolicy: "local",
+          createdAt: workspace.createdAt,
+          updatedAt: workspace.updatedAt
+        }),
+        {
+          status: 201,
+          headers: {
+            "content-type": "application/json"
+          }
+        }
+      )
+    );
+
+    const initializer = createSelfHostedWorkspaceDelegatingInitializer({
+      selfHosted: {
+        baseUrl: "http://oah-sandbox:8787/internal/v1"
+      },
+      getWorkspaceRecord
+    });
+
+    await expect(
+      initializer.initialize({
+        name: "worker-eventual",
+        runtime: "node",
+        executionPolicy: "local",
+        workspaceId: workspace.id
+      } as Parameters<typeof initializer.initialize>[0] & { workspaceId: string })
+    ).resolves.toEqual(workspace);
+
+    expect(getWorkspaceRecord).toHaveBeenCalledTimes(2);
+  });
+
   it("uploads runtime files into self-hosted sandbox workspaces", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-self-hosted-workspace-init-"));
     tempDirs.push(tempDir);
@@ -443,15 +605,27 @@ describe("sandbox-backed workspace initializer", () => {
       executionPolicy: "local"
     });
 
-    const preparedSeedDirName = (await readdir(os.tmpdir(), { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory() && entry.name.startsWith("oah-sandbox-prepared-seed-"))
-      .map((entry) => entry.name)
-      .find((entryName) => !tempRootEntriesBefore.has(entryName));
+    const preparedSeedArchives = await Promise.all(
+      (await readdir(os.tmpdir(), { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory() && entry.name.startsWith("oah-sandbox-prepared-seed-"))
+        .map(async (entry) => {
+          const archivePath = path.join(os.tmpdir(), entry.name, "workspace-seed.tar");
+          const archiveStat = await stat(archivePath).catch(() => undefined);
+          return archiveStat && !tempRootEntriesBefore.has(entry.name)
+            ? {
+                archivePath,
+                archiveStat
+              }
+            : undefined;
+        })
+    );
+    const preparedSeedArchive = preparedSeedArchives.find(
+      (entry): entry is { archivePath: string; archiveStat: Awaited<ReturnType<typeof stat>> } => Boolean(entry)
+    );
 
-    expect(preparedSeedDirName).toBeTruthy();
+    expect(preparedSeedArchive).toBeDefined();
 
-    const archivePath = path.join(os.tmpdir(), preparedSeedDirName!, "workspace-seed.tar");
-    const firstArchiveStat = await stat(archivePath);
+    const { archivePath, archiveStat: firstArchiveStat } = preparedSeedArchive!;
 
     await new Promise((resolve) => setTimeout(resolve, 20));
 

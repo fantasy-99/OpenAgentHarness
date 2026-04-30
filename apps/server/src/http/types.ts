@@ -34,7 +34,7 @@ export interface AppDependencies {
     ownerBaseUrl?: string | undefined;
     health: "healthy" | "late";
     lastActivityAt: string;
-    localPath: string;
+    localPath?: string | undefined;
     remotePrefix?: string | undefined;
     isLocalOwner: boolean;
   } | undefined>) | undefined;

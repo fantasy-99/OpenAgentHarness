@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 
 import { sandboxSchema, type CreateWorkspaceRequest } from "@oah/api-contracts";
 import { discoverWorkspace, initializeWorkspaceFromRuntime, type DiscoveredAgent, type PlatformModelRegistry } from "@oah/config";
@@ -29,6 +30,8 @@ const DEFAULT_SEED_ARCHIVE_UPLOAD_MODE = "auto";
 const DEFAULT_SEED_ARCHIVE_MIN_FILE_COUNT = 16;
 const DEFAULT_SEED_ARCHIVE_MIN_TOTAL_BYTES = 128 * 1024;
 const DEFAULT_SEED_ARCHIVE_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_DELEGATED_WORKSPACE_RECORD_WAIT_MS = 2_000;
+const DEFAULT_DELEGATED_WORKSPACE_RECORD_POLL_MS = 50;
 interface PreparedSeedCacheEntry {
   cacheRoot: string;
   preparedWorkspaceRoot: string;
@@ -112,6 +115,16 @@ function resolveSeedArchiveTimeoutMs(): number {
 
 function shouldWarmPreparedSeedArchive(): boolean {
   return resolveSeedArchiveUploadMode() !== "off";
+}
+
+function resolveDelegatedWorkspaceRecordWaitMs(): number {
+  const raw = process.env.OAH_SELF_HOSTED_WORKSPACE_RECORD_WAIT_MS?.trim();
+  if (!raw) {
+    return DEFAULT_DELEGATED_WORKSPACE_RECORD_WAIT_MS;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_DELEGATED_WORKSPACE_RECORD_WAIT_MS;
 }
 
 function shellQuote(value: string): string {
@@ -966,6 +979,7 @@ async function createSelfHostedSandbox(input: {
   workspaceId: string;
   baseUrl: string;
   headers?: Record<string, string> | undefined;
+  includeWorkspaceId?: boolean | undefined;
   maxWorkspacesPerSandbox?: number | undefined;
   resourceCpuPressureThreshold?: number | undefined;
   resourceMemoryPressureThreshold?: number | undefined;
@@ -992,6 +1006,7 @@ async function createSelfHostedSandbox(input: {
       ...(input.headers ?? {})
     },
     body: JSON.stringify({
+      ...(input.includeWorkspaceId ? { workspaceId: input.workspaceId } : {}),
       name: input.request.name,
       runtime: input.request.runtime,
       executionPolicy: input.request.executionPolicy,
@@ -1006,6 +1021,58 @@ async function createSelfHostedSandbox(input: {
   }
 
   return sandboxSchema.parse(await response.json());
+}
+
+export function createSelfHostedWorkspaceDelegatingInitializer(options: {
+  selfHosted: {
+    baseUrl: string;
+    headers?: Record<string, string> | undefined;
+    maxWorkspacesPerSandbox?: number | undefined;
+    resourceCpuPressureThreshold?: number | undefined;
+    resourceMemoryPressureThreshold?: number | undefined;
+    workspacePlacementRegistry?: Pick<WorkspacePlacementRegistry, "listAll" | "assignOwnerAffinity"> | undefined;
+    workerRegistry?: Pick<WorkerRegistry, "listActive"> | undefined;
+  };
+  getWorkspaceRecord(workspaceId: string): Promise<WorkspaceRecord | undefined>;
+}) {
+  return {
+    async initialize(input: CreateWorkspaceRequest): Promise<WorkspaceInitializationResult> {
+      const workspaceId = (
+        input as CreateWorkspaceRequest & {
+          workspaceId?: string | undefined;
+        }
+      ).workspaceId?.trim() || createId("ws");
+
+      const sandbox = await createSelfHostedSandbox({
+        request: input,
+        workspaceId,
+        baseUrl: options.selfHosted.baseUrl,
+        headers: options.selfHosted.headers,
+        includeWorkspaceId: true,
+        maxWorkspacesPerSandbox: options.selfHosted.maxWorkspacesPerSandbox,
+        resourceCpuPressureThreshold: options.selfHosted.resourceCpuPressureThreshold,
+        resourceMemoryPressureThreshold: options.selfHosted.resourceMemoryPressureThreshold,
+        ...(options.selfHosted.workspacePlacementRegistry
+          ? { workspacePlacementRegistry: options.selfHosted.workspacePlacementRegistry }
+          : {}),
+        ...(options.selfHosted.workerRegistry ? { workerRegistry: options.selfHosted.workerRegistry } : {})
+      });
+
+      const waitUntilMs = Date.now() + resolveDelegatedWorkspaceRecordWaitMs();
+      let created = await options.getWorkspaceRecord(sandbox.workspaceId);
+      while (!created && Date.now() < waitUntilMs) {
+        await sleep(DEFAULT_DELEGATED_WORKSPACE_RECORD_POLL_MS);
+        created = await options.getWorkspaceRecord(sandbox.workspaceId);
+      }
+      if (!created) {
+        throw new Error(
+          `Self-hosted worker created sandbox ${sandbox.id} for workspace ${sandbox.workspaceId}, but no workspace record was visible to the API.`
+        );
+      }
+
+      return created;
+    }
+  };
 }
 
 export function createSandboxBackedWorkspaceInitializer(options: {
