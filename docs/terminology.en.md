@@ -16,7 +16,7 @@ If you want the system map that shows how these concepts fit together, continue 
 | --- | --- | --- |
 | `Agent Engine` | Execution system | Loads, schedules, executes, recovers, audits, and exposes API / SSE. |
 | `Agent Runtime` | Primary runnable unit | A runnable unit that carries agent / action / hook definitions. Formerly called `blueprint`. |
-| `Agent Spec` | User extension layer | Extra user-authored inputs layered onto a runtime, mainly `AGENTS.md`, `MEMORY.md`, and extra loaded `model` / `tool` / `skill`. |
+| `Agent Spec` | User extension layer | Extra user-authored inputs layered onto a runtime, mainly `AGENTS.md`, `.openharness/memory/MEMORY.md`, and extra loaded `model` / `tool` / `skill`. |
 
 ## Boundary Rule
 
@@ -45,7 +45,7 @@ Avoid:
 `Spec` is not the whole runtime structure. It is the user-authored extension layer added on top of a runtime. It mainly includes:
 
 - project-root `AGENTS.md`
-- project-root `MEMORY.md`
+- `.openharness/memory/MEMORY.md` and `.openharness/memory/*.md` topic files
 - extra loaded `model`
 - extra loaded `tool`
 - extra loaded `skill`

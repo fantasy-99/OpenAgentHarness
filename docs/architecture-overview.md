@@ -9,7 +9,7 @@ OAH 的产品层级可以按基础设施体系理解：
 | 缩写 | 名称 | 定位 |
 | --- | --- | --- |
 | `OAR` | Open Agent Runtime | 面向开发者的运行时包层。定义一个可发布、可复用、可初始化 workspace 的 runtime 组织方式。 |
-| `OAS` | Open Agent Spec | 面向实际用户的 Spec 层。特指用户基于 OAR / runtime 叠加的配置与导入资源，例如 `AGENTS.md`、`MEMORY.md`、用户导入的 `tool` / `skill` / `model`。 |
+| `OAS` | Open Agent Spec | 面向实际用户的 Spec 层。特指用户基于 OAR / runtime 叠加的配置与导入资源，例如 `AGENTS.md`、`.openharness/memory/MEMORY.md`、用户导入的 `tool` / `skill` / `model`。 |
 | `OAH` | Open Agent Harness | 企业/平台部署。面向 Compose、Kubernetes、PostgreSQL、Redis、对象存储、sandbox fleet 和多 worker。 |
 | `OAP` | Open Agent Harness Personal | 个人部署。面向本地 daemon、SQLite、本地磁盘、embedded worker 和单用户工作流。 |
 
@@ -81,7 +81,7 @@ flowchart LR
 
 - `Agent Engine`：执行、调度、恢复、审计与 API 暴露系统
 - `Agent Runtime`：实际被运行的主对象，旧称 `blueprint`
-- `Agent Spec`：基于某个 runtime / workspace baseline 额外叠加的用户扩展层，主要包括 `AGENTS.md`、`MEMORY.md` 与额外加载的 `model` / `tool` / `skill`
+- `Agent Spec`：基于某个 runtime / workspace baseline 额外叠加的用户扩展层，主要包括 `AGENTS.md`、`.openharness/memory/MEMORY.md` 与额外加载的 `model` / `tool` / `skill`
 - 记忆方式：`Engine` 关注 how it runs，`Runtime` 关注 what runs，`Spec` 关注 what the user adds
 
 ### API Server

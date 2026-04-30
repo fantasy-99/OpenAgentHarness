@@ -64,7 +64,7 @@ OAH is designed as an infrastructure-style stack with four layers:
 | Layer | Audience | Name | Role |
 | --- | --- | --- | --- |
 | `OAR` | Developer layer | Open Agent Runtime | Reusable runtime bundles that platform/runtime developers build and publish to initialize workspaces. |
-| `OAS` | User layer | Open Agent Spec | User-imported tools, skills, model entries, `AGENTS.md`, `MEMORY.md`, and other workspace-level additions layered on top of an OAR/runtime baseline. |
+| `OAS` | User layer | Open Agent Spec | User-imported tools, skills, model entries, `AGENTS.md`, `.openharness/memory/MEMORY.md`, and other workspace-level additions layered on top of an OAR/runtime baseline. |
 | `OAH` | Service layer | Open Agent Harness | Enterprise/platform service deployment: Compose or Kubernetes, PostgreSQL, Redis, object storage, controller, sandbox fleet, and multiple workers. |
 | `OAP` | Service layer | Open Agent Harness Personal | Personal service deployment: local daemon, SQLite, local disk, embedded worker, and single-user workflows. |
 
@@ -79,7 +79,7 @@ flowchart LR
     Enterprise["OAH enterprise server\nCompose / Kubernetes\nPostgreSQL + Redis + object storage"]
     Personal["OAP local daemon\nSQLite + local disk\nembedded worker"]
     Runtime["OAR runtime packages\ndeveloper-facing"]
-    Spec["OAS user specs\nactual-user-facing\nAGENTS.md + MEMORY.md\ntools + skills + models"]
+    Spec["OAS user specs\nactual-user-facing\nAGENTS.md + .openharness/memory/MEMORY.md\ntools + skills + models"]
     Workspace["Effective workspace\nOAR baseline + OAS overlay"]
     Engine["Agent Engine\nsessions + runs + tools"]
 

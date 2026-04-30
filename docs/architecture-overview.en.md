@@ -9,7 +9,7 @@ The product hierarchy is infrastructure-style:
 | Abbrev | Name | Role |
 | --- | --- | --- |
 | `OAR` | Open Agent Runtime | Developer-facing runtime package layer: publishable, reusable runtime bundles for initializing workspaces. |
-| `OAS` | Open Agent Spec | User-facing spec layer: user-added configuration and imported resources layered on top of an OAR/runtime baseline, such as `AGENTS.md`, `MEMORY.md`, imported `tool` / `skill` / `model` entries. |
+| `OAS` | Open Agent Spec | User-facing spec layer: user-added configuration and imported resources layered on top of an OAR/runtime baseline, such as `AGENTS.md`, `.openharness/memory/MEMORY.md`, imported `tool` / `skill` / `model` entries. |
 | `OAH` | Open Agent Harness | Enterprise/platform deployment for Compose, Kubernetes, PostgreSQL, Redis, object storage, sandbox fleets, and multiple workers. |
 | `OAP` | Open Agent Harness Personal | Personal deployment for a local daemon, SQLite, local disk, embedded worker, and single-user workflows. |
 
@@ -81,7 +81,7 @@ Two workspace kinds:
 
 - `Agent Engine`: the execution, scheduling, recovery, audit, and API exposure system
 - `Agent Runtime`: the primary runnable unit, formerly called `blueprint`
-- `Agent Spec`: the user-authored extension layer on top of a runtime / workspace baseline, mainly `AGENTS.md`, `MEMORY.md`, and extra loaded `model` / `tool` / `skill`
+- `Agent Spec`: the user-authored extension layer on top of a runtime / workspace baseline, mainly `AGENTS.md`, `.openharness/memory/MEMORY.md`, and extra loaded `model` / `tool` / `skill`
 - mnemonic: `Engine` is how it runs, `Runtime` is what runs, `Spec` is what the user adds
 
 ### API Server

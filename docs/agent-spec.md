@@ -5,7 +5,7 @@
 当前 `Spec` 主要包括：
 
 - `AGENTS.md`
-- `MEMORY.md`
+- `.openharness/memory/MEMORY.md`
 - 额外加载的 `model`
 - 额外加载的 `tool`
 - 额外加载的 `skill`

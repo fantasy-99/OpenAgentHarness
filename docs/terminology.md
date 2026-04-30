@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | `Agent Engine` | 执行系统 | 负责加载、调度、执行、恢复、审计，以及对外提供 API / SSE。 |
 | `Agent Runtime` | 主运行对象 | 负责承载一套可运行的 agent / action / hook 等定义。旧称 `blueprint`。 |
-| `Agent Spec` | 用户扩展层 | 用户基于 runtime / workspace baseline 额外叠加的说明与资源，主要包括 `AGENTS.md`、`MEMORY.md`，以及额外加载的 `model` / `tool` / `skill`。 |
+| `Agent Spec` | 用户扩展层 | 用户基于 runtime / workspace baseline 额外叠加的说明与资源，主要包括 `AGENTS.md`、`.openharness/memory/MEMORY.md`，以及额外加载的 `model` / `tool` / `skill`。 |
 
 ## 产品与发行层命名
 
@@ -25,7 +25,7 @@
 | 缩写 | 名称 | 边界 |
 | --- | --- | --- |
 | `OAR` | Open Agent Runtime | 面向开发者的可发布 runtime 包层。一个 OAR 可以被放入 `runtimes/`，用于初始化 workspace。 |
-| `OAS` | Open Agent Spec | 面向实际用户的 Spec 层。特指用户基于 OAR / runtime 叠加到 workspace 上的配置与导入资源，例如 `AGENTS.md`、`MEMORY.md`、用户导入的 `tool` / `skill` / `model`。 |
+| `OAS` | Open Agent Spec | 面向实际用户的 Spec 层。特指用户基于 OAR / runtime 叠加到 workspace 上的配置与导入资源，例如 `AGENTS.md`、`.openharness/memory/MEMORY.md`、用户导入的 `tool` / `skill` / `model`。 |
 | `OAH` | Open Agent Harness | 企业/平台部署形态。默认面向 Compose / K8S、PostgreSQL、Redis、对象存储、控制面和 sandbox fleet。 |
 | `OAP` | Open Agent Harness Personal | 个人部署形态。默认面向 local daemon、SQLite、本地磁盘、embedded worker 和单用户 workspace。 |
 
@@ -79,7 +79,7 @@ OAP deploys it for one local user.
 `Spec` 不是整个 runtime 结构，而是用户附加在 runtime 之上的扩展层。当前主要包括：
 
 - 项目根目录的 `AGENTS.md`
-- 项目根目录的 `MEMORY.md`
+- `.openharness/memory/MEMORY.md` 以及 `.openharness/memory/*.md` topic files
 - 通过配置额外加载的 `model`
 - 通过配置额外加载的 `tool`
 - 通过配置额外加载的 `skill`

@@ -64,7 +64,7 @@ OAH 可以按一套基础设施层级来理解：
 | 层级 | 面向对象 | 名称 | 定位 |
 | --- | --- | --- | --- |
 | `OAR` | 开发层 | Open Agent Runtime | 由平台 / runtime 开发者构建和发布的可复用 runtime bundle，用来初始化 workspace。 |
-| `OAS` | 用户层 | Open Agent Spec | 用户基于 OAR / runtime 基线叠加的 tools、skills、model entries、`AGENTS.md`、`MEMORY.md` 以及其他 workspace 级增量配置。 |
+| `OAS` | 用户层 | Open Agent Spec | 用户基于 OAR / runtime 基线叠加的 tools、skills、model entries、`AGENTS.md`、`.openharness/memory/MEMORY.md` 以及其他 workspace 级增量配置。 |
 | `OAH` | 服务层 | Open Agent Harness | 企业/平台服务部署形态，面向 Compose 或 Kubernetes、PostgreSQL、Redis、对象存储、controller、sandbox fleet 和多 worker。 |
 | `OAP` | 服务层 | Open Agent Harness Personal | 个人服务部署形态，面向本地 daemon、SQLite、本地磁盘、embedded worker 和单用户工作流。 |
 
@@ -79,7 +79,7 @@ flowchart LR
     Enterprise["OAH enterprise server\nCompose / Kubernetes\nPostgreSQL + Redis + object storage"]
     Personal["OAP local daemon\nSQLite + local disk\nembedded worker"]
     Runtime["OAR runtime packages\n面向开发者"]
-    Spec["OAS user specs\n面向实际用户\nAGENTS.md + MEMORY.md\ntools + skills + models"]
+    Spec["OAS user specs\n面向实际用户\nAGENTS.md + .openharness/memory/MEMORY.md\ntools + skills + models"]
     Workspace["Effective workspace\nOAR baseline + OAS overlay"]
     Engine["Agent Engine\nsessions + runs + tools"]
 

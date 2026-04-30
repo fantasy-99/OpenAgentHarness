@@ -2,6 +2,40 @@
 
 OAP（Open Agent Harness Personal）是 OAH 的个人部署形态。它面向本地单用户使用，目标是用一个常驻 daemon 提供完整 OAH-compatible API，让 WebUI、TUI 和 Desktop 都能连接同一套本地服务。
 
+## 0. Repository Reality Check
+
+结合当前仓库实现，OAP 方向没有需要推翻的大架构问题。现有代码已经具备几个关键前提：
+
+- `apps/server/src/bootstrap.ts` 已支持未配置 PostgreSQL 时使用 `@oah/storage-sqlite`。
+- 未配置 Redis 时，server 会回退到 in-process / local-inline 执行；worker 不必须依赖 Redis 接收请求。
+- `API + embedded worker` 已是一等进程形态，适合包装成 local daemon。
+- `template/deploy-root/config/daemon.yaml` 已是 SQLite + embedded worker + local disk 的雏形。
+- `@oah/storage-sqlite` 已有 workspace registry、session/run/message、pending queue、event store、history events 等完整 repository 结构。
+
+所以 OAP 不应该变成新的 server、新的 engine、新的 TUI 协议或新的 Electron runtime。正确路线是：
+
+```text
+OAP daemon = existing OAH server + embedded worker + SQLite/local disk profile + daemon lifecycle wrapper
+```
+
+不过 ROADMAP 需要明确几个现实约束：
+
+| Area | Current reality | OAP implication |
+| --- | --- | --- |
+| Server process | `oah-api` already runs embedded worker when not `--api-only` / `--no-worker`. | Daemon should wrap this entrypoint, not fork a new runtime process. |
+| Redis | Optional. Without Redis, runs execute local-inline in the API process. | OAP does not need Redis for single-user operation. |
+| PostgreSQL | Optional. Without PostgreSQL, SQLite runtime persistence is used. | OAP can use SQLite, but must harden its directory and migration semantics. |
+| SQLite location | Writable `project` workspaces currently default to repo-local `.openharness/data/history.db`. | OAP needs a config switch to force `OAH_HOME/state` shadow storage for external repos. |
+| Workspace import | `POST /api/v1/workspaces/import` currently rejects paths outside `config.paths.workspace_dir`. | OAP needs a personal-only local path registration path, gated by server profile/capability. |
+| Profile identity | `/api/v1/system/profile` does not yet exist. | Clients cannot safely distinguish OAH vs OAP until this is added. |
+| Daemon lifecycle | No `oah daemon *` command yet. | CLI should add lifecycle management around the existing server. |
+
+High-level verdict:
+
+- No large architectural rewrite is needed.
+- The largest required adjustment is not the runtime core; it is local workspace registration and storage policy around external repo paths.
+- The second largest adjustment is packaging: daemon lifecycle, local token, logs, PID, and client defaults.
+
 ## 1. Product Target
 
 最终面向用户的入口应收敛到：
@@ -167,6 +201,11 @@ OAP 默认使用：
 - `logs/` 和 `run/` 属于 daemon 生命周期，不参与 deploy root 发布。
 - `config/daemon.yaml` 是 OAP 的源配置。
 - `config/server.docker.yaml` 和 `config/kubernetes.server.yaml` 保留为从个人环境迁移到 Compose / K8S 的 profile。
+- `tools/` 和 `skills/` 是全局 catalog / registry，不代表自动启用到所有 workspace。
+- 启用或导入 tool / skill 时，应写入目标 repo 的 `.openharness/tools` / `.openharness/skills`，并默认要求用户确认。
+- 默认模型来自 `OAH_HOME/models` 与 `config/daemon.yaml`；repo 可以不配置模型，直接使用 daemon / server 默认模型。
+- repo 内如需指定模型，只应保存 model ref / alias，不应保存 API key 或 provider secret。
+- workspace memory 固定为 repo 内 `.openharness/memory/MEMORY.md` 与 `.openharness/memory/*.md` topic files；OAP 不另行定义第二套本地记忆目录。
 
 ## 6. Runtime Model
 
@@ -178,7 +217,8 @@ OAP daemon 默认应是：
 - no object storage
 - no standalone sandbox fleet
 - local disk execution by default
-- SQLite for sessions, runs, messages, queues, registry metadata, and local history
+- SQLite for durable sessions, runs, messages, per-session pending runs, registry metadata, and local history
+- in-process scheduling for active run execution
 
 它仍然应复用 OAH 的核心模块：
 
@@ -193,7 +233,123 @@ OAP daemon 默认应是：
 
 OAP 不应该引入另一套 client SDK 或另一套 TUI 协议。
 
-## 7. Roadmap Phases
+## 7. Architecture Adjustments Required
+
+OAP 需要的架构调整应控制在下面几个边界内。
+
+### 7.1 Daemon 是产品化进程包装，不是新 runtime
+
+`oah daemon start` 应启动现有 server bootstrap：
+
+```bash
+apps/server/src/index.ts --config "$OAH_HOME/config/daemon.yaml"
+```
+
+长期可以换成构建后的二进制或 npm bin，但语义仍然是同一个 OAH server。不要新增一套 `apps/daemon` runtime，除非只是极薄的 launcher/supervisor。
+
+### 7.2 OAP 需要 personal workspace registration，而不是继续扩大 single workspace mode
+
+当前 `POST /api/v1/workspaces/import` 对 embedded/local 模式仍要求 rootPath 位于 `config.paths.workspace_dir` 下。这对 Compose/K8S 是合理的，但对 OAP 的核心命令不够：
+
+```bash
+oah tui --workspace /path/to/repo
+```
+
+OAP 需要一条由 profile/capability gate 控制的注册路径：
+
+- 只在 `edition=personal` 且 `localWorkspacePaths=true` 时允许任意本机绝对路径。
+- 记录稳定 `externalRef`，建议形如 `local:path:<normalized-abs-path>`。
+- workspace id 应可由 `externalRef` 稳定推导，或至少保证同一路径重复打开会复用旧记录。
+- 连接 OAH enterprise server 时，`--workspace /local/path` 必须拒绝，并提示切换到 local daemon。
+
+这可以实现为扩展现有 import endpoint，也可以新增更清晰的 endpoint，例如：
+
+```http
+POST /api/v1/local/workspaces/register
+```
+
+如果复用 `/api/v1/workspaces/import`，必须避免把企业服务也打开任意本地路径能力。
+
+### 7.3 SQLite 要成为 OAP 真值，而不是 repo-local sidecar
+
+当前 `@oah/storage-sqlite` 的 repository 覆盖面足够好，且已有 `workspace-registry.db` 和 per-workspace `history.db`。问题不是“不支持 SQLite”，而是默认路径策略不适合 OAP：
+
+- 普通可写 `project` workspace 会落到 `<workspace>/.openharness/data/history.db`。
+- OAP 对外部 repo 默认不应污染 repo。
+- OAP 需要 `storage.sqlite.project_db_location: shadow` 或等价配置，强制所有外部 repo 的 session/run/message/history 写入 `OAH_HOME/state`。
+
+推荐配置形态：
+
+```yaml
+storage:
+  sqlite:
+    project_db_location: shadow # shadow | workspace
+```
+
+其中：
+
+- `shadow` 是 OAP 默认。
+- `workspace` 保留给显式选择 repo-local history 的高级用户或兼容模式。
+
+### 7.4 Server profile 应成为客户端唯一判断依据
+
+WebUI、TUI、Desktop 都不能靠 localhost、端口号或用户手动选择来判断 OAH/OAP。必须先读：
+
+```http
+GET /api/v1/system/profile
+```
+
+该 endpoint 应由 server bootstrap 根据实际配置和进程形态生成，而不是写死：
+
+- 是否配置 PostgreSQL / Redis / object storage。
+- process mode 是 `api_embedded_worker`、`api_only` 还是 `standalone_worker`。
+- config profile 是否声明 `deploymentKind=oap`。
+- local capabilities 是否可用。
+
+### 7.5 Desktop 不承载 daemon，只监督 daemon
+
+Desktop 应是通用 OAH-compatible client。它可以帮助安装、启动、停止、查看 OAP local daemon，但 daemon 生命周期应独立于 Electron renderer/main bundle：
+
+- daemon 独立升级、独立日志、独立 token。
+- Desktop 退出不应杀掉 daemon，除非用户显式 stop。
+- TUI/WebUI/Desktop 连接同一 daemon endpoint。
+
+### 7.6 OAS 直接落在 workspace，不引入私有 overlay
+
+OAP 的 user-facing spec 应直接使用项目里的 OAS 文件，不再设计额外的本地私有 spec 层：
+
+- 项目说明仍是 workspace 根目录 `AGENTS.md`。
+- workspace memory 固定为 `.openharness/memory/MEMORY.md` 和 `.openharness/memory/*.md`。
+- workspace tools 固定为 `.openharness/tools/settings.yaml` 与 `.openharness/tools/servers/*`。
+- workspace skills 固定为 `.openharness/skills/*/SKILL.md`。
+- 全局 `OAH_HOME/tools` 与 `OAH_HOME/skills` 只是可导入 catalog；真正启用必须写入 workspace。
+
+这样做的好处是 WebUI、TUI、Desktop 看到同一个 effective workspace，也避免出现“daemon 里能用、repo 里看不到”的隐式配置。
+
+### 7.7 Daemon 控制状态写入和清理
+
+OAP 的 session、run、message、pending queue 和 history 写入应统一由 daemon 负责：
+
+- 客户端只通过 OAH API 读写，不直接操作 SQLite。
+- daemon 可以做 write batching、checkpoint、retention、cleanup 和 vacuum。
+- workspace 维度按稳定 workspace id 分目录，避免多个 repo 共享同一个大文件。
+- 默认写入 `OAH_HOME/state`，只在用户显式选择时写入 repo-local `.openharness/data/history.db`。
+
+## 8. Implementation Risk Matrix
+
+| Risk | Severity | Notes | Required mitigation |
+| --- | --- | --- | --- |
+| OAP 任意本地路径注册误开到企业服务 | High | 会让远端 OAH 暴露不该有的 local path 语义。 | 必须由 profile/capability gate 控制，默认 enterprise 关闭。 |
+| SQLite 默认污染 repo | High | 当前 writable project 默认 repo-local history。 | 增加 shadow storage 配置并让 daemon profile 默认启用。 |
+| 另起 OAP runtime / API | High | 会分叉协议和测试面。 | OAP 只包装现有 server bootstrap。 |
+| Daemon token 与本地安全 | Medium | 本机服务也需要避免任意进程误用。 | loopback + token 文件 + 权限检查。 |
+| Desktop 与 daemon 绑定过深 | Medium | 会造成 TUI/WebUI 与 Desktop 行为不一致。 | Desktop 只做 supervisor/client，不做 runtime boundary。 |
+| 客户端绕过 daemon 直接写 SQLite | Medium | 会破坏 batching、retention 和跨客户端一致性。 | WebUI/TUI/Desktop 只通过 OAH API 访问状态。 |
+| 全局 tools / skills 被误认为自动启用 | Medium | 会让 workspace 可复现性变差。 | 全局目录只做 catalog，启用时写入 repo `.openharness/tools` / `.openharness/skills`。 |
+| model secret 写入 repo | Medium | 个人配置迁移时容易泄露 key。 | repo 只保存 model ref；provider secret 留在 `OAH_HOME` 或安全凭据源。 |
+| Single workspace mode 继续扩张 | Medium | 会和 daemon registry 路线竞争。 | 仅保留兼容，新增能力落到 daemon registry。 |
+
+## 9. Roadmap Phases
 
 Status values:
 
@@ -261,6 +417,7 @@ Completion target:
 
 - WebUI、TUI、Desktop 都能通过同一个 endpoint 判断当前连接目标。
 - 客户端不再用 URL、端口或是否 localhost 来推断 OAH/OAP。
+- OAH enterprise server 默认不暴露 local path registration；OAP local daemon 默认暴露。
 
 ### Phase 2: Daemon Lifecycle CLI
 
@@ -324,9 +481,21 @@ Expected behavior:
 - TUI 默认连接本地 daemon，也可通过 `--base-url` 连接远端 OAH。
 - 如果连接的是 OAH enterprise server，`--workspace /local/path` 应拒绝或提示切换到 OAP local daemon，除非 server profile 显式声明支持 local path registration。
 
+Current implementation blocker:
+
+- 现有 `/api/v1/workspaces/import` 在本地 embedded 模式下仍要求 `rootPath` 位于 `config.paths.workspace_dir` 内。
+- 这个限制适合 OAH enterprise / managed workspace，但不适合 OAP 打开任意本机 repo。
+- OAP 不能通过简单把 `workspace_dir` 设成 `/` 来绕过；那会污染 discovery、权限语义和误扫风险。
+
+Required implementation:
+
+- 新增 personal-only local registration 能力，或扩展 import endpoint 并以 profile/capability gate 控制。
+- workspace record 需要稳定保存本地路径来源，建议 `externalRef=local:path:<normalized-abs-path>`。
+- register/reuse 逻辑应该优先按 `externalRef` / normalized path 查找，而不是每次创建新 workspace。
+
 Open design questions:
 
-- 外部 repo workspace 的 `externalRef` 格式是否需要稳定为 `local:path:<abs-path>`。
+- 外部 repo workspace 的 `externalRef` 格式是否最终稳定为 `local:path:<abs-path>`，还是改为 URI-safe 编码。
 - workspace name 默认用 repo basename，还是从 git remote / package metadata 推导。
 - 如果同一路径被移动或重命名，是否提供 `oah workspace repair`。
 
@@ -336,14 +505,22 @@ Completion target:
 
 ### Phase 4: SQLite Shadow Storage
 
-Status: planned
+Status: in progress
 
 Objective: OAP 的会话、run、message 和 history 默认留在 `OAH_HOME/state`，避免污染用户 repo。
+
+Already available:
+
+- `@oah/storage-sqlite` 已提供 workspace registry、session、message、run、run step、event store、pending run queue、audit record 和 history event repositories。
+- server bootstrap 在未配置 PostgreSQL 时已经会创建 SQLite runtime persistence。
+- `runtime_state_dir` 已能导向 shadow root，默认解析到 `runtime_state_dir/data/workspace-state`。
 
 Current gap:
 
 - `@oah/storage-sqlite` 当前对普通可写 project workspace 会优先写入 `<workspace>/.openharness/data/history.db`。
 - OAP 更希望外部 repo workspace 的会话数据默认写入 home shadow storage。
+- `ServerConfig.storage` 目前还没有 `sqlite` 子配置，schema 也还没有 `project_db_location`。
+- daemon 还需要统一控制写入批处理、retention、cleanup 和 SQLite vacuum 策略。
 
 Proposed config:
 
@@ -353,30 +530,27 @@ storage:
     project_db_location: shadow
 ```
 
-or:
-
-```yaml
-storage:
-  sqlite:
-    force_shadow: true
-```
-
 Expected storage layout:
 
 ```text
 ~/.openagentharness/state/
-  oap.sqlite
-  workspaces/
+  data/
+    workspace-state/
+      workspace-registry.db
+      <workspace-id>/
+        history.db
+  __materialized__/
     <workspace-id>/
-      history.db
-      materialization/
-      archive/
+  archives/
+    <workspace-id>/
 ```
 
 Completion target:
 
 - 打开任意外部 repo 后，OAP 不会默认生成 repo-local `.openharness/data/history.db`。
 - 用户明确选择 workspace-local storage 时，才写入 repo-local `.openharness/data/history.db`。
+- `@oah/storage-sqlite` 继续复用现有 registry/per-workspace DB 结构，只调整路径策略和配置面。
+- WebUI、TUI、Desktop 都不直接写 SQLite，状态变更统一走 daemon API。
 
 ### Phase 5: Local Config And Asset Management
 
@@ -398,8 +572,11 @@ oah skills list
 Requirements:
 
 - 修改 `OAH_HOME/models`、`tools`、`skills` 下的资产。
+- `OAH_HOME/tools` 与 `OAH_HOME/skills` 只作为 catalog；启用到 repo 时写入 `.openharness/tools` / `.openharness/skills`。
 - 校验 YAML schema。
 - 修改 `config/daemon.yaml` 中的 `llm.default_model`。
+- repo 可以不配置模型，默认使用 daemon 的 default model。
+- repo 内只保存 model ref / alias，不保存 provider API key。
 - 不影响 `config/server.docker.yaml` / `config/kubernetes.server.yaml`，除非用户显式同步 profile。
 
 Completion target:
@@ -483,23 +660,24 @@ Completion target:
 
 - 简化部署的正式答案只有 OAP daemon；single workspace mode 只保留给内部测试或兼容旧脚本。
 
-## 8. Near-Term Implementation Order
+## 10. Near-Term Implementation Order
 
 建议按这个顺序推进：
 
 1. `GET /api/v1/system/profile` 与 deployment capabilities
-2. `oah daemon init/start/status/stop/logs`
-3. `OAH_HOME` bootstrap 与 daemon profile resolver
-4. local daemon token、PID、logs、health check
-5. `oah tui --workspace` 参数与 workspace register/reuse
-6. SQLite shadow storage config
-7. README 中将 single workspace mode 标记为 legacy
-8. `oah models` / `oah runtimes` / `oah tools` / `oah skills`
-9. `oah web`
-10. Electron desktop client and local daemon supervisor
-11. single workspace migration / deprecation
+2. `storage.sqlite.project_db_location` 配置与 daemon profile 默认 shadow
+3. personal-only local workspace registration API
+4. `oah daemon init/start/status/stop/logs`
+5. `OAH_HOME` bootstrap 与 daemon profile resolver
+6. local daemon token、PID、logs、health check
+7. `oah tui --workspace` 参数与 workspace register/reuse
+8. README 中将 single workspace mode 标记为 legacy
+9. `oah models` / `oah runtimes` / `oah tools` / `oah skills`
+10. `oah web`
+11. Electron desktop client and local daemon supervisor
+12. single workspace migration / deprecation
 
-## 9. Acceptance Scenarios
+## 11. Acceptance Scenarios
 
 ### Fresh local user
 
@@ -545,7 +723,7 @@ Expected:
 - personal daemon reads local assets directly.
 - the same home can later be used as a deploy root source for Compose / K8S profiles.
 
-## 10. Non-Goals
+## 12. Non-Goals
 
 - OAP should not replace OAH enterprise deployment.
 - OAP should not require Docker, PostgreSQL, Redis, MinIO, or Kubernetes.
