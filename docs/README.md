@@ -26,6 +26,7 @@
 - [domain-model.md](./domain-model.md) — 领域对象、注册表和能力边界
 - [server-config.md](./server-config.md) — 服务端配置文件与运行模式
 - [deploy.md](./deploy.md) — 本地启动、联调、embedded worker 与拆分部署方式
+- [home-and-deploy-root.md](./home-and-deploy-root.md) — `OAH_HOME`、`OAH_DEPLOY_ROOT`、local daemon 与部署 profile 的目录契约
 - [debug-cli-tui.md](./debug-cli-tui.md) — 调试 CLI / TUI 的定位、入口和边界
 - [k8s-compose-reuse-matrix.md](./k8s-compose-reuse-matrix.md) — Compose 优化到 K8S 的复用对照
 - [k8s-rollout-checklist.md](./k8s-rollout-checklist.md) — K8S staging / production 上线检查清单
@@ -39,6 +40,8 @@
 ## 按目标快速跳转
 
 - 想先把系统跑起来：看 [deploy.md](./deploy.md)
+- 想统一本地 daemon、Compose 和 K8S 的目录结构：看 [home-and-deploy-root.md](./home-and-deploy-root.md)
+- 想理解 OAH / OAP / OAR / OAS 的产品与配置层级：看 [architecture-overview.md](./architecture-overview.md) 和 [terminology.md](./terminology.md)
 - 想在终端里调试 workspace/session：看 [debug-cli-tui.md](./debug-cli-tui.md)
 - 想确认 Compose 优化是否继承到 K8S：看 [k8s-compose-reuse-matrix.md](./k8s-compose-reuse-matrix.md)
 - 想做 K8S 上线检查：看 [k8s-rollout-checklist.md](./k8s-rollout-checklist.md)

@@ -35,7 +35,7 @@ import type {
 import { AppError, createId } from "@oah/engine-core";
 
 import { createParamsSchema } from "../context.js";
-import { resolveOwnerId } from "../proxy-utils.js";
+import { readRequestBodyBuffer, resolveOwnerId } from "../proxy-utils.js";
 import type { AppDependencies } from "../types.js";
 import { describeSandboxTopology } from "../../sandbox-topology.js";
 
@@ -289,13 +289,14 @@ async function handleUploadSandboxFile(
   reply: FastifyReply
 ) {
   const query = workspaceFileUploadQuerySchema.parse(request.query);
-  if (!Buffer.isBuffer(request.body)) {
+  const data = await readRequestBodyBuffer(request.body);
+  if (!data) {
     throw new AppError(415, "invalid_upload_content_type", "File upload requires Content-Type: application/octet-stream.");
   }
 
   const entry = await dependencies.runtimeService.uploadWorkspaceFile(sandboxId, {
     path: sandboxPathToWorkspacePath(query.path) ?? ".",
-    data: request.body,
+    data,
     overwrite: query.overwrite,
     ...(query.ifMatch !== undefined ? { ifMatch: query.ifMatch } : {}),
     ...(query.mtimeMs !== undefined ? { mtimeMs: query.mtimeMs } : {})

@@ -279,6 +279,7 @@ sandbox:
     warm_empty_count: 1
     resource_cpu_pressure_threshold: 0.75
     resource_memory_pressure_threshold: 0.9
+    resource_disk_pressure_threshold: 0.85
     max_workspaces_per_sandbox: 6
     ownerless_pool: dedicated
   self_hosted:
@@ -311,6 +312,7 @@ llm:
         warm_empty_count: 1,
         resource_cpu_pressure_threshold: 0.75,
         resource_memory_pressure_threshold: 0.9,
+        resource_disk_pressure_threshold: 0.85,
         max_workspaces_per_sandbox: 6,
         ownerless_pool: "dedicated"
       },

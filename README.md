@@ -57,6 +57,47 @@ OAH is a good fit when you need one reusable agent backend that can power differ
 - Dedicated single-workspace backends for one repo or one tenant
 - Platform teams that want a controllable runtime, not just a chat wrapper
 
+## Architecture and Deployment Shapes
+
+OAH is designed as an infrastructure-style stack with four layers:
+
+| Layer | Name | Role |
+| --- | --- | --- |
+| `OAS` | Open Agent Spec | The actual-user layer: user-imported tools, skills, model entries, `AGENTS.md`, `MEMORY.md`, and other workspace-level additions. |
+| `OAR` | Open Agent Runtime | The developer-facing runtime package layer: reusable runtime bundles that platform/runtime developers build and publish to initialize workspaces. |
+| `OAH` | Open Agent Harness | The enterprise/platform deployment: Compose or Kubernetes, PostgreSQL, Redis, object storage, controller, sandbox fleet, and multiple workers. |
+| `OAP` | Open Agent Harness Personal | The personal deployment: local daemon, SQLite, local disk, embedded worker, and single-user workflows. |
+
+The debug web UI, CLI, TUI, and future desktop app all connect to the same OAH-compatible API. They should work against either an enterprise server or a local personal daemon.
+
+```mermaid
+flowchart LR
+    Web["oah web/debug UI"]
+    Cli["oah cli"]
+    Tui["oah tui"]
+    Desktop["OAP desktop"]
+    Api["OAH API\nREST + SSE"]
+    Enterprise["OAH enterprise server\nCompose / Kubernetes\nPostgreSQL + Redis + object storage"]
+    Personal["OAP local daemon\nSQLite + local disk\nembedded worker"]
+    Runtime["OAR runtime packages\ndeveloper-facing"]
+    Spec["OAS user specs\nactual-user-facing\nAGENTS.md + MEMORY.md\ntools + skills + models"]
+
+    Web --> Api
+    Cli --> Api
+    Tui --> Api
+    Desktop --> Api
+    Api --> Enterprise
+    Api --> Personal
+    Enterprise --> Runtime
+    Enterprise --> Spec
+    Personal --> Runtime
+    Personal --> Spec
+```
+
+That means OAH and OAP differ by deployment profile, storage backend, worker/sandbox shape, and default directories, not by client protocol.
+It also keeps authorship clear: developers publish OAR runtimes; actual users bring OAS specs into their workspace.
+Clients should read a server profile, such as `GET /api/v1/system/profile`, before enabling OAH-only or OAP-only behavior.
+
 ## Core Model
 
 Four concepts organize the system:
@@ -181,19 +222,58 @@ docs/
 
 ## Quick Start
 
+Choose a deployment shape first:
+
+- **OAP personal daemon**: local single-user use, SQLite, local disk, embedded worker.
+- **OAH enterprise/split stack**: team or platform use, PostgreSQL, Redis, object storage, controller, sandbox workers, Compose or Kubernetes.
+
 ### Prerequisites
 
 - Node.js `24+`
 - `pnpm` `10+`
-- Docker + Docker Compose
+- Docker + Docker Compose for the OAH split stack
+- Helm and `kubectl` for Kubernetes deployments
 
-### 1. Install dependencies
+### Personal local daemon (OAP)
+
+The packaged daemon command is the intended product shape:
+
+```bash
+oah daemon start
+oah tui --workspace /path/to/repo
+```
+
+Until that command is wired into the CLI, the current development equivalent is:
+
+```bash
+pnpm install
+
+export OAH_HOME="${OAH_HOME:-$HOME/.openagentharness}"
+test -f "$OAH_HOME/config/daemon.yaml" || mkdir -p "$OAH_HOME"
+test -f "$OAH_HOME/config/daemon.yaml" || cp -R ./template/deploy-root/. "$OAH_HOME"/
+
+pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts -- \
+  --config "$OAH_HOME/config/daemon.yaml"
+```
+
+Then connect a client to the local daemon:
+
+```bash
+pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui
+pnpm dev:web
+```
+
+### Enterprise local stack (OAH)
+
+Use this path when you want the split service topology locally with PostgreSQL, Redis, MinIO, controller, and sandbox workers.
+
+#### 1. Install dependencies
 
 ```bash
 pnpm install
 ```
 
-### 2. Prepare a deploy root
+#### 2. Prepare a deploy root
 
 ```bash
 mkdir -p /absolute/path/to/oah-deploy-root
@@ -204,7 +284,7 @@ export OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root
 Then add at least one platform model YAML under:
 
 ```text
-$OAH_DEPLOY_ROOT/source/models/
+$OAH_DEPLOY_ROOT/models/
 ```
 
 For the bundled starter runtimes, the expected default model name is:
@@ -213,7 +293,7 @@ For the bundled starter runtimes, the expected default model name is:
 openai-default
 ```
 
-### 3. Start the local stack
+#### 3. Start the local stack
 
 ```bash
 pnpm local:up
@@ -231,7 +311,7 @@ This starts:
 
 The startup flow also runs one storage sync automatically. In the local split topology, `oah-api` does not persist active workspace copies; writable workspace state lives in `oah-sandbox` and flushes through the object-storage backing store.
 
-### 4. Start the web console
+#### 4. Start the web console
 
 ```bash
 pnpm dev:web
@@ -255,6 +335,21 @@ Default local addresses and debug commands:
 | MinIO Console | `http://127.0.0.1:9001` |
 
 ## Other Ways To Run It
+
+### Kubernetes / Helm
+
+For a cluster deployment, use the deploy-root Kubernetes profile as the source of the Helm `server.yaml`:
+
+```bash
+export OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root
+
+helm upgrade --install oah ./deploy/charts/open-agent-harness \
+  --namespace open-agent-harness \
+  --create-namespace \
+  --set-file config.serverYaml="$OAH_DEPLOY_ROOT/config/kubernetes.server.yaml"
+```
+
+See [Deploy and Run](./docs/deploy.en.md) for production values, credentials, persistence, and hardening.
 
 ### Single Workspace Mode
 
@@ -299,6 +394,7 @@ These are initialization templates for new workspaces, not the active runtime co
 ```bash
 pnpm build
 pnpm test
+pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts -- --config "$HOME/.openagentharness/config/daemon.yaml"
 pnpm dev:web
 pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui
 OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync
@@ -306,6 +402,7 @@ OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync -- --include
 OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm local:up
 OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root OAH_SKIP_BUILD=1 OAH_LOCAL_SYNC_ON_CHANGE_ONLY=1 pnpm local:up
 pnpm local:down
+helm upgrade --install oah ./deploy/charts/open-agent-harness --namespace open-agent-harness --create-namespace --set-file config.serverYaml=/absolute/path/to/oah-deploy-root/config/kubernetes.server.yaml
 ```
 
 ## Documentation Map
@@ -318,6 +415,7 @@ pnpm local:down
 | [Engine Overview](./docs/engine/README.en.md) | Runtime lifecycle, context engine, and execution flow |
 | [API Reference](./docs/openapi/README.en.md) | REST + SSE interface docs |
 | [Deploy and Run](./docs/deploy.en.md) | Local, split, and Kubernetes deployment paths |
+| [Home and Deploy Root](./docs/home-and-deploy-root.md) | `OAH_HOME`, `OAH_DEPLOY_ROOT`, local daemon, and deployment profiles |
 | [Deploy Root Template](./template/deploy-root/README.md) | Starter `OAH_DEPLOY_ROOT` layout |
 
 ## Future Vision

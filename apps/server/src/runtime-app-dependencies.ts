@@ -40,6 +40,9 @@ function buildSharedAppDependencies(runtime: BootstrappedRuntime): AppDependenci
       : {}),
     ...(runtime.touchWorkspaceActivity
       ? { touchWorkspaceActivity: runtime.touchWorkspaceActivity }
+      : {}),
+    ...(runtime.workspaceLifecycle
+      ? { workspaceLifecycle: runtime.workspaceLifecycle }
       : {})
   };
 }

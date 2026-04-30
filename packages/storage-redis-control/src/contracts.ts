@@ -51,9 +51,12 @@ export interface WorkerLeaseInput {
   lastSeenAt: string;
   resourceCpuLoadRatio?: number | undefined;
   resourceMemoryUsedRatio?: number | undefined;
+  resourceDiskUsedRatio?: number | undefined;
   resourceLoadAverage1m?: number | undefined;
   resourceMemoryUsedBytes?: number | undefined;
   resourceMemoryTotalBytes?: number | undefined;
+  resourceDiskUsedBytes?: number | undefined;
+  resourceDiskTotalBytes?: number | undefined;
   processMemoryRssBytes?: number | undefined;
   currentSessionId?: string | undefined;
   currentRunId?: string | undefined;

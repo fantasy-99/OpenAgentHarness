@@ -91,6 +91,9 @@ export interface WorkspaceArchiveRecord {
   timezone: string;
   exportedAt?: string | undefined;
   exportPath?: string | undefined;
+  payloadRef?: string | undefined;
+  payloadFormat?: "json_v1" | undefined;
+  payloadBytes?: number | undefined;
   workspace: WorkspaceRecord;
   sessions: Session[];
   runs: Run[];

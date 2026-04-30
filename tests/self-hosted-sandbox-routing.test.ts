@@ -262,8 +262,9 @@ describe("self-hosted sandbox routing", () => {
               ownerBaseUrl: "http://sandbox-a:8787",
               processKind: "standalone",
               state: "idle",
-              resourceCpuLoadRatio: 0.9,
+              resourceCpuLoadRatio: 0.2,
               resourceMemoryUsedRatio: 0.4,
+              resourceDiskUsedRatio: 0.92,
               lastSeenAt: "2026-04-19T15:11:00.000Z",
               leaseTtlMs: 60_000,
               expiresAt: "2026-04-19T15:12:00.000Z",
@@ -278,6 +279,7 @@ describe("self-hosted sandbox routing", () => {
               state: "idle",
               resourceCpuLoadRatio: 0.2,
               resourceMemoryUsedRatio: 0.3,
+              resourceDiskUsedRatio: 0.2,
               lastSeenAt: "2026-04-19T15:11:01.000Z",
               leaseTtlMs: 60_000,
               expiresAt: "2026-04-19T15:12:01.000Z",
@@ -290,6 +292,7 @@ describe("self-hosted sandbox routing", () => {
       maxWorkspacesPerSandbox: 4,
       resourceCpuPressureThreshold: 0.8,
       resourceMemoryPressureThreshold: 0.8,
+      resourceDiskPressureThreshold: 0.85,
       resolveHostAddresses: async (hostname) => {
         switch (hostname) {
           case "sandbox-a":

@@ -45,3 +45,66 @@ spec:
           annotations:
             summary: OAH controller scale-down is blocked
             description: The controller in namespace open-agent-harness is holding scale-down because one or more worker replicas are still blocked.
+        - alert: OAHWorkerDiskPressure
+          expr: max by (namespace) (oah_controller_sandbox_pressured{namespace="open-agent-harness"}) > 0 or max by (namespace) (oah_controller_sandbox_pressure_reserve{namespace="open-agent-harness"}) > 0
+          for: 5m
+          labels:
+            severity: warning
+            component: sandbox
+          annotations:
+            summary: OAH workers are reporting resource pressure
+            description: One or more healthy sandbox workers report CPU, memory, or disk pressure. Check workspace cache disk usage first.
+        - alert: OAHWorkspaceMaterializationSlow
+          expr: max by (namespace) (oah_native_workspace_sync_duration_ms_max{namespace="open-agent-harness",operation=~"sync_remote_to_local|sync_local_to_remote|scan"}) > 120000
+          for: 10m
+          labels:
+            severity: warning
+            component: sandbox
+          annotations:
+            summary: OAH workspace materialization is slow
+            description: Workspace sync/materialization operations exceeded 120s.
+        - alert: OAHObjectStorageSyncFailureRate
+          expr: (sum by (namespace) (increase(oah_object_storage_timeouts_total{namespace="open-agent-harness"}[5m])) + sum by (namespace) (increase(oah_object_storage_throttles_total{namespace="open-agent-harness"}[5m]))) > 5
+          for: 5m
+          labels:
+            severity: warning
+            component: sandbox
+          annotations:
+            summary: OAH object-storage sync is failing
+            description: Object-storage timeouts or throttles exceeded five events in five minutes.
+        - alert: OAHObjectStorageLatencyHigh
+          expr: max by (namespace) (oah_object_storage_duration_ms_max{namespace="open-agent-harness",operation=~"get|put|delete|list|bundle_create|bundle_extract"}) > 30000
+          for: 10m
+          labels:
+            severity: warning
+            component: sandbox
+          annotations:
+            summary: OAH object-storage operations are slow
+            description: Object-storage operation latency exceeded 30s.
+        - alert: OAHRedisReadyQueueDepthHigh
+          expr: max by (namespace) (oah_controller_ready_session_count{namespace="open-agent-harness"}) > 100
+          for: 10m
+          labels:
+            severity: warning
+            component: controller
+          annotations:
+            summary: OAH Redis ready queue depth is high
+            description: Ready session backlog exceeded 100.
+        - alert: OAHRedisMemoryHigh
+          expr: max by (namespace) (redis_memory_used_bytes{namespace="open-agent-harness"} / clamp_min(redis_memory_max_bytes{namespace="open-agent-harness"}, 1)) > 0.85
+          for: 10m
+          labels:
+            severity: warning
+            component: redis
+          annotations:
+            summary: OAH Redis memory usage is high
+            description: Redis exporter reports memory usage above 85%. Check ready queue depth, stream retention, and Redis maxmemory policy.
+        - alert: OAHPostgresBloatHigh
+          expr: max by (namespace,relname) (pg_stat_user_tables_n_dead_tup{namespace="open-agent-harness"} / clamp_min(pg_stat_user_tables_n_live_tup{namespace="open-agent-harness"} + pg_stat_user_tables_n_dead_tup{namespace="open-agent-harness"}, 1)) > 0.2
+          for: 30m
+          labels:
+            severity: warning
+            component: postgres
+          annotations:
+            summary: OAH PostgreSQL table bloat is high
+            description: PostgreSQL exporter reports a high dead tuple ratio for an OAH table. Run the production storage VACUUM/retention runbook.

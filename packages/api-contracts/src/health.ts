@@ -10,7 +10,7 @@ export const sessionSerialBoundarySchema = z.literal("session");
 
 export const healthCheckStatusSchema = z.enum(["up", "down", "not_configured"]);
 export const readinessStatusSchema = z.enum(["ready", "not_ready"]);
-export const readinessReasonSchema = z.enum(["draining", "checks_down"]);
+export const readinessReasonSchema = z.enum(["draining", "worker_disk_pressure", "checks_down"]);
 export const healthStatusSchema = z.enum(["ok", "degraded"]);
 export const runtimeProcessSchema = z.object({
   mode: z.enum(["api_embedded_worker", "api_only", "standalone_worker"]),
@@ -34,9 +34,12 @@ export const workerLeaseSchema = z.object({
   health: workerHealthSchema,
   resourceCpuLoadRatio: z.number().min(0).optional(),
   resourceMemoryUsedRatio: z.number().min(0).max(1).optional(),
+  resourceDiskUsedRatio: z.number().min(0).max(1).optional(),
   resourceLoadAverage1m: z.number().min(0).optional(),
   resourceMemoryUsedBytes: z.number().int().min(0).optional(),
   resourceMemoryTotalBytes: z.number().int().min(0).optional(),
+  resourceDiskUsedBytes: z.number().int().min(0).optional(),
+  resourceDiskTotalBytes: z.number().int().min(0).optional(),
   processMemoryRssBytes: z.number().int().min(0).optional(),
   currentSessionId: z.string().optional(),
   currentRunId: z.string().optional(),
@@ -212,7 +215,28 @@ export const readinessReportSchema = z.object({
   status: readinessStatusSchema,
   reason: readinessReasonSchema.optional(),
   draining: z.boolean().optional(),
-  checks: healthChecksSchema
+  checks: healthChecksSchema,
+  resources: z
+    .object({
+      workerDisk: z
+        .object({
+          status: z.enum(["ok", "pressure"]),
+          disks: z.array(
+            z.object({
+              path: z.string(),
+              statPath: z.string(),
+              status: z.enum(["ok", "pressure", "unavailable"]),
+              threshold: z.number().min(0).max(1),
+              usedRatio: z.number().min(0).max(1).optional(),
+              usedBytes: z.number().int().min(0).optional(),
+              totalBytes: z.number().int().min(0).optional(),
+              error: z.string().optional()
+            })
+          )
+        })
+        .optional()
+    })
+    .optional()
 });
 
 export type WorkerMode = z.infer<typeof workerModeSchema>;

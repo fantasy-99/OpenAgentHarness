@@ -111,6 +111,16 @@ llm:
 > **tip**
 > `workspace_backing_store` 只负责受管 workspace 的 `externalRef` / backing store 语义。active workspace 的本地改动不会按 `mirrors.sync_on_change` 实时回写，而是走 workspace materialization 的 idle / drain flush。
 
+生产环境建议同时设置 worker 环境变量：
+
+| 变量 | 说明 |
+| --- | --- |
+| `OAH_WORKER_DISK_METRICS_PATH` | worker lease 上报磁盘使用率时检查的挂载路径 |
+| `OAH_WORKER_DISK_READINESS_THRESHOLD` | worker 本机路径超过该使用率时 `/readyz` 返回 `worker_disk_pressure` |
+| `OAH_OBJECT_STORAGE_SYNC_MAX_OBJECTS` | 单次 workspace/object-store 同步允许的最大对象数 |
+| `OAH_OBJECT_STORAGE_SYNC_MAX_BYTES` | 单次 workspace/object-store 同步允许的最大总字节数 |
+| `OAH_OBJECT_STORAGE_SYNC_MAX_FILE_BYTES` | 单文件允许同步到对象存储的最大字节数 |
+
 ### `sandbox`
 
 | 字段 | 类型 | 说明 |
@@ -121,6 +131,7 @@ llm:
 | `fleet.warm_empty_count` | number | 额外保持的空 sandbox 数，用于让新 workspace 随时快速绑定。远端 provider 默认 `1`，embedded 默认 `0` |
 | `fleet.resource_cpu_pressure_threshold` | number | sandbox 资源压力阈值；CPU load ratio 超过该值时会优先把新 ownerless workspace 放到空 sandbox。默认 `0.8` |
 | `fleet.resource_memory_pressure_threshold` | number | sandbox 内存压力阈值；memory used ratio 超过该值时会优先把新 ownerless workspace 放到空 sandbox。默认 `0.8` |
+| `fleet.resource_disk_pressure_threshold` | number | sandbox 磁盘压力阈值；disk used ratio 超过该值时会优先把新 ownerless workspace 放到空 sandbox，并让 controller 额外保留迁移余量。默认 `0.85` |
 | `fleet.max_workspaces_per_sandbox` | number | 单个真实 sandbox 内允许承载的 workspace 上限；默认 `32` |
 | `fleet.ownerless_pool` | string | 无 `ownerId` 的 workspace 如何落入 sandbox。`shared` 表示共享池，`dedicated` 表示每个 workspace 独立 sandbox |
 | `self_hosted.base_url` | string | `provider=self_hosted` 时必填。指向 self-hosted sandbox 内 standalone worker 暴露的 `/internal/v1` 根地址 |
@@ -143,7 +154,7 @@ llm:
 > `self_hosted` 和 `e2b` 的共同语义是：`oah-api` 不直接执行业务 run，而是把 workspace 路由到真实 sandbox；standalone worker 在 sandbox 内部持有活跃 workspace、本地文件状态和命令执行上下文。
 
 > **tip**
-> 当前 controller 已经开始把 sandbox fleet 视为一等调度对象：同一 `ownerId` 会优先复用同一真实 sandbox；未提供 `ownerId` 的 workspace 默认进入共享池。ownerless workspace 会先复用 CPU 和内存都未压线的已有 sandbox；任一资源超过阈值后，才使用 `warm_empty_count` 额外保留的空 sandbox。
+> 当前 controller 已经开始把 sandbox fleet 视为一等调度对象：同一 `ownerId` 会优先复用同一真实 sandbox；未提供 `ownerId` 的 workspace 默认进入共享池。ownerless workspace 会先复用 CPU、内存和磁盘都未压线的已有 sandbox；任一资源超过阈值后，才使用 `warm_empty_count` 额外保留的空 sandbox。
 
 > **tip**
 > 从当前版本开始，`createSession` 成功后会异步预热对应 workspace：如果配置了远端 sandbox，会提前触发 sandbox 绑定；如果启用了 workspace materialization，也会提前拿到 active workspace copy。配合远端 provider 默认的 `fleet.warm_empty_count = 1`，可以显著缩短首条消息的冷启动等待，但首次 materialization 很重时仍会受到 workspace 体积影响。
@@ -401,7 +412,27 @@ openai-default:
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `OAH_HISTORY_EVENT_RETENTION_DAYS` | `7` | Postgres 模式下历史事件保留天数 |
+| `OAH_STORAGE_ADMIN_POSTGRES_OVERVIEW_COUNTS` | `cached` | Storage overview 的 Postgres 表行数模式：`cached`、`exact`、`estimated` 或 `skip` |
+| `OAH_STORAGE_ADMIN_POSTGRES_OVERVIEW_COUNT_TTL_MS` | `30000` | `cached` 模式下 Postgres overview 表行数缓存 TTL，上限 1 小时 |
+| `OAH_STORAGE_ADMIN_POSTGRES_DEEP_OFFSET_LIMIT` | `10000` | Storage table 浏览允许的最大 offset；超过后要求使用响应里的 `nextCursor` 走 keyset 分页 |
+| `OAH_STORAGE_ADMIN_ALLOW_FULL_ROW_SEARCH` | 未设置 | 设置后允许未带 `searchMode=full_row` 的 Postgres 全行搜索；默认要求显式 opt-in |
 | `OAH_STORAGE_ADMIN_REDIS_OVERVIEW_KEY_LIMIT` | `200` | Storage overview 中每类 Redis session queue / lock / event key 最多扫描并返回的数量，上限 `10000`；超过后响应会带 truncated 标记 |
+| `OAH_METADATA_RETENTION_ENABLED` | worker/embedded worker 进程为 `true`，API-only 为 `false` | 是否启动 Postgres 元数据保留清理；建议由 worker 执行，API-only 保持轻量 |
+| `OAH_METADATA_RETENTION_INTERVAL_MS` | `3600000` | Postgres 元数据保留清理间隔，最小 1 分钟 |
+| `OAH_METADATA_RETENTION_BATCH_LIMIT` | `1000` | 每轮每类元数据最多删除行数，上限 `10000` |
+| `OAH_SESSION_EVENT_RETENTION_DAYS` | `14` | Postgres `session_events` 保留天数；设为 `0` 可关闭该类清理 |
+| `OAH_RUN_RETENTION_DAYS` | `0` | 已结束 run 及其级联明细的保留天数；默认关闭，设为正数才清理 terminal run |
+| `OAH_POSTGRES_ARCHIVE_MAX_COMPONENT_ROWS` | 见分项默认值 | deleted workspace/session 归档构建时每类明细行的统一上限，防止单个 archive 在内存中无限膨胀 |
+| `OAH_POSTGRES_ARCHIVE_MAX_SESSIONS` | `10000` | 单个 Postgres archive 最多包含的 session 数 |
+| `OAH_POSTGRES_ARCHIVE_MAX_RUNS` | `50000` | 单个 Postgres archive 最多包含的 run 数 |
+| `OAH_POSTGRES_ARCHIVE_MAX_MESSAGES` | `100000` | 单个 Postgres archive 最多包含的 message 数 |
+| `OAH_POSTGRES_ARCHIVE_MAX_RUNTIME_MESSAGES` | `100000` | 单个 Postgres archive 最多包含的 runtime message 数 |
+| `OAH_POSTGRES_ARCHIVE_MAX_RUN_STEPS` | `100000` | 单个 Postgres archive 最多包含的 run step 数 |
+| `OAH_POSTGRES_ARCHIVE_MAX_TOOL_CALLS` | `100000` | 单个 Postgres archive 最多包含的 tool call 数 |
+| `OAH_POSTGRES_ARCHIVE_MAX_HOOK_RUNS` | `100000` | 单个 Postgres archive 最多包含的 hook run 数 |
+| `OAH_POSTGRES_ARCHIVE_MAX_ARTIFACTS` | `100000` | 单个 Postgres archive 最多包含的 artifact 数 |
+| `OAH_POSTGRES_ARCHIVE_PAYLOAD_DIR` | `runtime_state_dir/archive-payloads` | Postgres deleted workspace/session archive 明细 payload 的外置目录；新归档只在 `archives` 表保留轻量引用 |
+| `OAH_ARCHIVE_EXPORT_BUNDLE_RETENTION_DAYS` | 未设置 | 归档 SQLite bundle 文件保留天数；当前导出器选项支持该策略，未设置时不删除 bundle 文件 |
 | `OAH_RUNTIME_DEBUG` | 未设置 | 设置后向标准输出镜像 runtime debug 日志 |
 | `OAH_DOCKER_HOST_ALIAS` | `host.docker.internal` | 当服务运行在 Docker 内且 HTTP MCP server 配置为 loopback 地址时，用于替换 `127.0.0.1` / `localhost` 的宿主机别名 |
 

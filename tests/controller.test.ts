@@ -149,7 +149,8 @@ describe("controller", () => {
         ownerlessPool: "shared",
         warmEmptyCount: 0,
         resourceCpuPressureThreshold: 0.8,
-        resourceMemoryPressureThreshold: 0.8
+        resourceMemoryPressureThreshold: 0.8,
+        resourceDiskPressureThreshold: 0.85
       },
       placements: [
         {
@@ -205,6 +206,12 @@ describe("controller", () => {
       warmEmptySandboxes: 0,
       resourceCpuPressureThreshold: 0.8,
       resourceMemoryPressureThreshold: 0.8,
+      resourceDiskPressureThreshold: 0.85,
+      observedSandboxes: 0,
+      healthySandboxes: 0,
+      pressuredSandboxes: 0,
+      emptySandboxes: 0,
+      pressureReserveSandboxes: 0,
       trackedWorkspaces: 6,
       ownerScopedWorkspaces: 4,
       ownerlessWorkspaces: 2,
@@ -258,7 +265,8 @@ describe("controller", () => {
       ownerlessPool: "dedicated",
       warmEmptyCount: 1,
       resourceCpuPressureThreshold: 0.8,
-      resourceMemoryPressureThreshold: 0.8
+      resourceMemoryPressureThreshold: 0.8,
+      resourceDiskPressureThreshold: 0.85
     });
   });
 
@@ -293,7 +301,8 @@ describe("controller", () => {
       ownerlessPool: "shared",
       warmEmptyCount: 1,
       resourceCpuPressureThreshold: 0.8,
-      resourceMemoryPressureThreshold: 0.8
+      resourceMemoryPressureThreshold: 0.8,
+      resourceDiskPressureThreshold: 0.85
     });
   });
 
@@ -308,7 +317,8 @@ describe("controller", () => {
         ownerlessPool: "shared",
         warmEmptyCount: 1,
         resourceCpuPressureThreshold: 0.8,
-        resourceMemoryPressureThreshold: 0.8
+        resourceMemoryPressureThreshold: 0.8,
+        resourceDiskPressureThreshold: 0.85
       },
       placements: [
         {
@@ -332,6 +342,80 @@ describe("controller", () => {
       warmEmptySandboxes: 1,
       desiredSandboxes: 3,
       capped: false
+    });
+  });
+
+  it("summarizes observed sandbox inventory and pressure from worker leases", () => {
+    const fleet = summarizeSandboxFleet({
+      config: {
+        providerKind: "self_hosted",
+        managedByController: true,
+        minCount: 1,
+        maxCount: 8,
+        maxWorkspacesPerSandbox: 4,
+        ownerlessPool: "shared",
+        warmEmptyCount: 1,
+        resourceCpuPressureThreshold: 0.8,
+        resourceMemoryPressureThreshold: 0.8,
+        resourceDiskPressureThreshold: 0.85
+      },
+      placements: [
+        {
+          workspaceId: "ws_1",
+          version: "live",
+          ownerWorkerId: "sandbox-a",
+          state: "idle",
+          updatedAt: "2026-04-15T00:00:00.000Z"
+        }
+      ] satisfies RedisWorkspacePlacementEntry[],
+      activeWorkers: [
+        {
+          workerId: "worker-a-1",
+          runtimeInstanceId: "sandbox-a",
+          processKind: "standalone",
+          state: "idle",
+          health: "healthy",
+          resourceDiskUsedRatio: 0.9,
+          lastSeenAt: "2026-04-15T00:00:00.000Z",
+          leaseTtlMs: 5_000,
+          expiresAt: "2026-04-15T00:00:05.000Z",
+          lastSeenAgeMs: 0
+        },
+        {
+          workerId: "worker-b-1",
+          runtimeInstanceId: "sandbox-b",
+          processKind: "standalone",
+          state: "idle",
+          health: "healthy",
+          resourceDiskUsedRatio: 0.1,
+          lastSeenAt: "2026-04-15T00:00:00.000Z",
+          leaseTtlMs: 5_000,
+          expiresAt: "2026-04-15T00:00:05.000Z",
+          lastSeenAgeMs: 0
+        },
+        {
+          workerId: "worker-c-1",
+          runtimeInstanceId: "sandbox-c",
+          processKind: "standalone",
+          state: "idle",
+          health: "late",
+          lastSeenAt: "2026-04-15T00:00:00.000Z",
+          leaseTtlMs: 5_000,
+          expiresAt: "2026-04-15T00:00:05.000Z",
+          lastSeenAgeMs: 4_500
+        }
+      ] satisfies RedisWorkerRegistryEntry[]
+    });
+
+    expect(fleet).toMatchObject({
+      observedSandboxes: 3,
+      healthySandboxes: 2,
+      pressuredSandboxes: 1,
+      emptySandboxes: 1,
+      pressureReserveSandboxes: 1,
+      logicalSandboxes: 1,
+      warmEmptySandboxes: 1,
+      desiredSandboxes: 3
     });
   });
 
@@ -1074,7 +1158,70 @@ describe("controller", () => {
       ] satisfies RedisWorkerRegistryEntry[],
       maxWorkspacesPerSandbox: 4,
       resourceCpuPressureThreshold: 0.8,
-      resourceMemoryPressureThreshold: 0.8
+      resourceMemoryPressureThreshold: 0.8,
+      resourceDiskPressureThreshold: 0.85
+    });
+
+    expect(operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "assign_unassigned:ws_ownerless_new",
+          targetWorkerId: "worker_2",
+          targetWorkerReasons: expect.arrayContaining(["resource_available", "empty_sandbox"])
+        })
+      ])
+    );
+  });
+
+  it("treats disk pressure as a placement pressure signal", () => {
+    const operations = buildPlacementExecutionOperations({
+      placements: [
+        {
+          workspaceId: "ws_existing",
+          version: "live",
+          ownerWorkerId: "worker_1",
+          state: "idle",
+          updatedAt: "2026-04-15T00:00:00.000Z"
+        },
+        {
+          workspaceId: "ws_ownerless_new",
+          version: "live",
+          state: "unassigned",
+          updatedAt: "2026-04-15T00:00:01.000Z"
+        }
+      ] satisfies RedisWorkspacePlacementEntry[],
+      activeWorkers: [
+        {
+          workerId: "worker_1",
+          processKind: "standalone",
+          state: "idle",
+          health: "healthy",
+          resourceCpuLoadRatio: 0.1,
+          resourceMemoryUsedRatio: 0.2,
+          resourceDiskUsedRatio: 0.92,
+          lastSeenAt: "2026-04-15T00:00:00.000Z",
+          leaseTtlMs: 5_000,
+          expiresAt: "2026-04-15T00:00:05.000Z",
+          lastSeenAgeMs: 0
+        },
+        {
+          workerId: "worker_2",
+          processKind: "standalone",
+          state: "idle",
+          health: "healthy",
+          resourceCpuLoadRatio: 0.1,
+          resourceMemoryUsedRatio: 0.2,
+          resourceDiskUsedRatio: 0.2,
+          lastSeenAt: "2026-04-15T00:00:00.000Z",
+          leaseTtlMs: 5_000,
+          expiresAt: "2026-04-15T00:00:05.000Z",
+          lastSeenAgeMs: 0
+        }
+      ] satisfies RedisWorkerRegistryEntry[],
+      maxWorkspacesPerSandbox: 4,
+      resourceCpuPressureThreshold: 0.8,
+      resourceMemoryPressureThreshold: 0.8,
+      resourceDiskPressureThreshold: 0.85
     });
 
     expect(operations).toEqual(
@@ -1392,6 +1539,113 @@ describe("controller", () => {
       outcome: "scaled",
       at: snapshot.lastRebalanceAt
     });
+    await controller.close();
+  });
+
+  it("reconciles sandbox fleet demand through the scale target when workload pressure is low", async () => {
+    const reconciliations: number[] = [];
+    const controller = new RedisController({
+      queue: {
+        async getSchedulingPressure() {
+          return {
+            readySessionCount: 0
+          };
+        }
+      } as never,
+      registry: {
+        async heartbeat() {},
+        async remove() {},
+        async listActive() {
+          return [
+            {
+              workerId: "worker_1",
+              runtimeInstanceId: "sandbox-a",
+              processKind: "standalone",
+              state: "idle",
+              lastSeenAt: "2026-04-14T00:00:00.000Z",
+              leaseTtlMs: 5_000,
+              expiresAt: "2026-04-14T00:00:05.000Z",
+              lastSeenAgeMs: 0,
+              health: "healthy"
+            }
+          ] satisfies RedisWorkerRegistryEntry[];
+        }
+      },
+      placementRegistry: {
+        async listAll() {
+          return [
+            {
+              workspaceId: "ws_owner_a",
+              version: "live",
+              ownerId: "owner_a",
+              ownerWorkerId: "sandbox-a",
+              state: "idle",
+              updatedAt: "2026-04-14T00:00:00.000Z"
+            },
+            {
+              workspaceId: "ws_owner_b",
+              version: "live",
+              ownerId: "owner_b",
+              state: "unassigned",
+              updatedAt: "2026-04-14T00:00:01.000Z"
+            },
+            {
+              workspaceId: "ws_ownerless",
+              version: "live",
+              state: "unassigned",
+              updatedAt: "2026-04-14T00:00:02.000Z"
+            }
+          ] satisfies RedisWorkspacePlacementEntry[];
+        }
+      } as never,
+      config: {
+        minReplicas: 1,
+        maxReplicas: 6,
+        readySessionsPerCapacityUnit: 1,
+        reservedSubagentCapacity: 0,
+        scaleIntervalMs: 5_000,
+        scaleUpCooldownMs: 1,
+        scaleDownCooldownMs: 60_000,
+        scaleUpSampleSize: 1,
+        scaleDownSampleSize: 1,
+        scaleUpBusyRatioThreshold: 0.75,
+        scaleUpMaxReadyAgeMs: 2_000
+      },
+      sandboxConfig: {
+        providerKind: "self_hosted",
+        managedByController: true,
+        minCount: 1,
+        maxCount: 6,
+        maxWorkspacesPerSandbox: 4,
+        ownerlessPool: "shared",
+        warmEmptyCount: 1,
+        resourceCpuPressureThreshold: 0.8,
+        resourceMemoryPressureThreshold: 0.8,
+        resourceDiskPressureThreshold: 0.85
+      },
+      scaleTarget: {
+        kind: "test-target",
+        async reconcile(input) {
+          reconciliations.push(input.desiredReplicas);
+          return {
+            kind: "test-target",
+            attempted: true,
+            applied: true,
+            desiredReplicas: input.desiredReplicas,
+            observedReplicas: 1,
+            appliedReplicas: input.desiredReplicas,
+            outcome: "scaled",
+            at: input.timestamp
+          };
+        }
+      }
+    });
+
+    const snapshot = await controller.evaluateNow("interval");
+    expect(snapshot.sandboxFleet?.desiredSandboxes).toBe(4);
+    expect(snapshot.suggestedReplicas).toBe(4);
+    expect(snapshot.scaleTarget?.desiredReplicas).toBe(4);
+    expect(reconciliations).toEqual([4]);
     await controller.close();
   });
 
@@ -3415,6 +3669,14 @@ describe("controller", () => {
           maxWorkspacesPerSandbox: 4,
           ownerlessPool: "shared",
           warmEmptySandboxes: 1,
+          resourceCpuPressureThreshold: 0.8,
+          resourceMemoryPressureThreshold: 0.8,
+          resourceDiskPressureThreshold: 0.85,
+          observedSandboxes: 3,
+          healthySandboxes: 2,
+          pressuredSandboxes: 1,
+          emptySandboxes: 1,
+          pressureReserveSandboxes: 1,
           trackedWorkspaces: 5,
           ownerScopedWorkspaces: 4,
           ownerlessWorkspaces: 1,
@@ -3607,6 +3869,11 @@ describe("controller", () => {
     expect(metrics).toContain("oah_controller_sandbox_ownerless_workspaces 1");
     expect(metrics).toContain("oah_controller_sandbox_shared 1");
     expect(metrics).toContain("oah_controller_sandbox_warm_empty 1");
+    expect(metrics).toContain("oah_controller_sandbox_observed 3");
+    expect(metrics).toContain("oah_controller_sandbox_healthy 2");
+    expect(metrics).toContain("oah_controller_sandbox_pressured 1");
+    expect(metrics).toContain("oah_controller_sandbox_empty 1");
+    expect(metrics).toContain("oah_controller_sandbox_pressure_reserve 1");
     expect(metrics).toContain("oah_controller_sandbox_capped 0");
     expect(metrics).toContain("oah_controller_placement_owned_by_active_workers 2");
     expect(metrics).toContain("oah_controller_placement_owned_by_late_workers 1");

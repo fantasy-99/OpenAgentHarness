@@ -22,7 +22,7 @@ pnpm install
 mkdir -p /absolute/path/to/oah-deploy-root
 cp -R ./template/deploy-root/. /absolute/path/to/oah-deploy-root
 export OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root
-# Add at least one model YAML under $OAH_DEPLOY_ROOT/source/models/
+# Add at least one model YAML under $OAH_DEPLOY_ROOT/models/
 pnpm local:up
 ```
 
@@ -83,8 +83,8 @@ Optional flags: `--tool-dir`, `--skill-dir`, `--host`, `--port`
 | Command | Purpose |
 | --- | --- |
 | `pnpm install` | Install dependencies |
-| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync` | Sync readonly data from the deploy root to MinIO (does not include `source/workspaces` by default) |
-| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync -- --include-workspaces` | Also sync `source/workspaces` to MinIO |
+| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync` | Sync readonly data from the deploy root to MinIO (does not include `workspaces` by default) |
+| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync -- --include-workspaces` | Also sync `workspaces` to MinIO |
 | `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm local:up` | Start the full local stack (`oah-api` / `oah-controller` / `oah-compose-scaler` / `oah-sandbox`) |
 | `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root OAH_SKIP_BUILD=1 pnpm local:up` | Reuse an already-built local OAH image and skip Docker build |
 | `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root OAH_LOCAL_SYNC_ON_CHANGE_ONLY=1 pnpm local:up` | Keep the MinIO/rclone object-storage simulation, but resync readonly sources only when they changed |

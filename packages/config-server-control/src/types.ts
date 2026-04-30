@@ -61,6 +61,7 @@ export interface ServerConfig {
           warm_empty_count?: number | undefined;
           resource_cpu_pressure_threshold?: number | undefined;
           resource_memory_pressure_threshold?: number | undefined;
+          resource_disk_pressure_threshold?: number | undefined;
           max_workspaces_per_sandbox?: number | undefined;
           ownerless_pool?: "shared" | "dedicated" | undefined;
         }

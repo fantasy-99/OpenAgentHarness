@@ -231,6 +231,7 @@ async function scoreCandidateBaseUrls(options: {
   activeWorkers?: WorkerRegistryEntry[] | undefined;
   resourceCpuPressureThreshold?: number | undefined;
   resourceMemoryPressureThreshold?: number | undefined;
+  resourceDiskPressureThreshold?: number | undefined;
   resolveHostAddresses: (hostname: string) => Promise<string[]>;
 }): Promise<CandidateScore[]> {
   const placementEndpoints = new Map<string, Set<string>>();
@@ -259,6 +260,7 @@ async function scoreCandidateBaseUrls(options: {
         .map((worker) => {
           const cpuThreshold = Math.max(0.01, options.resourceCpuPressureThreshold ?? 0.8);
           const memoryThreshold = Math.max(0.01, options.resourceMemoryPressureThreshold ?? 0.8);
+          const diskThreshold = Math.max(0.01, options.resourceDiskPressureThreshold ?? 0.85);
           const cpuPressure =
             typeof worker.resourceCpuLoadRatio === "number" && Number.isFinite(worker.resourceCpuLoadRatio)
               ? worker.resourceCpuLoadRatio / cpuThreshold
@@ -267,7 +269,11 @@ async function scoreCandidateBaseUrls(options: {
             typeof worker.resourceMemoryUsedRatio === "number" && Number.isFinite(worker.resourceMemoryUsedRatio)
               ? worker.resourceMemoryUsedRatio / memoryThreshold
               : undefined;
-          return Math.max(cpuPressure ?? 0, memoryPressure ?? 0);
+          const diskPressure =
+            typeof worker.resourceDiskUsedRatio === "number" && Number.isFinite(worker.resourceDiskUsedRatio)
+              ? worker.resourceDiskUsedRatio / diskThreshold
+              : undefined;
+          return Math.max(cpuPressure ?? 0, memoryPressure ?? 0, diskPressure ?? 0);
         });
       const resourcePressure = resourcePressures.length > 0 ? Math.max(...resourcePressures) : 0;
       const foreignOwners = new Set<string>();
@@ -354,6 +360,7 @@ export async function resolveSelfHostedSandboxCreateBaseUrl(options: {
   maxWorkspacesPerSandbox?: number | undefined;
   resourceCpuPressureThreshold?: number | undefined;
   resourceMemoryPressureThreshold?: number | undefined;
+  resourceDiskPressureThreshold?: number | undefined;
   resolveHostAddresses?: ((hostname: string) => Promise<string[]>) | undefined;
   waitForAvailableReplicaMs?: number | undefined;
   pollIntervalMs?: number | undefined;
@@ -417,6 +424,7 @@ export async function resolveSelfHostedSandboxCreateBaseUrl(options: {
       activeWorkers,
       resourceCpuPressureThreshold: options.resourceCpuPressureThreshold,
       resourceMemoryPressureThreshold: options.resourceMemoryPressureThreshold,
+      resourceDiskPressureThreshold: options.resourceDiskPressureThreshold,
       resolveHostAddresses
     });
     const pinnedOwners = await mapPinnedOwnerCandidates({

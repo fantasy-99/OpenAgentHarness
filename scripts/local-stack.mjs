@@ -25,6 +25,7 @@ const composeProjectName =
   process.env.COMPOSE_PROJECT_NAME || path.basename(repoRoot).toLowerCase().replace(/[^a-z0-9]/g, "");
 const readonlyObjectStorageVolumeKeys = ["oah-runtimes", "oah-models", "oah-tools", "oah-skills", "oah-archives"];
 const readonlyObjectStorageSourceDirs = ["runtimes", "models", "tools", "skills", "archives"];
+const deployAssetDirs = ["runtimes", "models", "tools", "skills", "workspaces", "archives"];
 const workspaceSyncBinaryBasename = process.platform === "win32" ? "oah-workspace-sync.exe" : "oah-workspace-sync";
 
 if (mode !== "up" && mode !== "down") {
@@ -227,16 +228,44 @@ function seedDeployRootFromTemplate(deployRoot) {
   return true;
 }
 
+function hasDeployAssetDirectories(root) {
+  return deployAssetDirs.some((directoryName) => existsSync(path.join(root, directoryName)));
+}
+
+function resolveDeployAssetRoot(deployRoot) {
+  if (hasDeployAssetDirectories(deployRoot)) {
+    return deployRoot;
+  }
+
+  const legacySourceRoot = path.join(deployRoot, "source");
+  if (existsSync(legacySourceRoot)) {
+    return legacySourceRoot;
+  }
+
+  return deployRoot;
+}
+
+function dockerServerConfigCandidates(deployRoot) {
+  return [
+    path.join(deployRoot, "config", "server.docker.yaml"),
+    path.join(deployRoot, "server.docker.yaml")
+  ];
+}
+
+function findDockerServerConfigPath(deployRoot) {
+  return dockerServerConfigCandidates(deployRoot).find((candidate) => existsSync(candidate));
+}
+
 function ensureLocalRuntimeSources(deployRoot) {
-  const sourceRoot = path.join(deployRoot, "source");
-  const runtimeSourceRoot = path.join(sourceRoot, "runtimes");
+  const assetRoot = resolveDeployAssetRoot(deployRoot);
+  const runtimeSourceRoot = path.join(assetRoot, "runtimes");
   if (directoryHasSubdirectories(runtimeSourceRoot)) {
     return;
   }
 
-  mkdirSync(sourceRoot, { recursive: true });
+  mkdirSync(assetRoot, { recursive: true });
 
-  const legacyBlueprintRoot = path.join(sourceRoot, "blueprints");
+  const legacyBlueprintRoot = path.join(assetRoot, "blueprints");
   if (directoryHasSubdirectories(legacyBlueprintRoot)) {
     renameSync(legacyBlueprintRoot, runtimeSourceRoot);
     console.log(
@@ -245,7 +274,7 @@ function ensureLocalRuntimeSources(deployRoot) {
     return;
   }
 
-  const bundledRuntimeRoot = path.join(deployTemplateRoot, "source", "runtimes");
+  const bundledRuntimeRoot = path.join(resolveDeployAssetRoot(deployTemplateRoot), "runtimes");
   if (directoryHasSubdirectories(bundledRuntimeRoot)) {
     copyDirectoryChildren(bundledRuntimeRoot, runtimeSourceRoot);
     console.log(`Seeded ${runtimeSourceRoot} from bundled deploy template runtimes.`);
@@ -263,27 +292,30 @@ function prepareDockerServerConfigs() {
   const deployRoot = path.resolve(requestedDeployRoot);
   process.env.OAH_DEPLOY_ROOT = deployRoot;
 
-  const sourceConfigPath = path.join(deployRoot, "server.docker.yaml");
-  if (!existsSync(sourceConfigPath)) {
+  let sourceConfigPath = findDockerServerConfigPath(deployRoot);
+  if (!sourceConfigPath) {
     const seededFromTemplate = seedDeployRootFromTemplate(deployRoot);
+    sourceConfigPath = findDockerServerConfigPath(deployRoot);
 
-    if (!existsSync(sourceConfigPath)) {
+    if (!sourceConfigPath) {
+      const preferredConfigPath = path.join(deployRoot, "config", "server.docker.yaml");
       const exampleConfigPath = path.join(repoRoot, "server.example.yaml");
       if (!existsSync(exampleConfigPath)) {
         console.error(
-          `Missing ${sourceConfigPath} and no deploy template or server.example.yaml available to seed it from.`
+          `Missing ${dockerServerConfigCandidates(deployRoot).join(" or ")} and no deploy template or server.example.yaml available to seed it from.`
         );
         process.exit(1);
       }
 
-      mkdirSync(deployRoot, { recursive: true });
-      copyFileSync(exampleConfigPath, sourceConfigPath);
+      mkdirSync(path.dirname(preferredConfigPath), { recursive: true });
+      copyFileSync(exampleConfigPath, preferredConfigPath);
+      sourceConfigPath = preferredConfigPath;
       console.log(
         `Seeded ${sourceConfigPath} from server.example.yaml. Edit it to point at your Postgres/Redis/MinIO if the defaults do not fit.`
       );
     } else if (seededFromTemplate) {
       console.log(
-        `Using bundled deploy template at ${sourceConfigPath}. Add your model YAML files under ${path.join(deployRoot, "source", "models")} before deploying.`
+        `Using bundled deploy template at ${sourceConfigPath}. Add your model YAML files under ${path.join(resolveDeployAssetRoot(deployRoot), "models")} before deploying.`
       );
     }
   }
@@ -653,7 +685,7 @@ function tryNativeReadonlyObjectStorageSourceFingerprint(deployRoot) {
     return undefined;
   }
 
-  const sourceRoot = path.join(deployRoot, "source");
+  const sourceRoot = resolveDeployAssetRoot(deployRoot);
   const directories = readonlyObjectStorageSourceDirs.map((directoryName) => ({
     label: directoryName,
     rootDir: path.join(sourceRoot, directoryName),
@@ -715,7 +747,7 @@ function readonlyObjectStorageSourceFingerprint(deployRoot) {
     return nativeFingerprint;
   }
 
-  const sourceRoot = path.join(deployRoot, "source");
+  const sourceRoot = resolveDeployAssetRoot(deployRoot);
   const hash = createHash("sha256");
   for (const directoryName of readonlyObjectStorageSourceDirs) {
     appendDirectoryFingerprint(hash, path.join(sourceRoot, directoryName), directoryName);

@@ -17,7 +17,30 @@ import {
 import { AppError } from "@oah/engine-core";
 
 import { createParamsSchema } from "../context.js";
+import { readRequestBodyBuffer } from "../proxy-utils.js";
 import type { AppDependencies } from "../types.js";
+
+const workspaceLifecycleOperations = new Set(["hydrate", "flush", "evict", "delete", "repair_placement"] as const);
+
+function parseWorkspaceLifecycleRequest(body: unknown): {
+  operation: "hydrate" | "flush" | "evict" | "delete" | "repair_placement";
+  force?: boolean | undefined;
+} {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new AppError(400, "invalid_lifecycle_request", "Workspace lifecycle request body must be an object.");
+  }
+
+  const operation = (body as { operation?: unknown }).operation;
+  if (typeof operation !== "string" || !workspaceLifecycleOperations.has(operation as never)) {
+    throw new AppError(400, "invalid_lifecycle_operation", "Unsupported workspace lifecycle operation.");
+  }
+
+  const force = (body as { force?: unknown }).force;
+  return {
+    operation: operation as "hydrate" | "flush" | "evict" | "delete" | "repair_placement",
+    ...(typeof force === "boolean" ? { force } : {})
+  };
+}
 
 async function touchWorkspaceActivity(dependencies: AppDependencies, workspaceId: string): Promise<void> {
   await dependencies.touchWorkspaceActivity?.(workspaceId);
@@ -72,13 +95,14 @@ async function handleUploadWorkspaceFile(
   reply: FastifyReply
 ) {
   const query = workspaceFileUploadQuerySchema.parse(request.query);
-  if (!Buffer.isBuffer(request.body)) {
+  const data = await readRequestBodyBuffer(request.body);
+  if (!data) {
     throw new AppError(415, "invalid_upload_content_type", "File upload requires Content-Type: application/octet-stream.");
   }
 
   const entry = await dependencies.runtimeService.uploadWorkspaceFile(workspaceId, {
     path: query.path,
-    data: request.body,
+    data,
     overwrite: query.overwrite,
     ...(query.ifMatch !== undefined ? { ifMatch: query.ifMatch } : {}),
     ...(query.mtimeMs !== undefined ? { mtimeMs: query.mtimeMs } : {})
@@ -171,6 +195,21 @@ async function handleMoveWorkspaceEntry(
 }
 
 export function registerInternalWorkspaceRoutes(app: FastifyInstance, dependencies: AppDependencies): void {
+  app.post("/internal/v1/workspaces/:workspaceId/lifecycle", async (request, reply) => {
+    if (!dependencies.workspaceLifecycle) {
+      throw new AppError(501, "workspace_lifecycle_unavailable", "Workspace lifecycle operations are not available on this server.");
+    }
+
+    const params = createParamsSchema("workspaceId").parse(request.params);
+    const input = parseWorkspaceLifecycleRequest(request.body);
+    const result = await dependencies.workspaceLifecycle.execute({
+      workspaceId: params.workspaceId,
+      operation: input.operation,
+      ...(input.force !== undefined ? { force: input.force } : {})
+    });
+    return reply.send(result);
+  });
+
   app.delete("/internal/v1/workspaces/:workspaceId", async (request, reply) => {
     const params = createParamsSchema("workspaceId").parse(request.params);
     try {

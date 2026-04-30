@@ -48,6 +48,7 @@ export interface CreatePostgresRuntimePersistenceOptions {
   pool?: Pool | undefined;
   poolConfig?: PoolConfig | undefined;
   ensureSchema?: boolean | undefined;
+  archivePayloadRoot?: string | undefined;
 }
 
 export async function createPostgresRuntimePersistence(
@@ -73,7 +74,9 @@ export async function createPostgresRuntimePersistence(
     pool,
     db,
     workspaceRepository: new PostgresWorkspaceRepository(db),
-    workspaceArchiveRepository: new PostgresWorkspaceArchiveRepository(db),
+    workspaceArchiveRepository: new PostgresWorkspaceArchiveRepository(db, {
+      payloadRoot: options.archivePayloadRoot
+    }),
     sessionRepository: new PostgresSessionRepository(db),
     messageRepository: new PostgresMessageRepository(db),
     engineMessageRepository: new PostgresEngineMessageRepository(db),

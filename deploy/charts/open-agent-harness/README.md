@@ -40,6 +40,7 @@ helm upgrade --install oah ./deploy/charts/open-agent-harness \
 - [Compose To Kubernetes Reuse Matrix](/Users/wumengsong/Code/OpenAgentHarness/docs/k8s-compose-reuse-matrix.md)
 - [Kubernetes Rollout Checklist](/Users/wumengsong/Code/OpenAgentHarness/docs/k8s-rollout-checklist.md)
 - [Kubernetes Operations Runbook](/Users/wumengsong/Code/OpenAgentHarness/docs/k8s-operations-runbook.md)
+- [Production Storage Readiness](/Users/wumengsong/Code/OpenAgentHarness/docs/production-readiness.md)
 
 渲染或安装示例：
 
@@ -71,12 +72,19 @@ helm upgrade --install oah ./deploy/charts/open-agent-harness \
 - `config.serverYaml`
 - `config.create`
 - `config.nameOverride`
+- `objectStorage.enabled`
+- `objectStorage.bucket`
+- `objectStorage.workspaceBackingStore.keyPrefix`
 - `apiServer.replicaCount`
 - `apiServer.resources`
 - `worker.replicaCount`
 - `worker.workspaceVolume.type`
 - `worker.workspaceVolume.persistentVolumeClaim.claimName`
 - `worker.resources`
+- `worker.diskReadiness.threshold`
+- `worker.workspacePolicy.maxObjects`
+- `worker.workspacePolicy.maxBytes`
+- `worker.workspacePolicy.maxFileBytes`
 - `worker.drain.timeoutMs`
 - `worker.drain.timeoutStrategy`
 - `worker.drain.preStop.enabled`
@@ -115,8 +123,9 @@ helm upgrade --install oah ./deploy/charts/open-agent-harness \
   - 已开启 `PrometheusRule`、Grafana dashboard ConfigMap、controller/worker ingress `NetworkPolicy`
 - `prod.values.yaml`
   - 更偏正式生产的起点
-  - 更高副本数、更严格的 `DoNotSchedule` spread 策略、PVC workspace volume、IRSA/Workload Identity 注解占位
+  - 更高副本数、更严格的 `DoNotSchedule` spread 策略、PVC workspace volume、对象存储 backing store、IRSA/Workload Identity 注解占位
   - worker drain / `terminationGracePeriodSeconds` 已显式对齐
+  - worker 磁盘 readiness、`ephemeral-storage` 和 workspace 同步预算已显式给出
   - controller rollout 显式使用 `maxUnavailable: 0`
   - 已开启 `PrometheusRule`、Grafana dashboard ConfigMap、controller/worker ingress `NetworkPolicy`
 - `strict-egress.values.yaml`
@@ -156,8 +165,11 @@ helm upgrade --install oah ./deploy/charts/open-agent-harness \
   - `worker.workspaceVolume.type=emptyDir`
   - `worker.workspaceVolume.type=persistentVolumeClaim`
 - workspace 卷只挂在 sandbox worker 上；`oah-api` 默认不挂载 workspace volume，避免 API Pod 累积 active workspace 的本地目录
+- 生产环境应启用 `objectStorage.enabled=true`；这会在 `server.yaml` 中生成 `object_storage.workspace_backing_store`，让受管 workspace 通过 worker idle / drain / delete 生命周期 flush 到对象存储
 - 当 `worker.workspaceVolume.type=persistentVolumeClaim` 时，需要设置：
   - `worker.workspaceVolume.persistentVolumeClaim.claimName`
+- worker 会把 `OAH_WORKER_DISK_METRICS_PATH` 指向 workspace volume，并用 `worker.diskReadiness.threshold` 控制 `/readyz` 的磁盘压力水位
+- worker workspace 同步预算通过 `worker.workspacePolicy.maxObjects / maxBytes / maxFileBytes` 渲染为 `OAH_OBJECT_STORAGE_SYNC_*` 环境变量；建议生产环境按业务最大 workspace 明确设置
 - worker 现在默认会把 K8S `preStop` hook 对齐到本地 drain 控制入口：
   - `worker.drain.preStop.enabled=true`
   - `worker.drain.timeoutMs` 控制 worker drain 超时
@@ -169,7 +181,7 @@ helm upgrade --install oah ./deploy/charts/open-agent-harness \
   这样在多副本控制面下不会因为滚动发布主动把 leader election 面降到 0 个 ready 实例
 - 可选监控与隔离基线：
   - `serviceMonitor.enabled=true` 为 controller 暴露 Prometheus Operator `ServiceMonitor`
-  - `prometheusRule.enabled=true` 生成 controller leader / scale-target / rollout / scale-down-blocked 告警
+  - `prometheusRule.enabled=true` 生成 controller、worker 磁盘压力、workspace materialization、对象存储、Redis backlog、PostgreSQL bloat 告警
   - `grafanaDashboard.enabled=true` 生成带 sidecar label 的 Grafana dashboard ConfigMap
   - `networkPolicy.enabled=true` 为 controller / worker 收紧 ingress 面
 - 当前 chart 的 `networkPolicy` 默认只收紧 ingress，不默认限制 egress：

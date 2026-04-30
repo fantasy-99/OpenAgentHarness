@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import path from "node:path";
 
 const managedPathDirNames = {
@@ -116,14 +117,14 @@ function printUsage() {
   console.log("");
   console.log("Options:");
   console.log("  --root <path>                Deploy root. Defaults to $OAH_DEPLOY_ROOT.");
-  console.log("  --source-root <path>         Source directory root. Defaults to <root>/source.");
+  console.log("  --source-root <path>         Asset source root. Defaults to <root>, falling back to <root>/source.");
   console.log("  --bucket <name>              Bucket name. Defaults to test-oah-server.");
   console.log("  --aws-endpoint-url <url>     Docker-reachable MinIO endpoint.");
   console.log("  --access-key <key>           MinIO access key.");
   console.log("  --secret-key <key>           MinIO secret key.");
   console.log("  --region <region>            AWS region. Defaults to us-east-1.");
   console.log("  --delete                     Delete remote objects missing locally for readonly prefixes.");
-  console.log("  --include-workspaces         Also sync source/workspaces -> s3://.../workspace/.");
+  console.log("  --include-workspaces         Also sync workspaces -> s3://.../workspace/.");
   console.log("  --delete-workspaces          Allow --delete on workspace prefix too.");
   console.log("  --dry-run                    Print commands without running them.");
   console.log("  --retries <n>                Retry count for transient docker/aws failures. Defaults to 2.");
@@ -216,12 +217,29 @@ function ensureBucket(options) {
   runCommand(createCommand, options, "create-bucket");
 }
 
-function loadPublishPaths(root, sourceRoot) {
-  const resolvedSourceRoot = path.resolve(sourceRoot || path.join(root, "source"));
+function hasManagedAssetDirectories(root) {
+  return Object.values(managedPathDirNames).some((directoryName) => existsSync(path.join(root, directoryName)));
+}
+
+function resolveAssetRoot(root, sourceRoot) {
+  if (sourceRoot) {
+    return path.resolve(sourceRoot);
+  }
+
+  const flatRoot = path.resolve(root);
+  if (hasManagedAssetDirectories(flatRoot)) {
+    return flatRoot;
+  }
+
+  return path.join(flatRoot, "source");
+}
+
+function loadPublishPaths(assetRoot) {
+  const resolvedAssetRoot = path.resolve(assetRoot);
   return Object.fromEntries(
     Object.entries(managedPathDirNames).map(([pathKey, directoryName]) => [
       pathKey,
-      path.resolve(resolvedSourceRoot, directoryName)
+      path.resolve(resolvedAssetRoot, directoryName)
     ])
   );
 }
@@ -281,13 +299,13 @@ function main() {
   }
 
   const root = path.resolve(options.root);
-  const sourceRoot = path.resolve(options.sourceRoot || path.join(root, "source"));
-  const pathMap = loadPublishPaths(root, sourceRoot);
+  const assetRoot = resolveAssetRoot(root, options.sourceRoot);
+  const pathMap = loadPublishPaths(assetRoot);
 
   console.log(`Deploy root: ${root}`);
   console.log(`Docker aws-cli endpoint: ${options.awsEndpointUrl}`);
   console.log(`Target bucket: ${options.bucket}`);
-  console.log(`Source root: ${sourceRoot}`);
+  console.log(`Asset root: ${assetRoot}`);
   console.log(`Include workspace sync: ${options.includeWorkspaces ? "yes" : "no"}`);
 
   ensureBucket(options);

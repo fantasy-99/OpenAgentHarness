@@ -108,6 +108,7 @@ pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui
 - [`deploy/kustomization.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/kustomization.yaml)
 - [`deploy/controller-servicemonitor.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/controller-servicemonitor.yaml)
 - [`deploy/controller-prometheusrule.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/controller-prometheusrule.yaml)
+- [`docs/production-readiness.md`](/Users/wumengsong/Code/OpenAgentHarness/docs/production-readiness.md)
 - [`deploy/kubernetes/controller-rbac.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/kubernetes/controller-rbac.yaml)
 - [`deploy/kubernetes/configmap.example.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/kubernetes/configmap.example.yaml)
 
@@ -182,7 +183,7 @@ git push origin master
 - `controller` 使用 Kubernetes Lease 做 leader election
 - `controller` 通过 `Deployment /scale` 子资源改写 `oah-sandbox` 副本数，并已支持通过 `label_selector` 自动发现目标 Deployment
 - `server.yaml` 示例已把 `sandbox.provider` 设为 `self_hosted`，并通过 `oah-sandbox-internal` headless service 路由到 sandbox 内 worker
-- 默认 sandbox fleet 保留 `warm_empty_count: 1` 个空 sandbox；ownerless workspace 会先复用 CPU 和内存均低于 `0.8` 的已有 sandbox，任一资源超过阈值后才落到空 sandbox
+- 默认 sandbox fleet 保留 `warm_empty_count: 1` 个空 sandbox；ownerless workspace 会先复用 CPU、内存和磁盘均低于阈值的已有 sandbox，任一资源超过阈值后才落到空 sandbox
 - `controller-rbac.yaml` 当前已包含 `leases`、`deployments` 和 `deployments/scale` 所需权限，能够覆盖 leader election、label selector 发现和副本数改写
 - 默认已经允许在安全前提满足时自动缩容；真正的缩容护栏由 controller 对 standalone worker `/healthz` 的动态探测决定
 - standalone worker 收到退出信号后会先进入 drain，使 readiness 先摘除，再等待当前 run 自然结束
@@ -199,6 +200,7 @@ git push origin master
   - Grafana dashboard ConfigMap
   - controller / worker / api ingress `NetworkPolicy`
 - Helm chart 当前还已支持复用已有 ConfigMap、为 `oah-sandbox` 切换到现有 PVC、以及给三个组件分别配置 resources / securityContext / envFrom / scheduling
+- 生产环境应启用对象存储 backing store，并显式配置 `worker.workspaceVolume`、`ephemeral-storage`、`worker.diskReadiness.threshold` 和 `worker.workspacePolicy.*`；完整检查项见 [`docs/production-readiness.md`](/Users/wumengsong/Code/OpenAgentHarness/docs/production-readiness.md)
 - Helm chart 现在还支持 `PodDisruptionBudget`、`topologySpreadConstraints`、`priorityClassName`、`NetworkPolicy`，并可直接为 `oah-api` 生成 Ingress
 - chart 目录下现在还已附带 `dev / staging / prod` 三套 values 样例，便于按环境起步而不是手写所有参数
 - 现在也提供了生产 `Dockerfile` 与最小 GHCR 发布 workflow，K8S manifests/chart 不再只是假定“外部已有镜像”

@@ -1,6 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -86,6 +87,58 @@ class FakeDirectoryObjectStore implements DirectoryObjectStore {
 
   async close(): Promise<void> {
     return undefined;
+  }
+}
+
+class PagedListingObjectStore extends FakeDirectoryObjectStore {
+  listEntryPageCalls = 0;
+
+  constructor(private readonly pageSize = 2) {
+    super();
+  }
+
+  override async listEntries(_prefix: string) {
+    throw new Error("listEntries should not be called when listEntriesPaged is available");
+  }
+
+  override async *listEntriesPaged(prefix: string) {
+    this.listEntryPageCalls += 1;
+    const normalizedPrefix = prefix ? `${prefix}/` : "";
+    const entries = [...this.objects.entries()]
+      .filter(([key]) => (normalizedPrefix ? key.startsWith(normalizedPrefix) : true))
+      .map(([key, value]) => ({
+        key,
+        size: value.body.length,
+        lastModified: value.lastModified
+      }))
+      .sort((left, right) => left.key.localeCompare(right.key));
+
+    for (let index = 0; index < entries.length; index += this.pageSize) {
+      yield entries.slice(index, index + this.pageSize);
+    }
+  }
+}
+
+class StreamCapableObjectStore extends FakeDirectoryObjectStore {
+  putObjectFromStreamCalls = 0;
+  getObjectStreamCalls = 0;
+
+  async putObjectFromStream(key: string, body: NodeJS.ReadableStream, options?: { mtimeMs?: number | undefined }): Promise<void> {
+    this.putObjectFromStreamCalls += 1;
+    const chunks: Buffer[] = [];
+    for await (const chunk of body as AsyncIterable<Uint8Array | Buffer | string>) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    await this.putObject(key, Buffer.concat(chunks), options);
+  }
+
+  async getObjectStream(key: string): Promise<{ body: NodeJS.ReadableStream; metadata?: Record<string, string> | undefined }> {
+    this.getObjectStreamCalls += 1;
+    const object = await this.getObject(key);
+    return {
+      body: Readable.from([object.body]),
+      ...(object.metadata ? { metadata: object.metadata } : {})
+    };
   }
 }
 
@@ -242,6 +295,37 @@ describe("object storage sync", () => {
     expect(store.putObjectCalls).toBe(0);
   });
 
+  it("shards large sync manifests and reads the shards on the next sync", async () => {
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_MANIFEST_SHARD_FILE_COUNT", "1");
+
+    const directory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-manifest-shards-source-"));
+    const targetDirectory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-manifest-shards-target-"));
+    tempDirs.push(directory, targetDirectory);
+    const store = new FakeDirectoryObjectStore();
+
+    await writeFile(path.join(directory, "a.txt"), "a\n", "utf8");
+    await writeFile(path.join(directory, "b.txt"), "b\n", "utf8");
+
+    await syncLocalDirectoryToRemote(store, "workspace/demo", directory);
+
+    const manifest = JSON.parse(store.objects.get("workspace/demo/.oah-sync-manifest.json")!.body.toString("utf8")) as {
+      files: Record<string, unknown>;
+      manifestShards?: string[];
+    };
+    expect(manifest.files).toEqual({});
+    expect(manifest.manifestShards).toEqual([
+      "workspace/demo/.oah-sync-manifest-shards/00000.json",
+      "workspace/demo/.oah-sync-manifest-shards/00001.json"
+    ]);
+    expect(store.objects.has("workspace/demo/.oah-sync-manifest-shards/00000.json")).toBe(true);
+    expect(store.objects.has("workspace/demo/.oah-sync-manifest-shards/00001.json")).toBe(true);
+
+    await syncRemotePrefixToLocal(store, "workspace/demo", targetDirectory);
+
+    await expect(readFile(path.join(targetDirectory, "a.txt"), "utf8")).resolves.toBe("a\n");
+    await expect(readFile(path.join(targetDirectory, "b.txt"), "utf8")).resolves.toBe("b\n");
+  });
+
   it("writes an object-storage sync bundle sidecar when forced", async () => {
     vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_BUNDLE", "1");
 
@@ -256,6 +340,27 @@ describe("object storage sync", () => {
     await syncLocalDirectoryToRemote(store, "workspace/demo", directory);
 
     expect(store.objects.has("workspace/demo/.oah-sync-bundle.tar")).toBe(true);
+  });
+
+  it("streams object-storage sync bundle writes and hydrates when the store supports streams", async () => {
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_BUNDLE", "1");
+
+    const sourceDirectory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-bundle-stream-source-"));
+    const targetDirectory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-bundle-stream-target-"));
+    tempDirs.push(sourceDirectory, targetDirectory);
+    const store = new StreamCapableObjectStore();
+
+    await mkdir(path.join(sourceDirectory, "docs"), { recursive: true });
+    await writeFile(path.join(sourceDirectory, "README.md"), "# streamed\n", "utf8");
+    await writeFile(path.join(sourceDirectory, "docs", "guide.md"), "hello\n", "utf8");
+
+    await syncLocalDirectoryToRemote(store, "workspace/demo", sourceDirectory);
+    await syncRemotePrefixToLocal(store, "workspace/demo", targetDirectory);
+
+    expect(store.putObjectFromStreamCalls).toBe(1);
+    expect(store.getObjectStreamCalls).toBe(1);
+    await expect(readFile(path.join(targetDirectory, "README.md"), "utf8")).resolves.toBe("# streamed\n");
+    await expect(readFile(path.join(targetDirectory, "docs", "guide.md"), "utf8")).resolves.toBe("hello\n");
   });
 
   it("skips rewriting the object-storage sync bundle on no-op push", async () => {
@@ -306,6 +411,32 @@ describe("object storage sync", () => {
     expect([...store.objects.keys()].sort()).toEqual([
       "workspace/demo/.oah-sync-bundle.tar",
       "workspace/demo/.oah-sync-manifest.json"
+    ]);
+  });
+
+  it("uses paged remote cleanup for bundle-primary cold pushes", async () => {
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_BUNDLE", "1");
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT", "primary");
+
+    const directory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-bundle-primary-paged-cleanup-"));
+    tempDirs.push(directory);
+    const store = new PagedListingObjectStore(1);
+
+    await writeFile(path.join(directory, "README.md"), "# synced\n", "utf8");
+    await store.putObject("workspace/demo/old-a.txt", Buffer.from("stale a\n"));
+    await store.putObject("workspace/demo/old-b.txt", Buffer.from("stale b\n"));
+    await store.putObject("workspace/other/old.txt", Buffer.from("other\n"));
+    store.putObjectCalls = 0;
+
+    const result = await syncLocalDirectoryToRemote(store, "workspace/demo", directory);
+
+    expect(result.deletedRemoteCount).toBe(2);
+    expect(store.listEntryPageCalls).toBe(1);
+    expect(store.listEntriesCalls).toBe(0);
+    expect([...store.objects.keys()].sort()).toEqual([
+      "workspace/demo/.oah-sync-bundle.tar",
+      "workspace/demo/.oah-sync-manifest.json",
+      "workspace/other/old.txt"
     ]);
   });
 
@@ -995,6 +1126,63 @@ describe("object storage sync", () => {
     await deleteRemotePrefixFromObjectStore(store, "workspace/demo");
 
     expect([...store.objects.keys()].sort()).toEqual(["workspace/other/README.md"]);
+  });
+
+  it("uses paged listing for fallback prefix deletion when native deletion is unavailable", async () => {
+    const store = new PagedListingObjectStore(1);
+    await store.putObject("workspace/demo/README.md", Buffer.from("# demo\n"));
+    await store.putObject("workspace/demo/src/index.ts", Buffer.from("export {};\n"));
+    await store.putObject("workspace/demo/empty-dir/", Buffer.alloc(0));
+    await store.putObject("workspace/other/README.md", Buffer.from("# other\n"));
+
+    await deleteRemotePrefixFromObjectStore(store, "workspace/demo");
+
+    expect(store.listEntryPageCalls).toBe(1);
+    expect(store.listEntriesCalls).toBe(0);
+    expect([...store.objects.keys()].sort()).toEqual(["workspace/other/README.md"]);
+  });
+
+  it("enforces object-count limits in TypeScript object-storage sync fallback", async () => {
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_MAX_OBJECTS", "1");
+
+    const directory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-limit-pull-"));
+    tempDirs.push(directory);
+    const store = new FakeDirectoryObjectStore();
+    await store.putObject("workspace/demo/a.txt", Buffer.from("a\n"));
+    await store.putObject("workspace/demo/b.txt", Buffer.from("b\n"));
+
+    await expect(syncRemotePrefixToLocal(store, "workspace/demo", directory)).rejects.toThrow(
+      /exceeded object storage sync object limit 1/u
+    );
+  });
+
+  it("enforces local object-count limits before uploading workspace copies", async () => {
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_MAX_OBJECTS", "1");
+
+    const directory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-limit-push-"));
+    tempDirs.push(directory);
+    await writeFile(path.join(directory, "a.txt"), "a\n", "utf8");
+    await writeFile(path.join(directory, "b.txt"), "b\n", "utf8");
+    const store = new FakeDirectoryObjectStore();
+
+    await expect(syncLocalDirectoryToRemote(store, "workspace/demo", directory)).rejects.toThrow(
+      /local directory .* exceeded object storage sync object limit 1/u
+    );
+    expect(store.putObjectCalls).toBe(0);
+  });
+
+  it("enforces local single-file limits before uploading workspace copies", async () => {
+    vi.stubEnv("OAH_OBJECT_STORAGE_SYNC_MAX_FILE_BYTES", "3");
+
+    const directory = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-limit-file-"));
+    tempDirs.push(directory);
+    await writeFile(path.join(directory, "large.txt"), "large\n", "utf8");
+    const store = new FakeDirectoryObjectStore();
+
+    await expect(syncLocalDirectoryToRemote(store, "workspace/demo", directory)).rejects.toThrow(
+      /file large\.txt exceeded object storage sync single-file limit 3/u
+    );
+    expect(store.putObjectCalls).toBe(0);
   });
 
   it("uses store-native prefix deletion when available", async () => {

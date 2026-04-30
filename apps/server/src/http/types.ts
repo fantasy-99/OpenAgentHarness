@@ -82,6 +82,22 @@ export interface AppDependencies {
     state?: "unassigned" | "draining" | "evicted" | undefined;
   }) => Promise<void>) | undefined;
   clearWorkspaceCoordination?: ((workspaceId: string) => Promise<void>) | undefined;
+  workspaceLifecycle?: {
+    execute(input: {
+      workspaceId: string;
+      operation: "hydrate" | "flush" | "evict" | "delete" | "repair_placement";
+      force?: boolean | undefined;
+    }): Promise<{
+      workspaceId: string;
+      operation: "hydrate" | "flush" | "evict" | "delete" | "repair_placement";
+      status: "completed" | "not_available";
+      hydrated?: unknown[] | undefined;
+      flushed?: unknown[] | undefined;
+      evicted?: unknown[] | undefined;
+      skipped?: unknown[] | undefined;
+      repaired?: unknown[] | undefined;
+    }>;
+  } | undefined;
   healthCheck?: () => Promise<HealthReport> | HealthReport;
   readinessCheck?: () => Promise<ReadinessReport> | ReadinessReport;
   beginDrain?: (() => Promise<void> | void) | undefined;

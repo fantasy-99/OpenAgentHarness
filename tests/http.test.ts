@@ -1,4 +1,4 @@
-import { access, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -322,7 +322,7 @@ async function createStartedInternalWorkerApp(options?: {
   readinessCheck?: (() => Promise<{
     status: "ready" | "not_ready";
     draining?: boolean;
-    reason?: "draining" | "checks_down";
+    reason?: "draining" | "worker_disk_pressure" | "checks_down";
     checks: {
       postgres: "up" | "down" | "not_configured";
       redisEvents: "up" | "down" | "not_configured";
@@ -331,7 +331,7 @@ async function createStartedInternalWorkerApp(options?: {
   }> | {
     status: "ready" | "not_ready";
     draining?: boolean;
-    reason?: "draining" | "checks_down";
+    reason?: "draining" | "worker_disk_pressure" | "checks_down";
     checks: {
       postgres: "up" | "down" | "not_configured";
       redisEvents: "up" | "down" | "not_configured";
@@ -570,6 +570,7 @@ describe("http api", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/plain");
     expect(body).toContain("oah_native_workspace_sync_attempts_total");
+    expect(body).toContain("oah_object_storage_operations_total");
     expect(body).toContain('operation="sync_local_to_remote"');
     expect(body).toContain('implementation="rust"');
     expect(body).toContain('outcome="success"');
@@ -1076,7 +1077,8 @@ describe("http api", () => {
           options.runId ||
           options.status ||
           options.errorCode ||
-          options.recoveryState
+          options.recoveryState ||
+          options.searchMode
             ? {
                 appliedFilters: {
                   ...(options.serviceName ? { serviceName: options.serviceName } : {}),
@@ -1086,7 +1088,8 @@ describe("http api", () => {
                   ...(options.runId ? { runId: options.runId } : {}),
                   ...(options.status ? { status: options.status } : {}),
                   ...(options.errorCode ? { errorCode: options.errorCode } : {}),
-                  ...(options.recoveryState ? { recoveryState: options.recoveryState } : {})
+                  ...(options.recoveryState ? { recoveryState: options.recoveryState } : {}),
+                  ...(options.searchMode ? { searchMode: options.searchMode } : {})
                 }
               }
             : {}),
@@ -1242,7 +1245,7 @@ describe("http api", () => {
       fetch(`${activeApp.baseUrl}/api/v1/storage/overview?serviceName=@default`),
       fetch(`${activeApp.baseUrl}/api/v1/storage/postgres/tables/runs?limit=20&offset=40`),
       fetch(
-        `${activeApp.baseUrl}/api/v1/storage/postgres/tables/runs?limit=20&q=completed&runId=run_1&status=failed&errorCode=worker_recovery_failed&recoveryState=quarantined&serviceName=acme`
+        `${activeApp.baseUrl}/api/v1/storage/postgres/tables/runs?limit=20&q=completed&searchMode=full_row&runId=run_1&status=failed&errorCode=worker_recovery_failed&recoveryState=quarantined&serviceName=acme`
       ),
       fetch(`${activeApp.baseUrl}/api/v1/storage/redis/keys?pattern=oah:*`),
       fetch(`${activeApp.baseUrl}/api/v1/storage/redis/key?key=oah:runs:ready`),
@@ -1331,7 +1334,8 @@ describe("http api", () => {
         runId: "run_1",
         status: "failed",
         errorCode: "worker_recovery_failed",
-        recoveryState: "quarantined"
+        recoveryState: "quarantined",
+        searchMode: "full_row"
       }
     });
     expect(postgresTableOptions.at(-1)).toMatchObject({
@@ -1341,7 +1345,8 @@ describe("http api", () => {
       runId: "run_1",
       status: "failed",
       errorCode: "worker_recovery_failed",
-      recoveryState: "quarantined"
+      recoveryState: "quarantined",
+      searchMode: "full_row"
     });
     await expect(keysResponse.json()).resolves.toMatchObject({
       items: [{ key: "oah:runs:ready" }]
@@ -2662,6 +2667,205 @@ describe("http api", () => {
 
     expect(deleteResponse.status).toBe(204);
     await expect(ownerPersistence.workspaceRepository.getById(ownerWorkspace.id)).resolves.toBeNull();
+  });
+
+  it("delegates self-hosted workspace deletion to a fallback worker when no active owner lease is visible", async () => {
+    const workerGateway = new FakeModelGateway(20);
+    const workerPersistence = createMemoryRuntimePersistence();
+    const workerDeleted = vi.fn();
+    const workerRuntime = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: workerGateway,
+      ...workerPersistence,
+      workspaceDeletionHandler: {
+        async deleteWorkspace(workspace) {
+          workerDeleted(workspace.id);
+        }
+      }
+    });
+    const workspace = await createWorkspaceRecord();
+    await workerPersistence.workspaceRepository.upsert(workspace);
+
+    const workerApp = createApp({
+      runtimeService: workerRuntime,
+      modelGateway: workerGateway,
+      defaultModel: "openai-default",
+      logger: false,
+      workspaceMode: "multi"
+    });
+    await workerApp.listen({ host: "127.0.0.1", port: 0 });
+    activeClosers.push(async () => {
+      await workerApp.close();
+    });
+    const workerAddress = workerApp.server.address() as AddressInfo;
+    const workerBaseUrl = `http://127.0.0.1:${workerAddress.port}`;
+
+    const apiGateway = new FakeModelGateway(20);
+    const apiPersistence = createMemoryRuntimePersistence();
+    const apiDeleteHandler = vi.fn(async () => {
+      throw new Error("API-side workspace deletion should have been delegated to the worker.");
+    });
+    await apiPersistence.workspaceRepository.upsert(workspace);
+    activeApp = await createStartedAppWithEngineService(
+      new EngineService({
+        defaultModel: "openai-default",
+        modelGateway: apiGateway,
+        ...apiPersistence,
+        workspaceDeletionHandler: {
+          deleteWorkspace: apiDeleteHandler
+        }
+      }),
+      apiGateway,
+      {
+        sandboxHostProviderKind: "self_hosted",
+        sandboxOwnerFallbackBaseUrl: workerBaseUrl
+      }
+    );
+
+    const deleteResponse = await fetch(`${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}`, {
+      method: "DELETE",
+      headers: {
+        authorization: "Bearer token-1"
+      }
+    });
+
+    expect(deleteResponse.status).toBe(204);
+    expect(apiDeleteHandler).not.toHaveBeenCalled();
+    expect(workerDeleted).toHaveBeenCalledWith(workspace.id);
+    await expect(workerPersistence.workspaceRepository.getById(workspace.id)).resolves.toBeNull();
+    await expect(apiPersistence.workspaceRepository.getById(workspace.id)).resolves.toEqual(expect.objectContaining({ id: workspace.id }));
+  });
+
+  it("delegates self-hosted workspace file uploads to a fallback worker when no active owner lease is visible", async () => {
+    const workerGateway = new FakeModelGateway(20);
+    const workerPersistence = createMemoryRuntimePersistence();
+    const workspace = await createWorkspaceRecord();
+    await workerPersistence.workspaceRepository.upsert(workspace);
+
+    const workerApp = createApp({
+      runtimeService: new EngineService({
+        defaultModel: "openai-default",
+        modelGateway: workerGateway,
+        ...workerPersistence
+      }),
+      modelGateway: workerGateway,
+      defaultModel: "openai-default",
+      logger: false,
+      workspaceMode: "multi"
+    });
+    await workerApp.listen({ host: "127.0.0.1", port: 0 });
+    activeClosers.push(async () => {
+      await workerApp.close();
+    });
+    const workerAddress = workerApp.server.address() as AddressInfo;
+    const workerBaseUrl = `http://127.0.0.1:${workerAddress.port}`;
+
+    const apiGateway = new FakeModelGateway(20);
+    const apiPersistence = createMemoryRuntimePersistence();
+    const apiWorkspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-api-upload-should-stay-empty-"));
+    tempWorkspaceRoots.push(apiWorkspaceRoot);
+    await apiPersistence.workspaceRepository.upsert({
+      ...workspace,
+      rootPath: apiWorkspaceRoot
+    });
+    activeApp = await createStartedAppWithEngineService(
+      new EngineService({
+        defaultModel: "openai-default",
+        modelGateway: apiGateway,
+        ...apiPersistence
+      }),
+      apiGateway,
+      {
+        sandboxHostProviderKind: "self_hosted",
+        sandboxOwnerFallbackBaseUrl: workerBaseUrl
+      }
+    );
+
+    const uploadResponse = await fetch(
+      `${activeApp.baseUrl}/api/v1/workspaces/${workspace.id}/files/upload?path=${encodeURIComponent("delegated.bin")}`,
+      {
+        method: "PUT",
+        headers: {
+          "content-type": "application/octet-stream"
+        },
+        body: Uint8Array.from([1, 2, 3, 4])
+      }
+    );
+
+    expect(uploadResponse.status).toBe(200);
+    await expect(readFile(path.join(workspace.rootPath, "delegated.bin"))).resolves.toEqual(Buffer.from([1, 2, 3, 4]));
+    await expect(access(path.join(apiWorkspaceRoot, "delegated.bin"))).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+  });
+
+  it("exposes a unified internal workspace lifecycle endpoint on workers", async () => {
+    const gateway = new FakeModelGateway(20);
+    const persistence = createMemoryRuntimePersistence();
+    const lifecycleCalls: Array<{
+      workspaceId: string;
+      operation: string;
+      force?: boolean;
+    }> = [];
+    const app = createInternalWorkerApp({
+      runtimeService: new EngineService({
+        defaultModel: "openai-default",
+        modelGateway: gateway,
+        ...persistence
+      }),
+      modelGateway: gateway,
+      defaultModel: "openai-default",
+      logger: false,
+      workspaceLifecycle: {
+        async execute(input) {
+          lifecycleCalls.push(input);
+          return {
+            workspaceId: input.workspaceId,
+            operation: input.operation,
+            status: "completed",
+            ...(input.operation === "evict"
+              ? {
+                  evicted: [],
+                  skipped: []
+                }
+              : {})
+          };
+        }
+      }
+    });
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    activeClosers.push(async () => {
+      await app.close();
+    });
+    const address = app.server.address() as AddressInfo;
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const response = await fetch(`${baseUrl}/internal/v1/workspaces/ws_lifecycle/lifecycle`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        operation: "evict",
+        force: true
+      })
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      workspaceId: "ws_lifecycle",
+      operation: "evict",
+      status: "completed",
+      evicted: [],
+      skipped: []
+    });
+    expect(lifecycleCalls).toEqual([
+      {
+        workspaceId: "ws_lifecycle",
+        operation: "evict",
+        force: true
+      }
+    ]);
   });
 
   it("proxies sandbox requests to the owner worker", async () => {

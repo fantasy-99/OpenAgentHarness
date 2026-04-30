@@ -22,6 +22,10 @@ export function resolveArchiveExportRoot(paths: Pick<ServerConfig["paths"], "wor
   return path.join(resolveRuntimeStateDir(paths), "archives");
 }
 
+export function resolvePostgresArchivePayloadRoot(paths: Pick<ServerConfig["paths"], "workspace_dir" | "runtime_state_dir">): string {
+  return path.join(resolveRuntimeStateDir(paths), "archive-payloads");
+}
+
 export function resolveSqliteShadowRoot(paths: Pick<ServerConfig["paths"], "workspace_dir" | "runtime_state_dir">): string {
   return path.join(resolveRuntimeStateDir(paths), "data", "workspace-state");
 }

@@ -530,6 +530,9 @@ describe("storage redis", () => {
         processKind: "embedded",
         state: "busy",
         lastSeenAt: "2026-04-01T00:00:00.000Z",
+        resourceDiskUsedRatio: 0.42,
+        resourceDiskUsedBytes: 42_000,
+        resourceDiskTotalBytes: 100_000,
         currentSessionId: "ses_1",
         currentRunId: "run_1",
         currentWorkspaceId: "ws_1"
@@ -548,6 +551,9 @@ describe("storage redis", () => {
       currentSessionId: "ses_1",
       currentRunId: "run_1",
       currentWorkspaceId: "ws_1",
+      resourceDiskUsedRatio: 0.42,
+      resourceDiskUsedBytes: 42_000,
+      resourceDiskTotalBytes: 100_000,
       leaseTtlMs: 6_000,
       expiresAt: "2026-04-01T00:00:06.000Z",
       lastSeenAgeMs: 4_500,
@@ -556,7 +562,10 @@ describe("storage redis", () => {
     expect(redis.hashes.get("test:worker:worker_1")).toMatchObject({
       ownerBaseUrl: "http://worker-pod-a.internal:8787",
       leaseTtlMs: "6000",
-      expiresAt: "2026-04-01T00:00:06.000Z"
+      expiresAt: "2026-04-01T00:00:06.000Z",
+      resourceDiskUsedRatio: "0.42",
+      resourceDiskUsedBytes: "42000",
+      resourceDiskTotalBytes: "100000"
     });
     expect(redis.expiries.get("test:worker:worker_1")).toBe(6_000);
   });

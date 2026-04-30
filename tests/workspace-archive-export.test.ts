@@ -414,6 +414,67 @@ describe("workspace archive exporter", () => {
     expect(logs.some((message) => message.includes("Pruned 3 exported workspace archives older than"))).toBe(true);
   });
 
+  it("prunes exported archive bundle files when bundle retention is configured", async () => {
+    const exportRoot = await mkdtemp(path.join(tmpdir(), "oah-archive-export-bundle-prune-"));
+    tempDirs.push(exportRoot);
+
+    await Promise.all([
+      writeFile(path.join(exportRoot, "2026-03-01.sqlite"), "old bundle", "utf8"),
+      writeFile(path.join(exportRoot, "2026-03-01.sqlite.sha256"), "old checksum", "utf8"),
+      writeFile(path.join(exportRoot, "2026-03-02.sqlite.sha256"), "orphan checksum", "utf8"),
+      writeFile(path.join(exportRoot, "2026-04-29.sqlite"), "recent bundle", "utf8"),
+      writeFile(path.join(exportRoot, "notes.txt"), "manual note", "utf8")
+    ]);
+
+    const repository: WorkspaceArchiveRepository = {
+      async archiveWorkspace() {
+        return createArchiveRecord();
+      },
+      async archiveSessionTree() {
+        return createArchiveRecord();
+      },
+      async listPendingArchiveDates() {
+        return [];
+      },
+      async listByArchiveDate() {
+        return [];
+      },
+      async markExported() {},
+      async pruneExportedBefore() {
+        return 0;
+      }
+    };
+
+    const logs: string[] = [];
+    const exporter = new WorkspaceArchiveExporter({
+      repository,
+      exportRoot,
+      timeZone: "Asia/Shanghai",
+      exportedBundleRetentionDays: 14,
+      logger: {
+        info(message) {
+          logs.push(message);
+        }
+      }
+    });
+
+    await exporter.exportPending();
+    await exporter.close();
+
+    await expect(readFile(path.join(exportRoot, "2026-03-01.sqlite"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+    await expect(readFile(path.join(exportRoot, "2026-03-01.sqlite.sha256"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+    await expect(readFile(path.join(exportRoot, "2026-03-02.sqlite.sha256"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+    await expect(readFile(path.join(exportRoot, "2026-04-29.sqlite"), "utf8")).resolves.toBe("recent bundle");
+    await expect(readFile(path.join(exportRoot, "notes.txt"), "utf8")).resolves.toBe("manual note");
+    expect(logs.some((message) => message.includes("Pruned 1 archive export bundles and 2 checksums older than"))).toBe(true);
+  });
+
   it("warns about unexpected archive directory entries without deleting them", async () => {
     const exportRoot = await mkdtemp(path.join(tmpdir(), "oah-archive-export-inspect-"));
     tempDirs.push(exportRoot);

@@ -38,7 +38,8 @@ import { assertWorkspaceAccess, createParamsSchema, sendError, toCallerContext }
 import {
   buildOwnerProxyUrl,
   buildProxyBody,
-  buildProxyHeaders,
+  buildProxyRequestInit,
+  readRequestBodyBuffer,
   resolveOwnerId,
   sendProxyResponse
 } from "../proxy-utils.js";
@@ -144,6 +145,16 @@ function resolveWorkspaceOwnerBaseUrl(
   return ownership.ownerBaseUrl ?? dependencies.sandboxOwnerFallbackBaseUrl;
 }
 
+function shouldDelegateSelfHostedSandboxOperation(
+  dependencies: Pick<AppDependencies, "localOwnerBaseUrl" | "sandboxHostProviderKind" | "sandboxOwnerFallbackBaseUrl">
+): boolean {
+  return (
+    dependencies.sandboxHostProviderKind === "self_hosted" &&
+    Boolean(dependencies.sandboxOwnerFallbackBaseUrl) &&
+    !dependencies.localOwnerBaseUrl
+  );
+}
+
 async function proxySandboxRequestToOwner(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -175,11 +186,7 @@ async function proxySandboxRequestToOwner(
     const body = buildProxyBody(request);
     const response = await fetch(
       buildOwnerProxyUrl(ownerBaseUrl, request, /^\/api\/v1\/sandboxes/u, "/internal/v1/sandboxes"),
-      {
-        method: request.method,
-        headers: buildProxyHeaders(request),
-        ...(body !== undefined ? { body } : {})
-      }
+      buildProxyRequestInit(request, body)
     );
 
     await sendProxyResponse(reply, response);
@@ -198,6 +205,25 @@ async function proxySandboxRequestToOwner(
   }
 }
 
+async function proxySandboxRequestToBaseUrl(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  baseUrl: string,
+  errorContext: { code: string; message: string; details?: Record<string, unknown> | undefined }
+): Promise<void> {
+  try {
+    const body = buildProxyBody(request);
+    const response = await fetch(
+      buildOwnerProxyUrl(baseUrl, request, /^\/api\/v1\/sandboxes/u, "/internal/v1/sandboxes"),
+      buildProxyRequestInit(request, body)
+    );
+
+    await sendProxyResponse(reply, response);
+  } catch {
+    await sendError(reply, 502, errorContext.code, errorContext.message, errorContext.details);
+  }
+}
+
 async function guardSandboxOwnership(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -205,7 +231,22 @@ async function guardSandboxOwnership(
   workspaceId: string
 ): Promise<"local" | "proxied" | "blocked"> {
   const ownership = await dependencies.resolveWorkspaceOwnership?.(workspaceId);
-  if (!ownership || ownership.isLocalOwner) {
+  if (!ownership) {
+    if (shouldDelegateSelfHostedSandboxOperation(dependencies)) {
+      await proxySandboxRequestToBaseUrl(request, reply, dependencies.sandboxOwnerFallbackBaseUrl!, {
+        code: "workspace_owner_unresolved",
+        message: `Failed to resolve an owner for workspace ${workspaceId}; routed request to a self-hosted worker.`,
+        details: {
+          workspaceId,
+          routingHint: "self_hosted_worker"
+        }
+      });
+      return "proxied";
+    }
+    return "local";
+  }
+
+  if (ownership.isLocalOwner) {
     return "local";
   }
 
@@ -389,13 +430,14 @@ async function handleUploadSandboxFile(
   reply: FastifyReply
 ) {
   const query = workspaceFileUploadQuerySchema.parse(request.query);
-  if (!Buffer.isBuffer(request.body)) {
+  const data = await readRequestBodyBuffer(request.body);
+  if (!data) {
     throw new AppError(415, "invalid_upload_content_type", "File upload requires Content-Type: application/octet-stream.");
   }
 
   const entry = await dependencies.runtimeService.uploadWorkspaceFile(sandboxId, {
     path: sandboxPathToWorkspacePath(query.path) ?? ".",
-    data: request.body,
+    data,
     overwrite: query.overwrite,
     ...(query.ifMatch !== undefined ? { ifMatch: query.ifMatch } : {}),
     ...(query.mtimeMs !== undefined ? { mtimeMs: query.mtimeMs } : {})

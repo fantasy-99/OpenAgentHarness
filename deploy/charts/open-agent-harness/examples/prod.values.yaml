@@ -4,6 +4,15 @@ image:
 commonLabels:
   environment: prod
 
+objectStorage:
+  enabled: true
+  bucket: oah-prod-workspaces
+  region: us-east-1
+  # endpoint: https://s3.us-east-1.amazonaws.com
+  workspaceBackingStore:
+    enabled: true
+    keyPrefix: workspaces
+
 apiServer:
   replicaCount: 3
   priorityClassName: oah-api-critical
@@ -36,6 +45,9 @@ apiServer:
     limits:
       cpu: "4"
       memory: 4Gi
+  envFrom:
+    - secretRef:
+        name: oah-object-storage-credentials
 
 worker:
   replicaCount: 4
@@ -63,9 +75,20 @@ worker:
     requests:
       cpu: "2"
       memory: 4Gi
+      ephemeral-storage: 32Gi
     limits:
       cpu: "8"
       memory: 8Gi
+      ephemeral-storage: 64Gi
+  envFrom:
+    - secretRef:
+        name: oah-object-storage-credentials
+  diskReadiness:
+    threshold: "0.92"
+  workspacePolicy:
+    maxObjects: "200000"
+    maxBytes: "214748364800"
+    maxFileBytes: "5368709120"
   workspaceVolume:
     type: persistentVolumeClaim
     persistentVolumeClaim:

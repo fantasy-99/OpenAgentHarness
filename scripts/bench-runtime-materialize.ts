@@ -63,6 +63,14 @@ const DEFAULT_OPTIONS: BenchmarkOptions = {
 
 const WORKSPACE_SYNC_BINARY_BASENAME = process.platform === "win32" ? "oah-workspace-sync.exe" : "oah-workspace-sync";
 
+async function resolveDeployAssetRoot(deployRoot: string): Promise<string> {
+  const root = path.resolve(deployRoot);
+  const hasFlatAssets = await Promise.all(
+    ["runtimes", "models", "tools", "skills", "workspaces", "archives"].map((name) => pathExists(path.join(root, name)))
+  );
+  return hasFlatAssets.some(Boolean) ? root : path.join(root, "source");
+}
+
 function parseArgs(argv: string[]): BenchmarkOptions {
   const options = { ...DEFAULT_OPTIONS };
   for (let index = 0; index < argv.length; index += 1) {
@@ -292,7 +300,8 @@ async function resolveDeploySourceSets(options: BenchmarkOptions): Promise<Sourc
     return [];
   }
 
-  const runtimeDir = path.resolve(options.deployRoot, "source", "runtimes");
+  const assetRoot = await resolveDeployAssetRoot(options.deployRoot);
+  const runtimeDir = path.resolve(assetRoot, "runtimes");
   if (!(await pathExists(runtimeDir))) {
     return [];
   }
@@ -310,8 +319,8 @@ async function resolveDeploySourceSets(options: BenchmarkOptions): Promise<Sourc
           label: `deploy:${runtimeName}`,
           runtimeDir,
           runtimeName,
-          platformToolDir: path.resolve(options.deployRoot!, "source", "tools"),
-          platformSkillDir: path.resolve(options.deployRoot!, "source", "skills")
+          platformToolDir: path.resolve(assetRoot, "tools"),
+          platformSkillDir: path.resolve(assetRoot, "skills")
         } satisfies SourceSet,
         inventory
       };

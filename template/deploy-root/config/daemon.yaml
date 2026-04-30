@@ -1,0 +1,30 @@
+server:
+  host: 127.0.0.1
+  port: 8787
+
+storage: {}
+
+sandbox:
+  provider: embedded
+
+paths:
+  workspace_dir: ../workspaces
+  runtime_state_dir: ../state
+  runtime_dir: ../runtimes
+  model_dir: ../models
+  tool_dir: ../tools
+  skill_dir: ../skills
+
+workers:
+  embedded:
+    min_count: 1
+    max_count: 2
+    scale_interval_ms: 1000
+    idle_ttl_ms: 30000
+    scale_up_window: 1
+    scale_down_window: 2
+    cooldown_ms: 1000
+    reserved_capacity_for_subagent: 1
+
+llm:
+  default_model: openai-default

@@ -48,4 +48,67 @@ spec:
           annotations:
             summary: OAH controller scale-down is blocked
             description: The controller in namespace {{ .Release.Namespace }} is holding scale-down because one or more worker replicas are still blocked.
+        - alert: OAHWorkerDiskPressure
+          expr: max by (namespace) (oah_controller_sandbox_pressured{namespace="{{ .Release.Namespace }}"}) > 0 or max by (namespace) (oah_controller_sandbox_pressure_reserve{namespace="{{ .Release.Namespace }}"}) > 0
+          for: {{ .Values.prometheusRule.durations.workerDiskPressure }}
+          labels:
+            severity: {{ .Values.prometheusRule.severities.workerDiskPressure | quote }}
+            component: sandbox
+          annotations:
+            summary: OAH workers are reporting resource pressure
+            description: One or more healthy sandbox workers in namespace {{ .Release.Namespace }} report CPU, memory, or disk pressure. Check worker disk usage first when workspace materialization is active.
+        - alert: OAHWorkspaceMaterializationSlow
+          expr: max by (namespace) (oah_native_workspace_sync_duration_ms_max{namespace="{{ .Release.Namespace }}",operation=~"sync_remote_to_local|sync_local_to_remote|scan"}) > {{ .Values.prometheusRule.thresholds.materializationLatencyMs }}
+          for: {{ .Values.prometheusRule.durations.materializationLatency }}
+          labels:
+            severity: {{ .Values.prometheusRule.severities.materializationLatency | quote }}
+            component: sandbox
+          annotations:
+            summary: OAH workspace materialization is slow
+            description: Workspace sync/materialization operations in namespace {{ .Release.Namespace }} exceeded {{ .Values.prometheusRule.thresholds.materializationLatencyMs }}ms.
+        - alert: OAHObjectStorageSyncFailureRate
+          expr: (sum by (namespace) (increase(oah_object_storage_timeouts_total{namespace="{{ .Release.Namespace }}"}[5m])) + sum by (namespace) (increase(oah_object_storage_throttles_total{namespace="{{ .Release.Namespace }}"}[5m]))) > {{ .Values.prometheusRule.thresholds.objectStorageErrorsPerFiveMinutes }}
+          for: {{ .Values.prometheusRule.durations.objectStorageFailureRate }}
+          labels:
+            severity: {{ .Values.prometheusRule.severities.objectStorageFailureRate | quote }}
+            component: sandbox
+          annotations:
+            summary: OAH object-storage sync is failing
+            description: Object-storage timeouts or throttles exceeded {{ .Values.prometheusRule.thresholds.objectStorageErrorsPerFiveMinutes }} events in five minutes for namespace {{ .Release.Namespace }}.
+        - alert: OAHObjectStorageLatencyHigh
+          expr: max by (namespace) (oah_object_storage_duration_ms_max{namespace="{{ .Release.Namespace }}",operation=~"get|put|delete|list|bundle_create|bundle_extract"}) > {{ .Values.prometheusRule.thresholds.objectStorageLatencyMs }}
+          for: {{ .Values.prometheusRule.durations.objectStorageLatency }}
+          labels:
+            severity: {{ .Values.prometheusRule.severities.objectStorageLatency | quote }}
+            component: sandbox
+          annotations:
+            summary: OAH object-storage operations are slow
+            description: Object-storage operation latency in namespace {{ .Release.Namespace }} exceeded {{ .Values.prometheusRule.thresholds.objectStorageLatencyMs }}ms.
+        - alert: OAHRedisReadyQueueDepthHigh
+          expr: max by (namespace) (oah_controller_ready_session_count{namespace="{{ .Release.Namespace }}"}) > {{ .Values.prometheusRule.thresholds.redisReadyQueueDepth }}
+          for: {{ .Values.prometheusRule.durations.redisReadyQueueDepth }}
+          labels:
+            severity: {{ .Values.prometheusRule.severities.redisReadyQueueDepth | quote }}
+            component: controller
+          annotations:
+            summary: OAH Redis ready queue depth is high
+            description: Ready session backlog in namespace {{ .Release.Namespace }} exceeded {{ .Values.prometheusRule.thresholds.redisReadyQueueDepth }}.
+        - alert: OAHRedisMemoryHigh
+          expr: max by (namespace) (redis_memory_used_bytes{namespace="{{ .Release.Namespace }}"} / clamp_min(redis_memory_max_bytes{namespace="{{ .Release.Namespace }}"}, 1)) > {{ .Values.prometheusRule.thresholds.redisMemoryUsedRatio }}
+          for: {{ .Values.prometheusRule.durations.redisMemory }}
+          labels:
+            severity: {{ .Values.prometheusRule.severities.redisMemory | quote }}
+            component: redis
+          annotations:
+            summary: OAH Redis memory usage is high
+            description: Redis exporter reports memory usage above {{ .Values.prometheusRule.thresholds.redisMemoryUsedRatio }} in namespace {{ .Release.Namespace }}. Check ready queue depth, stream retention, and Redis maxmemory policy.
+        - alert: OAHPostgresBloatHigh
+          expr: max by (namespace,relname) (pg_stat_user_tables_n_dead_tup{namespace="{{ .Release.Namespace }}"} / clamp_min(pg_stat_user_tables_n_live_tup{namespace="{{ .Release.Namespace }}"} + pg_stat_user_tables_n_dead_tup{namespace="{{ .Release.Namespace }}"}, 1)) > {{ .Values.prometheusRule.thresholds.postgresDeadTupleRatio }}
+          for: {{ .Values.prometheusRule.durations.postgresBloat }}
+          labels:
+            severity: {{ .Values.prometheusRule.severities.postgresBloat | quote }}
+            component: postgres
+          annotations:
+            summary: OAH PostgreSQL table bloat is high
+            description: PostgreSQL exporter reports high dead tuple ratio for an OAH table in namespace {{ .Release.Namespace }}. Run the production storage VACUUM/retention runbook.
 {{- end }}

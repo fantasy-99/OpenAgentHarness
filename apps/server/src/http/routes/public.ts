@@ -15,9 +15,11 @@ import { AppError } from "@oah/engine-core";
 import { SUPPORTED_MODEL_PROVIDERS } from "@oah/model-runtime/providers";
 
 import { createParamsSchema, writeSseEvent } from "../context.js";
+import { readRequestBodyBuffer } from "../proxy-utils.js";
 import { describeSandboxTopology } from "../../sandbox-topology.js";
 import type { AppDependencies, AppRouteOptions } from "../types.js";
 import { renderNativeWorkspaceSyncMetrics } from "../../observability/native-workspace-sync.js";
+import { renderObjectStorageMetrics } from "../../observability/object-storage.js";
 import { registerPublicStorageRoutes } from "./public-storage-lazy.js";
 
 let developerDocsModulePromise: Promise<typeof import("../developer-docs.js")> | undefined;
@@ -46,7 +48,8 @@ export function registerPublicRoutes(app: FastifyInstance, dependencies: AppDepe
       throw new AppError(501, "runtime_upload_unavailable", "Runtime upload is not available on this server.");
     }
 
-    if (!Buffer.isBuffer(request.body)) {
+    const zipBuffer = await readRequestBodyBuffer(request.body);
+    if (!zipBuffer) {
       throw new AppError(415, "invalid_content_type", "Runtime upload requires Content-Type: application/octet-stream.");
     }
 
@@ -55,7 +58,7 @@ export function registerPublicRoutes(app: FastifyInstance, dependencies: AppDepe
     try {
       const runtime = await dependencies.uploadWorkspaceRuntime({
         runtimeName: query.name,
-        zipBuffer: request.body,
+        zipBuffer,
         overwrite: query.overwrite
       });
       return reply.status(201).send(uploadWorkspaceRuntimeResponseSchema.parse({ name: runtime.name }));
@@ -178,7 +181,7 @@ export function registerPublicRoutes(app: FastifyInstance, dependencies: AppDepe
 
   app.get("/metrics", async (_request, reply) => {
     reply.header("content-type", "text/plain; version=0.0.4; charset=utf-8");
-    return reply.send(renderNativeWorkspaceSyncMetrics());
+    return reply.send(`${renderNativeWorkspaceSyncMetrics()}${renderObjectStorageMetrics()}`);
   });
 
   app.get("/api/v1", async (request, reply) => reply.send((await loadDeveloperDocsModule()).buildApiIndex(request)));

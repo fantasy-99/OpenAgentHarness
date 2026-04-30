@@ -152,7 +152,7 @@ flowchart TD
 
 - Owns workspace placement and worker lifecycle governance
 - Combines `owner affinity + workspace ownership + worker health + capacity` into placement decisions
-- For `self_hosted / e2b` providers, also derives logical sandbox fleet demand: the same `ownerId` reuses a sandbox, while ownerless workspaces use a shared pool, first reusing existing sandboxes whose CPU and memory are both below threshold and then falling back to a warm empty sandbox when either resource crosses the threshold
+- For `self_hosted / e2b` providers, also derives logical sandbox fleet demand: the same `ownerId` reuses a sandbox, while ownerless workspaces use a shared pool, first reusing existing sandboxes whose CPU, memory, and disk are below threshold and then falling back to a warm empty sandbox when any resource crosses the threshold
 - Owns drain, rebalance, recovery, and scaling
 - Does not execute business runs directly
 

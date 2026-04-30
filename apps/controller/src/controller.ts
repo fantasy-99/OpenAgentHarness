@@ -37,6 +37,7 @@ export interface SandboxFleetConfig {
   warmEmptyCount: number;
   resourceCpuPressureThreshold: number;
   resourceMemoryPressureThreshold: number;
+  resourceDiskPressureThreshold: number;
 }
 
 export interface StandaloneWorkerFleetSummary {
@@ -164,6 +165,12 @@ export interface ControllerSandboxFleetSummary {
   warmEmptySandboxes: number;
   resourceCpuPressureThreshold: number;
   resourceMemoryPressureThreshold: number;
+  resourceDiskPressureThreshold: number;
+  observedSandboxes: number;
+  healthySandboxes: number;
+  pressuredSandboxes: number;
+  emptySandboxes: number;
+  pressureReserveSandboxes: number;
   trackedWorkspaces: number;
   ownerScopedWorkspaces: number;
   ownerlessWorkspaces: number;
@@ -616,6 +623,9 @@ export function resolveSandboxFleetConfig(config: ServerConfig): SandboxFleetCon
   const configuredMemoryPressureThreshold = (
     config.sandbox?.fleet as { resource_memory_pressure_threshold?: number | undefined } | undefined
   )?.resource_memory_pressure_threshold;
+  const configuredDiskPressureThreshold = (
+    config.sandbox?.fleet as { resource_disk_pressure_threshold?: number | undefined } | undefined
+  )?.resource_disk_pressure_threshold;
   const minCount = readNonNegativeIntEnv(
     "OAH_SANDBOX_FLEET_MIN_COUNT",
     configuredMinCount ?? (managedByController ? 1 : 0)
@@ -652,6 +662,10 @@ export function resolveSandboxFleetConfig(config: ServerConfig): SandboxFleetCon
     resourceMemoryPressureThreshold: readRatioEnv(
       "OAH_SANDBOX_FLEET_RESOURCE_MEMORY_PRESSURE_THRESHOLD",
       configuredMemoryPressureThreshold ?? 0.8
+    ),
+    resourceDiskPressureThreshold: readRatioEnv(
+      "OAH_SANDBOX_FLEET_RESOURCE_DISK_PRESSURE_THRESHOLD",
+      configuredDiskPressureThreshold ?? 0.85
     )
   };
 }
@@ -713,11 +727,15 @@ function workspacePlacementLoad(placement: Pick<RedisWorkspacePlacementEntry, "r
 }
 
 function workerResourcePressure(
-  worker: Pick<RedisWorkerRegistryEntry, "resourceCpuLoadRatio" | "resourceMemoryUsedRatio">,
-  config: Pick<SandboxFleetConfig, "resourceCpuPressureThreshold" | "resourceMemoryPressureThreshold">
+  worker: Pick<RedisWorkerRegistryEntry, "resourceCpuLoadRatio" | "resourceMemoryUsedRatio" | "resourceDiskUsedRatio">,
+  config: Pick<
+    SandboxFleetConfig,
+    "resourceCpuPressureThreshold" | "resourceMemoryPressureThreshold" | "resourceDiskPressureThreshold"
+  >
 ): { pressure: number; pressureExceeded: boolean; hasMetrics: boolean } {
   const cpuThreshold = Math.max(0.01, config.resourceCpuPressureThreshold);
   const memoryThreshold = Math.max(0.01, config.resourceMemoryPressureThreshold);
+  const diskThreshold = Math.max(0.01, config.resourceDiskPressureThreshold);
   const cpuPressure =
     typeof worker.resourceCpuLoadRatio === "number" && Number.isFinite(worker.resourceCpuLoadRatio)
       ? worker.resourceCpuLoadRatio / cpuThreshold
@@ -726,7 +744,11 @@ function workerResourcePressure(
     typeof worker.resourceMemoryUsedRatio === "number" && Number.isFinite(worker.resourceMemoryUsedRatio)
       ? worker.resourceMemoryUsedRatio / memoryThreshold
       : undefined;
-  const pressures = [cpuPressure, memoryPressure].filter((value): value is number => typeof value === "number");
+  const diskPressure =
+    typeof worker.resourceDiskUsedRatio === "number" && Number.isFinite(worker.resourceDiskUsedRatio)
+      ? worker.resourceDiskUsedRatio / diskThreshold
+      : undefined;
+  const pressures = [cpuPressure, memoryPressure, diskPressure].filter((value): value is number => typeof value === "number");
   const pressure = pressures.length > 0 ? Math.max(...pressures) : 0;
 
   return {
@@ -856,10 +878,12 @@ export function summarizeWorkspacePlacements(
 
 export function summarizeSandboxFleet(input: {
   placements?: RedisWorkspacePlacementEntry[] | undefined;
+  activeWorkers?: RedisWorkerRegistryEntry[] | undefined;
   config: SandboxFleetConfig;
 }): ControllerSandboxFleetSummary {
   const trackedPlacements = (input.placements ?? []).filter((placement) => placement.state !== "evicted");
   const ownerWorkspaceCounts = new Map<string, number>();
+  const workerRefLoads = new Map<string, number>();
   let ownerlessWorkspaces = 0;
 
   for (const placement of trackedPlacements) {
@@ -869,8 +893,39 @@ export function summarizeSandboxFleet(input: {
     } else {
       ownerlessWorkspaces += 1;
     }
+    if (placement.ownerWorkerId && placement.state !== "unassigned") {
+      workerRefLoads.set(placement.ownerWorkerId, (workerRefLoads.get(placement.ownerWorkerId) ?? 0) + workspacePlacementLoad(placement));
+    }
   }
 
+  const observedSandboxRefs = new Set<string>();
+  const healthySandboxRefs = new Set<string>();
+  const pressuredSandboxRefs = new Set<string>();
+  const healthySandboxWorkers: Array<{ workerId: string; placementReference: string }> = [];
+  for (const worker of input.activeWorkers ?? []) {
+    if (worker.processKind !== "standalone") {
+      continue;
+    }
+
+    const ref = workerPlacementReference(worker);
+    observedSandboxRefs.add(ref);
+    if (worker.health === "healthy") {
+      healthySandboxRefs.add(ref);
+      healthySandboxWorkers.push({
+        workerId: worker.workerId,
+        placementReference: ref
+      });
+      if (workerResourcePressure(worker, input.config).pressureExceeded) {
+        pressuredSandboxRefs.add(ref);
+      }
+    }
+  }
+  const emptySandboxRefs = new Set(
+    healthySandboxWorkers
+      .filter((worker) => (workerRefLoads.get(worker.placementReference) ?? workerRefLoads.get(worker.workerId) ?? 0) === 0)
+      .map((worker) => worker.placementReference)
+  );
+  const emptySandboxes = emptySandboxRefs.size;
   const ownerScopedWorkspaces = [...ownerWorkspaceCounts.values()].reduce((sum, count) => sum + count, 0);
   const ownerScopedSandboxes = [...ownerWorkspaceCounts.values()].reduce(
     (sum, count) => sum + Math.max(1, Math.ceil(count / input.config.maxWorkspacesPerSandbox)),
@@ -884,7 +939,8 @@ export function summarizeSandboxFleet(input: {
         : Math.ceil(ownerlessWorkspaces / input.config.maxWorkspacesPerSandbox);
   const logicalSandboxes = ownerScopedSandboxes + ownerlessSandboxes;
   const warmEmptySandboxes = input.config.managedByController ? Math.max(0, input.config.warmEmptyCount ?? 0) : 0;
-  const targetSandboxes = logicalSandboxes + warmEmptySandboxes;
+  const pressureReserveSandboxes = input.config.managedByController ? pressuredSandboxRefs.size : 0;
+  const targetSandboxes = logicalSandboxes + warmEmptySandboxes + pressureReserveSandboxes;
   const desiredSandboxes = input.config.managedByController
     ? Math.max(input.config.minCount, Math.min(input.config.maxCount, targetSandboxes))
     : 0;
@@ -899,6 +955,12 @@ export function summarizeSandboxFleet(input: {
     warmEmptySandboxes,
     resourceCpuPressureThreshold: input.config.resourceCpuPressureThreshold,
     resourceMemoryPressureThreshold: input.config.resourceMemoryPressureThreshold,
+    resourceDiskPressureThreshold: input.config.resourceDiskPressureThreshold,
+    observedSandboxes: observedSandboxRefs.size,
+    healthySandboxes: healthySandboxRefs.size,
+    pressuredSandboxes: pressuredSandboxRefs.size,
+    emptySandboxes,
+    pressureReserveSandboxes,
     trackedWorkspaces: trackedPlacements.length,
     ownerScopedWorkspaces,
     ownerlessWorkspaces,
@@ -1190,6 +1252,7 @@ export function buildPlacementExecutionOperations(input: {
   maxWorkspacesPerSandbox?: number | undefined;
   resourceCpuPressureThreshold?: number | undefined;
   resourceMemoryPressureThreshold?: number | undefined;
+  resourceDiskPressureThreshold?: number | undefined;
 }): ControllerPlacementExecutionOperation[] {
   const placements = (input.placements ?? []) as ControllerWorkspacePlacementEntry[];
   if (placements.length === 0) {
@@ -1204,7 +1267,8 @@ export function buildPlacementExecutionOperations(input: {
   const workspaceCapacity = Math.max(1, input.maxWorkspacesPerSandbox ?? 1);
   const resourceThresholds = {
     resourceCpuPressureThreshold: Math.max(0.01, input.resourceCpuPressureThreshold ?? 0.8),
-    resourceMemoryPressureThreshold: Math.max(0.01, input.resourceMemoryPressureThreshold ?? 0.8)
+    resourceMemoryPressureThreshold: Math.max(0.01, input.resourceMemoryPressureThreshold ?? 0.8),
+    resourceDiskPressureThreshold: Math.max(0.01, input.resourceDiskPressureThreshold ?? 0.85)
   };
   const workerRefLoads = new Map<string, number>();
   const scheduledWorkerLoads = new Map<string, number>();
@@ -1512,6 +1576,7 @@ export function createPlacementRegistryActionExecutor(options: {
   maxWorkspacesPerSandbox?: number | undefined;
   resourceCpuPressureThreshold?: number | undefined;
   resourceMemoryPressureThreshold?: number | undefined;
+  resourceDiskPressureThreshold?: number | undefined;
   logger?: ControllerLogger | undefined;
 }): ControllerPlacementExecutor {
   return {
@@ -1521,7 +1586,8 @@ export function createPlacementRegistryActionExecutor(options: {
         activeWorkers: input.activeWorkers,
         maxWorkspacesPerSandbox: options.maxWorkspacesPerSandbox,
         resourceCpuPressureThreshold: options.resourceCpuPressureThreshold,
-        resourceMemoryPressureThreshold: options.resourceMemoryPressureThreshold
+        resourceMemoryPressureThreshold: options.resourceMemoryPressureThreshold,
+        resourceDiskPressureThreshold: options.resourceDiskPressureThreshold
       });
       if (operations.length === 0) {
         return undefined;
@@ -1638,7 +1704,8 @@ export class RedisController {
       ownerlessPool: "shared",
       warmEmptyCount: 0,
       resourceCpuPressureThreshold: 0.8,
-      resourceMemoryPressureThreshold: 0.8
+      resourceMemoryPressureThreshold: 0.8,
+      resourceDiskPressureThreshold: 0.85
     };
     this.#scaleTarget = options.scaleTarget;
     this.#logger = options.logger;
@@ -1760,6 +1827,7 @@ export class RedisController {
     }
     const sandboxFleet = summarizeSandboxFleet({
       placements: workspacePlacements,
+      activeWorkers,
       config: this.#sandboxConfig
     });
     const placementSuggestedReplicas = sandboxFleet.managedByController

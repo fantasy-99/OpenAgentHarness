@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -40,6 +40,7 @@ export interface WorkspaceArchiveExporterOptions {
   pollIntervalMs?: number | undefined;
   batchLimit?: number | undefined;
   exportedRetentionDays?: number | undefined;
+  exportedBundleRetentionDays?: number | undefined;
   logger?: WorkspaceArchiveExporterLogger | undefined;
 }
 
@@ -220,6 +221,28 @@ function isArchiveChecksumName(fileName: string): boolean {
   return /^\d{4}-\d{2}-\d{2}\.sqlite\.sha256$/u.test(fileName);
 }
 
+function archiveDateFromExportFileName(fileName: string): string | undefined {
+  if (isArchiveBundleName(fileName)) {
+    return fileName.slice(0, "YYYY-MM-DD".length);
+  }
+
+  if (isArchiveChecksumName(fileName)) {
+    return fileName.slice(0, "YYYY-MM-DD".length);
+  }
+
+  return undefined;
+}
+
+function resolvePositiveIntEnv(name: string): number | undefined {
+  const raw = process.env[name]?.trim();
+  if (!raw) {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
+}
+
 function jsonText(value: unknown): string {
   return JSON.stringify(value ?? null);
 }
@@ -247,6 +270,107 @@ async function sha256File(filePath: string): Promise<string> {
   });
 
   return hash.digest("hex");
+}
+
+interface ArchiveBundlePruneSummary {
+  bundles: number;
+  checksums: number;
+  bytes: number;
+}
+
+async function removeArchiveExportFile(filePath: string): Promise<number | undefined> {
+  try {
+    const fileStat = await stat(filePath);
+    await rm(filePath, { force: true });
+    return fileStat.size;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return undefined;
+    }
+
+    throw error;
+  }
+}
+
+async function pruneArchiveExportBundles(
+  exportRoot: string,
+  beforeArchiveDate: string,
+  limit: number
+): Promise<ArchiveBundlePruneSummary> {
+  let entries: Array<{ name: string; isFile(): boolean }>;
+  try {
+    entries = (await readdir(exportRoot, { withFileTypes: true })).map((entry) => ({
+      name: String(entry.name),
+      isFile: () => entry.isFile()
+    }));
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return {
+        bundles: 0,
+        checksums: 0,
+        bytes: 0
+      };
+    }
+
+    throw error;
+  }
+
+  const removableBundles = entries
+    .filter((entry) => entry.isFile() && isArchiveBundleName(entry.name))
+    .map((entry) => ({
+      fileName: entry.name,
+      archiveDate: archiveDateFromExportFileName(entry.name)!
+    }))
+    .filter((entry) => entry.archiveDate < beforeArchiveDate)
+    .sort((left, right) => left.archiveDate.localeCompare(right.archiveDate) || left.fileName.localeCompare(right.fileName))
+    .slice(0, Math.max(0, limit));
+
+  const removableBundleNames = new Set(removableBundles.map((entry) => entry.fileName));
+  let bundles = 0;
+  let checksums = 0;
+  let bytes = 0;
+
+  for (const entry of removableBundles) {
+    const removedBytes = await removeArchiveExportFile(path.join(exportRoot, entry.fileName));
+    if (removedBytes !== undefined) {
+      bundles += 1;
+      bytes += removedBytes;
+    }
+
+    const checksumName = `${entry.fileName}.sha256`;
+    const checksumBytes = await removeArchiveExportFile(path.join(exportRoot, checksumName));
+    if (checksumBytes !== undefined) {
+      checksums += 1;
+      bytes += checksumBytes;
+    }
+  }
+
+  const remainingChecksumSlots = Math.max(0, limit - bundles);
+  if (remainingChecksumSlots > 0) {
+    const removableOrphanChecksums = entries
+      .filter((entry) => entry.isFile() && isArchiveChecksumName(entry.name))
+      .filter((entry) => {
+        const archiveDate = archiveDateFromExportFileName(entry.name);
+        const bundleName = entry.name.replace(/\.sha256$/u, "");
+        return archiveDate !== undefined && archiveDate < beforeArchiveDate && !removableBundleNames.has(bundleName);
+      })
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .slice(0, remainingChecksumSlots);
+
+    for (const entry of removableOrphanChecksums) {
+      const removedBytes = await removeArchiveExportFile(path.join(exportRoot, entry.name));
+      if (removedBytes !== undefined) {
+        checksums += 1;
+        bytes += removedBytes;
+      }
+    }
+  }
+
+  return {
+    bundles,
+    checksums,
+    bytes
+  };
 }
 
 interface ArchiveDirectoryInspection {
@@ -751,6 +875,7 @@ export class WorkspaceArchiveExporter {
   readonly #pollIntervalMs: number;
   readonly #batchLimit: number;
   readonly #exportedRetentionDays: number;
+  readonly #exportedBundleRetentionDays: number | undefined;
   readonly #logger: WorkspaceArchiveExporterLogger;
   #activeExport: Promise<void> | undefined;
   #hasInspectedExportRoot = false;
@@ -763,6 +888,12 @@ export class WorkspaceArchiveExporter {
     this.#pollIntervalMs = Math.max(60_000, options.pollIntervalMs ?? 15 * 60_000);
     this.#batchLimit = Math.max(1, options.batchLimit ?? 32);
     this.#exportedRetentionDays = Math.max(1, options.exportedRetentionDays ?? 30);
+    const exportedBundleRetentionDays =
+      options.exportedBundleRetentionDays ?? resolvePositiveIntEnv("OAH_ARCHIVE_EXPORT_BUNDLE_RETENTION_DAYS");
+    this.#exportedBundleRetentionDays =
+      exportedBundleRetentionDays !== undefined && exportedBundleRetentionDays > 0
+        ? Math.max(1, Math.floor(exportedBundleRetentionDays))
+        : undefined;
     this.#logger = options.logger ?? {};
   }
 
@@ -824,6 +955,16 @@ export class WorkspaceArchiveExporter {
         this.#logger.info?.(
           `Pruned ${pruned} exported workspace archives older than ${exportedPruneBefore} from primary storage.`
         );
+      }
+
+      if (this.#exportedBundleRetentionDays !== undefined) {
+        const bundlePruneBefore = shiftArchiveDate(now, this.#timeZone, -(this.#exportedBundleRetentionDays - 1));
+        const bundlePrune = await pruneArchiveExportBundles(this.#exportRoot, bundlePruneBefore, this.#batchLimit);
+        if (bundlePrune.bundles > 0 || bundlePrune.checksums > 0) {
+          this.#logger.info?.(
+            `Pruned ${bundlePrune.bundles} archive export bundles and ${bundlePrune.checksums} checksums older than ${bundlePruneBefore} (${bundlePrune.bytes} bytes).`
+          );
+        }
       }
     })();
 

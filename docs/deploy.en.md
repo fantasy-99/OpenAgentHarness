@@ -92,6 +92,7 @@ The repository now includes a minimal Kubernetes split-deployment skeleton:
 - [`deploy/controller-servicemonitor.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/controller-servicemonitor.yaml)
 - [`deploy/kubernetes/controller-rbac.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/kubernetes/controller-rbac.yaml)
 - [`deploy/kubernetes/configmap.example.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/kubernetes/configmap.example.yaml)
+- [`docs/production-readiness.md`](/Users/wumengsong/Code/OpenAgentHarness/docs/production-readiness.md)
 
 Apply them in order:
 
@@ -144,7 +145,7 @@ This baseline already includes:
 - Kubernetes Lease based leader election for `controller`
 - Replica reconciliation through the `Deployment /scale` subresource for `oah-sandbox`, with optional target discovery via `label_selector`
 - The shipped `server.yaml` examples set `sandbox.provider=self_hosted` and route sandbox requests through the `oah-sandbox-internal` headless service
-- The default sandbox fleet keeps `warm_empty_count: 1` empty sandbox ready; ownerless workspaces reuse existing sandboxes while both CPU and memory are below `0.8`, then fall back to the warm empty sandbox when either resource crosses the threshold
+- The default sandbox fleet keeps `warm_empty_count: 1` empty sandbox ready; ownerless workspaces reuse existing sandboxes while CPU, memory, and disk are below threshold, then fall back to the warm empty sandbox when any resource crosses the threshold
 - `controller-rbac.yaml` now includes the `leases`, `deployments`, and `deployments/scale` permissions needed for leader election, label-selector discovery, and replica reconciliation
 - Automatic scale-down is now enabled when safety conditions are met; the real scale-down guardrail comes from controller health probes against standalone worker `/healthz`
 - Standalone workers now enter a drain phase on shutdown so readiness drops before the current run is allowed to finish
@@ -157,6 +158,7 @@ This baseline already includes:
   It layers [`deploy/controller-servicemonitor.yaml`](/Users/wumengsong/Code/OpenAgentHarness/deploy/controller-servicemonitor.yaml) on top of the base `deploy/kubernetes` skeleton, so Prometheus Operator users can enable the `controller` `ServiceMonitor` with `kubectl apply -k ./deploy`
 - The repository now also ships a minimal Helm chart so the split deployment, RBAC, ConfigMap, and optional `ServiceMonitor` can be managed together by Helm
 - The Helm chart now also supports existing ConfigMaps, PVC-backed workspace volumes for `oah-sandbox`, and per-component resources / securityContext / envFrom / scheduling settings
+- Production deployments should enable object-storage backing store and explicitly size `worker.workspaceVolume`, `ephemeral-storage`, `worker.diskReadiness.threshold`, and `worker.workspacePolicy.*`; see [`docs/production-readiness.md`](/Users/wumengsong/Code/OpenAgentHarness/docs/production-readiness.md)
 - The Helm chart now also supports `PodDisruptionBudget`, `topologySpreadConstraints`, `priorityClassName`, and direct `oah-api` Ingress generation
 - The chart directory now also ships `dev / staging / prod` values examples, so teams can start from environment-specific presets instead of building everything from scratch
 - The repository now also ships a production `Dockerfile` and minimal GHCR publishing workflow, so the K8S manifests/chart are no longer assuming some external image pipeline already exists

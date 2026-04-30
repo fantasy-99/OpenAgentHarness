@@ -1,6 +1,12 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import { createPostgresRuntimePersistence, ensurePostgresSchema } from "@oah/storage-postgres";
+import type { WorkspaceRecord } from "@oah/engine-core";
+import { PostgresWorkspaceArchiveRepository } from "../packages/storage-postgres/src/repositories.ts";
 import { toWorkspaceRecord } from "../packages/storage-postgres/src/row-mappers.ts";
 
 function sqlText(statement: unknown): string {
@@ -17,6 +23,113 @@ function sqlText(statement: unknown): string {
 }
 
 describe("storage postgres", () => {
+  it("stores new archive payloads outside Postgres archive rows when a payload root is configured", async () => {
+    const payloadRoot = await mkdtemp(path.join(tmpdir(), "oah-postgres-archive-payload-"));
+    try {
+      const workspace: WorkspaceRecord = {
+        id: "ws_payload",
+        name: "Payload Workspace",
+        rootPath: "/data/workspaces/ws_payload",
+        executionPolicy: "local",
+        status: "active",
+        kind: "project",
+        readOnly: false,
+        historyMirrorEnabled: true,
+        createdAt: "2026-04-30T00:00:00.000Z",
+        updatedAt: "2026-04-30T00:00:00.000Z",
+        settings: {
+          defaultAgent: "assistant",
+          skillDirs: []
+        },
+        workspaceModels: {},
+        agents: {},
+        actions: {},
+        skills: {},
+        toolServers: {},
+        hooks: {},
+        catalog: {
+          workspaceId: "ws_payload",
+          agents: [],
+          models: [],
+          actions: [],
+          skills: [],
+          tools: [],
+          hooks: [],
+          nativeTools: []
+        }
+      };
+
+      let inserted: Record<string, unknown> | undefined;
+      const emptySelect = {
+        innerJoin() {
+          return this;
+        },
+        where() {
+          return this;
+        },
+        orderBy() {
+          return this;
+        },
+        limit() {
+          return {
+            async offset() {
+              return [];
+            }
+          };
+        }
+      };
+      const tx = {
+        select: vi.fn(() => ({
+          from: vi.fn(() => emptySelect)
+        })),
+        insert: vi.fn(() => ({
+          values(value: Record<string, unknown>) {
+            inserted = value;
+            return {
+              async returning() {
+                return [value];
+              }
+            };
+          }
+        }))
+      };
+      const db = {
+        transaction: vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => callback(tx))
+      };
+
+      const repository = new PostgresWorkspaceArchiveRepository(db as never, {
+        payloadRoot
+      });
+      const archive = await repository.archiveWorkspace({
+        workspace,
+        archiveDate: "2026-04-30",
+        archivedAt: "2026-04-30T01:00:00.000Z",
+        deletedAt: "2026-04-30T01:00:00.000Z",
+        timezone: "UTC"
+      });
+
+      expect(inserted?.payloadRef).toBe(archive.payloadRef);
+      expect(inserted?.sessions).toEqual([]);
+      expect(inserted?.runs).toEqual([]);
+      expect(inserted?.messages).toEqual([]);
+      expect(archive.payloadFormat).toBe("json_v1");
+      expect(archive.sessions).toEqual([]);
+
+      const payload = JSON.parse(await readFile(archive.payloadRef!, "utf8")) as {
+        workspace: { id: string };
+        sessions: unknown[];
+        runs: unknown[];
+        messages: unknown[];
+      };
+      expect(payload.workspace.id).toBe("ws_payload");
+      expect(payload.sessions).toEqual([]);
+      expect(payload.runs).toEqual([]);
+      expect(payload.messages).toEqual([]);
+    } finally {
+      await rm(payloadRoot, { recursive: true, force: true });
+    }
+  });
+
   it("restores workspace runtime from persisted settings", () => {
     const workspace = toWorkspaceRecord({
       id: "ws_test",

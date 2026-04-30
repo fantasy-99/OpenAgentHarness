@@ -223,6 +223,199 @@ describe("storage admin", () => {
     await storageAdmin.close();
   });
 
+  it("requires explicit opt-in before running full-row postgres search", async () => {
+    const pool = {
+      async query<T extends Record<string, unknown>>(sqlText: string) {
+        throw new Error(`Unexpected query: ${sqlText}`);
+      }
+    } as unknown as Pool;
+
+    const storageAdmin = createStorageAdmin({
+      postgresPool: pool,
+      redisAvailable: false,
+      redisEventBusEnabled: false,
+      redisRunQueueEnabled: false
+    });
+
+    await expect(
+      storageAdmin.postgresTable("runs", {
+        limit: 10,
+        q: "completed"
+      })
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      code: "storage_admin_full_row_search_requires_opt_in"
+    });
+
+    await storageAdmin.close();
+  });
+
+  it("uses keyset cursors for postgres table pagination", async () => {
+    const queries: Array<{ sql: string; values: unknown[] | undefined }> = [];
+    const pool = {
+      async query<T extends Record<string, unknown>>(sqlText: string, values?: unknown[]) {
+        queries.push({ sql: sqlText, values });
+
+        if (sqlText.startsWith("select count(*)::text as count from runs")) {
+          return {
+            rows: [{ count: "5" }],
+            fields: []
+          };
+        }
+
+        if (sqlText.startsWith("select * from runs")) {
+          return {
+            rows:
+              values && values.length > 0
+                ? [
+                    {
+                      id: "run_3",
+                      created_at: "2026-04-10T00:00:03.000Z",
+                      status: "completed"
+                    }
+                  ]
+                : [
+                    {
+                      id: "run_1",
+                      created_at: "2026-04-10T00:00:05.000Z",
+                      status: "completed"
+                    },
+                    {
+                      id: "run_2",
+                      created_at: "2026-04-10T00:00:04.000Z",
+                      status: "completed"
+                    },
+                    {
+                      id: "run_3",
+                      created_at: "2026-04-10T00:00:03.000Z",
+                      status: "completed"
+                    }
+                  ],
+            fields: [{ name: "id" }, { name: "created_at" }, { name: "status" }]
+          };
+        }
+
+        throw new Error(`Unexpected query: ${sqlText}`);
+      }
+    } as unknown as Pool;
+
+    const storageAdmin = createStorageAdmin({
+      postgresPool: pool,
+      redisAvailable: false,
+      redisEventBusEnabled: false,
+      redisRunQueueEnabled: false
+    });
+
+    const firstPage = await storageAdmin.postgresTable("runs", {
+      limit: 2
+    });
+    expect(firstPage.rows.map((row) => row.id)).toEqual(["run_1", "run_2"]);
+    expect(firstPage.nextCursor).toEqual(expect.any(String));
+    expect(firstPage.paginationMode).toBe("offset");
+
+    const secondPage = await storageAdmin.postgresTable("runs", {
+      limit: 2,
+      cursor: firstPage.nextCursor
+    });
+    expect(secondPage.rows.map((row) => row.id)).toEqual(["run_3"]);
+    expect(secondPage.paginationMode).toBe("keyset");
+    expect(secondPage.rowCountStatus).toBe("skipped");
+    expect(queries.at(-1)?.sql).toContain("created_at < $1");
+    expect(queries.at(-1)?.sql).toContain("id > $3");
+    expect(queries.at(-1)?.values).toEqual(["2026-04-10T00:00:04.000Z", "2026-04-10T00:00:04.000Z", "run_2"]);
+
+    await storageAdmin.close();
+  });
+
+  it("caches broad postgres overview table counts", async () => {
+    const previousMode = process.env.OAH_STORAGE_ADMIN_POSTGRES_OVERVIEW_COUNTS;
+    const previousTtl = process.env.OAH_STORAGE_ADMIN_POSTGRES_OVERVIEW_COUNT_TTL_MS;
+    process.env.OAH_STORAGE_ADMIN_POSTGRES_OVERVIEW_COUNTS = "cached";
+    process.env.OAH_STORAGE_ADMIN_POSTGRES_OVERVIEW_COUNT_TTL_MS = "60000";
+    let tableCountQueries = 0;
+    const pool = {
+      async query<T extends Record<string, unknown>>(sqlText: string) {
+        if (sqlText.includes("current_database()")) {
+          return {
+            rows: [{ database: "oah_test" }],
+            fields: []
+          };
+        }
+
+        const countTableMatch = sqlText.match(/select count\(\*\)::text as count from ([a-z_]+)/u);
+        if (countTableMatch) {
+          tableCountQueries += 1;
+          return {
+            rows: [{ count: "1" }],
+            fields: []
+          };
+        }
+
+        if (sqlText.includes("from history_events")) {
+          return {
+            rows: [{ count: "0", oldestOccurredAt: null, newestOccurredAt: null }],
+            fields: []
+          };
+        }
+
+        if (sqlText.includes("from archives")) {
+          return {
+            rows: [{ rowCount: "0", pendingExports: "0", exportedRows: "0", oldestPendingArchiveDate: null, newestExportedAt: null }],
+            fields: []
+          };
+        }
+
+        if (sqlText.includes("from runs")) {
+          return {
+            rows: [
+              {
+                trackedRuns: "0",
+                quarantinedRuns: "0",
+                requeuedRuns: "0",
+                failedRecoveryRuns: "0",
+                workerRecoveryFailures: "0",
+                oldestQuarantinedAt: null,
+                newestQuarantinedAt: null,
+                newestRecoveredAt: null
+              }
+            ],
+            fields: []
+          };
+        }
+
+        throw new Error(`Unexpected query: ${sqlText}`);
+      }
+    } as unknown as Pool;
+
+    try {
+      const storageAdmin = createStorageAdmin({
+        postgresPool: pool,
+        redisAvailable: false,
+        redisEventBusEnabled: false,
+        redisRunQueueEnabled: false
+      });
+
+      const first = await storageAdmin.overview();
+      const second = await storageAdmin.overview();
+
+      expect(first.postgres.tables[0]?.rowCountStatus).toBe("exact");
+      expect(second.postgres.tables[0]?.rowCountStatus).toBe("cached");
+      expect(tableCountQueries).toBe(11);
+      await storageAdmin.close();
+    } finally {
+      if (previousMode === undefined) {
+        delete process.env.OAH_STORAGE_ADMIN_POSTGRES_OVERVIEW_COUNTS;
+      } else {
+        process.env.OAH_STORAGE_ADMIN_POSTGRES_OVERVIEW_COUNTS = previousMode;
+      }
+      if (previousTtl === undefined) {
+        delete process.env.OAH_STORAGE_ADMIN_POSTGRES_OVERVIEW_COUNT_TTL_MS;
+      } else {
+        process.env.OAH_STORAGE_ADMIN_POSTGRES_OVERVIEW_COUNT_TTL_MS = previousTtl;
+      }
+    }
+  });
+
   it("uses bounded SCAN for redis overview key summaries", async () => {
     const previousLimit = process.env.OAH_STORAGE_ADMIN_REDIS_OVERVIEW_KEY_LIMIT;
     process.env.OAH_STORAGE_ADMIN_REDIS_OVERVIEW_KEY_LIMIT = "2";

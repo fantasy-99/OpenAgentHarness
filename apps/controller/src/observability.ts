@@ -142,6 +142,31 @@ export function renderControllerMetrics(input: {
       value: input.controller.sandboxFleet?.warmEmptySandboxes ?? 0
     },
     {
+      name: "sandbox_observed",
+      help: "Number of observed standalone sandbox replicas in the worker registry.",
+      value: input.controller.sandboxFleet?.observedSandboxes ?? 0
+    },
+    {
+      name: "sandbox_healthy",
+      help: "Number of observed standalone sandbox replicas with healthy worker leases.",
+      value: input.controller.sandboxFleet?.healthySandboxes ?? 0
+    },
+    {
+      name: "sandbox_pressured",
+      help: "Number of healthy sandbox replicas whose reported CPU, memory, or disk pressure exceeds threshold.",
+      value: input.controller.sandboxFleet?.pressuredSandboxes ?? 0
+    },
+    {
+      name: "sandbox_empty",
+      help: "Number of healthy sandbox replicas without active workspace placement load.",
+      value: input.controller.sandboxFleet?.emptySandboxes ?? 0
+    },
+    {
+      name: "sandbox_pressure_reserve",
+      help: "Extra sandbox demand reserved to move work away from resource-pressured replicas.",
+      value: input.controller.sandboxFleet?.pressureReserveSandboxes ?? 0
+    },
+    {
       name: "sandbox_capped",
       help: "Whether desired sandbox count is currently capped by sandbox fleet max_count.",
       value: input.controller.sandboxFleet?.capped ? 1 : 0

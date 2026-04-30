@@ -198,6 +198,95 @@ describe("workspace materialization", () => {
     expect(manager.snapshot()).toEqual([]);
   });
 
+  it("runs explicit workspace lifecycle operations for hydrate, flush, evict, and repair", async () => {
+    const cacheRoot = await mkdtemp(path.join(os.tmpdir(), "oah-materialization-lifecycle-"));
+    tempDirs.push(cacheRoot);
+    const store = new FakeDirectoryObjectStore();
+    await store.putObject("workspace/demo/README.md", Buffer.from("# old\n"));
+    const placements: Array<{ workspaceId: string; state: string }> = [];
+
+    const manager = new WorkspaceMaterializationManager({
+      cacheRoot,
+      workerId: "worker_1",
+      store,
+      placementRegistry: {
+        async upsert(entry) {
+          placements.push({
+            workspaceId: entry.workspaceId,
+            state: entry.state
+          });
+        },
+        async assignOwnerAffinity() {
+          return undefined;
+        },
+        async setPreferredWorker() {
+          return undefined;
+        },
+        async releaseOwnership() {
+          return undefined;
+        },
+        async removeWorkspace() {
+          return undefined;
+        },
+        async listAll() {
+          return [];
+        },
+        async getByWorkspaceId() {
+          return undefined;
+        }
+      }
+    });
+
+    const workspace = {
+      id: "ws_lifecycle",
+      rootPath: "/unused",
+      externalRef: "s3://test-bucket/workspace/demo"
+    } as never;
+
+    const hydrated = await manager.hydrateWorkspace(workspace);
+    expect(hydrated).toEqual([
+      expect.objectContaining({
+        workspaceId: "ws_lifecycle",
+        sourceKind: "object_store",
+        dirty: false
+      })
+    ]);
+
+    const lease = await manager.acquireWorkspace({
+      workspace
+    });
+    await writeFile(path.join(lease.localPath, "README.md"), "# fresh\n", "utf8");
+    lease.markDirty();
+
+    const busyEviction = await manager.evictWorkspaceCopies("ws_lifecycle");
+    expect(busyEviction.evicted).toEqual([]);
+    expect(busyEviction.skipped).toEqual([
+      expect.objectContaining({
+        workspaceId: "ws_lifecycle",
+        refCount: 1
+      })
+    ]);
+
+    await lease.release();
+    const flushed = await manager.flushWorkspaceCopies("ws_lifecycle");
+    expect(flushed).toEqual([
+      expect.objectContaining({
+        workspaceId: "ws_lifecycle",
+        dirty: false
+      })
+    ]);
+    expect(store.objects.get("workspace/demo/README.md")?.body.toString("utf8")).toBe("# fresh\n");
+
+    const repaired = await manager.repairWorkspacePlacement("ws_lifecycle");
+    expect(repaired).toHaveLength(1);
+    expect(placements.some((entry) => entry.workspaceId === "ws_lifecycle")).toBe(true);
+
+    const eviction = await manager.evictWorkspaceCopies("ws_lifecycle");
+    expect(eviction.evicted).toHaveLength(1);
+    expect(eviction.skipped).toEqual([]);
+    expect(manager.snapshot()).toEqual([]);
+  });
+
   it("flushes workspace configs without persisting runtime-only state", async () => {
     const cacheRoot = await mkdtemp(path.join(os.tmpdir(), "oah-materialization-cache-"));
     tempDirs.push(cacheRoot);

@@ -50,11 +50,13 @@ import type { PlatformAgentRegistry } from "./bootstrap/workspace-registry.js";
 import {
   cleanupWorkspaceLocalArtifacts,
   resolveArchiveExportRoot,
+  resolvePostgresArchivePayloadRoot,
   resolveRuntimeStateDir,
   resolveSqliteShadowRoot,
   resolveWorkspaceMaterializationCacheRoot,
   type WorkspaceLocalArtifactCleanupStatus
 } from "./bootstrap/engine-state-paths.js";
+import { evaluateWorkerDiskReadiness } from "./bootstrap/worker-disk-readiness.js";
 
 export { cleanupWorkspaceLocalArtifacts } from "./bootstrap/engine-state-paths.js";
 export type { WorkspaceLocalArtifactCleanupStatus } from "./bootstrap/engine-state-paths.js";
@@ -80,6 +82,7 @@ let modelMetadataDiscoveryModulePromise: Promise<typeof import("./bootstrap/mode
 let sandboxHostModulePromise: Promise<typeof import("./bootstrap/sandbox-host.js")> | undefined;
 let workspaceMaterializationModulePromise: Promise<typeof import("./bootstrap/workspace-materialization.js")> | undefined;
 let nativeBridgeModulePromise: Promise<typeof import("@oah/native-bridge")> | undefined;
+let metadataRetentionModulePromise: Promise<typeof import("./metadata-retention.js")> | undefined;
 
 function loadConfigWorkspaceModule(): Promise<typeof import("@oah/config/workspace")> {
   configWorkspaceModulePromise ??= import("@oah/config/workspace").catch(() =>
@@ -142,6 +145,11 @@ function loadAdminCapabilitiesModule(): Promise<typeof import("./bootstrap/admin
 function loadStorageAdminModule(): Promise<typeof import("./storage-admin.js")> {
   storageAdminModulePromise ??= import("./storage-admin.js");
   return storageAdminModulePromise;
+}
+
+function loadMetadataRetentionModule(): Promise<typeof import("./metadata-retention.js")> {
+  metadataRetentionModulePromise ??= import("./metadata-retention.js");
+  return metadataRetentionModulePromise;
 }
 
 function loadSQLiteStorageModule(): Promise<typeof import("@oah/storage-sqlite")> {
@@ -592,6 +600,22 @@ export interface BootstrappedRuntime {
   sandboxHostProviderKind?: SandboxHostProviderKind | undefined;
   localOwnerBaseUrl?: string | undefined;
   touchWorkspaceActivity?: (workspaceId: string) => Promise<void>;
+  workspaceLifecycle?: {
+    execute(input: {
+      workspaceId: string;
+      operation: "hydrate" | "flush" | "evict" | "delete" | "repair_placement";
+      force?: boolean | undefined;
+    }): Promise<{
+      workspaceId: string;
+      operation: "hydrate" | "flush" | "evict" | "delete" | "repair_placement";
+      status: "completed" | "not_available";
+      hydrated?: unknown[] | undefined;
+      flushed?: unknown[] | undefined;
+      evicted?: unknown[] | undefined;
+      skipped?: unknown[] | undefined;
+      repaired?: unknown[] | undefined;
+    }>;
+  };
   appendEngineLog(input: {
     sessionId: string;
     runId?: string | undefined;
@@ -618,6 +642,18 @@ async function fileExists(targetPath: string): Promise<boolean> {
 
 function isTruthyEnvValue(value: string | undefined): boolean {
   return value !== undefined && /^(1|true|yes|on)$/iu.test(value.trim());
+}
+
+function resolvePostgresMetadataRetentionConfig(input: { processKind: "api" | "worker"; startWorker: boolean }) {
+  const defaultEnabled = input.processKind === "worker" || input.startWorker;
+  return {
+    enabled: parseBooleanEnv("OAH_METADATA_RETENTION_ENABLED", defaultEnabled),
+    intervalMs: parsePositiveIntEnv("OAH_METADATA_RETENTION_INTERVAL_MS", 60 * 60 * 1000),
+    batchLimit: parsePositiveIntEnv("OAH_METADATA_RETENTION_BATCH_LIMIT", 1_000),
+    historyEventRetentionDays: parseNonNegativeIntEnv("OAH_HISTORY_EVENT_RETENTION_DAYS", 7),
+    sessionEventRetentionDays: parseNonNegativeIntEnv("OAH_SESSION_EVENT_RETENTION_DAYS", 14),
+    runRetentionDays: parseNonNegativeIntEnv("OAH_RUN_RETENTION_DAYS", 0)
+  };
 }
 
 function isRemoteSandboxProvider(config: Pick<ServerConfig, "sandbox">): boolean {
@@ -1060,7 +1096,8 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   const redisStorageModule = redisConfigured ? await loadRedisStorageModule() : undefined;
   const persistence = postgresConfigured
     ? await (await loadServiceRoutedPostgresModule()).createServiceRoutedPostgresRuntimePersistence({
-        connectionString: config.storage.postgres_url!
+        connectionString: config.storage.postgres_url!,
+        archivePayloadRoot: resolvePostgresArchivePayloadRoot(config.paths)
       }).catch((error) => {
         throw new Error(
           `Configured PostgreSQL persistence is unavailable: ${error instanceof Error ? error.message : "unknown error"}`
@@ -1070,6 +1107,10 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         shadowRoot: sqliteShadowRoot
       });
   const primaryStorageMode = "driver" in persistence && persistence.driver === "sqlite" ? "sqlite" : "postgres";
+  const postgresMetadataRetentionConfig = resolvePostgresMetadataRetentionConfig({
+    processKind,
+    startWorker
+  });
   const redisBus =
     redisConfigured
       ? await redisStorageModule!.createRedisSessionEventBus({
@@ -1215,6 +1256,9 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
           resourceMemoryPressureThreshold: (
             config.sandbox.fleet as { resource_memory_pressure_threshold?: number | undefined } | undefined
           )?.resource_memory_pressure_threshold,
+          resourceDiskPressureThreshold: (
+            config.sandbox.fleet as { resource_disk_pressure_threshold?: number | undefined } | undefined
+          )?.resource_disk_pressure_threshold,
           ...(redisWorkspacePlacementRegistry ? { workspacePlacementRegistry: redisWorkspacePlacementRegistry } : {}),
           ...(redisWorkerRegistry ? { workerRegistry: redisWorkerRegistry } : {})
         }
@@ -1237,6 +1281,9 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
             redisEventBusEnabled: Boolean(redisBus),
             redisRunQueueEnabled: Boolean(redisRunQueue),
             ...(redisWorkspacePlacementRegistry ? { workspacePlacementRegistry: redisWorkspacePlacementRegistry } : {}),
+            historyEventCleanupEnabled:
+              postgresMetadataRetentionConfig.enabled && postgresMetadataRetentionConfig.historyEventRetentionDays > 0,
+            historyEventRetentionDays: Math.max(1, postgresMetadataRetentionConfig.historyEventRetentionDays || 7),
             archiveExportEnabled: false,
             archiveExportRoot: resolveArchiveExportRoot(config.paths)
           });
@@ -1400,6 +1447,14 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
                 `[oah-bootstrap] Deleting workspace ${workspace.id} (rootPath=${workspace.rootPath}, externalRef=${workspace.externalRef ?? "none"})`
               );
 
+              if (useSelfHostedWorkspaceDelegatingInitializer) {
+                throw new AppError(
+                  409,
+                  "workspace_delete_requires_worker",
+                  `Workspace ${workspace.id} must be deleted by a self-hosted worker in API-only mode.`
+                );
+              }
+
               if (remoteSandboxProvider && sandboxHost) {
                 await clearWorkspaceRootContents({
                   sandboxHost,
@@ -1542,6 +1597,94 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       })
     : runtimeService;
   const executionEngineService = new ExecutionEngineService(runtimeService);
+  const workspaceLifecycle = sandboxHost
+    ? {
+        async execute(input: {
+          workspaceId: string;
+          operation: "hydrate" | "flush" | "evict" | "delete" | "repair_placement";
+          force?: boolean | undefined;
+        }) {
+          if (input.operation === "delete") {
+            try {
+              await runtimeService.deleteWorkspace(input.workspaceId);
+            } catch (error) {
+              if (!(error instanceof Error) || (error as Error & { code?: string }).code !== "workspace_not_found") {
+                throw error;
+              }
+            }
+            await clearWorkspaceCoordination(input.workspaceId);
+            return {
+              workspaceId: input.workspaceId,
+              operation: input.operation,
+              status: "completed" as const
+            };
+          }
+
+          if (input.operation === "hydrate") {
+            const workspace = await runtimeService.getWorkspaceRecord(input.workspaceId);
+            if (workspaceMaterializationManager) {
+              const hydrated = await workspaceMaterializationManager.hydrateWorkspace(workspace);
+              return {
+                workspaceId: input.workspaceId,
+                operation: input.operation,
+                status: "completed" as const,
+                hydrated
+              };
+            }
+
+            const lease = await sandboxHost.workspaceFileAccessProvider.acquire({
+              workspace,
+              access: "read"
+            });
+            await lease.release();
+            return {
+              workspaceId: input.workspaceId,
+              operation: input.operation,
+              status: "completed" as const,
+              hydrated: []
+            };
+          }
+
+          if (input.operation === "flush") {
+            const flushed = (await workspaceMaterializationManager?.flushWorkspaceCopies(input.workspaceId)) ?? [];
+            return {
+              workspaceId: input.workspaceId,
+              operation: input.operation,
+              status: "completed" as const,
+              flushed
+            };
+          }
+
+          if (input.operation === "evict") {
+            const result =
+              (await workspaceMaterializationManager?.evictWorkspaceCopies(input.workspaceId, {
+                force: input.force
+              })) ?? {
+                evicted: [],
+                skipped: []
+              };
+            return {
+              workspaceId: input.workspaceId,
+              operation: input.operation,
+              status: "completed" as const,
+              evicted: result.evicted,
+              skipped: result.skipped
+            };
+          }
+
+          const repaired = (await workspaceMaterializationManager?.repairWorkspacePlacement(input.workspaceId)) ?? [];
+          if (repaired.length === 0) {
+            await touchWorkspaceActivity?.(input.workspaceId);
+          }
+          return {
+            workspaceId: input.workspaceId,
+            operation: input.operation,
+            status: "completed" as const,
+            repaired
+          };
+        }
+      }
+    : undefined;
   const describeQueuedRun = controlPlaneRuntime
     ? (runId: string) =>
         import("./bootstrap/scoped-repositories.js").then(({ describeQueuedRunWithScopedVisibility }) =>
@@ -1576,6 +1719,26 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       })
     : undefined;
   workerRuntime?.start();
+  const postgresMetadataRetentionService =
+    postgresMetadataRetentionConfig.enabled && "pool" in persistence
+      ? new (await loadMetadataRetentionModule()).PostgresMetadataRetentionService({
+          pool: persistence.pool,
+          intervalMs: postgresMetadataRetentionConfig.intervalMs,
+          batchLimit: postgresMetadataRetentionConfig.batchLimit,
+          historyEventRetentionDays: postgresMetadataRetentionConfig.historyEventRetentionDays,
+          sessionEventRetentionDays: postgresMetadataRetentionConfig.sessionEventRetentionDays,
+          runRetentionDays: postgresMetadataRetentionConfig.runRetentionDays,
+          logger: {
+            info(message) {
+              console.info(message);
+            },
+            warn(message, error) {
+              console.warn(message, error);
+            }
+          }
+        })
+      : undefined;
+  postgresMetadataRetentionService?.start();
   const closePersistence =
     "close" in persistence && typeof persistence.close === "function" ? () => persistence.close() : async () => undefined;
 
@@ -1865,6 +2028,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     ...(sandboxHost ? { sandboxHostProviderKind: sandboxHost.providerKind } : {}),
     ...(ownerBaseUrl ? { localOwnerBaseUrl: ownerBaseUrl } : {}),
     ...(touchWorkspaceActivity ? { touchWorkspaceActivity } : {}),
+    ...(workspaceLifecycle ? { workspaceLifecycle } : {}),
     appendEngineLog(input) {
       return appendEngineLogEvent(primarySessionEventStore, {
         ...input,
@@ -1901,17 +2065,31 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
     },
     async readinessReport() {
       const workerStatus = await getWorkerStatus();
+      const workerDiskReadiness =
+        runtimeProcess.mode === "api_only"
+          ? undefined
+          : evaluateWorkerDiskReadiness({
+              paths: [
+                config.paths.workspace_dir,
+                resolveRuntimeStateDir(config.paths),
+                resolveWorkspaceMaterializationCacheRoot(config.paths)
+              ]
+            });
       const checks = {
         postgres: await postgresCheck(),
         redisEvents: await redisEventsCheck(),
         redisRunQueue: await redisRunQueueCheck()
       };
+      const checksDown = Object.values(checks).includes("down");
+      const workerDiskPressure = workerDiskReadiness?.status === "pressure";
 
       return {
-        status: workerStatus.draining || Object.values(checks).includes("down") ? "not_ready" : "ready",
+        status: workerStatus.draining || workerDiskPressure || checksDown ? "not_ready" : "ready",
         ...(workerStatus.draining ? { reason: "draining" as const, draining: true } : {}),
-        ...(!workerStatus.draining && Object.values(checks).includes("down") ? { reason: "checks_down" as const } : {}),
-        checks
+        ...(!workerStatus.draining && workerDiskPressure ? { reason: "worker_disk_pressure" as const } : {}),
+        ...(!workerStatus.draining && !workerDiskPressure && checksDown ? { reason: "checks_down" as const } : {}),
+        checks,
+        ...(workerDiskReadiness && workerDiskPressure ? { resources: { workerDisk: workerDiskReadiness } } : {})
       };
     },
     async beginDrain() {
@@ -1921,10 +2099,12 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       }
       await sandboxHost?.beginDrain();
       await workerRuntime?.beginDrain();
+      await postgresMetadataRetentionService?.close();
     },
     async close() {
       await Promise.all([
         workerRuntime?.close() ?? Promise.resolve(),
+        postgresMetadataRetentionService?.close() ?? Promise.resolve(),
         adminCapabilities?.close() ?? Promise.resolve(),
         redisBus?.close() ?? Promise.resolve(),
         redisWorkerRegistry?.close() ?? Promise.resolve(),

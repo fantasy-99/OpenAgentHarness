@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { cp, mkdtemp, mkdir, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -87,6 +88,14 @@ const DEFAULT_OPTIONS: BenchmarkOptions = {
   ...resolveRuntimeSourceOptions()
 };
 
+function resolveDeployAssetRoot(deployRoot: string): string {
+  const root = path.resolve(deployRoot);
+  if (["runtimes", "models", "tools", "skills", "workspaces", "archives"].some((name) => existsSync(path.join(root, name)))) {
+    return root;
+  }
+  return path.join(root, "source");
+}
+
 const WORKSPACE_SYNC_BINARY_BASENAME = process.platform === "win32" ? "oah-workspace-sync.exe" : "oah-workspace-sync";
 
 function parseArgs(argv: string[]): BenchmarkOptions {
@@ -123,7 +132,7 @@ function parseArgs(argv: string[]): BenchmarkOptions {
         break;
       case "--runtime-name":
         if (process.env.OAH_DEPLOY_ROOT) {
-          options.runtimeSourceDir = path.resolve(process.env.OAH_DEPLOY_ROOT, "source", "runtimes", value);
+          options.runtimeSourceDir = path.resolve(resolveDeployAssetRoot(process.env.OAH_DEPLOY_ROOT), "runtimes", value);
           options.runtimeSourceLabel = value;
         }
         index += 1;
@@ -150,7 +159,7 @@ function resolveRuntimeSourceOptions(): Pick<BenchmarkOptions, "runtimeSourceDir
   const runtimeName = process.env.OAH_BENCH_MAINLINE_RUNTIME_NAME?.trim();
   if (deployRoot && runtimeName) {
     return {
-      runtimeSourceDir: path.resolve(deployRoot, "source", "runtimes", runtimeName),
+      runtimeSourceDir: path.resolve(resolveDeployAssetRoot(deployRoot), "runtimes", runtimeName),
       runtimeSourceLabel: runtimeName
     };
   }

@@ -4,6 +4,28 @@
 
 Open Agent Harness 是一个 headless Agent Engine。不提供正式产品 UI，通过 OpenAPI + SSE 暴露能力，供 Web、桌面、CLI、TUI 或自动化系统接入。仓库里的 Web 控制台和 `oah tui` 都是调试界面，用来观察 runtime、session、run 和存储状态。
 
+OAH 的产品层级可以按基础设施体系理解：
+
+| 缩写 | 名称 | 定位 |
+| --- | --- | --- |
+| `OAS` | Open Agent Spec | 面向实际用户的 Spec 层。特指用户叠加到 runtime 上的配置与导入资源，例如 `AGENTS.md`、`MEMORY.md`、用户导入的 `tool` / `skill` / `model`。 |
+| `OAR` | Open Agent Runtime | 面向开发者的运行时包层。定义一个可发布、可复用、可初始化 workspace 的 runtime 组织方式。 |
+| `OAH` | Open Agent Harness | 企业/平台部署。面向 Compose、Kubernetes、PostgreSQL、Redis、对象存储、sandbox fleet 和多 worker。 |
+| `OAP` | Open Agent Harness Personal | 个人部署。面向本地 daemon、SQLite、本地磁盘、embedded worker 和单用户工作流。 |
+
+`OAH` 与 `OAP` 都应暴露同一套 OAH-compatible API；Web 调试端、CLI、TUI、Electron 桌面端都只是 client，不绑定某一种部署形态：
+
+```text
+oah web/debug UI  ┐
+oah cli           ├── OAH API ── OAH enterprise server
+oah tui           │
+OAP desktop       ┘          └── OAP local daemon
+```
+
+因此，本地个人版和企业版的关键差异应落在部署 profile、存储后端、worker / sandbox 形态和默认目录，而不是协议或客户端能力上。
+
+客户端连接任意 OAH-compatible API 后，应先读取 server profile，例如 `GET /api/v1/system/profile`。服务端需要明确自报 `edition=enterprise` 还是 `edition=personal`，以及是否支持 local daemon control、local workspace paths、model management 等 capabilities。Web、TUI、Desktop 只能基于 profile / capabilities 开关行为，不能靠 URL、端口或是否 localhost 猜测当前是 OAH 还是 OAP。
+
 两类使用者：
 
 - **平台开发者** -- 定义 agent、action、skill、tool、hook
@@ -155,7 +177,7 @@ flowchart TD
 
 - 负责 workspace placement 与 worker 生命周期治理
 - 将 `owner affinity + workspace ownership + worker health + capacity` 组合为放置决策
-- 在 `self_hosted / e2b` provider 下进一步推导 sandbox fleet 需求：同 `ownerId` 复用 sandbox；无 owner 默认进入共享池，优先复用 CPU / memory 都未超过阈值的已有 sandbox，任一资源超过阈值后再落到 warm empty sandbox
+- 在 `self_hosted / e2b` provider 下进一步推导 sandbox fleet 需求：同 `ownerId` 复用 sandbox；无 owner 默认进入共享池，优先复用 CPU / memory / disk 都未超过阈值的已有 sandbox，任一资源超过阈值后再落到 warm empty sandbox
 - 负责 drain、rebalance、recovery 与扩缩容
 - 不直接执行业务 run
 

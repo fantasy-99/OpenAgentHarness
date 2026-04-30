@@ -27,6 +27,13 @@ import { buildServiceDatabaseConnectionString } from "./bootstrap/service-routed
 
 type RedisInspectorClient = ReturnType<typeof createClient>;
 type PostgresTableConfigName = keyof typeof POSTGRES_TABLE_CONFIG;
+type PostgresOverviewCountStatus = "exact" | "cached" | "estimated" | "skipped";
+type PostgresTableSortTerm = {
+  expression: string;
+  field: string;
+  direction: "asc" | "desc";
+  nullsLast?: boolean | undefined;
+};
 type WorkerRegistryInspector = {
   listActive(nowMs?: number): Promise<RedisWorkerRegistryEntry[]>;
   close?(): Promise<void>;
@@ -37,49 +44,90 @@ type PostgresPoolFactory = (options: { connectionString: string }) => Pool;
 const POSTGRES_TABLE_CONFIG = {
   workspaces: {
     orderBy: "updated_at desc, created_at desc, id asc",
+    keyset: [
+      { expression: "updated_at", field: "updated_at", direction: "desc" },
+      { expression: "created_at", field: "created_at", direction: "desc" },
+      { expression: "id", field: "id", direction: "asc" }
+    ],
     description: "Workspace registry and resolved catalog snapshots."
   },
   sessions: {
     orderBy: "updated_at desc, created_at desc, id asc",
+    keyset: [
+      { expression: "updated_at", field: "updated_at", direction: "desc" },
+      { expression: "created_at", field: "created_at", direction: "desc" },
+      { expression: "id", field: "id", direction: "asc" }
+    ],
     description: "Session headers per workspace."
   },
   runs: {
     orderBy: "created_at desc, id asc",
+    keyset: [
+      { expression: "created_at", field: "created_at", direction: "desc" },
+      { expression: "id", field: "id", direction: "asc" }
+    ],
     description: "Run lifecycle records and status."
   },
   messages: {
     orderBy: "created_at desc, id asc",
+    keyset: [
+      { expression: "created_at", field: "created_at", direction: "desc" },
+      { expression: "id", field: "id", direction: "asc" }
+    ],
     description: "Persisted session messages, with content stored in AI SDK-compatible message format."
   },
   run_steps: {
     orderBy: "coalesce(started_at, ended_at) desc nulls last, seq desc, id asc",
+    keyset: [
+      { expression: "coalesce(started_at, ended_at)", field: "__oah_sort_0", direction: "desc", nullsLast: true },
+      { expression: "seq", field: "seq", direction: "desc" },
+      { expression: "id", field: "id", direction: "asc" }
+    ],
     description: "Per-run step audit trail. model_call steps snapshot AI SDK-facing request/response data plus OAH audit fields."
   },
   session_events: {
     orderBy: "cursor desc",
+    keyset: [{ expression: "cursor", field: "cursor", direction: "desc" }],
     description: "SSE/session event log. Transport/event stream only, not the canonical conversation store."
   },
   tool_calls: {
     orderBy: "started_at desc, id asc",
+    keyset: [
+      { expression: "started_at", field: "started_at", direction: "desc" },
+      { expression: "id", field: "id", direction: "asc" }
+    ],
     description: "Tool call audit records."
   },
   hook_runs: {
     orderBy: "started_at desc, id asc",
+    keyset: [
+      { expression: "started_at", field: "started_at", direction: "desc" },
+      { expression: "id", field: "id", direction: "asc" }
+    ],
     description: "Hook execution audit records."
   },
   artifacts: {
     orderBy: "created_at desc, id asc",
+    keyset: [
+      { expression: "created_at", field: "created_at", direction: "desc" },
+      { expression: "id", field: "id", direction: "asc" }
+    ],
     description: "Artifact metadata emitted by runs."
   },
   history_events: {
     orderBy: "id desc",
+    keyset: [{ expression: "id", field: "id", direction: "desc" }],
     description: "History mirror event source for workspace mirror sync."
   },
   archives: {
     orderBy: "archived_at desc, id asc",
+    keyset: [
+      { expression: "archived_at", field: "archived_at", direction: "desc" },
+      { expression: "id", field: "id", direction: "asc" }
+    ],
     description: "Deletion archive buffer before daily SQLite export."
   }
-} satisfies Record<StoragePostgresTableName, { orderBy: string; description: string }>;
+} satisfies Record<StoragePostgresTableName, { orderBy: string; keyset: PostgresTableSortTerm[]; description: string }>;
 
 const POSTGRES_TABLE_FILTER_COLUMNS: Record<
   StoragePostgresTableName,
@@ -183,6 +231,37 @@ async function readRedisKeySize(client: RedisInspectorClient, key: string, type:
 }
 
 const DEFAULT_REDIS_OVERVIEW_KEY_LIMIT = 200;
+const DEFAULT_POSTGRES_OVERVIEW_COUNT_TTL_MS = 30_000;
+const DEFAULT_POSTGRES_DEEP_OFFSET_LIMIT = 10_000;
+
+function isTruthy(value: string | undefined): boolean {
+  return value ? ["1", "true", "yes", "on"].includes(value.trim().toLowerCase()) : false;
+}
+
+function resolvePostgresOverviewCountMode(): "cached" | "exact" | "estimated" | "skip" {
+  const raw = process.env.OAH_STORAGE_ADMIN_POSTGRES_OVERVIEW_COUNTS?.trim().toLowerCase();
+  return raw === "exact" || raw === "estimated" || raw === "skip" || raw === "cached" ? raw : "cached";
+}
+
+function resolvePostgresOverviewCountTtlMs(): number {
+  const raw = process.env.OAH_STORAGE_ADMIN_POSTGRES_OVERVIEW_COUNT_TTL_MS?.trim();
+  if (!raw) {
+    return DEFAULT_POSTGRES_OVERVIEW_COUNT_TTL_MS;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.min(parsed, 3_600_000) : DEFAULT_POSTGRES_OVERVIEW_COUNT_TTL_MS;
+}
+
+function resolvePostgresDeepOffsetLimit(): number {
+  const raw = process.env.OAH_STORAGE_ADMIN_POSTGRES_DEEP_OFFSET_LIMIT?.trim();
+  if (!raw) {
+    return DEFAULT_POSTGRES_DEEP_OFFSET_LIMIT;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_POSTGRES_DEEP_OFFSET_LIMIT;
+}
 
 function resolveRedisOverviewKeyLimit(): number {
   const raw = process.env.OAH_STORAGE_ADMIN_REDIS_OVERVIEW_KEY_LIMIT?.trim();
@@ -192,6 +271,71 @@ function resolveRedisOverviewKeyLimit(): number {
 
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 10_000) : DEFAULT_REDIS_OVERVIEW_KEY_LIMIT;
+}
+
+function encodePostgresCursor(table: StoragePostgresTableName, values: unknown[]): string {
+  return Buffer.from(JSON.stringify({ table, values }), "utf8").toString("base64url");
+}
+
+function decodePostgresCursor(cursor: string | undefined, table: StoragePostgresTableName): unknown[] | undefined {
+  const trimmed = cursor?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  try {
+    const decoded = JSON.parse(Buffer.from(trimmed, "base64url").toString("utf8")) as {
+      table?: unknown;
+      values?: unknown;
+    };
+    if (decoded.table !== table || !Array.isArray(decoded.values)) {
+      throw new Error("Cursor does not match the requested table.");
+    }
+    return decoded.values;
+  } catch (error) {
+    throw new AppError(
+      400,
+      "invalid_storage_table_cursor",
+      error instanceof Error ? error.message : "Invalid storage table cursor."
+    );
+  }
+}
+
+function buildPostgresKeysetWhere(
+  terms: PostgresTableSortTerm[],
+  cursorValues: unknown[],
+  values: unknown[]
+): string | undefined {
+  if (cursorValues.length !== terms.length) {
+    throw new AppError(400, "invalid_storage_table_cursor", "Storage table cursor shape does not match the table order.");
+  }
+
+  const disjunctions: string[] = [];
+  for (let index = 0; index < terms.length; index += 1) {
+    const term = terms[index]!;
+    const equalityParts: string[] = [];
+    for (let previousIndex = 0; previousIndex < index; previousIndex += 1) {
+      const previousTerm = terms[previousIndex]!;
+      const previousValue = cursorValues[previousIndex];
+      if (previousValue === null || previousValue === undefined) {
+        equalityParts.push(`${previousTerm.expression} is null`);
+      } else {
+        values.push(previousValue);
+        equalityParts.push(`${previousTerm.expression} = $${values.length}`);
+      }
+    }
+
+    const cursorValue = cursorValues[index];
+    if (cursorValue === null || cursorValue === undefined) {
+      continue;
+    }
+
+    values.push(cursorValue);
+    const comparison = `${term.expression} ${term.direction === "desc" ? "<" : ">"} $${values.length}`;
+    disjunctions.push([...equalityParts, comparison].join(" and "));
+  }
+
+  return disjunctions.length > 0 ? `(${disjunctions.map((clause) => `(${clause})`).join(" or ")})` : undefined;
 }
 
 async function scanRedisKeysBounded(
@@ -347,8 +491,11 @@ export interface StorageAdmin {
     options: {
       limit: number;
       offset?: number | undefined;
+      cursor?: string | undefined;
       serviceName?: string | undefined;
       q?: string | undefined;
+      searchMode?: "full_row" | undefined;
+      includeRowCount?: boolean | undefined;
       workspaceId?: string | undefined;
       sessionId?: string | undefined;
       runId?: string | undefined;
@@ -443,6 +590,13 @@ export function createStorageAdmin(options: {
   let redisClientPromise: Promise<RedisInspectorClient | undefined> | undefined;
   let workerRegistryPromise: Promise<WorkerRegistryInspector | undefined> | undefined;
   const postgresServicePools = new Map<string, Promise<Pool>>();
+  const postgresOverviewCountCache = new Map<
+    string,
+    {
+      rowCount: number;
+      cachedAtMs: number;
+    }
+  >();
 
   async function getRedisClient(): Promise<RedisInspectorClient | undefined> {
     if (options.redisClient) {
@@ -506,6 +660,51 @@ export function createStorageAdmin(options: {
     return postgresServicePools.get(normalizedServiceName)!;
   }
 
+  async function readPostgresOverviewTableCount(input: {
+    pool: Pool;
+    table: StoragePostgresTableName;
+    serviceName?: string | undefined;
+  }): Promise<{ rowCount: number; rowCountStatus: PostgresOverviewCountStatus; rowCountCachedAt?: string | undefined }> {
+    const mode = resolvePostgresOverviewCountMode();
+    if (mode === "skip") {
+      return {
+        rowCount: 0,
+        rowCountStatus: "skipped"
+      };
+    }
+
+    const normalizedServiceName = normalizeServiceName(input.serviceName) ?? "@default";
+    const cacheKey = `${normalizedServiceName}:${input.table}:${mode}`;
+    const nowMs = Date.now();
+    const ttlMs = resolvePostgresOverviewCountTtlMs();
+    const cached = postgresOverviewCountCache.get(cacheKey);
+    if (mode === "cached" && cached && ttlMs > 0 && nowMs - cached.cachedAtMs <= ttlMs) {
+      return {
+        rowCount: cached.rowCount,
+        rowCountStatus: "cached",
+        rowCountCachedAt: new Date(cached.cachedAtMs).toISOString()
+      };
+    }
+
+    const result =
+      mode === "estimated"
+        ? await input.pool.query<{ count: string }>(
+            "select greatest(coalesce(c.reltuples, 0), 0)::bigint::text as count from pg_class c where c.oid = $1::regclass",
+            [input.table]
+          )
+        : await input.pool.query<{ count: string }>(`select count(*)::text as count from ${input.table}`);
+    const rowCount = Number.parseInt(result.rows[0]?.count ?? "0", 10);
+    postgresOverviewCountCache.set(cacheKey, {
+      rowCount,
+      cachedAtMs: nowMs
+    });
+
+    return {
+      rowCount,
+      rowCountStatus: mode === "estimated" ? "estimated" : "exact"
+    };
+  }
+
   async function requireRedisClient(): Promise<RedisInspectorClient> {
     const client = await getRedisClient();
     if (!client) {
@@ -545,11 +744,17 @@ export function createStorageAdmin(options: {
             selectedPostgresPool.query<{ database: string }>("select current_database() as database"),
             Promise.all(
               (Object.keys(POSTGRES_TABLE_CONFIG) as StoragePostgresTableName[]).map(async (table) => {
-                const count = await selectedPostgresPool.query<{ count: string }>(`select count(*)::text as count from ${table}`);
                 const tableKey = table as PostgresTableConfigName;
+                const count = await readPostgresOverviewTableCount({
+                  pool: selectedPostgresPool,
+                  table,
+                  serviceName: input?.serviceName
+                });
                 return {
                   name: table,
-                  rowCount: Number.parseInt(count.rows[0]?.count ?? "0", 10),
+                  rowCount: count.rowCount,
+                  rowCountStatus: count.rowCountStatus,
+                  ...(count.rowCountCachedAt ? { rowCountCachedAt: count.rowCountCachedAt } : {}),
                   orderBy: POSTGRES_TABLE_CONFIG[tableKey].orderBy,
                   description: POSTGRES_TABLE_CONFIG[tableKey].description
                 };
@@ -758,9 +963,19 @@ export function createStorageAdmin(options: {
       const config = POSTGRES_TABLE_CONFIG[table as PostgresTableConfigName];
       const filterColumns = POSTGRES_TABLE_FILTER_COLUMNS[table];
       const safeLimit = Math.max(1, Math.min(200, options.limit));
-      const safeOffset = Math.max(0, options.offset ?? 0);
+      const cursorValues = decodePostgresCursor(options.cursor, table);
+      const paginationMode = cursorValues ? "keyset" : "offset";
+      const safeOffset = cursorValues ? 0 : Math.max(0, options.offset ?? 0);
+      const deepOffsetLimit = resolvePostgresDeepOffsetLimit();
+      if (!cursorValues && deepOffsetLimit > 0 && safeOffset > deepOffsetLimit) {
+        throw new AppError(
+          400,
+          "storage_admin_deep_offset_requires_cursor",
+          `Postgres table browsing offset ${safeOffset} exceeds ${deepOffsetLimit}; use the returned nextCursor for keyset pagination.`
+        );
+      }
       const whereClauses: string[] = [];
-      const values: string[] = [];
+      const values: unknown[] = [];
       const pushFilter = (column: string | undefined, value: string | undefined) => {
         if (!column || !value?.trim()) {
           return;
@@ -783,35 +998,70 @@ export function createStorageAdmin(options: {
       }
 
       if (options.q?.trim()) {
+        if (options.searchMode !== "full_row" && !isTruthy(process.env.OAH_STORAGE_ADMIN_ALLOW_FULL_ROW_SEARCH)) {
+          throw new AppError(
+            400,
+            "storage_admin_full_row_search_requires_opt_in",
+            "Postgres storage q search scans full rows; pass searchMode=full_row to run it explicitly."
+          );
+        }
         values.push(`%${options.q.trim()}%`);
         whereClauses.push(`row_to_json(${table})::text ilike $${values.length}`);
       }
+      if (cursorValues) {
+        const keysetWhere = buildPostgresKeysetWhere(config.keyset, cursorValues, values);
+        if (keysetWhere) {
+          whereClauses.push(keysetWhere);
+        }
+      }
 
       const whereSql = whereClauses.length > 0 ? ` where ${whereClauses.join(" and ")}` : "";
+      const keysetSelect = config.keyset
+        .filter((term) => term.field.startsWith("__oah_sort_"))
+        .map((term) => `, ${term.expression} as "${term.field}"`)
+        .join("");
+      const shouldReadRowCount = options.includeRowCount !== false && paginationMode === "offset";
       const [countResult, rowsResult] = await Promise.all([
-        pool.query<{ count: string }>(`select count(*)::text as count from ${table}${whereSql}`, values),
+        shouldReadRowCount
+          ? pool.query<{ count: string }>(`select count(*)::text as count from ${table}${whereSql}`, values)
+          : Promise.resolve({ rows: [{ count: "0" }], fields: [] }),
         pool.query<Record<string, unknown>>(
-          `select * from ${table}${whereSql} order by ${config.orderBy} limit ${safeLimit} offset ${safeOffset}`,
+          `select *${keysetSelect} from ${table}${whereSql} order by ${config.orderBy} limit ${safeLimit + 1} offset ${safeOffset}`,
           values
         )
       ]);
 
-      const columns = Array.from(new Set(rowsResult.fields.map((field) => field.name)));
+      const rows = rowsResult.rows.slice(0, safeLimit);
+      const columns = Array.from(new Set(rowsResult.fields.map((field) => field.name).filter((name) => !name.startsWith("__oah_"))));
       const rowCount = Number.parseInt(countResult.rows[0]?.count ?? "0", 10);
+      const nextCursor =
+        rowsResult.rows.length > safeLimit && rows.length > 0
+          ? encodePostgresCursor(
+              table,
+              config.keyset.map((term) => {
+                const value = rows.at(-1)?.[term.field];
+                return value instanceof Date ? value.toISOString() : value ?? null;
+              })
+            )
+          : undefined;
 
       return {
         table,
         rowCount,
+        rowCountStatus: shouldReadRowCount ? "exact" : "skipped",
         orderBy: config.orderBy,
         offset: safeOffset,
         limit: safeLimit,
+        ...(options.cursor?.trim() ? { cursor: options.cursor.trim() } : {}),
         columns,
-        rows: rowsResult.rows.map((row) =>
+        rows: rows.map((row) =>
           Object.fromEntries(
-            Object.entries(row).map(([key, value]) => [
-              key,
-              value instanceof Date ? value.toISOString() : value === undefined ? null : value
-            ])
+            Object.entries(row)
+              .filter(([key]) => !key.startsWith("__oah_"))
+              .map(([key, value]) => [
+                key,
+                value instanceof Date ? value.toISOString() : value === undefined ? null : value
+              ])
           )
         ),
         ...(options.q?.trim() ||
@@ -831,12 +1081,15 @@ export function createStorageAdmin(options: {
                 ...(options.runId?.trim() ? { runId: options.runId.trim() } : {}),
                 ...(options.status?.trim() ? { status: options.status.trim() } : {}),
                 ...(options.errorCode?.trim() ? { errorCode: options.errorCode.trim() } : {}),
-                ...(options.recoveryState?.trim() ? { recoveryState: options.recoveryState.trim() } : {})
+                ...(options.recoveryState?.trim() ? { recoveryState: options.recoveryState.trim() } : {}),
+                ...(options.searchMode ? { searchMode: options.searchMode } : {})
               }
             }
           : {})
         ,
-        ...(safeOffset + rowsResult.rows.length < rowCount ? { nextOffset: safeOffset + rowsResult.rows.length } : {})
+        ...(paginationMode === "offset" && safeOffset + rows.length < rowCount ? { nextOffset: safeOffset + rows.length } : {}),
+        ...(nextCursor ? { nextCursor } : {}),
+        paginationMode
       };
     },
 

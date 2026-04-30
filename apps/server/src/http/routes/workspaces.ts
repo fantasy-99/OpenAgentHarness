@@ -27,13 +27,35 @@ import { assertWorkspaceAccess, createParamsSchema, sendError, toCallerContext }
 import {
   buildOwnerProxyUrl,
   buildProxyBody,
-  buildProxyHeaders,
+  buildProxyRequestInit,
+  readRequestBodyBuffer,
   resolveOwnerId,
   sendProxyResponse
 } from "../proxy-utils.js";
 import type { AppDependencies, AppRouteOptions } from "../types.js";
 
 type WorkspaceOwnership = Awaited<ReturnType<NonNullable<AppDependencies["resolveWorkspaceOwnership"]>>>;
+const workspaceLifecycleOperations = new Set(["hydrate", "flush", "evict", "delete", "repair_placement"] as const);
+
+function parseWorkspaceLifecycleRequest(body: unknown): {
+  operation: "hydrate" | "flush" | "evict" | "delete" | "repair_placement";
+  force?: boolean | undefined;
+} {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new AppError(400, "invalid_lifecycle_request", "Workspace lifecycle request body must be an object.");
+  }
+
+  const operation = (body as { operation?: unknown }).operation;
+  if (typeof operation !== "string" || !workspaceLifecycleOperations.has(operation as never)) {
+    throw new AppError(400, "invalid_lifecycle_operation", "Unsupported workspace lifecycle operation.");
+  }
+
+  const force = (body as { force?: unknown }).force;
+  return {
+    operation: operation as "hydrate" | "flush" | "evict" | "delete" | "repair_placement",
+    ...(typeof force === "boolean" ? { force } : {})
+  };
+}
 
 function readRegisteredRouteUrl(request: FastifyRequest): string {
   return typeof request.routeOptions.url === "string" ? request.routeOptions.url : request.url.split("?")[0] ?? request.url;
@@ -44,6 +66,16 @@ function resolveWorkspaceOwnerBaseUrl(
   ownership: NonNullable<WorkspaceOwnership>
 ): string | undefined {
   return ownership.ownerBaseUrl ?? dependencies.sandboxOwnerFallbackBaseUrl;
+}
+
+function shouldDelegateSelfHostedWorkspaceOperation(
+  dependencies: Pick<AppDependencies, "localOwnerBaseUrl" | "sandboxHostProviderKind" | "sandboxOwnerFallbackBaseUrl">
+): boolean {
+  return (
+    dependencies.sandboxHostProviderKind === "self_hosted" &&
+    Boolean(dependencies.sandboxOwnerFallbackBaseUrl) &&
+    !dependencies.localOwnerBaseUrl
+  );
 }
 
 function projectWorkspaceForPublicApi(
@@ -138,15 +170,11 @@ async function proxyWorkspaceRequestToOwner(
     const body = buildProxyBody(request);
     const response = await fetch(
       buildOwnerProxyUrl(ownerBaseUrl, request, /^\/api\/v1\/workspaces/u, "/internal/v1/workspaces"),
-      {
-        method: request.method,
-        headers: buildProxyHeaders(request),
-        ...(body !== undefined ? { body } : {})
-      }
+      buildProxyRequestInit(request, body)
     );
 
     await sendProxyResponse(reply, response);
-  } catch (error) {
+  } catch {
     await sendError(
       reply,
       502,
@@ -161,6 +189,25 @@ async function proxyWorkspaceRequestToOwner(
   }
 }
 
+async function proxyWorkspaceRequestToBaseUrl(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  baseUrl: string,
+  errorContext: { code: string; message: string; details?: Record<string, unknown> | undefined }
+): Promise<void> {
+  try {
+    const body = buildProxyBody(request);
+    const response = await fetch(
+      buildOwnerProxyUrl(baseUrl, request, /^\/api\/v1\/workspaces/u, "/internal/v1/workspaces"),
+      buildProxyRequestInit(request, body)
+    );
+
+    await sendProxyResponse(reply, response);
+  } catch (error) {
+    await sendError(reply, 502, errorContext.code, errorContext.message, errorContext.details);
+  }
+}
+
 async function guardWorkspaceOwnership(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -168,7 +215,22 @@ async function guardWorkspaceOwnership(
   workspaceId: string
 ): Promise<"local" | "proxied" | "blocked"> {
   const ownership = await dependencies.resolveWorkspaceOwnership?.(workspaceId);
-  if (!ownership || ownership.isLocalOwner) {
+  if (!ownership) {
+    if (shouldDelegateSelfHostedWorkspaceOperation(dependencies)) {
+      await proxyWorkspaceRequestToBaseUrl(request, reply, dependencies.sandboxOwnerFallbackBaseUrl!, {
+        code: "workspace_owner_unresolved",
+        message: `Failed to resolve an owner for workspace ${workspaceId}; routed request to a self-hosted worker.`,
+        details: {
+          workspaceId,
+          routingHint: "self_hosted_worker"
+        }
+      });
+      return "proxied";
+    }
+    return "local";
+  }
+
+  if (ownership.isLocalOwner) {
     return "local";
   }
 
@@ -247,13 +309,14 @@ async function handleUploadWorkspaceFile(
   reply: FastifyReply
 ) {
   const query = workspaceFileUploadQuerySchema.parse(request.query);
-  if (!Buffer.isBuffer(request.body)) {
+  const data = await readRequestBodyBuffer(request.body);
+  if (!data) {
     throw new AppError(415, "invalid_upload_content_type", "File upload requires Content-Type: application/octet-stream.");
   }
 
   const entry = await dependencies.runtimeService.uploadWorkspaceFile(workspaceId, {
     path: query.path,
-    data: request.body,
+    data,
     overwrite: query.overwrite,
     ...(query.ifMatch !== undefined ? { ifMatch: query.ifMatch } : {}),
     ...(query.mtimeMs !== undefined ? { mtimeMs: query.mtimeMs } : {})
@@ -357,6 +420,25 @@ async function handleDeleteWorkspace(
   return reply.status(204).send();
 }
 
+async function handleWorkspaceLifecycle(
+  dependencies: AppDependencies,
+  workspaceId: string,
+  request: FastifyRequest,
+  reply: FastifyReply
+) {
+  if (!dependencies.workspaceLifecycle) {
+    throw new AppError(501, "workspace_lifecycle_unavailable", "Workspace lifecycle operations are not available on this server.");
+  }
+
+  const input = parseWorkspaceLifecycleRequest(request.body);
+  const result = await dependencies.workspaceLifecycle.execute({
+    workspaceId,
+    operation: input.operation,
+    ...(input.force !== undefined ? { force: input.force } : {})
+  });
+  return reply.send(result);
+}
+
 export async function dispatchRegisteredInternalWorkspaceRoute(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -365,6 +447,10 @@ export async function dispatchRegisteredInternalWorkspaceRoute(
   const routeUrl = readRegisteredRouteUrl(request);
 
   switch (`${request.method} ${routeUrl}`) {
+    case "POST /internal/v1/workspaces/:workspaceId/lifecycle": {
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      return handleWorkspaceLifecycle(dependencies, params.workspaceId, request, reply);
+    }
     case "DELETE /internal/v1/workspaces/:workspaceId": {
       const params = createParamsSchema("workspaceId").parse(request.params);
       return handleDeleteWorkspace(dependencies, params.workspaceId, reply);
@@ -504,6 +590,17 @@ export async function dispatchRegisteredWorkspaceRoute(
       const params = createParamsSchema("workspaceId").parse(request.params);
       assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
       if ((await guardWorkspaceOwnership(request, reply, dependencies, params.workspaceId)) !== "local") {
+        return reply;
+      }
+      if (shouldDelegateSelfHostedWorkspaceOperation(dependencies)) {
+        await proxyWorkspaceRequestToBaseUrl(request, reply, dependencies.sandboxOwnerFallbackBaseUrl!, {
+          code: "workspace_delete_owner_unreachable",
+          message: `Failed to reach a self-hosted worker to delete workspace ${params.workspaceId}.`,
+          details: {
+            workspaceId: params.workspaceId,
+            routingHint: "self_hosted_worker"
+          }
+        });
         return reply;
       }
       return handleDeleteWorkspace(dependencies, params.workspaceId, reply);

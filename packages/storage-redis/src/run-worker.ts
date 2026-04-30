@@ -1,4 +1,5 @@
 import os from "node:os";
+import { statfsSync } from "node:fs";
 
 import { createId } from "@oah/engine-core";
 import { calculateWorkerLeaseTtlMs } from "./worker-registry.js";
@@ -11,6 +12,30 @@ function readWorkerResourceMetrics() {
   const freeMemoryBytes = os.freemem();
   const usedMemoryBytes = Math.max(0, totalMemoryBytes - freeMemoryBytes);
   const rssBytes = process.memoryUsage().rss;
+  let diskMetrics:
+    | {
+        resourceDiskUsedRatio: number;
+        resourceDiskUsedBytes: number;
+        resourceDiskTotalBytes: number;
+      }
+    | undefined;
+
+  try {
+    const diskMetricsPath = process.env.OAH_WORKER_DISK_METRICS_PATH?.trim() || process.cwd();
+    const stats = statfsSync(diskMetricsPath, { bigint: false });
+    const totalBytes = Math.max(0, stats.blocks * stats.bsize);
+    const availableBytes = Math.max(0, stats.bavail * stats.bsize);
+    const usedBytes = Math.max(0, totalBytes - availableBytes);
+    if (totalBytes > 0) {
+      diskMetrics = {
+        resourceDiskUsedRatio: Math.max(0, Math.min(1, usedBytes / totalBytes)),
+        resourceDiskUsedBytes: usedBytes,
+        resourceDiskTotalBytes: totalBytes
+      };
+    }
+  } catch {
+    diskMetrics = undefined;
+  }
 
   return {
     resourceCpuLoadRatio: Math.max(0, loadAverage1m / cpuCount),
@@ -18,6 +43,7 @@ function readWorkerResourceMetrics() {
     resourceLoadAverage1m: Math.max(0, loadAverage1m),
     resourceMemoryUsedBytes: usedMemoryBytes,
     resourceMemoryTotalBytes: totalMemoryBytes,
+    ...(diskMetrics ?? {}),
     processMemoryRssBytes: rssBytes
   };
 }

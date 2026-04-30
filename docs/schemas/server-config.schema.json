@@ -278,6 +278,11 @@
               "minimum": 0,
               "maximum": 1
             },
+            "resource_disk_pressure_threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
             "max_workspaces_per_sandbox": {
               "type": "integer",
               "minimum": 1

@@ -504,6 +504,75 @@ export class WorkspaceMaterializationManager {
     return deleted;
   }
 
+  async hydrateWorkspace(workspace: Pick<WorkspaceRecord, "id" | "rootPath" | "externalRef" | "ownerId">): Promise<WorkspaceMaterializationSnapshot[]> {
+    const lease = await this.acquireWorkspace({
+      workspace
+    });
+    await lease.release();
+    return this.snapshot().filter((entry) => entry.workspaceId === workspace.id);
+  }
+
+  async flushWorkspaceCopies(workspaceId: string): Promise<WorkspaceMaterializationSnapshot[]> {
+    const flushed: WorkspaceMaterializationSnapshot[] = [];
+    const failures: WorkspaceMaterializationFailureDiagnostic[] = [];
+
+    for (const entry of this.#entriesForWorkspace(workspaceId)) {
+      try {
+        const wasDirty = entry.dirty;
+        await this.#flushEntry(entry, "idle_flush");
+        await this.#publishEntry(entry);
+        if (wasDirty) {
+          flushed.push(this.#toSnapshot(entry));
+        }
+      } catch (error) {
+        failures.push(this.#toFailureDiagnostic(error, entry, "idle_flush", "flush"));
+      }
+    }
+
+    this.#throwIfFailures(failures);
+    return flushed;
+  }
+
+  async evictWorkspaceCopies(
+    workspaceId: string,
+    options?: {
+      force?: boolean | undefined;
+    }
+  ): Promise<{ evicted: WorkspaceMaterializationSnapshot[]; skipped: WorkspaceMaterializationSnapshot[] }> {
+    const evicted: WorkspaceMaterializationSnapshot[] = [];
+    const skipped: WorkspaceMaterializationSnapshot[] = [];
+    const failures: WorkspaceMaterializationFailureDiagnostic[] = [];
+
+    for (const entry of this.#entriesForWorkspace(workspaceId)) {
+      if (entry.refCount > 0 && !options?.force) {
+        skipped.push(this.#toSnapshot(entry));
+        continue;
+      }
+
+      try {
+        await this.#flushAndEvictEntry(entry, "idle_evict");
+        evicted.push(this.#toSnapshot(entry));
+      } catch (error) {
+        failures.push(this.#toFailureDiagnostic(error, entry, "idle_evict", entry.dirty ? "flush" : "evict"));
+      }
+    }
+
+    this.#throwIfFailures(failures);
+    return {
+      evicted,
+      skipped
+    };
+  }
+
+  async repairWorkspacePlacement(workspaceId: string): Promise<WorkspaceMaterializationSnapshot[]> {
+    const repaired: WorkspaceMaterializationSnapshot[] = [];
+    for (const entry of this.#entriesForWorkspace(workspaceId)) {
+      await this.#publishEntry(entry);
+      repaired.push(this.#toSnapshot(entry));
+    }
+    return repaired;
+  }
+
   async refreshLeases(): Promise<void> {
     for (const entry of this.#entries.values()) {
       await this.#refreshBackgroundActivity(entry);
@@ -532,6 +601,10 @@ export class WorkspaceMaterializationManager {
     }
 
     return true;
+  }
+
+  #entriesForWorkspace(workspaceId: string): WorkspaceMaterializationEntry[] {
+    return [...this.#entries.values()].filter((candidate) => candidate.workspaceId === workspaceId);
   }
 
   async #ensureMaterialized(entry: WorkspaceMaterializationEntry): Promise<WorkspaceMaterializeResult | undefined> {

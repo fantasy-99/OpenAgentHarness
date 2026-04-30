@@ -19,6 +19,8 @@ export const storagePostgresTableNameSchema = z.enum([
 export const storagePostgresTableSummarySchema = z.object({
   name: storagePostgresTableNameSchema,
   rowCount: z.number().int().min(0),
+  rowCountStatus: z.enum(["exact", "cached", "estimated", "skipped"]).optional(),
+  rowCountCachedAt: z.string().optional(),
   orderBy: z.string(),
   description: z.string()
 });
@@ -127,9 +129,11 @@ export const storageOverviewQuerySchema = z.object({
 export const storagePostgresTablePageSchema = z.object({
   table: storagePostgresTableNameSchema,
   rowCount: z.number().int().min(0),
+  rowCountStatus: z.enum(["exact", "cached", "estimated", "skipped"]).optional(),
   orderBy: z.string(),
   offset: z.number().int().min(0),
   limit: z.number().int().min(1).max(200),
+  cursor: z.string().optional(),
   columns: z.array(z.string()),
   rows: z.array(z.record(z.string(), jsonValueSchema)),
   appliedFilters: z
@@ -141,10 +145,13 @@ export const storagePostgresTablePageSchema = z.object({
       runId: z.string().optional(),
       status: z.string().optional(),
       errorCode: z.string().optional(),
-      recoveryState: z.string().optional()
+      recoveryState: z.string().optional(),
+      searchMode: z.enum(["full_row"]).optional()
     })
     .optional(),
-  nextOffset: z.number().int().min(0).optional()
+  nextOffset: z.number().int().min(0).optional(),
+  nextCursor: z.string().optional(),
+  paginationMode: z.enum(["offset", "keyset"]).optional()
 });
 
 export const storageRedisKeyPageSchema = z.object({
@@ -229,8 +236,11 @@ export const storageRedisWorkspacePlacementPageSchema = z.object({
 export const storageTableQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
+  cursor: z.string().optional(),
   serviceName: z.string().optional(),
   q: z.string().optional(),
+  searchMode: z.enum(["full_row"]).optional(),
+  includeRowCount: z.coerce.boolean().optional(),
   workspaceId: z.string().optional(),
   sessionId: z.string().optional(),
   runId: z.string().optional(),

@@ -84,6 +84,9 @@ export async function createConfiguredSandboxHost(options: {
                   resourceMemoryPressureThreshold: (
                     options.config.sandbox?.fleet as { resource_memory_pressure_threshold?: number | undefined } | undefined
                   )?.resource_memory_pressure_threshold,
+                  resourceDiskPressureThreshold: (
+                    options.config.sandbox?.fleet as { resource_disk_pressure_threshold?: number | undefined } | undefined
+                  )?.resource_disk_pressure_threshold,
                   ...(options.workerRegistry ? { workerRegistry: options.workerRegistry } : {})
                 })
             }

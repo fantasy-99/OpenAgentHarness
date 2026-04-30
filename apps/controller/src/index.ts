@@ -95,6 +95,7 @@ async function main() {
           maxWorkspacesPerSandbox: sandboxConfig.maxWorkspacesPerSandbox,
           resourceCpuPressureThreshold: sandboxConfig.resourceCpuPressureThreshold,
           resourceMemoryPressureThreshold: sandboxConfig.resourceMemoryPressureThreshold,
+          resourceDiskPressureThreshold: sandboxConfig.resourceDiskPressureThreshold,
           logger
         })
       : undefined,

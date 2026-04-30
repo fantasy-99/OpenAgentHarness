@@ -62,5 +62,5 @@ workers:
     scale_up_max_ready_age_ms: 5000
 
 llm:
-  # Define this model under source/models/ before deploying.
+  # Define this model under models/ before deploying.
   default_model: openai-default

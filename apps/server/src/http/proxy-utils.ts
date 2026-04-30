@@ -56,12 +56,49 @@ export function buildProxyHeaders(request: FastifyRequest): Headers {
   return headers;
 }
 
-export function buildProxyBody(request: FastifyRequest): Buffer | string | undefined {
+export type ProxyRequestBody = Buffer | string | Readable;
+
+export function isReadableRequestBody(body: unknown): body is Readable {
+  return (
+    typeof body === "object" &&
+    body !== null &&
+    "pipe" in body &&
+    typeof (body as { pipe?: unknown }).pipe === "function" &&
+    "on" in body &&
+    typeof (body as { on?: unknown }).on === "function"
+  );
+}
+
+export async function readRequestBodyBuffer(body: unknown): Promise<Buffer | undefined> {
+  if (Buffer.isBuffer(body)) {
+    return body;
+  }
+
+  if (typeof body === "string") {
+    return Buffer.from(body);
+  }
+
+  if (body instanceof Uint8Array) {
+    return Buffer.from(body);
+  }
+
+  if (!isReadableRequestBody(body)) {
+    return undefined;
+  }
+
+  const chunks: Buffer[] = [];
+  for await (const chunk of body) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+export function buildProxyBody(request: FastifyRequest): ProxyRequestBody | undefined {
   if (request.method === "GET" || request.method === "HEAD") {
     return undefined;
   }
 
-  if (Buffer.isBuffer(request.body)) {
+  if (Buffer.isBuffer(request.body) || isReadableRequestBody(request.body)) {
     return request.body;
   }
 
@@ -74,6 +111,18 @@ export function buildProxyBody(request: FastifyRequest): Buffer | string | undef
   }
 
   return JSON.stringify(request.body);
+}
+
+export function buildProxyRequestInit(request: FastifyRequest, body: ProxyRequestBody | undefined): RequestInit {
+  const init = {
+    method: request.method,
+    headers: buildProxyHeaders(request),
+    ...(body !== undefined ? { body: body as RequestInit["body"] } : {})
+  } as RequestInit & { duplex?: "half" };
+  if (body && isReadableRequestBody(body)) {
+    init.duplex = "half";
+  }
+  return init;
 }
 
 export async function sendProxyResponse(reply: FastifyReply, response: Response): Promise<void> {

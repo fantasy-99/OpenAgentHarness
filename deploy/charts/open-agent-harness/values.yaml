@@ -27,10 +27,34 @@ config:
 
     paths:
       workspace_dir: /var/lib/oah/workspaces
+      runtime_state_dir: {{ .Values.worker.workspaceVolume.mountPath }}/.openharness-state
       runtime_dir: /var/lib/oah/runtimes
       model_dir: /var/lib/oah/models
       tool_dir: /var/lib/oah/tools
       skill_dir: /var/lib/oah/skills
+
+    {{- if .Values.objectStorage.enabled }}
+    object_storage:
+      provider: s3
+      bucket: {{ required "objectStorage.bucket is required when objectStorage.enabled=true" .Values.objectStorage.bucket | quote }}
+      region: {{ .Values.objectStorage.region | quote }}
+      {{- with .Values.objectStorage.endpoint }}
+      endpoint: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.objectStorage.accessKeyEnv }}
+      access_key: ${env.{{ . }}}
+      {{- end }}
+      {{- with .Values.objectStorage.secretKeyEnv }}
+      secret_key: ${env.{{ . }}}
+      {{- end }}
+      {{- with .Values.objectStorage.sessionTokenEnv }}
+      session_token: ${env.{{ . }}}
+      {{- end }}
+      force_path_style: {{ .Values.objectStorage.forcePathStyle }}
+      workspace_backing_store:
+        enabled: {{ .Values.objectStorage.workspaceBackingStore.enabled }}
+        key_prefix: {{ .Values.objectStorage.workspaceBackingStore.keyPrefix | quote }}
+    {{- end }}
 
     sandbox:
       provider: self_hosted
@@ -156,6 +180,12 @@ worker:
   runtimeOptimizations:
     allowPrivateInternalRoutes: true
     objectStorageTrustManagedPrefixes: true
+  diskReadiness:
+    threshold: "0.95"
+  workspacePolicy:
+    maxObjects: ""
+    maxBytes: ""
+    maxFileBytes: ""
   drain:
     timeoutMs: 110000
     timeoutStrategy: requeue_running
@@ -209,6 +239,19 @@ worker:
     persistentVolumeClaim:
       claimName: ""
       readOnly: false
+
+objectStorage:
+  enabled: false
+  bucket: ""
+  region: us-east-1
+  endpoint: ""
+  accessKeyEnv: AWS_ACCESS_KEY_ID
+  secretKeyEnv: AWS_SECRET_ACCESS_KEY
+  sessionTokenEnv: ""
+  forcePathStyle: false
+  workspaceBackingStore:
+    enabled: true
+    keyPrefix: workspaces
 
 controller:
   enabled: true
@@ -278,11 +321,32 @@ prometheusRule:
     scaleTargetError: warning
     rolloutStuck: warning
     scaleDownBlocked: info
+    workerDiskPressure: warning
+    materializationLatency: warning
+    objectStorageFailureRate: warning
+    objectStorageLatency: warning
+    redisReadyQueueDepth: warning
+    redisMemory: warning
+    postgresBloat: warning
   durations:
     noLeader: 2m
     scaleTargetError: 10m
     rolloutStuck: 10m
     scaleDownBlocked: 15m
+    workerDiskPressure: 5m
+    materializationLatency: 10m
+    objectStorageFailureRate: 5m
+    objectStorageLatency: 10m
+    redisReadyQueueDepth: 10m
+    redisMemory: 10m
+    postgresBloat: 30m
+  thresholds:
+    materializationLatencyMs: 120000
+    objectStorageErrorsPerFiveMinutes: 5
+    objectStorageLatencyMs: 30000
+    redisReadyQueueDepth: 100
+    redisMemoryUsedRatio: 0.85
+    postgresDeadTupleRatio: 0.2
 
 grafanaDashboard:
   enabled: false

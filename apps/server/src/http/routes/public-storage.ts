@@ -66,8 +66,11 @@ export async function dispatchRegisteredPublicStorageRoute(
           await dependencies.storageAdmin.postgresTable(table, {
             limit: query.limit,
             offset: query.offset,
+            ...(query.cursor ? { cursor: query.cursor } : {}),
             ...(query.serviceName ? { serviceName: query.serviceName } : {}),
             ...(query.q ? { q: query.q } : {}),
+            ...(query.searchMode ? { searchMode: query.searchMode } : {}),
+            ...(typeof query.includeRowCount === "boolean" ? { includeRowCount: query.includeRowCount } : {}),
             ...(query.workspaceId ? { workspaceId: query.workspaceId } : {}),
             ...(query.sessionId ? { sessionId: query.sessionId } : {}),
             ...(query.runId ? { runId: query.runId } : {}),

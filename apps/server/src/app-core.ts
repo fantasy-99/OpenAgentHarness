@@ -7,6 +7,7 @@ import { registerInternalWorkspaceRoutes } from "./http/routes/internal-workspac
 import { registerInternalSandboxRoutes } from "./http/routes/internal-sandboxes-lazy.js";
 import type { AppDependencies } from "./http/types.js";
 import { renderNativeWorkspaceSyncMetrics } from "./observability/native-workspace-sync.js";
+import { renderObjectStorageMetrics } from "./observability/object-storage.js";
 import { describeSandboxTopology } from "./sandbox-topology.js";
 
 function readRequestParam(request: FastifyRequest, key: string): string | undefined {
@@ -30,8 +31,8 @@ export function createBaseApp(dependencies: AppDependencies) {
     (process.env.OAH_ALLOW_PRIVATE_INTERNAL_MODEL_ROUTES !== undefined &&
       /^(1|true|yes|on)$/iu.test(process.env.OAH_ALLOW_PRIVATE_INTERNAL_MODEL_ROUTES.trim()));
 
-  app.addContentTypeParser(/^application\/octet-stream(?:\s*;.*)?$/i, { parseAs: "buffer" }, (_request, body, done) => {
-    done(null, body);
+  app.addContentTypeParser(/^application\/octet-stream(?:\s*;.*)?$/i, (_request, payload, done) => {
+    done(null, payload);
   });
 
   app.setErrorHandler(async (error, request, reply) => {
@@ -183,7 +184,7 @@ export function registerInternalOnlySurface(app: ReturnType<typeof Fastify>, dep
 
   app.get("/metrics", async (_request: FastifyRequest, reply: FastifyReply) => {
     reply.header("content-type", "text/plain; version=0.0.4; charset=utf-8");
-    return reply.send(renderNativeWorkspaceSyncMetrics());
+    return reply.send(`${renderNativeWorkspaceSyncMetrics()}${renderObjectStorageMetrics()}`);
   });
 
   app.post("/internal/v1/control/drain", async (_request: FastifyRequest, reply: FastifyReply) => {

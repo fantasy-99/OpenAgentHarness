@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import type {
   ArtifactRecord,
   HistoryEventEntityType,
@@ -453,6 +455,9 @@ export function buildWorkspaceArchiveRow(input: WorkspaceArchiveRecord) {
     timezone: input.timezone,
     exportedAt: input.exportedAt ?? null,
     exportPath: input.exportPath ?? null,
+    payloadRef: input.payloadRef ?? null,
+    payloadFormat: input.payloadFormat ?? null,
+    payloadBytes: input.payloadBytes ?? null,
     workspace: input.workspace,
     sessions: input.sessions,
     runs: input.runs,
@@ -465,7 +470,45 @@ export function buildWorkspaceArchiveRow(input: WorkspaceArchiveRecord) {
   };
 }
 
+function readArchivePayload(row: typeof archives.$inferSelect): Partial<WorkspaceArchiveRecord> {
+  if (!row.payloadRef || row.payloadFormat !== "json_v1") {
+    return {};
+  }
+
+  const payload = JSON.parse(readFileSync(row.payloadRef, "utf8")) as Partial<WorkspaceArchiveRecord>;
+  const result: Partial<WorkspaceArchiveRecord> = {};
+  if (payload.workspace) {
+    result.workspace = payload.workspace;
+  }
+  if (payload.sessions) {
+    result.sessions = payload.sessions;
+  }
+  if (payload.runs) {
+    result.runs = payload.runs;
+  }
+  if (payload.messages) {
+    result.messages = payload.messages;
+  }
+  if (payload.engineMessages) {
+    result.engineMessages = payload.engineMessages;
+  }
+  if (payload.runSteps) {
+    result.runSteps = payload.runSteps;
+  }
+  if (payload.toolCalls) {
+    result.toolCalls = payload.toolCalls;
+  }
+  if (payload.hookRuns) {
+    result.hookRuns = payload.hookRuns;
+  }
+  if (payload.artifacts) {
+    result.artifacts = payload.artifacts;
+  }
+  return result;
+}
+
 export function toWorkspaceArchiveRecord(row: typeof archives.$inferSelect): WorkspaceArchiveRecord {
+  const payload = readArchivePayload(row);
   return {
     id: row.id,
     workspaceId: row.workspaceId,
@@ -477,15 +520,18 @@ export function toWorkspaceArchiveRecord(row: typeof archives.$inferSelect): Wor
     timezone: row.timezone,
     ...(row.exportedAt ? { exportedAt: normalizeTimestamp(row.exportedAt) ?? row.exportedAt } : {}),
     ...(row.exportPath ? { exportPath: row.exportPath } : {}),
-    workspace: row.workspace,
-    sessions: row.sessions,
-    runs: row.runs,
-    messages: row.messages,
-    engineMessages: row.engineMessages,
-    runSteps: row.runSteps,
-    toolCalls: row.toolCalls,
-    hookRuns: row.hookRuns,
-    artifacts: row.artifacts
+    ...(row.payloadRef ? { payloadRef: row.payloadRef } : {}),
+    ...(row.payloadFormat === "json_v1" ? { payloadFormat: "json_v1" as const } : {}),
+    ...(row.payloadBytes !== null ? { payloadBytes: row.payloadBytes } : {}),
+    workspace: payload.workspace ?? row.workspace,
+    sessions: payload.sessions ?? row.sessions,
+    runs: payload.runs ?? row.runs,
+    messages: payload.messages ?? row.messages,
+    engineMessages: payload.engineMessages ?? row.engineMessages,
+    runSteps: payload.runSteps ?? row.runSteps,
+    toolCalls: payload.toolCalls ?? row.toolCalls,
+    hookRuns: payload.hookRuns ?? row.hookRuns,
+    artifacts: payload.artifacts ?? row.artifacts
   };
 }
 

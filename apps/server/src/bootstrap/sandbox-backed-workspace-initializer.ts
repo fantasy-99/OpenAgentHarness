@@ -983,6 +983,7 @@ async function createSelfHostedSandbox(input: {
   maxWorkspacesPerSandbox?: number | undefined;
   resourceCpuPressureThreshold?: number | undefined;
   resourceMemoryPressureThreshold?: number | undefined;
+  resourceDiskPressureThreshold?: number | undefined;
   workspacePlacementRegistry?: Pick<WorkspacePlacementRegistry, "listAll" | "assignOwnerAffinity"> | undefined;
   workerRegistry?: Pick<WorkerRegistry, "listActive"> | undefined;
 }) {
@@ -996,6 +997,7 @@ async function createSelfHostedSandbox(input: {
       maxWorkspacesPerSandbox: input.maxWorkspacesPerSandbox,
       resourceCpuPressureThreshold: input.resourceCpuPressureThreshold,
       resourceMemoryPressureThreshold: input.resourceMemoryPressureThreshold,
+      resourceDiskPressureThreshold: input.resourceDiskPressureThreshold,
       ...(input.workspacePlacementRegistry ? { workspacePlacementRegistry: input.workspacePlacementRegistry } : {}),
       ...(input.workerRegistry ? { workerRegistry: input.workerRegistry } : {})
     })) ?? input.baseUrl;
@@ -1030,6 +1032,7 @@ export function createSelfHostedWorkspaceDelegatingInitializer(options: {
     maxWorkspacesPerSandbox?: number | undefined;
     resourceCpuPressureThreshold?: number | undefined;
     resourceMemoryPressureThreshold?: number | undefined;
+    resourceDiskPressureThreshold?: number | undefined;
     workspacePlacementRegistry?: Pick<WorkspacePlacementRegistry, "listAll" | "assignOwnerAffinity"> | undefined;
     workerRegistry?: Pick<WorkerRegistry, "listActive"> | undefined;
   };
@@ -1052,6 +1055,7 @@ export function createSelfHostedWorkspaceDelegatingInitializer(options: {
         maxWorkspacesPerSandbox: options.selfHosted.maxWorkspacesPerSandbox,
         resourceCpuPressureThreshold: options.selfHosted.resourceCpuPressureThreshold,
         resourceMemoryPressureThreshold: options.selfHosted.resourceMemoryPressureThreshold,
+        resourceDiskPressureThreshold: options.selfHosted.resourceDiskPressureThreshold,
         ...(options.selfHosted.workspacePlacementRegistry
           ? { workspacePlacementRegistry: options.selfHosted.workspacePlacementRegistry }
           : {}),
@@ -1089,6 +1093,7 @@ export function createSandboxBackedWorkspaceInitializer(options: {
     maxWorkspacesPerSandbox?: number | undefined;
     resourceCpuPressureThreshold?: number | undefined;
     resourceMemoryPressureThreshold?: number | undefined;
+    resourceDiskPressureThreshold?: number | undefined;
     workspacePlacementRegistry?: Pick<WorkspacePlacementRegistry, "listAll" | "assignOwnerAffinity"> | undefined;
     workerRegistry?: Pick<WorkerRegistry, "listActive"> | undefined;
   } | undefined;
@@ -1214,6 +1219,7 @@ export function createSandboxBackedWorkspaceInitializer(options: {
           maxWorkspacesPerSandbox: options.selfHosted.maxWorkspacesPerSandbox,
           resourceCpuPressureThreshold: options.selfHosted.resourceCpuPressureThreshold,
           resourceMemoryPressureThreshold: options.selfHosted.resourceMemoryPressureThreshold,
+          resourceDiskPressureThreshold: options.selfHosted.resourceDiskPressureThreshold,
           ...(options.selfHosted.workspacePlacementRegistry
             ? { workspacePlacementRegistry: options.selfHosted.workspacePlacementRegistry }
             : {}),

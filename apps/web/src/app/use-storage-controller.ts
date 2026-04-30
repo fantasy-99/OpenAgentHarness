@@ -88,6 +88,7 @@ export function useStorageController(params: {
     quiet = false,
     overrides?: {
       offset?: number;
+      cursor?: string;
       q?: string;
       workspaceId?: string;
       sessionId?: string;
@@ -107,6 +108,7 @@ export function useStorageController(params: {
       });
       appendServiceScope(paramsValue);
       const offset = overrides?.offset ?? storageTableOffset;
+      const cursor = overrides?.cursor;
       const q = overrides?.q ?? storageTableSearch;
       const workspaceId = overrides?.workspaceId ?? storageTableWorkspaceId;
       const sessionId = overrides?.sessionId ?? storageTableSessionId;
@@ -115,8 +117,12 @@ export function useStorageController(params: {
       const errorCode = overrides?.errorCode ?? storageTableErrorCode;
       const recoveryState = overrides?.recoveryState ?? storageTableRecoveryState;
       paramsValue.set("offset", String(offset));
+      if (cursor) {
+        paramsValue.set("cursor", cursor);
+      }
       if (q.trim()) {
         paramsValue.set("q", q.trim());
+        paramsValue.set("searchMode", "full_row");
       }
       if (workspaceId.trim()) {
         paramsValue.set("workspaceId", workspaceId.trim());
@@ -477,7 +483,11 @@ export function useStorageController(params: {
         void refreshStorageTable(
           selectedStorageTable,
           false,
-          storageTablePage?.nextOffset !== undefined ? { offset: storageTablePage.nextOffset } : undefined
+          storageTablePage?.nextCursor
+            ? { cursor: storageTablePage.nextCursor, offset: storageTableOffset }
+            : storageTablePage?.nextOffset !== undefined
+              ? { offset: storageTablePage.nextOffset }
+              : undefined
         ),
       onClearStorageTableFilters: () => {
         setStorageTableSearch("");

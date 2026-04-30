@@ -24,6 +24,9 @@ async function dispatchInternalWorkspaceRoute(
 }
 
 export function registerInternalWorkspaceRoutes(app: FastifyInstance, dependencies: AppDependencies): void {
+  app.post("/internal/v1/workspaces/:workspaceId/lifecycle", async (request, reply) =>
+    dispatchInternalWorkspaceRoute(request, reply, dependencies)
+  );
   app.delete("/internal/v1/workspaces/:workspaceId", async (request, reply) =>
     dispatchInternalWorkspaceRoute(request, reply, dependencies)
   );

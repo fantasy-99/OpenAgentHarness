@@ -34,14 +34,14 @@ def default_root() -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Sync OAH deploy-root source directories into an S3-compatible bucket via dockerized aws-cli."
+        description="Sync OAH deploy-root asset directories into an S3-compatible bucket via dockerized aws-cli."
     )
     parser.add_argument(
         "--root",
         default=os.environ.get("OAH_DEPLOY_ROOT") or default_root(),
         help=(
             "Deploy root directory. Defaults to $OAH_DEPLOY_ROOT or the parent of this script. "
-            "Expected layout: <root>/source, <root>/scripts, <root>/server.docker.yaml."
+            "Expected layout: <root>/{models,runtimes,tools,skills} with legacy <root>/source fallback."
         ),
     )
     parser.add_argument(
@@ -72,7 +72,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--source-root",
         default=None,
-        help="Source directory root. Defaults to <root>/source.",
+        help="Asset source root. Defaults to <root>, falling back to <root>/source.",
     )
     parser.add_argument(
         "--delete",
@@ -82,7 +82,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--include-workspaces",
         action="store_true",
-        help="Also sync source/workspaces -> s3://.../workspace/.",
+        help="Also sync workspaces -> s3://.../workspace/.",
     )
     parser.add_argument(
         "--delete-workspaces",
@@ -189,8 +189,22 @@ def ensure_bucket(args: argparse.Namespace) -> None:
     run_command(create_cmd, dry_run=False, retries=args.retries, context_label="create-bucket")
 
 
-def load_publish_paths(root: Path, source_root: Path | None) -> dict[str, Path]:
-    resolved_source_root = source_root or (root / "source").resolve()
+def has_managed_asset_directories(root: Path) -> bool:
+    return any((root / directory_name).exists() for directory_name in MANAGED_PATH_DIR_NAMES.values())
+
+
+def resolve_asset_root(root: Path, source_root: Path | None) -> Path:
+    if source_root is not None:
+        return source_root.resolve()
+
+    if has_managed_asset_directories(root):
+        return root
+
+    return (root / "source").resolve()
+
+
+def load_publish_paths(asset_root: Path) -> dict[str, Path]:
+    resolved_source_root = asset_root.resolve()
     return {
         path_key: (resolved_source_root / directory_name).resolve()
         for path_key, directory_name in MANAGED_PATH_DIR_NAMES.items()
@@ -255,12 +269,13 @@ def main() -> int:
         raise SystemExit(f"Deploy root not found: {root}")
 
     source_root = Path(args.source_root).expanduser().resolve() if args.source_root else None
-    path_map = load_publish_paths(root, source_root)
+    asset_root = resolve_asset_root(root, source_root)
+    path_map = load_publish_paths(asset_root)
 
     print(f"Deploy root: {root}")
     print(f"Docker aws-cli endpoint: {args.aws_endpoint_url}")
     print(f"Target bucket: {args.bucket}")
-    print(f"Source root: {source_root or (root / 'source').resolve()}")
+    print(f"Asset root: {asset_root}")
 
     ensure_bucket(args)
     for path_key, directory in path_map.items():

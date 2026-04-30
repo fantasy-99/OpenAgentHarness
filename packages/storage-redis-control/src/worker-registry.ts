@@ -42,9 +42,12 @@ function deriveRedisWorkerRegistryEntry(
     health: expiresAtMs - nowMs <= lateThresholdMs ? "late" : "healthy",
     ...(typeof entry.resourceCpuLoadRatio === "number" ? { resourceCpuLoadRatio: entry.resourceCpuLoadRatio } : {}),
     ...(typeof entry.resourceMemoryUsedRatio === "number" ? { resourceMemoryUsedRatio: entry.resourceMemoryUsedRatio } : {}),
+    ...(typeof entry.resourceDiskUsedRatio === "number" ? { resourceDiskUsedRatio: entry.resourceDiskUsedRatio } : {}),
     ...(typeof entry.resourceLoadAverage1m === "number" ? { resourceLoadAverage1m: entry.resourceLoadAverage1m } : {}),
     ...(typeof entry.resourceMemoryUsedBytes === "number" ? { resourceMemoryUsedBytes: entry.resourceMemoryUsedBytes } : {}),
     ...(typeof entry.resourceMemoryTotalBytes === "number" ? { resourceMemoryTotalBytes: entry.resourceMemoryTotalBytes } : {}),
+    ...(typeof entry.resourceDiskUsedBytes === "number" ? { resourceDiskUsedBytes: entry.resourceDiskUsedBytes } : {}),
+    ...(typeof entry.resourceDiskTotalBytes === "number" ? { resourceDiskTotalBytes: entry.resourceDiskTotalBytes } : {}),
     ...(typeof entry.processMemoryRssBytes === "number" ? { processMemoryRssBytes: entry.processMemoryRssBytes } : {}),
     ...(entry.currentSessionId ? { currentSessionId: entry.currentSessionId } : {}),
     ...(entry.currentRunId ? { currentRunId: entry.currentRunId } : {}),
@@ -89,6 +92,7 @@ export class RedisWorkerRegistry implements WorkerRegistry {
         ...(typeof entry.resourceMemoryUsedRatio === "number"
           ? { resourceMemoryUsedRatio: String(entry.resourceMemoryUsedRatio) }
           : {}),
+        ...(typeof entry.resourceDiskUsedRatio === "number" ? { resourceDiskUsedRatio: String(entry.resourceDiskUsedRatio) } : {}),
         ...(typeof entry.resourceLoadAverage1m === "number" ? { resourceLoadAverage1m: String(entry.resourceLoadAverage1m) } : {}),
         ...(typeof entry.resourceMemoryUsedBytes === "number"
           ? { resourceMemoryUsedBytes: String(entry.resourceMemoryUsedBytes) }
@@ -96,6 +100,8 @@ export class RedisWorkerRegistry implements WorkerRegistry {
         ...(typeof entry.resourceMemoryTotalBytes === "number"
           ? { resourceMemoryTotalBytes: String(entry.resourceMemoryTotalBytes) }
           : {}),
+        ...(typeof entry.resourceDiskUsedBytes === "number" ? { resourceDiskUsedBytes: String(entry.resourceDiskUsedBytes) } : {}),
+        ...(typeof entry.resourceDiskTotalBytes === "number" ? { resourceDiskTotalBytes: String(entry.resourceDiskTotalBytes) } : {}),
         ...(typeof entry.processMemoryRssBytes === "number" ? { processMemoryRssBytes: String(entry.processMemoryRssBytes) } : {}),
         ...(entry.currentSessionId ? { currentSessionId: entry.currentSessionId } : {}),
         ...(entry.currentRunId ? { currentRunId: entry.currentRunId } : {}),
@@ -122,6 +128,9 @@ export class RedisWorkerRegistry implements WorkerRegistry {
     if (typeof entry.resourceMemoryUsedRatio !== "number") {
       transaction.hDel(this.#workerKey(entry.workerId), "resourceMemoryUsedRatio");
     }
+    if (typeof entry.resourceDiskUsedRatio !== "number") {
+      transaction.hDel(this.#workerKey(entry.workerId), "resourceDiskUsedRatio");
+    }
     if (typeof entry.resourceLoadAverage1m !== "number") {
       transaction.hDel(this.#workerKey(entry.workerId), "resourceLoadAverage1m");
     }
@@ -130,6 +139,12 @@ export class RedisWorkerRegistry implements WorkerRegistry {
     }
     if (typeof entry.resourceMemoryTotalBytes !== "number") {
       transaction.hDel(this.#workerKey(entry.workerId), "resourceMemoryTotalBytes");
+    }
+    if (typeof entry.resourceDiskUsedBytes !== "number") {
+      transaction.hDel(this.#workerKey(entry.workerId), "resourceDiskUsedBytes");
+    }
+    if (typeof entry.resourceDiskTotalBytes !== "number") {
+      transaction.hDel(this.#workerKey(entry.workerId), "resourceDiskTotalBytes");
     }
     if (typeof entry.processMemoryRssBytes !== "number") {
       transaction.hDel(this.#workerKey(entry.workerId), "processMemoryRssBytes");
@@ -181,9 +196,12 @@ export class RedisWorkerRegistry implements WorkerRegistry {
             expiresAt: record.fields.expiresAt,
             resourceCpuLoadRatio: optionalFiniteNumber(record.fields.resourceCpuLoadRatio),
             resourceMemoryUsedRatio: optionalFiniteNumber(record.fields.resourceMemoryUsedRatio),
+            resourceDiskUsedRatio: optionalFiniteNumber(record.fields.resourceDiskUsedRatio),
             resourceLoadAverage1m: optionalFiniteNumber(record.fields.resourceLoadAverage1m),
             resourceMemoryUsedBytes: optionalFiniteNumber(record.fields.resourceMemoryUsedBytes),
             resourceMemoryTotalBytes: optionalFiniteNumber(record.fields.resourceMemoryTotalBytes),
+            resourceDiskUsedBytes: optionalFiniteNumber(record.fields.resourceDiskUsedBytes),
+            resourceDiskTotalBytes: optionalFiniteNumber(record.fields.resourceDiskTotalBytes),
             processMemoryRssBytes: optionalFiniteNumber(record.fields.processMemoryRssBytes),
             ...(record.fields.currentSessionId ? { currentSessionId: record.fields.currentSessionId } : {}),
             ...(record.fields.currentRunId ? { currentRunId: record.fields.currentRunId } : {}),

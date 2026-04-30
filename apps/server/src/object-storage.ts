@@ -26,11 +26,12 @@ import {
   observeNativeWorkspaceSyncOperation,
   recordNativeWorkspaceSyncFallback
 } from "./observability/native-workspace-sync.js";
+import { recordObjectStorageOperation, type ObjectStorageMetricOperation } from "./observability/object-storage.js";
 
 type AwsS3Module = typeof import("@aws-sdk/client-s3");
 type AwsS3ModuleImport = AwsS3Module | { default?: AwsS3Module | undefined };
 type AwsS3ClientLike = {
-  send(command: unknown): Promise<unknown>;
+  send(command: unknown, options?: { abortSignal?: AbortSignal | undefined }): Promise<unknown>;
   destroy(): void;
 };
 
@@ -47,12 +48,15 @@ interface ObjectStorageEntry {
 
 export interface DirectoryObjectStore {
   listEntries(prefix: string): Promise<ObjectStorageEntry[]>;
+  listEntriesPaged?(prefix: string): AsyncIterable<ObjectStorageEntry[]>;
   getObjectInfo?(
     key: string
   ): Promise<{ size?: number | undefined; lastModified?: Date | undefined; metadata?: Record<string, string> | undefined }>;
   getObject(key: string): Promise<{ body: Buffer; metadata?: Record<string, string> | undefined }>;
+  getObjectStream?(key: string): Promise<{ body: NodeJS.ReadableStream; metadata?: Record<string, string> | undefined }>;
   getObjectToFile?(key: string, targetPath: string): Promise<{ metadata?: Record<string, string> | undefined }>;
   putObject(key: string, body: Buffer, options?: { mtimeMs?: number | undefined }): Promise<void>;
+  putObjectFromStream?(key: string, body: NodeJS.ReadableStream, options?: { mtimeMs?: number | undefined }): Promise<void>;
   putObjectFromFile?(key: string, filePath: string, options?: { mtimeMs?: number | undefined }): Promise<void>;
   deleteObjects(keys: string[]): Promise<void>;
   deletePrefix?(prefix: string): Promise<number>;
@@ -178,6 +182,7 @@ interface DirectorySyncManifestDocument {
   files: Record<string, DirectorySyncManifestFileEntry>;
   emptyDirectories?: string[] | undefined;
   storageMode?: "objects" | "bundle" | undefined;
+  manifestShards?: string[] | undefined;
 }
 
 interface ManagedPathMapping {
@@ -195,6 +200,7 @@ const DEFAULT_KEY_PREFIXES: Record<ManagedPathKey, string> = {
 };
 const OBJECT_MTIME_METADATA_KEY = "oah-mtime-ms";
 const INTERNAL_SYNC_MANIFEST_RELATIVE_PATH = ".oah-sync-manifest.json";
+const INTERNAL_SYNC_MANIFEST_SHARD_PREFIX = ".oah-sync-manifest-shards";
 const INTERNAL_SYNC_BUNDLE_RELATIVE_PATH = ".oah-sync-bundle.tar";
 const DEFAULT_DIRECTORY_SYNC_CONCURRENCY = 8;
 const DEFAULT_OBJECT_STORAGE_BUNDLE_MODE = "auto";
@@ -203,6 +209,11 @@ const DEFAULT_OBJECT_STORAGE_BUNDLE_MIN_TOTAL_BYTES = 128 * 1024;
 const DEFAULT_OBJECT_STORAGE_BUNDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const trustedManagedObjectStoragePrefixes = new Set<string>();
 const DEFAULT_NATIVE_INLINE_UPLOAD_THRESHOLD_BYTES = 128 * 1024;
+const DEFAULT_OBJECT_STORAGE_REQUEST_TIMEOUT_MS = 2 * 60 * 1000;
+const DEFAULT_OBJECT_STORAGE_MAX_ATTEMPTS = 3;
+const DEFAULT_OBJECT_STORAGE_MULTIPART_THRESHOLD_BYTES = 64 * 1024 * 1024;
+const DEFAULT_OBJECT_STORAGE_MULTIPART_PART_SIZE_BYTES = 8 * 1024 * 1024;
+const DEFAULT_OBJECT_STORAGE_SYNC_MANIFEST_SHARD_FILE_COUNT = 10_000;
 
 const DEFAULT_MANAGED_PATHS = Object.keys(DEFAULT_KEY_PREFIXES) as ManagedPathKey[];
 let awsS3ModulePromise: Promise<AwsS3Module> | undefined;
@@ -242,6 +253,87 @@ function buildRemoteKey(prefix: string, relativePath: string): string {
   return prefix.length === 0 ? normalizedRelativePath : `${prefix}/${normalizedRelativePath}`;
 }
 
+async function collectObjectStorageEntries(store: DirectoryObjectStore, prefix: string): Promise<ObjectStorageEntry[]> {
+  const budget = createObjectStorageSyncBudget(`object storage prefix ${(prefix || ".").trim() || "."}`);
+  if (!store.listEntriesPaged) {
+    const entries = await store.listEntries(prefix);
+    for (const entry of entries) {
+      budget.observeObject();
+      budget.observeBytes(entry.size);
+    }
+    return entries;
+  }
+
+  const entries: ObjectStorageEntry[] = [];
+  for await (const page of store.listEntriesPaged(prefix)) {
+    for (const entry of page) {
+      budget.observeObject();
+      budget.observeBytes(entry.size);
+    }
+    entries.push(...page);
+  }
+  return entries.sort((left, right) => left.key.localeCompare(right.key));
+}
+
+async function deleteObjectStorageKeysInChunks(store: DirectoryObjectStore, keys: Iterable<string>): Promise<number> {
+  let deletedCount = 0;
+  let chunk: string[] = [];
+
+  const flush = async (): Promise<void> => {
+    if (chunk.length === 0) {
+      return;
+    }
+    await store.deleteObjects(chunk);
+    deletedCount += chunk.length;
+    chunk = [];
+  };
+
+  for (const key of keys) {
+    if (!key) {
+      continue;
+    }
+    chunk.push(key);
+    if (chunk.length >= 1000) {
+      await flush();
+    }
+  }
+
+  await flush();
+  return deletedCount;
+}
+
+async function deleteRemoteEntriesMatching(input: {
+  store: DirectoryObjectStore;
+  remotePrefix: string;
+  shouldDelete(entry: ObjectStorageEntry): boolean;
+}): Promise<number> {
+  const budget = createObjectStorageSyncBudget(`object storage prefix ${(input.remotePrefix || ".").trim() || "."}`);
+  if (!input.store.listEntriesPaged) {
+    const entries = await input.store.listEntries(input.remotePrefix);
+    for (const entry of entries) {
+      budget.observeObject();
+      budget.observeBytes(entry.size);
+    }
+    return deleteObjectStorageKeysInChunks(
+      input.store,
+      entries.filter((entry) => input.shouldDelete(entry)).map((entry) => entry.key)
+    );
+  }
+
+  let deletedCount = 0;
+  for await (const page of input.store.listEntriesPaged(input.remotePrefix)) {
+    for (const entry of page) {
+      budget.observeObject();
+      budget.observeBytes(entry.size);
+    }
+    deletedCount += await deleteObjectStorageKeysInChunks(
+      input.store,
+      page.filter((entry) => input.shouldDelete(entry)).map((entry) => entry.key)
+    );
+  }
+  return deletedCount;
+}
+
 function relativePathFromRemoteKey(prefix: string, key: string): string | undefined {
   if (prefix.length === 0) {
     return normalizeRelativePath(key);
@@ -265,6 +357,9 @@ function shouldIgnoreRelativePath(relativePath: string): boolean {
   }
 
   if (normalized === INTERNAL_SYNC_MANIFEST_RELATIVE_PATH) {
+    return true;
+  }
+  if (normalized === INTERNAL_SYNC_MANIFEST_SHARD_PREFIX || normalized.startsWith(`${INTERNAL_SYNC_MANIFEST_SHARD_PREFIX}/`)) {
     return true;
   }
   if (normalized === INTERNAL_SYNC_BUNDLE_RELATIVE_PATH) {
@@ -365,6 +460,19 @@ function isDirectorySyncManifestDocument(value: unknown): value is DirectorySync
   );
 }
 
+function buildRemoteDirectorySyncManifestShardKey(remotePrefix: string, shardIndex: number): string {
+  return buildRemoteKey(remotePrefix, `${INTERNAL_SYNC_MANIFEST_SHARD_PREFIX}/${String(shardIndex).padStart(5, "0")}.json`);
+}
+
+function buildDirectorySyncManifestShardDocument(
+  files: Iterable<readonly [string, DirectorySyncManifestFileEntry]>
+): DirectorySyncManifestDocument {
+  return {
+    version: 1,
+    files: Object.fromEntries(files)
+  };
+}
+
 async function loadRemoteDirectorySyncManifestDocument(
   store: DirectoryObjectStore,
   remotePrefix: string,
@@ -373,14 +481,44 @@ async function loadRemoteDirectorySyncManifestDocument(
   try {
     const manifestKey = buildRemoteKey(remotePrefix, INTERNAL_SYNC_MANIFEST_RELATIVE_PATH);
     if (remoteEntries) {
-      const manifestPresent = [...remoteEntries].some((entry) => entry.key === manifestKey);
+      let manifestPresent = false;
+      for (const entry of remoteEntries) {
+        if (entry.key === manifestKey) {
+          manifestPresent = true;
+          break;
+        }
+      }
       if (!manifestPresent) {
         return undefined;
       }
     }
     const manifestObject = await store.getObject(manifestKey);
     const parsed = JSON.parse(manifestObject.body.toString("utf8")) as Partial<DirectorySyncManifestDocument>;
-    return isDirectorySyncManifestDocument(parsed) ? parsed : undefined;
+    if (!isDirectorySyncManifestDocument(parsed)) {
+      return undefined;
+    }
+
+    const manifestShards = (parsed.manifestShards ?? [])
+      .map((key) => (typeof key === "string" ? key : ""))
+      .filter((key) => key.length > 0);
+    if (manifestShards.length === 0) {
+      return parsed;
+    }
+
+    const files: Record<string, DirectorySyncManifestFileEntry> = { ...parsed.files };
+    for (const shardKey of manifestShards) {
+      const shardObject = await store.getObject(shardKey);
+      const shard = JSON.parse(shardObject.body.toString("utf8")) as Partial<DirectorySyncManifestDocument>;
+      if (!isDirectorySyncManifestDocument(shard)) {
+        return undefined;
+      }
+      Object.assign(files, shard.files);
+    }
+    return {
+      ...parsed,
+      files,
+      manifestShards
+    };
   } catch {
     return undefined;
   }
@@ -424,8 +562,9 @@ async function writeRemoteDirectorySyncManifest(input: {
   );
   const manifestKey = buildRemoteKey(input.remotePrefix, INTERNAL_SYNC_MANIFEST_RELATIVE_PATH);
 
-  if (normalizedEntries.size === 0) {
-    await input.store.deleteObjects([manifestKey]);
+  const existingShardKeys = input.existingManifestDocument?.manifestShards ?? [];
+  if (normalizedEntries.size === 0 && (manifest.emptyDirectories?.length ?? 0) === 0) {
+    await input.store.deleteObjects([manifestKey, ...existingShardKeys]);
     return;
   }
 
@@ -436,10 +575,41 @@ async function writeRemoteDirectorySyncManifest(input: {
     return;
   }
 
+  const shardFileCount = resolveObjectStorageSyncManifestShardFileCount();
+  const shouldShard = normalizedEntries.size > shardFileCount;
+  if (shouldShard) {
+    const sortedEntries = [...normalizedEntries.entries()].sort(([left], [right]) => left.localeCompare(right));
+    const shardKeys: string[] = [];
+    for (let index = 0; index < sortedEntries.length; index += shardFileCount) {
+      const shardIndex = Math.floor(index / shardFileCount);
+      const shardKey = buildRemoteDirectorySyncManifestShardKey(input.remotePrefix, shardIndex);
+      shardKeys.push(shardKey);
+      const shardDocument = buildDirectorySyncManifestShardDocument(sortedEntries.slice(index, index + shardFileCount));
+      await input.store.putObject(shardKey, Buffer.from(`${JSON.stringify(shardDocument)}\n`, "utf8"));
+    }
+
+    const manifestDocument: DirectorySyncManifestDocument = {
+      version: 1,
+      files: {},
+      ...(manifest.emptyDirectories ? { emptyDirectories: manifest.emptyDirectories } : {}),
+      ...(manifest.storageMode ? { storageMode: manifest.storageMode } : {}),
+      manifestShards: shardKeys
+    };
+    await input.store.putObject(manifestKey, Buffer.from(`${JSON.stringify(manifestDocument)}\n`, "utf8"));
+    const staleShardKeys = existingShardKeys.filter((key) => !shardKeys.includes(key));
+    if (staleShardKeys.length > 0) {
+      await input.store.deleteObjects(staleShardKeys);
+    }
+    return;
+  }
+
   await input.store.putObject(
     manifestKey,
     Buffer.from(`${JSON.stringify(manifest)}\n`, "utf8")
   );
+  if (existingShardKeys.length > 0) {
+    await input.store.deleteObjects(existingShardKeys);
+  }
 }
 
 function isEquivalentDirectorySyncManifestDocument(
@@ -612,6 +782,7 @@ async function withObjectStorageBundleFile<T>(
   const listPath = path.join(bundleRoot, "bundle-files.txt");
   const bundlePath = path.join(bundleRoot, "bundle.tar");
   const timeoutMs = resolveObjectStorageBundleTimeoutMs();
+  const startedAt = performance.now();
 
   try {
     const fileList = [
@@ -624,7 +795,84 @@ async function withObjectStorageBundleFile<T>(
       args: ["-C", input.localDir, "-cf", bundlePath, "--null", "-T", listPath],
       timeoutMs
     });
+    recordObjectStorageOperation({
+      operation: "bundle_create",
+      durationMs: Math.max(0, Math.round(performance.now() - startedAt))
+    });
     return await useBundle(bundlePath);
+  } finally {
+    await rm(bundleRoot, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+async function withObjectStorageBundleStream<T>(
+  input: {
+    localDir: string;
+    snapshot: LocalDirectorySnapshot;
+  },
+  useBundle: (bundle: NodeJS.ReadableStream) => Promise<T>
+): Promise<T> {
+  const bundleRoot = await mkdtemp(path.join(os.tmpdir(), "oah-object-store-bundle-stream-"));
+  const listPath = path.join(bundleRoot, "bundle-files.txt");
+  const timeoutMs = resolveObjectStorageBundleTimeoutMs();
+  const startedAt = performance.now();
+
+  try {
+    const fileList = [
+      ...[...input.snapshot.files.keys()].sort((left, right) => left.localeCompare(right)),
+      ...[...input.snapshot.emptyDirectories].sort((left, right) => left.localeCompare(right))
+    ];
+    await writeFile(listPath, Buffer.from(fileList.join("\0"), "utf8"));
+
+    const child = spawn("tar", ["-C", input.localDir, "-cf", "-", "--null", "-T", listPath], {
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stderr = "";
+    let timeoutTriggered = false;
+    const timeoutHandle = setTimeout(() => {
+      timeoutTriggered = true;
+      child.kill("SIGTERM");
+    }, timeoutMs);
+    child.stderr?.on("data", (chunk: Buffer | string) => {
+      stderr = `${stderr}${chunk.toString()}`.slice(-32_768);
+    });
+
+    const closePromise = new Promise<void>((resolve, reject) => {
+      child.on("error", (error) => {
+        clearTimeout(timeoutHandle);
+        reject(error);
+      });
+      child.on("close", (code) => {
+        clearTimeout(timeoutHandle);
+        if (timeoutTriggered) {
+          reject(new Error(`Process timed out after ${timeoutMs}ms.`));
+          return;
+        }
+        if ((code ?? 0) !== 0) {
+          reject(new Error(stderr.trim() || `Process exited with code ${code ?? 0}.`));
+          return;
+        }
+        resolve();
+      });
+    });
+
+    if (!child.stdout) {
+      child.kill("SIGTERM");
+      throw new Error("tar stdout stream is unavailable.");
+    }
+
+    const result = await Promise.all([
+      useBundle(child.stdout).catch((error) => {
+        child.kill("SIGTERM");
+        throw error;
+      }),
+      closePromise
+    ]).then(([value]) => value);
+    recordObjectStorageOperation({
+      operation: "bundle_create",
+      durationMs: Math.max(0, Math.round(performance.now() - startedAt))
+    });
+    return result;
   } finally {
     await rm(bundleRoot, { recursive: true, force: true }).catch(() => undefined);
   }
@@ -669,6 +917,10 @@ async function maybeWriteObjectStorageBundle(input: {
 
   const nativeSnapshot = await collectNativeSnapshotIfAvailable(input.localDir, input.options);
   const snapshot = nativeSnapshot?.snapshot ?? (await collectLocalDirectorySnapshot(input.localDir, input.options));
+  enforceLocalDirectorySyncBudget(
+    snapshot,
+    `local directory ${input.localDir} for object storage prefix ${(input.remotePrefix || ".").trim() || "."}`
+  );
   const files = [...snapshot.files.entries()].map(([relativePath, file]) => ({
     relativePath,
     size: file.size,
@@ -679,17 +931,32 @@ async function maybeWriteObjectStorageBundle(input: {
     return;
   }
 
-  await withObjectStorageBundleFile({
-    localDir: input.localDir,
-    snapshot
-  }, async (bundlePath) => {
-    const bundleKey = buildRemoteKey(input.remotePrefix, INTERNAL_SYNC_BUNDLE_RELATIVE_PATH);
-    if (input.store.putObjectFromFile) {
-      await input.store.putObjectFromFile(bundleKey, bundlePath);
-      return;
-    }
-    await input.store.putObject(bundleKey, await readFile(bundlePath));
-  });
+  const bundleKey = buildRemoteKey(input.remotePrefix, INTERNAL_SYNC_BUNDLE_RELATIVE_PATH);
+  if (input.store.putObjectFromStream) {
+    await withObjectStorageBundleStream(
+      {
+        localDir: input.localDir,
+        snapshot
+      },
+      async (bundle) => {
+        await input.store.putObjectFromStream!(bundleKey, bundle);
+      }
+    );
+  } else {
+    await withObjectStorageBundleFile(
+      {
+        localDir: input.localDir,
+        snapshot
+      },
+      async (bundlePath) => {
+        if (input.store.putObjectFromFile) {
+          await input.store.putObjectFromFile(bundleKey, bundlePath);
+          return;
+        }
+        await input.store.putObject(bundleKey, await readFile(bundlePath));
+      }
+    );
+  }
   input.logger?.(
     `[oah-object-storage] wrote sync bundle ${INTERNAL_SYNC_BUNDLE_RELATIVE_PATH} for ${(input.remotePrefix || ".").trim() || "."}`
   );
@@ -724,18 +991,36 @@ async function maybeHydrateFromObjectStorageBundle(input: {
   const bundleRoot = await mkdtemp(path.join(os.tmpdir(), "oah-object-store-bundle-extract-"));
   const bundlePath = path.join(bundleRoot, "bundle.tar");
   const timeoutMs = resolveObjectStorageBundleTimeoutMs();
+  const startedAt = performance.now();
   try {
     await mkdir(input.localDir, { recursive: true });
-    if (input.store.getObjectToFile) {
+    if (input.store.getObjectStream) {
+      const bundle = await input.store.getObjectStream(bundleEntry.key);
+      await extractTarStreamToDirectory({
+        bundle: bundle.body,
+        localDir: input.localDir,
+        timeoutMs
+      });
+    } else if (input.store.getObjectToFile) {
       await input.store.getObjectToFile(bundleEntry.key, bundlePath);
+      await runLocalProcess({
+        executable: "tar",
+        args: ["-xf", bundlePath, "-C", input.localDir],
+        timeoutMs
+      });
     } else {
       const bundle = await input.store.getObject(bundleEntry.key);
       await writeFile(bundlePath, bundle.body);
+      await runLocalProcess({
+        executable: "tar",
+        args: ["-xf", bundlePath, "-C", input.localDir],
+        timeoutMs
+      });
     }
-    await runLocalProcess({
-      executable: "tar",
-      args: ["-xf", bundlePath, "-C", input.localDir],
-      timeoutMs
+    recordObjectStorageOperation({
+      operation: "bundle_extract",
+      durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      bytesDownloaded: bundleEntry.size
     });
     input.logger?.(
       `[oah-object-storage] hydrated ${(input.remotePrefix || ".").trim() || "."} from sync bundle ${INTERNAL_SYNC_BUNDLE_RELATIVE_PATH}`
@@ -809,6 +1094,9 @@ function buildManagedRemoteKeysFromManifestDocument(
   );
   if (manifestDocument.storageMode === "bundle") {
     keys.add(buildRemoteKey(remotePrefix, INTERNAL_SYNC_BUNDLE_RELATIVE_PATH));
+  }
+  for (const shardKey of manifestDocument.manifestShards ?? []) {
+    keys.add(shardKey);
   }
   return [...keys].sort((left, right) => left.localeCompare(right));
 }
@@ -895,6 +1183,104 @@ function resolvePositiveIntegerEnv(name: string): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+function resolveObjectStorageRequestTimeoutMs(): number {
+  return resolvePositiveIntegerEnv("OAH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS") ?? DEFAULT_OBJECT_STORAGE_REQUEST_TIMEOUT_MS;
+}
+
+function resolveObjectStorageMaxAttempts(): number {
+  return resolvePositiveIntegerEnv("OAH_OBJECT_STORAGE_MAX_ATTEMPTS") ?? DEFAULT_OBJECT_STORAGE_MAX_ATTEMPTS;
+}
+
+function resolveObjectStorageMultipartThresholdBytes(): number {
+  return resolvePositiveIntegerEnv("OAH_OBJECT_STORAGE_MULTIPART_THRESHOLD_BYTES") ?? DEFAULT_OBJECT_STORAGE_MULTIPART_THRESHOLD_BYTES;
+}
+
+function resolveObjectStorageMultipartPartSizeBytes(): number {
+  const minimumPartSize = 5 * 1024 * 1024;
+  return Math.max(
+    minimumPartSize,
+    resolvePositiveIntegerEnv("OAH_OBJECT_STORAGE_MULTIPART_PART_SIZE_BYTES") ?? DEFAULT_OBJECT_STORAGE_MULTIPART_PART_SIZE_BYTES
+  );
+}
+
+function resolveObjectStorageSyncMaxObjects(): number | undefined {
+  return resolvePositiveIntegerEnv("OAH_OBJECT_STORAGE_SYNC_MAX_OBJECTS");
+}
+
+function resolveObjectStorageSyncMaxBytes(): number | undefined {
+  return resolvePositiveIntegerEnv("OAH_OBJECT_STORAGE_SYNC_MAX_BYTES");
+}
+
+function resolveObjectStorageSyncMaxFileBytes(): number | undefined {
+  return resolvePositiveIntegerEnv("OAH_OBJECT_STORAGE_SYNC_MAX_FILE_BYTES");
+}
+
+function hasObjectStorageSyncBudgetPolicy(): boolean {
+  return (
+    resolveObjectStorageSyncMaxObjects() !== undefined ||
+    resolveObjectStorageSyncMaxBytes() !== undefined ||
+    resolveObjectStorageSyncMaxFileBytes() !== undefined
+  );
+}
+
+function resolveObjectStorageSyncManifestShardFileCount(): number {
+  return (
+    resolvePositiveIntegerEnv("OAH_OBJECT_STORAGE_SYNC_MANIFEST_SHARD_FILE_COUNT") ??
+    DEFAULT_OBJECT_STORAGE_SYNC_MANIFEST_SHARD_FILE_COUNT
+  );
+}
+
+function createObjectStorageSyncBudget(label: string): {
+  observeObject(count?: number): void;
+  observeBytes(count: number): void;
+  observeFile(relativePath: string, size: number): void;
+} {
+  const maxObjects = resolveObjectStorageSyncMaxObjects();
+  const maxBytes = resolveObjectStorageSyncMaxBytes();
+  const maxFileBytes = resolveObjectStorageSyncMaxFileBytes();
+  let objectCount = 0;
+  let byteCount = 0;
+
+  return {
+    observeObject(count = 1): void {
+      objectCount += count;
+      if (maxObjects !== undefined && objectCount > maxObjects) {
+        throw new Error(`${label} exceeded object storage sync object limit ${maxObjects}.`);
+      }
+    },
+    observeBytes(count: number): void {
+      if (!Number.isFinite(count) || count <= 0) {
+        return;
+      }
+      byteCount += count;
+      if (maxBytes !== undefined && byteCount > maxBytes) {
+        throw new Error(`${label} exceeded object storage sync byte limit ${maxBytes}.`);
+      }
+    },
+    observeFile(relativePath: string, size: number): void {
+      if (!Number.isFinite(size) || size < 0) {
+        return;
+      }
+      if (maxFileBytes !== undefined && size > maxFileBytes) {
+        throw new Error(
+          `${label} file ${relativePath || "."} exceeded object storage sync single-file limit ${maxFileBytes}.`
+        );
+      }
+    }
+  };
+}
+
+function enforceLocalDirectorySyncBudget(snapshot: LocalDirectorySnapshot, label: string): void {
+  const budget = createObjectStorageSyncBudget(label);
+  for (const [relativePath, file] of snapshot.files.entries()) {
+    budget.observeObject();
+    budget.observeBytes(file.size);
+    budget.observeFile(relativePath, file.size);
+  }
+
+  budget.observeObject(snapshot.emptyDirectories.size);
+}
+
 function resolveObjectStorageBundleConfig(): {
   mode: "off" | "auto" | "force";
   minFileCount: number;
@@ -976,6 +1362,55 @@ async function runLocalProcess(input: {
         return;
       }
       resolve();
+    });
+  });
+}
+
+async function extractTarStreamToDirectory(input: {
+  bundle: NodeJS.ReadableStream;
+  localDir: string;
+  timeoutMs: number;
+}): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn("tar", ["-xf", "-", "-C", input.localDir], {
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    let stderr = "";
+    let timeoutTriggered = false;
+    const timeoutHandle = setTimeout(() => {
+      timeoutTriggered = true;
+      child.kill("SIGTERM");
+    }, input.timeoutMs);
+
+    child.stderr.on("data", (chunk: Buffer | string) => {
+      stderr = `${stderr}${chunk.toString()}`.slice(-32_768);
+    });
+    child.on("error", (error) => {
+      clearTimeout(timeoutHandle);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timeoutHandle);
+      if (timeoutTriggered) {
+        reject(new Error(`Process timed out after ${input.timeoutMs}ms.`));
+        return;
+      }
+      if ((code ?? 0) !== 0) {
+        reject(new Error(stderr.trim() || `Process exited with code ${code ?? 0}.`));
+        return;
+      }
+      resolve();
+    });
+
+    if (!child.stdin) {
+      child.kill("SIGTERM");
+      reject(new Error("tar stdin stream is unavailable."));
+      return;
+    }
+
+    pipeline(input.bundle, child.stdin).catch((error) => {
+      child.kill("SIGTERM");
+      reject(error);
     });
   });
 }
@@ -1343,6 +1778,7 @@ async function syncNativeLocalDirectoryToRemoteIfAvailable(
   store: DirectoryObjectStore,
   remotePrefix: string,
   localDir: string,
+  label: string | undefined,
   options?: DirectorySyncOptions
 ): Promise<DirectorySyncResult | undefined> {
   const nativeExcludes = resolveNativeFingerprintExcludes(options);
@@ -1356,6 +1792,15 @@ async function syncNativeLocalDirectoryToRemoteIfAvailable(
   }
 
   try {
+    if (hasObjectStorageSyncBudgetPolicy()) {
+      const nativeSnapshot = await collectNativeSnapshotIfAvailable(localDir, options);
+      const snapshot = nativeSnapshot?.snapshot ?? (await collectLocalDirectorySnapshot(localDir, options));
+      enforceLocalDirectorySyncBudget(
+        snapshot,
+        `local directory ${localDir} for object storage prefix ${((label ?? remotePrefix) || ".").trim() || "."}`
+      );
+    }
+
     const concurrency = resolveDirectorySyncConcurrency();
     const bundleConfig = resolveObjectStorageBundleConfig();
     const syncBundle = {
@@ -1782,6 +2227,56 @@ async function writeStreamBodyToFile(body: unknown, targetPath: string): Promise
   await pipeline(Readable.from(body as AsyncIterable<Uint8Array | Buffer | string>), createWriteStream(targetPath));
 }
 
+function readableFromStreamBody(body: unknown): NodeJS.ReadableStream {
+  if (!body) {
+    return Readable.from([]);
+  }
+  if (typeof body === "string" || body instanceof Uint8Array) {
+    return Readable.from([body]);
+  }
+  if (typeof body === "object" && body !== null && "pipe" in body && typeof body.pipe === "function") {
+    return body as NodeJS.ReadableStream;
+  }
+  if (typeof body === "object" && body !== null && "transformToByteArray" in body) {
+    return Readable.from(
+      (async function* () {
+        yield await (body as { transformToByteArray(): Promise<Uint8Array> }).transformToByteArray();
+      })()
+    );
+  }
+  return Readable.from(body as AsyncIterable<Uint8Array | Buffer | string>);
+}
+
+function objectStorageErrorCode(error: unknown): string {
+  if (!error || typeof error !== "object") {
+    return "";
+  }
+  const record = error as { name?: unknown; code?: unknown; Code?: unknown; $metadata?: { httpStatusCode?: number | undefined } };
+  return String(record.code ?? record.Code ?? record.name ?? "").toLowerCase();
+}
+
+function objectStorageHttpStatus(error: unknown): number | undefined {
+  return error && typeof error === "object"
+    ? (error as { $metadata?: { httpStatusCode?: number | undefined } }).$metadata?.httpStatusCode
+    : undefined;
+}
+
+function isTimeoutLikeObjectStorageError(error: unknown): boolean {
+  const code = objectStorageErrorCode(error);
+  return code.includes("abort") || code.includes("timeout") || code.includes("timedout");
+}
+
+function isThrottlingObjectStorageError(error: unknown): boolean {
+  const code = objectStorageErrorCode(error);
+  const status = objectStorageHttpStatus(error);
+  return status === 429 || code.includes("throttl") || code.includes("slowdown") || code.includes("toomanyrequests");
+}
+
+function isRetryableObjectStorageError(error: unknown): boolean {
+  const status = objectStorageHttpStatus(error);
+  return status === 408 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+}
+
 class S3DirectoryStore implements DirectoryObjectStore {
   readonly #bucket: string;
   readonly #config: ObjectStorageConfig;
@@ -1824,6 +2319,186 @@ class S3DirectoryStore implements DirectoryObjectStore {
     return this.#clientPromise;
   }
 
+  async #send<TResponse>(
+    command: unknown,
+    operation: ObjectStorageMetricOperation
+  ): Promise<{ response: TResponse; retries: number }> {
+    const client = await this.#getClient();
+    const maxAttempts = Math.max(1, resolveObjectStorageMaxAttempts());
+    const timeoutMs = resolveObjectStorageRequestTimeoutMs();
+    let retries = 0;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const controller = new AbortController();
+      const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = (await client.send(command, { abortSignal: controller.signal })) as TResponse;
+        clearTimeout(timeoutHandle);
+        return { response, retries };
+      } catch (error) {
+        clearTimeout(timeoutHandle);
+        const timeout = controller.signal.aborted || isTimeoutLikeObjectStorageError(error);
+        const throttled = isThrottlingObjectStorageError(error);
+        const retryable = timeout || throttled || isRetryableObjectStorageError(error);
+        if (retryable) {
+          recordObjectStorageOperation({
+            operation,
+            countOperation: false,
+            ...(timeout ? { timeout: true } : {}),
+            ...(throttled ? { throttled: true } : {})
+          });
+        }
+        if (!retryable || attempt >= maxAttempts) {
+          throw error;
+        }
+        retries += 1;
+        recordObjectStorageOperation({
+          operation,
+          countOperation: false,
+          retries: 1
+        });
+        await new Promise((resolve) => setTimeout(resolve, Math.min(1000, 50 * 2 ** (attempt - 1))));
+      }
+    }
+
+    throw new Error("unreachable object storage retry state");
+  }
+
+  #metadataFromOptions(options?: { mtimeMs?: number | undefined }): Record<string, string> | undefined {
+    return typeof options?.mtimeMs === "number" && Number.isFinite(options.mtimeMs) && options.mtimeMs > 0
+      ? {
+          [OBJECT_MTIME_METADATA_KEY]: String(Math.trunc(options.mtimeMs))
+        }
+      : undefined;
+  }
+
+  async #putObjectStreamMultipart(
+    key: string,
+    body: NodeJS.ReadableStream,
+    options?: { mtimeMs?: number | undefined }
+  ): Promise<void> {
+    const {
+      AbortMultipartUploadCommand,
+      CompleteMultipartUploadCommand,
+      CreateMultipartUploadCommand,
+      PutObjectCommand,
+      UploadPartCommand
+    } = await loadAwsS3Module();
+    const partSize = resolveObjectStorageMultipartPartSizeBytes();
+    const startedAt = performance.now();
+    let uploadId: string | undefined;
+    let retries = 0;
+    let uploadedBytes = 0;
+    const completedParts: Array<{ ETag?: string | undefined; PartNumber: number }> = [];
+
+    const metadata = this.#metadataFromOptions(options);
+    const uploadPart = async (partNumber: number, partBody: Buffer): Promise<void> => {
+      const { response, retries: partRetries } = await this.#send<{ ETag?: string | undefined }>(
+        new UploadPartCommand({
+          Bucket: this.#bucket,
+          Key: key,
+          UploadId: uploadId,
+          PartNumber: partNumber,
+          Body: partBody,
+          ContentLength: partBody.length
+        }),
+        "multipart_upload"
+      );
+      retries += partRetries;
+      uploadedBytes += partBody.length;
+      completedParts.push({
+        PartNumber: partNumber,
+        ...(response.ETag ? { ETag: response.ETag } : {})
+      });
+    };
+
+    try {
+      const createResult = await this.#send<{ UploadId?: string | undefined }>(
+        new CreateMultipartUploadCommand({
+          Bucket: this.#bucket,
+          Key: key,
+          ...(metadata ? { Metadata: metadata } : {})
+        }),
+        "multipart_upload"
+      );
+      retries += createResult.retries;
+      uploadId = createResult.response.UploadId;
+      if (!uploadId) {
+        throw new Error(`S3 multipart upload for ${key} did not return an upload id.`);
+      }
+
+      let pending = Buffer.alloc(0);
+      let partNumber = 1;
+      for await (const chunk of body as AsyncIterable<Uint8Array | Buffer | string>) {
+        const buffer = Buffer.from(chunk);
+        pending = pending.length === 0 ? buffer : Buffer.concat([pending, buffer]);
+        while (pending.length >= partSize) {
+          const part = pending.subarray(0, partSize);
+          pending = pending.subarray(partSize);
+          await uploadPart(partNumber, part);
+          partNumber += 1;
+        }
+      }
+
+      if (pending.length > 0) {
+        await uploadPart(partNumber, pending);
+      }
+
+      if (completedParts.length === 0) {
+        const putStartedAt = performance.now();
+        const { retries: putRetries } = await this.#send(
+          new PutObjectCommand({
+            Bucket: this.#bucket,
+            Key: key,
+            Body: Buffer.alloc(0),
+            ContentLength: 0,
+            ...(metadata ? { Metadata: metadata } : {})
+          }),
+          "put"
+        );
+        recordObjectStorageOperation({
+          operation: "put",
+          durationMs: Math.max(0, Math.round(performance.now() - putStartedAt)),
+          retries: putRetries,
+          objectsUploaded: 1
+        });
+        return;
+      }
+
+      const completeResult = await this.#send(
+        new CompleteMultipartUploadCommand({
+          Bucket: this.#bucket,
+          Key: key,
+          UploadId: uploadId,
+          MultipartUpload: {
+            Parts: completedParts
+          }
+        }),
+        "multipart_upload"
+      );
+      retries += completeResult.retries;
+      recordObjectStorageOperation({
+        operation: "multipart_upload",
+        durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+        retries,
+        bytesUploaded: uploadedBytes,
+        objectsUploaded: 1
+      });
+    } catch (error) {
+      if (uploadId) {
+        await this.#send(
+          new AbortMultipartUploadCommand({
+            Bucket: this.#bucket,
+            Key: key,
+            UploadId: uploadId
+          }),
+          "multipart_upload"
+        ).catch(() => undefined);
+      }
+      throw error;
+    }
+  }
+
   getNativeWorkspaceSyncConfig(): NativeWorkspaceSyncObjectStoreConfig {
     return {
       bucket: this.#config.bucket,
@@ -1836,71 +2511,134 @@ class S3DirectoryStore implements DirectoryObjectStore {
     };
   }
 
-  async listEntries(prefix: string): Promise<ObjectStorageEntry[]> {
-    const [client, { ListObjectsV2Command }] = await Promise.all([this.#getClient(), loadAwsS3Module()]);
-    const entries: ObjectStorageEntry[] = [];
+  async *listEntriesPaged(prefix: string): AsyncIterable<ObjectStorageEntry[]> {
+    const { ListObjectsV2Command } = await loadAwsS3Module();
+    const normalizedPrefix = normalizePrefix(prefix);
     let continuationToken: string | undefined;
 
     do {
-      const response = (await client.send(
-        new ListObjectsV2Command({
-          Bucket: this.#bucket,
-          ...(prefix ? { Prefix: `${prefix}/` } : {}),
-          ...(continuationToken ? { ContinuationToken: continuationToken } : {})
-        })
-      )) as {
+      const startedAt = performance.now();
+      const { response, retries } = await this.#send<{
         Contents?: Array<{ Key?: string | undefined; Size?: number | undefined; LastModified?: Date | undefined }>;
         IsTruncated?: boolean | undefined;
         NextContinuationToken?: string | undefined;
-      };
+      }>(
+        new ListObjectsV2Command({
+          Bucket: this.#bucket,
+          ...(normalizedPrefix ? { Prefix: `${normalizedPrefix}/` } : {}),
+          ...(continuationToken ? { ContinuationToken: continuationToken } : {})
+        }),
+        "list"
+      );
 
+      const page: ObjectStorageEntry[] = [];
       for (const item of response.Contents ?? []) {
         if (!item.Key) {
           continue;
         }
 
-        entries.push({
+        page.push({
           key: item.Key,
           size: item.Size ?? 0,
           ...(item.LastModified ? { lastModified: item.LastModified } : {})
         });
       }
+      recordObjectStorageOperation({
+        operation: "list",
+        durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+        retries,
+        objectsListed: page.length
+      });
 
+      if (page.length > 0) {
+        yield page.sort((left, right) => left.key.localeCompare(right.key));
+      }
       continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
     } while (continuationToken);
+  }
 
-    return entries.sort((left, right) => left.key.localeCompare(right.key));
+  async listEntries(prefix: string): Promise<ObjectStorageEntry[]> {
+    return collectObjectStorageEntries(this, prefix);
   }
 
   async getObject(key: string): Promise<{ body: Buffer; metadata?: Record<string, string> | undefined }> {
-    const [client, { GetObjectCommand }] = await Promise.all([this.#getClient(), loadAwsS3Module()]);
-    const response = (await client.send(
+    const { GetObjectCommand } = await loadAwsS3Module();
+    const startedAt = performance.now();
+    const { response, retries } = await this.#send<{
+      Body?: unknown;
+      Metadata?: Record<string, string> | undefined;
+      ContentLength?: number | undefined;
+    }>(
       new GetObjectCommand({
         Bucket: this.#bucket,
         Key: key
-      })
-    )) as {
+      }),
+      "get"
+    );
+    const body = await streamBodyToBuffer(response.Body);
+    recordObjectStorageOperation({
+      operation: "get",
+      durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      retries,
+      bytesDownloaded: body.length,
+      objectsDownloaded: 1
+    });
+    return {
+      body,
+      metadata: response.Metadata
+    };
+  }
+
+  async getObjectStream(key: string): Promise<{ body: NodeJS.ReadableStream; metadata?: Record<string, string> | undefined }> {
+    const { GetObjectCommand } = await loadAwsS3Module();
+    const startedAt = performance.now();
+    const { response, retries } = await this.#send<{
       Body?: unknown;
       Metadata?: Record<string, string> | undefined;
-    };
+      ContentLength?: number | undefined;
+    }>(
+      new GetObjectCommand({
+        Bucket: this.#bucket,
+        Key: key
+      }),
+      "get"
+    );
+    recordObjectStorageOperation({
+      operation: "get",
+      durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      retries,
+      bytesDownloaded: response.ContentLength,
+      objectsDownloaded: 1
+    });
     return {
-      body: await streamBodyToBuffer(response.Body),
+      body: readableFromStreamBody(response.Body),
       metadata: response.Metadata
     };
   }
 
   async getObjectToFile(key: string, targetPath: string): Promise<{ metadata?: Record<string, string> | undefined }> {
-    const [client, { GetObjectCommand }] = await Promise.all([this.#getClient(), loadAwsS3Module()]);
-    const response = (await client.send(
+    const { GetObjectCommand } = await loadAwsS3Module();
+    const startedAt = performance.now();
+    const { response, retries } = await this.#send<{
+      Body?: unknown;
+      Metadata?: Record<string, string> | undefined;
+      ContentLength?: number | undefined;
+    }>(
       new GetObjectCommand({
         Bucket: this.#bucket,
         Key: key
-      })
-    )) as {
-      Body?: unknown;
-      Metadata?: Record<string, string> | undefined;
-    };
+      }),
+      "get"
+    );
     await writeStreamBodyToFile(response.Body, targetPath);
+    const fileStat = await stat(targetPath).catch(() => undefined);
+    recordObjectStorageOperation({
+      operation: "get",
+      durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      retries,
+      bytesDownloaded: fileStat?.size ?? response.ContentLength,
+      objectsDownloaded: 1
+    });
     return {
       metadata: response.Metadata
     };
@@ -1909,17 +2647,24 @@ class S3DirectoryStore implements DirectoryObjectStore {
   async getObjectInfo(
     key: string
   ): Promise<{ size?: number | undefined; lastModified?: Date | undefined; metadata?: Record<string, string> | undefined }> {
-    const [client, { HeadObjectCommand }] = await Promise.all([this.#getClient(), loadAwsS3Module()]);
-    const response = (await client.send(
-      new HeadObjectCommand({
-        Bucket: this.#bucket,
-        Key: key
-      })
-    )) as {
+    const { HeadObjectCommand } = await loadAwsS3Module();
+    const startedAt = performance.now();
+    const { response, retries } = await this.#send<{
       ContentLength?: number | undefined;
       LastModified?: Date | undefined;
       Metadata?: Record<string, string> | undefined;
-    };
+    }>(
+      new HeadObjectCommand({
+        Bucket: this.#bucket,
+        Key: key
+      }),
+      "head"
+    );
+    recordObjectStorageOperation({
+      operation: "head",
+      durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      retries
+    });
 
     return {
       ...(typeof response.ContentLength === "number" ? { size: response.ContentLength } : {}),
@@ -1929,41 +2674,57 @@ class S3DirectoryStore implements DirectoryObjectStore {
   }
 
   async putObject(key: string, body: Buffer, options?: { mtimeMs?: number | undefined }): Promise<void> {
-    const [client, { PutObjectCommand }] = await Promise.all([this.#getClient(), loadAwsS3Module()]);
-    await client.send(
+    const { PutObjectCommand } = await loadAwsS3Module();
+    const startedAt = performance.now();
+    const { retries } = await this.#send(
       new PutObjectCommand({
         Bucket: this.#bucket,
         Key: key,
         Body: body,
-        ...(typeof options?.mtimeMs === "number" && Number.isFinite(options.mtimeMs) && options.mtimeMs > 0
-          ? {
-              Metadata: {
-                [OBJECT_MTIME_METADATA_KEY]: String(Math.trunc(options.mtimeMs))
-              }
-            }
-          : {})
-      })
+        ContentLength: body.length,
+        ...(this.#metadataFromOptions(options) ? { Metadata: this.#metadataFromOptions(options) } : {})
+      }),
+      "put"
     );
+    recordObjectStorageOperation({
+      operation: "put",
+      durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      retries,
+      bytesUploaded: body.length,
+      objectsUploaded: 1
+    });
+  }
+
+  async putObjectFromStream(key: string, body: NodeJS.ReadableStream, options?: { mtimeMs?: number | undefined }): Promise<void> {
+    await this.#putObjectStreamMultipart(key, body, options);
   }
 
   async putObjectFromFile(key: string, filePath: string, options?: { mtimeMs?: number | undefined }): Promise<void> {
-    const [client, { PutObjectCommand }] = await Promise.all([this.#getClient(), loadAwsS3Module()]);
     const fileStat = await stat(filePath);
-    await client.send(
+    if (fileStat.size >= resolveObjectStorageMultipartThresholdBytes()) {
+      await this.#putObjectStreamMultipart(key, createReadStream(filePath), options);
+      return;
+    }
+
+    const { PutObjectCommand } = await loadAwsS3Module();
+    const startedAt = performance.now();
+    const { retries } = await this.#send(
       new PutObjectCommand({
         Bucket: this.#bucket,
         Key: key,
         Body: createReadStream(filePath),
         ContentLength: fileStat.size,
-        ...(typeof options?.mtimeMs === "number" && Number.isFinite(options.mtimeMs) && options.mtimeMs > 0
-          ? {
-              Metadata: {
-                [OBJECT_MTIME_METADATA_KEY]: String(Math.trunc(options.mtimeMs))
-              }
-            }
-          : {})
-      })
+        ...(this.#metadataFromOptions(options) ? { Metadata: this.#metadataFromOptions(options) } : {})
+      }),
+      "put"
     );
+    recordObjectStorageOperation({
+      operation: "put",
+      durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+      retries,
+      bytesUploaded: fileStat.size,
+      objectsUploaded: 1
+    });
   }
 
   async deleteObjects(keys: string[]): Promise<void> {
@@ -1971,18 +2732,26 @@ class S3DirectoryStore implements DirectoryObjectStore {
       return;
     }
 
-    const [client, { DeleteObjectsCommand }] = await Promise.all([this.#getClient(), loadAwsS3Module()]);
+    const { DeleteObjectsCommand } = await loadAwsS3Module();
     for (let index = 0; index < keys.length; index += 1000) {
       const chunk = keys.slice(index, index + 1000);
-      await client.send(
+      const startedAt = performance.now();
+      const { retries } = await this.#send(
         new DeleteObjectsCommand({
           Bucket: this.#bucket,
           Delete: {
             Objects: chunk.map((key) => ({ Key: key })),
             Quiet: true
           }
-        })
+        }),
+        "delete"
       );
+      recordObjectStorageOperation({
+        operation: "delete",
+        durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+        retries,
+        objectsDeleted: chunk.length
+      });
     }
   }
 
@@ -1992,38 +2761,54 @@ class S3DirectoryStore implements DirectoryObjectStore {
       throw new Error("Refusing to delete an empty object storage prefix.");
     }
 
-    const [client, { DeleteObjectsCommand, ListObjectsV2Command }] = await Promise.all([this.#getClient(), loadAwsS3Module()]);
+    const { DeleteObjectsCommand, ListObjectsV2Command } = await loadAwsS3Module();
     let deletedCount = 0;
     const deleteChunk = async (keys: string[]): Promise<void> => {
       if (keys.length === 0) {
         return;
       }
-      await client.send(
+      const startedAt = performance.now();
+      const { retries } = await this.#send(
         new DeleteObjectsCommand({
           Bucket: this.#bucket,
           Delete: {
             Objects: keys.map((key) => ({ Key: key })),
             Quiet: true
           }
-        })
+        }),
+        "delete"
       );
+      recordObjectStorageOperation({
+        operation: "delete",
+        durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+        retries,
+        objectsDeleted: keys.length
+      });
       deletedCount += keys.length;
     };
 
     let continuationToken: string | undefined;
     do {
-      const response = (await client.send(
+      const startedAt = performance.now();
+      const { response, retries } = await this.#send<{
+        Contents?: Array<{ Key?: string | undefined }>;
+        IsTruncated?: boolean | undefined;
+        NextContinuationToken?: string | undefined;
+      }>(
         new ListObjectsV2Command({
           Bucket: this.#bucket,
           Prefix: `${normalizedPrefix}/`,
           ...(continuationToken ? { ContinuationToken: continuationToken } : {})
-        })
-      )) as {
-        Contents?: Array<{ Key?: string | undefined }>;
-        IsTruncated?: boolean | undefined;
-        NextContinuationToken?: string | undefined;
-      };
+        }),
+        "list"
+      );
       const keys = (response.Contents ?? []).map((item) => item.Key).filter((key): key is string => Boolean(key));
+      recordObjectStorageOperation({
+        operation: "list",
+        durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+        retries,
+        objectsListed: keys.length
+      });
       await deleteChunk(keys);
       continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
     } while (continuationToken);
@@ -2345,15 +3130,15 @@ export async function deleteRemotePrefixFromObjectStore(
     return;
   }
 
-  const entries = await store.listEntries(normalizedPrefix);
-  const keys = [...new Set([normalizedPrefix, `${normalizedPrefix}/`, ...entries.map((entry) => entry.key)])];
+  let deletedCount = await deleteObjectStorageKeysInChunks(store, [normalizedPrefix, `${normalizedPrefix}/`]);
+  deletedCount += await deleteRemoteEntriesMatching({
+    store,
+    remotePrefix: normalizedPrefix,
+    shouldDelete: (entry) => entry.key === normalizedPrefix || entry.key === `${normalizedPrefix}/` || entry.key.startsWith(`${normalizedPrefix}/`)
+  });
   logger?.(
-    `deleting ${keys.length} object storage entr${keys.length === 1 ? "y" : "ies"} from ${(label ?? normalizedPrefix) || "."}`
+    `deleted ${deletedCount} object storage entr${deletedCount === 1 ? "y" : "ies"} from ${(label ?? normalizedPrefix) || "."}`
   );
-  if (keys.length > 0) {
-    await store.deleteObjects(keys);
-  }
-  logger?.(`deleted object storage prefix ${(label ?? normalizedPrefix) || "."}`);
 }
 
 export async function deleteWorkspaceExternalRefFromObjectStore(
@@ -2443,8 +3228,15 @@ export async function syncRemotePrefixToLocal(
     }
   }
 
+  if (!prefetchedEntries && store.listEntriesPaged) {
+    syncManifestDocument = await loadRemoteDirectorySyncManifestDocument(store, remotePrefix);
+    if (syncManifestDocument) {
+      prefetchedEntries = buildSyntheticRemoteEntriesFromManifestDocument(remotePrefix, syncManifestDocument, options, true);
+    }
+  }
+
   if (!prefetchedEntries) {
-    prefetchedEntries = await store.listEntries(remotePrefix);
+    prefetchedEntries = await collectObjectStorageEntries(store, remotePrefix);
     const hasVisibleRemoteEntries = prefetchedEntries.some((entry) => {
       if (entry.key.endsWith("/")) {
         return true;
@@ -2455,9 +3247,7 @@ export async function syncRemotePrefixToLocal(
       }
       return !options?.excludeRelativePath?.(relativePath);
     });
-    syncManifestDocument = hasVisibleRemoteEntries
-      ? undefined
-      : await loadRemoteDirectorySyncManifestDocument(store, remotePrefix, prefetchedEntries);
+    syncManifestDocument = hasVisibleRemoteEntries ? undefined : await loadRemoteDirectorySyncManifestDocument(store, remotePrefix, prefetchedEntries);
   }
   const hydratedFromBundle = await maybeHydrateFromObjectStorageBundle({
     store,
@@ -2713,7 +3503,7 @@ export async function syncLocalDirectoryToRemote(
   options?: DirectorySyncOptions
 ): Promise<DirectorySyncResult> {
   logger?.(`syncing local changes in ${localDir} back to object storage (${(label ?? remotePrefix) || "."})`);
-  const nativeSyncResult = await syncNativeLocalDirectoryToRemoteIfAvailable(store, remotePrefix, localDir, options);
+  const nativeSyncResult = await syncNativeLocalDirectoryToRemoteIfAvailable(store, remotePrefix, localDir, label, options);
   if (nativeSyncResult) {
     return nativeSyncResult;
   }
@@ -2734,6 +3524,10 @@ export async function syncLocalDirectoryToRemote(
       const concurrency = resolveDirectorySyncConcurrency();
       const nativeSnapshot = await collectNativeSnapshotIfAvailable(localDir, options);
       const snapshot = nativeSnapshot?.snapshot ?? (await collectLocalDirectorySnapshot(localDir, options));
+      enforceLocalDirectorySyncBudget(
+        snapshot,
+        `local directory ${localDir} for object storage prefix ${((label ?? remotePrefix) || ".").trim() || "."}`
+      );
       const localFingerprint = nativeSnapshot?.fingerprint ?? createDirectoryFingerprint(snapshot);
       const snapshotFiles = [...snapshot.files.entries()].map(([relativePath, file]) => ({
         relativePath,
@@ -2786,16 +3580,17 @@ export async function syncLocalDirectoryToRemote(
               (key) => key !== buildRemoteKey(remotePrefix, INTERNAL_SYNC_MANIFEST_RELATIVE_PATH)
             );
           } else if (!existingManifestDocument && !shouldTrustManagedObjectStoragePrefixes()) {
-            const remoteEntries = await store.listEntries(remotePrefix);
-            keysToDelete = remoteEntries
-              .map((entry) => {
+            deletedRemoteCount = await deleteRemoteEntriesMatching({
+              store,
+              remotePrefix,
+              shouldDelete: (entry) => {
                 const relativePath = relativePathFromRemoteKey(remotePrefix, entry.key);
                 if (relativePath === undefined || shouldIgnoreRelativePath(relativePath)) {
-                  return undefined;
+                  return false;
                 }
-                return entry.key;
-              })
-              .filter((key): key is string => key !== undefined);
+                return true;
+              }
+            });
           }
 
           if (keysToDelete.length > 0) {
@@ -2822,11 +3617,17 @@ export async function syncLocalDirectoryToRemote(
         };
       }
 
-      const remoteEntries = await store.listEntries(remotePrefix);
-      const existingManifestDocument = await loadRemoteDirectorySyncManifestDocument(store, remotePrefix, remoteEntries);
-      const syncManifest = existingManifestDocument
+      const existingManifestDocument = store.listEntriesPaged
+        ? await loadRemoteDirectorySyncManifestDocument(store, remotePrefix)
+        : undefined;
+      const remoteEntries = existingManifestDocument
+        ? buildSyntheticRemoteEntriesFromManifestDocument(remotePrefix, existingManifestDocument, options, true)
+        : await collectObjectStorageEntries(store, remotePrefix);
+      const resolvedManifestDocument =
+        existingManifestDocument ?? (await loadRemoteDirectorySyncManifestDocument(store, remotePrefix, remoteEntries));
+      const syncManifest = resolvedManifestDocument
         ? new Map(
-            Object.entries(existingManifestDocument.files)
+            Object.entries(resolvedManifestDocument.files)
               .map(([relativePath, entry]) => [normalizeRelativePath(relativePath), entry] as const)
               .filter(
                 (entry): entry is readonly [string, DirectorySyncManifestFileEntry] =>
@@ -2914,7 +3715,7 @@ export async function syncLocalDirectoryToRemote(
           store,
           remotePrefix,
           existingManifest: syncManifest,
-          existingManifestDocument,
+          existingManifestDocument: resolvedManifestDocument,
           files: snapshotFiles,
           emptyDirectories: snapshot.emptyDirectories,
           storageMode: "objects"
@@ -2995,7 +3796,7 @@ export async function syncLocalDirectoryToRemote(
         store,
         remotePrefix,
         existingManifest: syncManifest,
-        existingManifestDocument,
+        existingManifestDocument: resolvedManifestDocument,
         files: snapshotFiles,
         emptyDirectories: snapshot.emptyDirectories,
         storageMode: "objects"

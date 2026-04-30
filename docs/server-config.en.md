@@ -111,6 +111,16 @@ llm:
 > **tip**
 > `workspace_backing_store` only controls managed workspace `externalRef` / backing-store semantics. Active workspace writes do not flush on every change; they flush through the workspace materialization idle / drain lifecycle.
 
+Production workers should also set:
+
+| Env var | Description |
+| --- | --- |
+| `OAH_WORKER_DISK_METRICS_PATH` | Mounted path used for worker lease disk-usage reporting |
+| `OAH_WORKER_DISK_READINESS_THRESHOLD` | Worker `/readyz` returns `worker_disk_pressure` above this local disk usage ratio |
+| `OAH_OBJECT_STORAGE_SYNC_MAX_OBJECTS` | Maximum object count allowed for one workspace/object-store sync |
+| `OAH_OBJECT_STORAGE_SYNC_MAX_BYTES` | Maximum total bytes allowed for one workspace/object-store sync |
+| `OAH_OBJECT_STORAGE_SYNC_MAX_FILE_BYTES` | Maximum single-file size allowed for object-store sync |
+
 ### `sandbox`
 
 | Field | Type | Description |
@@ -121,6 +131,7 @@ llm:
 | `fleet.warm_empty_count` | number | Extra empty sandboxes to keep warm so new workspaces can bind quickly at any time. Defaults to `1` for remote providers and `0` for embedded. |
 | `fleet.resource_cpu_pressure_threshold` | number | Sandbox resource pressure threshold. Ownerless workspaces prefer an empty sandbox when CPU load ratio exceeds this value. Defaults to `0.8`. |
 | `fleet.resource_memory_pressure_threshold` | number | Sandbox memory pressure threshold. Ownerless workspaces prefer an empty sandbox when memory used ratio exceeds this value. Defaults to `0.8`. |
+| `fleet.resource_disk_pressure_threshold` | number | Sandbox disk pressure threshold. Ownerless workspaces prefer an empty sandbox when disk used ratio exceeds this value, and the controller reserves extra migration headroom. Defaults to `0.85`. |
 | `fleet.max_workspaces_per_sandbox` | number | Capacity limit for how many workspaces a single real sandbox should carry. Defaults to `32`. |
 | `fleet.ownerless_pool` | string | How workspaces without `ownerId` are grouped into sandboxes. `shared` uses a shared pool; `dedicated` gives each workspace its own sandbox. |
 | `self_hosted.base_url` | string | Required when `provider=self_hosted`. Base `/internal/v1` URL exposed by the sandbox-resident standalone worker. |
@@ -143,7 +154,7 @@ llm:
 > `self_hosted` and `e2b` share the same execution semantics: `oah-api` routes workspaces into a real sandbox, while the standalone worker inside that sandbox owns the live workspace copy, local file state, and command execution context.
 
 > **tip**
-> The controller now treats sandbox fleet demand as a first-class signal: the same `ownerId` prefers the same real sandbox, while ownerless workspaces use a shared pool by default. Ownerless workspaces first reuse existing sandboxes whose CPU and memory are both below threshold; when either CPU or memory crosses the threshold, placement falls back to the empty sandboxes reserved by `warm_empty_count`.
+> The controller now treats sandbox fleet demand as a first-class signal: the same `ownerId` prefers the same real sandbox, while ownerless workspaces use a shared pool by default. Ownerless workspaces first reuse existing sandboxes whose CPU, memory, and disk are below threshold; when any resource crosses the threshold, placement falls back to the empty sandboxes reserved by `warm_empty_count`.
 
 > **tip**
 > Starting with the current version, `createSession` asynchronously prewarms the target workspace after the session is created. With a remote sandbox provider, that eagerly binds the workspace to a sandbox; with workspace materialization enabled, it also prepares the active workspace copy ahead of the first user message. Combined with the remote-provider default `fleet.warm_empty_count = 1`, this removes most first-message cold-start latency, although very large first-time materializations can still dominate.
@@ -324,7 +335,27 @@ In addition to YAML config, the server also reads a set of runtime environment v
 | Variable | Default | Description |
 | --- | --- | --- |
 | `OAH_HISTORY_EVENT_RETENTION_DAYS` | `7` | Retention window for historical events in PostgreSQL mode. |
+| `OAH_STORAGE_ADMIN_POSTGRES_OVERVIEW_COUNTS` | `cached` | Postgres table row-count mode for storage overview: `cached`, `exact`, `estimated`, or `skip`. |
+| `OAH_STORAGE_ADMIN_POSTGRES_OVERVIEW_COUNT_TTL_MS` | `30000` | Postgres overview table row-count cache TTL in `cached` mode, capped at one hour. |
+| `OAH_STORAGE_ADMIN_POSTGRES_DEEP_OFFSET_LIMIT` | `10000` | Maximum offset allowed for storage table browsing before callers must use the returned `nextCursor` for keyset pagination. |
+| `OAH_STORAGE_ADMIN_ALLOW_FULL_ROW_SEARCH` | unset | When set, allows Postgres full-row search without `searchMode=full_row`; by default callers must opt in explicitly. |
 | `OAH_STORAGE_ADMIN_REDIS_OVERVIEW_KEY_LIMIT` | `200` | Maximum number of Redis session queue / lock / event keys scanned and returned per category in storage overview, capped at `10000`; responses include truncated flags when the cap is reached. |
+| `OAH_METADATA_RETENTION_ENABLED` | `true` for worker/embedded worker processes, `false` for API-only | Enables Postgres metadata retention cleanup; this should normally run on workers so API-only stays light. |
+| `OAH_METADATA_RETENTION_INTERVAL_MS` | `3600000` | Postgres metadata retention interval, with a 1-minute minimum. |
+| `OAH_METADATA_RETENTION_BATCH_LIMIT` | `1000` | Maximum deleted rows per metadata category per retention pass, capped at `10000`. |
+| `OAH_SESSION_EVENT_RETENTION_DAYS` | `14` | Retention window for Postgres `session_events`; set to `0` to disable this category. |
+| `OAH_RUN_RETENTION_DAYS` | `0` | Retention window for ended runs and their cascaded detail rows; disabled by default and only active when set to a positive value. |
+| `OAH_POSTGRES_ARCHIVE_MAX_COMPONENT_ROWS` | see per-category defaults | Shared upper bound for each detail category while constructing deleted workspace/session archives, preventing a single archive from growing unbounded in memory. |
+| `OAH_POSTGRES_ARCHIVE_MAX_SESSIONS` | `10000` | Maximum sessions per Postgres archive. |
+| `OAH_POSTGRES_ARCHIVE_MAX_RUNS` | `50000` | Maximum runs per Postgres archive. |
+| `OAH_POSTGRES_ARCHIVE_MAX_MESSAGES` | `100000` | Maximum messages per Postgres archive. |
+| `OAH_POSTGRES_ARCHIVE_MAX_RUNTIME_MESSAGES` | `100000` | Maximum runtime messages per Postgres archive. |
+| `OAH_POSTGRES_ARCHIVE_MAX_RUN_STEPS` | `100000` | Maximum run steps per Postgres archive. |
+| `OAH_POSTGRES_ARCHIVE_MAX_TOOL_CALLS` | `100000` | Maximum tool calls per Postgres archive. |
+| `OAH_POSTGRES_ARCHIVE_MAX_HOOK_RUNS` | `100000` | Maximum hook runs per Postgres archive. |
+| `OAH_POSTGRES_ARCHIVE_MAX_ARTIFACTS` | `100000` | Maximum artifacts per Postgres archive. |
+| `OAH_POSTGRES_ARCHIVE_PAYLOAD_DIR` | `runtime_state_dir/archive-payloads` | External payload directory for Postgres deleted workspace/session archive details; new archives keep only a lightweight reference in the `archives` table. |
+| `OAH_ARCHIVE_EXPORT_BUNDLE_RETENTION_DAYS` | unset | Retention window for exported SQLite archive bundle files; the exporter supports this policy and leaves bundle files untouched when unset. |
 | `OAH_RUNTIME_DEBUG` | unset | Mirrors runtime debug logs to stdout when set. |
 | `OAH_DOCKER_HOST_ALIAS` | `host.docker.internal` | Host alias used when OAH runs inside Docker and an HTTP MCP server is configured with a loopback URL such as `127.0.0.1` or `localhost`. |
 
