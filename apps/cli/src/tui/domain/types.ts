@@ -24,6 +24,8 @@ export type ChatLine = {
 
 export type WorkspaceCreateField = "name" | "runtime" | "rootPath" | "ownerId" | "serviceName";
 
+export type SessionStartupMode = "resume" | "new";
+
 export type WorkspaceCreateDialog = {
   kind: "workspace-create";
   field: WorkspaceCreateField;

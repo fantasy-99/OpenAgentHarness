@@ -1,8 +1,9 @@
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import {
+  type DiscoveredToolServer,
   listWorkspaceRuntimes,
   loadPlatformModels,
   loadPlatformSkills,
@@ -18,6 +19,12 @@ export type AssetCommandOptions = {
 
 export type AddModelOptions = AssetCommandOptions & {
   overwrite?: boolean | undefined;
+};
+
+export type EnableWorkspaceAssetOptions = AssetCommandOptions & {
+  workspace?: string | undefined;
+  overwrite?: boolean | undefined;
+  dryRun?: boolean | undefined;
 };
 
 export async function listModels(options: AssetCommandOptions = {}): Promise<string> {
@@ -114,10 +121,221 @@ export async function listSkills(options: AssetCommandOptions = {}): Promise<str
   return entries.map((skill) => `${skill.name}${skill.description ? ` · ${skill.description}` : ""}`).join("\n");
 }
 
+export async function enableTool(name: string, options: EnableWorkspaceAssetOptions = {}): Promise<string> {
+  const context = await loadAssetContext(options);
+  const workspaceRoot = await resolveWorkspaceRoot(options.workspace);
+  const toolServers = await loadPlatformToolServers(context.config.paths.tool_dir);
+  const toolServer = toolServers[name];
+  if (!toolServer) {
+    throw new Error(`Tool ${name} was not found in ${context.config.paths.tool_dir}.`);
+  }
+
+  const toolsRoot = path.join(workspaceRoot, ".openharness", "tools");
+  const targetServersRoot = path.join(toolsRoot, "servers");
+  const targetDirectory = resolvePathInsideRoot(targetServersRoot, name, "tool server name");
+  const settingsPath = path.join(toolsRoot, "settings.yaml");
+  const sourceDirectory = await findToolSourceDirectory(context.config.paths.tool_dir, name);
+  const settings = await readWorkspaceToolSettings(settingsPath);
+  const hasSettingsConflict = Object.prototype.hasOwnProperty.call(settings, name);
+  const targetExists = sourceDirectory ? await pathExists(targetDirectory) : false;
+
+  if ((hasSettingsConflict || targetExists) && !options.overwrite) {
+    const conflicts = [
+      ...(hasSettingsConflict ? [`${settingsPath} already defines ${name}`] : []),
+      ...(targetExists ? [`${targetDirectory} already exists`] : [])
+    ];
+    throw new Error(`Tool ${name} is already enabled. ${conflicts.join("; ")}. Use --overwrite to replace.`);
+  }
+
+  const serializedDefinition = serializeToolServerDefinition(toolServer);
+  if (typeof serializedDefinition.command === "string") {
+    serializedDefinition.command = rewriteImportedToolCommandForWorkspace(
+      serializedDefinition.command,
+      context.config.paths.tool_dir,
+      name
+    );
+  }
+
+  if (options.dryRun) {
+    return [
+      `Would enable tool ${name} in ${workspaceRoot}.`,
+      `Would ${hasSettingsConflict ? "update" : "write"} ${settingsPath}.`,
+      sourceDirectory ? `Would copy ${sourceDirectory} to ${targetDirectory}.` : "No local tool server directory would be copied."
+    ].join("\n");
+  }
+
+  await mkdir(toolsRoot, { recursive: true });
+  if (sourceDirectory) {
+    await mkdir(targetServersRoot, { recursive: true });
+    await rm(targetDirectory, { recursive: true, force: true });
+    await cp(sourceDirectory, targetDirectory, {
+      recursive: true,
+      force: false,
+      errorOnExist: false,
+      preserveTimestamps: true
+    });
+  }
+
+  await writeWorkspaceToolSettings(settingsPath, {
+    ...settings,
+    [name]: serializedDefinition
+  });
+
+  return `Enabled tool ${name} in ${workspaceRoot}.`;
+}
+
+export async function enableSkill(name: string, options: EnableWorkspaceAssetOptions = {}): Promise<string> {
+  const context = await loadAssetContext(options);
+  const workspaceRoot = await resolveWorkspaceRoot(options.workspace);
+  const skills = await loadPlatformSkills(context.config.paths.skill_dir);
+  const skill = skills[name];
+  if (!skill) {
+    throw new Error(`Skill ${name} was not found in ${context.config.paths.skill_dir}.`);
+  }
+
+  const skillsRoot = path.join(workspaceRoot, ".openharness", "skills");
+  const targetDirectory = resolvePathInsideRoot(skillsRoot, name, "skill name");
+  const targetExists = await pathExists(targetDirectory);
+
+  if (targetExists && !options.overwrite) {
+    throw new Error(`Skill ${name} is already enabled at ${targetDirectory}. Use --overwrite to replace.`);
+  }
+
+  if (options.dryRun) {
+    return [
+      `Would enable skill ${name} in ${workspaceRoot}.`,
+      `Would copy ${skill.directory} to ${targetDirectory}.`
+    ].join("\n");
+  }
+
+  await mkdir(skillsRoot, { recursive: true });
+  await rm(targetDirectory, { recursive: true, force: true });
+  await cp(skill.directory, targetDirectory, {
+    recursive: true,
+    force: false,
+    errorOnExist: false,
+    preserveTimestamps: true
+  });
+
+  return `Enabled skill ${name} in ${workspaceRoot}.`;
+}
+
 async function loadAssetContext(options: AssetCommandOptions) {
   const paths = await initDaemonHome(options);
   const config = await loadServerConfig(paths.configPath);
   return { paths, config };
+}
+
+async function resolveWorkspaceRoot(workspacePath: string | undefined): Promise<string> {
+  const workspaceRoot = path.resolve(process.cwd(), workspacePath ?? ".");
+  const stats = await stat(workspaceRoot).catch(() => null);
+  if (!stats?.isDirectory()) {
+    throw new Error(`Workspace path was not found or is not a directory: ${workspaceRoot}`);
+  }
+  return workspaceRoot;
+}
+
+async function findToolSourceDirectory(platformToolDir: string, name: string): Promise<string | undefined> {
+  const candidates = [
+    resolvePathInsideRoot(path.join(platformToolDir, "servers"), name, "tool server name"),
+    resolvePathInsideRoot(platformToolDir, name, "tool server name")
+  ];
+
+  for (const candidate of candidates) {
+    const stats = await stat(candidate).catch(() => null);
+    if (stats?.isDirectory()) {
+      return candidate;
+    }
+  }
+
+  return undefined;
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  return Boolean(await stat(targetPath).catch(() => null));
+}
+
+function resolvePathInsideRoot(rootPath: string, relativePath: string, label: string): string {
+  const resolvedPath = path.resolve(rootPath, relativePath);
+  const relative = path.relative(rootPath, resolvedPath);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`Invalid ${label}: ${relativePath}`);
+  }
+
+  return resolvedPath;
+}
+
+async function readWorkspaceToolSettings(settingsPath: string): Promise<Record<string, Record<string, unknown>>> {
+  const settingsExists = await pathExists(settingsPath);
+  if (!settingsExists) {
+    return {};
+  }
+
+  const YAML = (await import("yaml")).default;
+  const parsed = YAML.parse(await readFile(settingsPath, "utf8")) ?? {};
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`Invalid existing MCP settings in ${settingsPath}.`);
+  }
+
+  return parsed as Record<string, Record<string, unknown>>;
+}
+
+async function writeWorkspaceToolSettings(
+  settingsPath: string,
+  settings: Record<string, Record<string, unknown>>
+): Promise<void> {
+  const YAML = (await import("yaml")).default;
+  await mkdir(path.dirname(settingsPath), { recursive: true });
+  await writeFile(settingsPath, YAML.stringify(settings), "utf8");
+}
+
+function serializeToolServerDefinition(server: DiscoveredToolServer): Record<string, unknown> {
+  return {
+    ...(server.command ? { command: server.command } : {}),
+    ...(server.url ? { url: server.url } : {}),
+    ...(server.enabled !== true ? { enabled: server.enabled } : {}),
+    ...(server.environment ? { environment: server.environment } : {}),
+    ...(server.headers ? { headers: server.headers } : {}),
+    ...(typeof server.timeout === "number" ? { timeout: server.timeout } : {}),
+    ...(server.oauth !== undefined ? { oauth: server.oauth } : {}),
+    ...(server.toolPrefix || server.include || server.exclude
+      ? {
+          expose: {
+            ...(server.toolPrefix ? { tool_prefix: server.toolPrefix } : {}),
+            ...(server.include ? { include: server.include } : {}),
+            ...(server.exclude ? { exclude: server.exclude } : {})
+          }
+        }
+      : {})
+  };
+}
+
+function rewriteImportedToolCommandForWorkspace(command: string, platformToolDir: string, toolName: string): string {
+  const workspaceToolPrefix = `./.openharness/tools/servers/${toolName}`;
+  const existingWorkspacePrefixes = [workspaceToolPrefix, workspaceToolPrefix.replace(/^\.\//u, "")];
+
+  if (existingWorkspacePrefixes.some((prefix) => command.includes(prefix))) {
+    return command;
+  }
+
+  const replacementCandidates = [
+    path.join(platformToolDir, "servers", toolName),
+    path.join(platformToolDir, toolName),
+    `./servers/${toolName}`,
+    `servers/${toolName}`,
+    `./${toolName}`
+  ]
+    .map((candidate) => candidate.trim())
+    .filter((candidate, index, values) => candidate.length > 0 && values.indexOf(candidate) === index)
+    .sort((left, right) => right.length - left.length);
+
+  for (const candidate of replacementCandidates) {
+    if (command.includes(candidate)) {
+      return command.split(candidate).join(workspaceToolPrefix);
+    }
+  }
+
+  return command;
 }
 
 function setYamlSectionScalar(content: string, sectionName: string, key: string, value: string): string {

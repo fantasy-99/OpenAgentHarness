@@ -1,9 +1,17 @@
 import React from "react";
 import { Box, Text, useWindowSize } from "ink";
-import type { Session, Workspace, WorkspaceRuntime } from "@oah/api-contracts";
+import type { Run, Session, Workspace, WorkspaceRuntime } from "@oah/api-contracts";
 
 import type { Dialog } from "../domain/types.js";
-import { clampIndex, formatTime, getRuntimeMatches, shortId, SLASH_COMMANDS, STATUS_COLORS, visibleWindow } from "../domain/utils.js";
+import {
+  clampIndex,
+  formatSessionActivity,
+  getRuntimeMatches,
+  shortId,
+  SLASH_COMMANDS,
+  STATUS_COLORS,
+  visibleWindow
+} from "../domain/utils.js";
 
 export function WorkspaceDialog(props: {
   dialog: Extract<Dialog, { kind: "workspace-list" | "workspace-create" }>;
@@ -108,6 +116,7 @@ function RuntimeChoiceLine(props: { dialog: Extract<Dialog, { kind: "workspace-c
 export function SessionDialog(props: {
   dialog: Extract<Dialog, { kind: "session-list" | "session-create" }>;
   sessions: Session[];
+  sessionLatestRuns: Record<string, Run | undefined>;
   currentSession: Session | null;
   workspace: Workspace | null;
   rows: number;
@@ -138,16 +147,18 @@ export function SessionDialog(props: {
           const absoluteIndex = window.offset + index;
           const selected = absoluteIndex === selectedIndex;
           const current = props.currentSession?.id === session.id;
-          const color = selected ? "cyan" : current ? "green" : STATUS_COLORS[session.status];
+          const activity = formatSessionActivity(session, props.sessionLatestRuns[session.id]);
+          const color = selected ? "cyan" : current ? "green" : activity.tone;
           return (
             <Text key={session.id} {...(color ? { color } : {})} bold={selected || current} wrap="truncate-end">
               {selected ? "❯" : current ? "•" : " "} {session.title ?? shortId(session.id)} <Text dimColor>{shortId(session.id)}</Text>{" "}
-              {session.activeAgentName} {session.status} <Text dimColor>{formatTime(session.lastRunAt ?? session.updatedAt)}</Text>
+              {session.activeAgentName} <Text {...(activity.tone ? { color: activity.tone } : {})}>{activity.label}</Text>{" "}
+              <Text dimColor>{activity.detail}</Text>
             </Text>
           );
         })
       )}
-      <Text dimColor>enter switch · n create · r refresh · esc close</Text>
+      <Text dimColor>enter resume · n new session · r refresh · esc close</Text>
     </DialogBox>
   );
 }

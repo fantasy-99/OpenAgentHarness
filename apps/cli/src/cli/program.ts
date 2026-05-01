@@ -15,6 +15,33 @@ type TuiOptions = {
   runtime?: string;
   autoStart?: boolean;
   home?: string;
+  newSession?: boolean;
+  resumeLast?: boolean;
+};
+
+type WorkspaceListOptions = {
+  missing?: boolean;
+};
+
+type WorkspaceRepairOptions = {
+  workspace?: string;
+  name?: string;
+  autoStart?: boolean;
+};
+
+type WorkspaceMigrateHistoryOptions = {
+  workspace?: string;
+  dryRun?: boolean;
+  overwrite?: boolean;
+  backup?: boolean;
+  autoStart?: boolean;
+};
+
+type DaemonMaintenanceOptions = {
+  dryRun?: boolean;
+  force?: boolean;
+  checkpoint?: boolean;
+  vacuum?: boolean;
 };
 
 export function resolveConnection(options: GlobalOptions) {
@@ -62,6 +89,26 @@ export function createProgram(): Command {
     .action(async (_options: unknown, command: Command) => {
       const { daemonStatus } = await import("../daemon/lifecycle.js");
       console.log(await daemonStatus(resolveGroupedHomeOptions(command, daemon, program)));
+    });
+
+  daemon
+    .command("state")
+    .description("Show OAP local state disk usage")
+    .action(async (_options: unknown, command: Command) => {
+      const { summarizeDaemonState } = await import("../daemon/state-maintenance.js");
+      console.log(await summarizeDaemonState(resolveGroupedHomeOptions(command, daemon, program)));
+    });
+
+  daemon
+    .command("maintenance")
+    .description("Run local OAP state maintenance for shadow SQLite databases")
+    .option("--dry-run", "Preview maintenance without opening or writing databases")
+    .option("--force", "Run even if the local daemon process appears to be running")
+    .option("--no-checkpoint", "Skip SQLite WAL checkpoint/truncate")
+    .option("--no-vacuum", "Skip SQLite VACUUM")
+    .action(async (options: DaemonMaintenanceOptions, command: Command) => {
+      const { maintainDaemonState } = await import("../daemon/state-maintenance.js");
+      console.log(await maintainDaemonState({ ...resolveGroupedHomeOptions(command, daemon, program), ...options }));
     });
 
   daemon
@@ -145,6 +192,24 @@ export function createProgram(): Command {
       console.log(await listTools(resolveGroupedHomeOptions(command, tools, program)));
     });
 
+  tools
+    .command("enable")
+    .description("Enable a platform tool into a workspace .openharness/tools directory")
+    .argument("<name>", "Platform tool name")
+    .option("--workspace <path>", "Workspace path; defaults to the current directory")
+    .option("--overwrite", "Replace an existing workspace tool definition and copied server directory")
+    .option("--dry-run", "Preview the files that would be written")
+    .action(
+      async (
+        name: string,
+        options: { workspace?: string; overwrite?: boolean; dryRun?: boolean },
+        command: Command
+      ) => {
+        const { enableTool } = await import("../daemon/assets.js");
+        console.log(await enableTool(name, { ...resolveGroupedHomeOptions(command, tools, program), ...options }));
+      }
+    );
+
   const skills = program.command("skills").description("Manage OAP platform skill catalog").option("--home <path>", "OAH home directory");
 
   skills
@@ -155,11 +220,29 @@ export function createProgram(): Command {
       console.log(await listSkills(resolveGroupedHomeOptions(command, skills, program)));
     });
 
+  skills
+    .command("enable")
+    .description("Enable a platform skill into a workspace .openharness/skills directory")
+    .argument("<name>", "Platform skill name")
+    .option("--workspace <path>", "Workspace path; defaults to the current directory")
+    .option("--overwrite", "Replace an existing workspace skill directory")
+    .option("--dry-run", "Preview the files that would be written")
+    .action(
+      async (
+        name: string,
+        options: { workspace?: string; overwrite?: boolean; dryRun?: boolean },
+        command: Command
+      ) => {
+        const { enableSkill } = await import("../daemon/assets.js");
+        console.log(await enableSkill(name, { ...resolveGroupedHomeOptions(command, skills, program), ...options }));
+      }
+    );
+
   program
     .command("web")
     .description("Start the WebUI against an OAH-compatible API")
-    .option("--host <host>", "WebUI dev server host", "127.0.0.1")
-    .option("--port <port>", "WebUI dev server port", parseIntegerOption, 5173)
+    .option("--host <host>", "WebUI server host", "127.0.0.1")
+    .option("--port <port>", "WebUI server port", parseIntegerOption, 5173)
     .option("--open", "Open the browser after the WebUI starts")
     .option("--no-auto-start", "Do not auto-start the local OAP daemon when no --base-url is provided")
     .action(async (options: { host: string; port: number; open?: boolean; autoStart?: boolean }) => {
@@ -181,12 +264,20 @@ export function createProgram(): Command {
     .description("Open the interactive TUI")
     .option("--workspace <path>", "Register and open a local workspace path; defaults to the current directory for local OAP")
     .option("--runtime <name>", "Initialize the local workspace with a runtime before opening it")
+    .option("--new-session", "Create a fresh session after opening the workspace")
+    .option("--resume-last", "Resume the most recent session after opening the workspace")
     .option("--home <path>", "OAH home directory for local daemon defaults")
     .option("--no-auto-start", "Do not auto-start the local OAP daemon when no --base-url is provided")
     .action(async (options: TuiOptions) => {
       const { launchTui } = await import("../tui/launcher.js");
+      if (options.newSession && options.resumeLast) {
+        throw new Error("Use either --new-session or --resume-last, not both.");
+      }
       const { connection, workspaceId } = await resolveTuiConnection(program.opts<GlobalOptions>(), options);
-      await launchTui(connection, { ...(workspaceId ? { initialWorkspaceId: workspaceId } : {}) });
+      await launchTui(connection, {
+        ...(workspaceId ? { initialWorkspaceId: workspaceId } : {}),
+        sessionStartupMode: options.newSession ? "new" : "resume"
+      });
     });
 
   program
@@ -200,22 +291,102 @@ export function createProgram(): Command {
       console.log(JSON.stringify(profile, null, 2));
     });
 
+  const workspace = program.command("workspace").description("Manage visible workspaces");
+
+  workspace
+    .command("list")
+    .description("List visible workspaces")
+    .option("--missing", "Only show local workspace records whose root path no longer exists")
+    .action(async (options: WorkspaceListOptions) => {
+      await printWorkspaceList(program.opts<GlobalOptions>(), options);
+    });
+
+  workspace
+    .command("repair")
+    .description("Rebind an existing local workspace record to a new repo path")
+    .argument("<workspace-id>", "Existing workspace id to repair")
+    .option("--workspace <path>", "New workspace path; defaults to the current directory")
+    .option("--name <name>", "Optional workspace display name")
+    .option("--no-auto-start", "Do not auto-start the local OAP daemon when no --base-url is provided")
+    .action(async (workspaceId: string, options: WorkspaceRepairOptions) => {
+      await repairWorkspace(program.opts<GlobalOptions>(), workspaceId, options);
+    });
+
+  workspace
+    .command("migrate-history")
+    .description("Copy repo-local .openharness/data/history.db into OAP shadow storage")
+    .argument("[workspace-id]", "Existing workspace id; defaults to registering or reusing the selected local path")
+    .option("--workspace <path>", "Workspace path containing .openharness/data/history.db; defaults to the current directory")
+    .option("--dry-run", "Preview the migration without writing files")
+    .option("--overwrite", "Replace an existing shadow history database")
+    .option("--no-backup", "Do not backup an existing shadow history database before overwrite")
+    .option("--no-auto-start", "Do not auto-start the local OAP daemon when no --base-url is provided")
+    .action(async (workspaceId: string | undefined, options: WorkspaceMigrateHistoryOptions) => {
+      await migrateWorkspaceHistoryCommand(program.opts<GlobalOptions>(), workspaceId, options);
+    });
+
   program
     .command("workspace:list")
-    .alias("workspaces")
     .description("List visible workspaces")
-    .action(async () => {
-      const { OahApiClient, formatWorkspaceLine } = await import("../api/oah-api.js");
-      const { connection } = await resolveClientConnection(program.opts<GlobalOptions>(), {});
-      const client = new OahApiClient(connection);
-      const workspaces = await client.listAllWorkspaces();
-      if (workspaces.length === 0) {
-        console.log("No workspaces found.");
-        return;
-      }
-      for (const workspace of workspaces) {
-        console.log(formatWorkspaceLine(workspace));
-      }
+    .option("--missing", "Only show local workspace records whose root path no longer exists")
+    .action(async (options: WorkspaceListOptions) => {
+      await printWorkspaceList(program.opts<GlobalOptions>(), options);
+    });
+
+  const workspaces = program
+    .command("workspaces")
+    .description("List or repair visible workspaces")
+    .option("--missing", "Only show local workspace records whose root path no longer exists")
+    .action(async (options: WorkspaceListOptions) => {
+      await printWorkspaceList(program.opts<GlobalOptions>(), options);
+    });
+
+  workspaces
+    .command("repair")
+    .description("Rebind an existing local workspace record to a new repo path")
+    .argument("<workspace-id>", "Existing workspace id to repair")
+    .option("--workspace <path>", "New workspace path; defaults to the current directory")
+    .option("--name <name>", "Optional workspace display name")
+    .option("--no-auto-start", "Do not auto-start the local OAP daemon when no --base-url is provided")
+    .action(async (workspaceId: string, options: WorkspaceRepairOptions) => {
+      await repairWorkspace(program.opts<GlobalOptions>(), workspaceId, options);
+    });
+
+  workspaces
+    .command("migrate-history")
+    .description("Copy repo-local .openharness/data/history.db into OAP shadow storage")
+    .argument("[workspace-id]", "Existing workspace id; defaults to registering or reusing the selected local path")
+    .option("--workspace <path>", "Workspace path containing .openharness/data/history.db; defaults to the current directory")
+    .option("--dry-run", "Preview the migration without writing files")
+    .option("--overwrite", "Replace an existing shadow history database")
+    .option("--no-backup", "Do not backup an existing shadow history database before overwrite")
+    .option("--no-auto-start", "Do not auto-start the local OAP daemon when no --base-url is provided")
+    .action(async (workspaceId: string | undefined, options: WorkspaceMigrateHistoryOptions) => {
+      await migrateWorkspaceHistoryCommand(program.opts<GlobalOptions>(), workspaceId, options);
+    });
+
+  program
+    .command("workspaces:repair")
+    .description("Rebind an existing local workspace record to a new repo path")
+    .argument("<workspace-id>", "Existing workspace id to repair")
+    .option("--workspace <path>", "New workspace path; defaults to the current directory")
+    .option("--name <name>", "Optional workspace display name")
+    .option("--no-auto-start", "Do not auto-start the local OAP daemon when no --base-url is provided")
+    .action(async (workspaceId: string, options: WorkspaceRepairOptions) => {
+      await repairWorkspace(program.opts<GlobalOptions>(), workspaceId, options);
+    });
+
+  program
+    .command("workspaces:migrate-history")
+    .description("Copy repo-local .openharness/data/history.db into OAP shadow storage")
+    .argument("[workspace-id]", "Existing workspace id; defaults to registering or reusing the selected local path")
+    .option("--workspace <path>", "Workspace path containing .openharness/data/history.db; defaults to the current directory")
+    .option("--dry-run", "Preview the migration without writing files")
+    .option("--overwrite", "Replace an existing shadow history database")
+    .option("--no-backup", "Do not backup an existing shadow history database before overwrite")
+    .option("--no-auto-start", "Do not auto-start the local OAP daemon when no --base-url is provided")
+    .action(async (workspaceId: string | undefined, options: WorkspaceMigrateHistoryOptions) => {
+      await migrateWorkspaceHistoryCommand(program.opts<GlobalOptions>(), workspaceId, options);
     });
 
   program
@@ -231,6 +402,104 @@ export function createProgram(): Command {
     });
 
   return program;
+}
+
+async function printWorkspaceList(globalOptions: GlobalOptions, options: WorkspaceListOptions) {
+  const { OahApiClient, formatWorkspaceLine } = await import("../api/oah-api.js");
+  const { connection } = await resolveClientConnection(globalOptions, {});
+  const client = new OahApiClient(connection);
+  let workspaces = await client.listAllWorkspaces();
+  if (options.missing) {
+    const profile = await client.getSystemProfile();
+    if (!profile.capabilities.localWorkspacePaths) {
+      throw new Error(`Connected server "${profile.displayName}" does not expose local workspace paths.`);
+    }
+    const missingFlags = await Promise.all(workspaces.map((workspace) => isMissingLocalPath(workspace.rootPath)));
+    workspaces = workspaces.filter((_workspace, index) => missingFlags[index]);
+  }
+
+  if (workspaces.length === 0) {
+    console.log(options.missing ? "No missing local workspace roots found." : "No workspaces found.");
+    return;
+  }
+  for (const workspace of workspaces) {
+    console.log(formatWorkspaceLine(workspace));
+  }
+}
+
+async function repairWorkspace(globalOptions: GlobalOptions, workspaceId: string, options: WorkspaceRepairOptions) {
+  const { OahApiClient } = await import("../api/oah-api.js");
+  const workspacePath = options.workspace ?? process.cwd();
+  const { connection } = await resolveClientConnection(globalOptions, {
+    autoStartLocalDaemon: options.autoStart !== false,
+    announceAutoStart: true
+  });
+  const client = new OahApiClient(connection);
+  const profile = await client.getSystemProfile();
+  if (!profile.capabilities.localWorkspacePaths || !profile.capabilities.workspaceRegistration) {
+    throw new Error(
+      `Connected server "${profile.displayName}" does not support local workspace repair. ` +
+        "Use an OAP local daemon for path-based workspace repair."
+    );
+  }
+
+  const repaired = await client.repairLocalWorkspace({
+    workspaceId,
+    rootPath: workspacePath,
+    ...(options.name ? { name: options.name } : {})
+  });
+  console.log(`Repaired workspace ${repaired.name} (${repaired.id}) at ${repaired.rootPath}`);
+}
+
+async function migrateWorkspaceHistoryCommand(
+  globalOptions: GlobalOptions,
+  workspaceId: string | undefined,
+  options: WorkspaceMigrateHistoryOptions
+) {
+  const { OahApiClient } = await import("../api/oah-api.js");
+  const { migrateWorkspaceHistory } = await import("../daemon/history-migration.js");
+  const workspacePath = options.workspace ?? process.cwd();
+  const { connection, source } = await resolveClientConnection(globalOptions, {
+    autoStartLocalDaemon: options.autoStart !== false,
+    announceAutoStart: true
+  });
+  if (source !== "local-daemon" && !globalOptions.home && !process.env.OAH_HOME) {
+    throw new Error("History migration writes OAP shadow storage and requires a local OAH_HOME. Pass --home when using --base-url.");
+  }
+
+  const client = new OahApiClient(connection);
+  const profile = await client.getSystemProfile();
+  if (!profile.capabilities.localWorkspacePaths || !profile.capabilities.workspaceRegistration) {
+    throw new Error(
+      `Connected server "${profile.displayName}" does not support local workspace history migration. ` +
+        "Use an OAP local daemon."
+    );
+  }
+
+  const workspace = workspaceId
+    ? await client.getWorkspace(workspaceId)
+    : await client.registerLocalWorkspace({ rootPath: workspacePath });
+  const message = await migrateWorkspaceHistory({
+    home: globalOptions.home,
+    workspaceId: workspace.id,
+    workspaceRoot: workspacePath,
+    dryRun: options.dryRun,
+    overwrite: options.overwrite,
+    backup: options.backup
+  });
+  console.log(message);
+}
+
+async function isMissingLocalPath(rootPath: string): Promise<boolean> {
+  if (!pathLooksLocal(rootPath)) {
+    return false;
+  }
+  const { stat } = await import("node:fs/promises");
+  return !(await stat(rootPath).then((value) => value.isDirectory(), () => false));
+}
+
+function pathLooksLocal(rootPath: string): boolean {
+  return rootPath.startsWith("/") || /^[a-zA-Z]:[\\/]/u.test(rootPath);
 }
 
 async function resolveTuiConnection(globalOptions: GlobalOptions, tuiOptions: TuiOptions) {

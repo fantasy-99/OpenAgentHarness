@@ -107,6 +107,11 @@ export const registerLocalWorkspaceRequestSchema = z.object({
     .optional()
 });
 
+export const repairLocalWorkspaceRequestSchema = z.object({
+  rootPath: z.string().min(1),
+  name: z.string().trim().min(1).optional()
+});
+
 export const putWorkspaceFileRequestSchema = z.object({
   path: z.string().min(1),
   content: z.string(),
@@ -169,6 +174,7 @@ export type WorkspaceDeleteResult = z.infer<typeof workspaceDeleteResultSchema>;
 export type WorkspaceSkillInput = z.infer<typeof workspaceSkillInputSchema>;
 export type CreateWorkspaceRequest = z.infer<typeof createWorkspaceRequestSchema>;
 export type RegisterLocalWorkspaceRequest = z.infer<typeof registerLocalWorkspaceRequestSchema>;
+export type RepairLocalWorkspaceRequest = z.infer<typeof repairLocalWorkspaceRequestSchema>;
 export type PutWorkspaceFileRequest = z.infer<typeof putWorkspaceFileRequestSchema>;
 export type CreateWorkspaceDirectoryRequest = z.infer<typeof createWorkspaceDirectoryRequestSchema>;
 export type MoveWorkspaceEntryRequest = z.infer<typeof moveWorkspaceEntryRequestSchema>;

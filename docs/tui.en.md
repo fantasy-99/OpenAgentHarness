@@ -29,9 +29,13 @@ By default, the TUI connects to the local OAP daemon. If the daemon is not runni
 cd /path/to/repo
 pnpm dev:cli -- tui
 pnpm dev:cli -- tui --runtime vibe-coding
+pnpm dev:cli -- tui --new-session
+pnpm dev:cli -- tui --resume-last
 ```
 
 When `--base-url` is omitted, `oah tui` registers or reuses the current directory as a local workspace. `--runtime <name>` only bootstraps the repo when `.openharness/` is absent; existing OAS config is left untouched.
+
+After entering a workspace, the TUI resumes the most recent session by default; if the workspace has no sessions, it creates one automatically. Use `--new-session` to explicitly start fresh, or `--resume-last` to explicitly resume the latest conversation. The session picker shows the latest run state such as `queued`, `running`, or `completed` so it is clear whether to wait, resume, or create a new session.
 
 When connecting to a remote or enterprise OAH server, pass `--base-url` explicitly:
 
@@ -43,19 +47,27 @@ The current CLI includes:
 
 ```text
 oah
-  daemon init|start|status|stop|restart|logs
+  daemon init|start|status|stop|restart|logs|state|maintenance
   web
   models list|add|default
   runtimes list
   tools list
   skills list
-  tui [--workspace <path>] [--runtime <name>]
+  tui [--workspace <path>] [--runtime <name>] [--new-session|--resume-last]
   workspace:list
   workspaces
+  workspace:list --missing
+  workspace repair <workspace-id> [--workspace <path>]
+  workspaces repair <workspace-id> [--workspace <path>]
+  workspaces:repair <workspace-id> [--workspace <path>]
+  workspace migrate-history [workspace-id] [--workspace <path>] [--dry-run] [--overwrite]
+  workspaces migrate-history [workspace-id] [--workspace <path>] [--dry-run] [--overwrite]
   catalog:show --workspace <id>
+  tools enable <name> [--workspace <path>] [--dry-run] [--overwrite]
+  skills enable <name> [--workspace <path>] [--dry-run] [--overwrite]
 ```
 
-Use `workspace:list` / `workspaces` to list visible workspaces, `catalog:show` to inspect a workspace catalog as JSON, and `tui` to enter the interactive terminal interface. When connected to an OAP local daemon, `oah tui` registers or reuses the current directory by default, and `--workspace /path/to/repo` can point it at a different repo. `web` starts the WebUI against the same OAH-compatible API. The `models`, `runtimes`, `tools`, and `skills` commands manage or inspect local assets under `OAH_HOME`; tools and skills remain a global catalog until they are enabled into a repo's `.openharness` directory.
+Use `workspace:list` / `workspaces` to list visible workspaces, `workspace:list --missing` to filter local records whose root path no longer exists, `workspace repair <workspace-id> --workspace /new/path` to rebind a moved repo, `workspace migrate-history` to copy early repo-local `.openharness/data/history.db` into OAP shadow storage, `catalog:show` to inspect a workspace catalog as JSON, and `tui` to enter the interactive terminal interface. When connected to an OAP local daemon, `oah tui` registers or reuses the current directory by default, and `--workspace /path/to/repo` can point it at a different repo. `web` starts the WebUI against the same OAH-compatible API. The `models`, `runtimes`, `tools`, and `skills` commands manage or inspect local assets under `OAH_HOME`; tools and skills remain a global catalog until `tools enable` / `skills enable` writes them into a repo's `.openharness` directory. WebUI and TUI then show the workspace catalog that is actually enabled for that repo.
 
 ## Why TUI
 

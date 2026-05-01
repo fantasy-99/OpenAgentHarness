@@ -107,6 +107,10 @@ export class OahApiClient {
     return items;
   }
 
+  async getWorkspace(workspaceId: string): Promise<Workspace> {
+    return this.request<Workspace>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}`);
+  }
+
   async listWorkspaceRuntimes(): Promise<WorkspaceRuntime[]> {
     const list = await this.request<WorkspaceRuntimeList>("/api/v1/runtimes");
     return list.items;
@@ -147,6 +151,19 @@ export class OahApiClient {
         ...(input.runtime ? { runtime: input.runtime } : {}),
         ...(input.ownerId ? { ownerId: input.ownerId } : {}),
         ...(input.serviceName ? { serviceName: input.serviceName } : {})
+      })
+    });
+  }
+
+  async repairLocalWorkspace(input: { workspaceId: string; rootPath: string; name?: string }): Promise<Workspace> {
+    return this.request<Workspace>(`/api/v1/local/workspaces/${encodeURIComponent(input.workspaceId)}/repair`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        rootPath: input.rootPath,
+        ...(input.name ? { name: input.name } : {})
       })
     });
   }

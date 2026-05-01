@@ -94,6 +94,7 @@ export function buildApiIndex(request: FastifyRequest) {
         "POST /api/v1/workspaces",
         "POST /api/v1/workspaces/import",
         "POST /api/v1/local/workspaces/register",
+        "POST /api/v1/local/workspaces/{workspaceId}/repair",
         "GET /api/v1/runtimes"
       ]
     },
@@ -902,6 +903,7 @@ export function buildDeveloperDocsHtml(request: FastifyRequest): string {
               <li><code>POST /api/v1/workspaces</code> Create a managed workspace</li>
               <li><code>POST /api/v1/workspaces/import</code> Register an existing root</li>
               <li><code>POST /api/v1/local/workspaces/register</code> Register a personal local path</li>
+              <li><code>POST /api/v1/local/workspaces/{workspaceId}/repair</code> Rebind a moved personal local path</li>
             </ul>
           </article>
           <article class="subcard">

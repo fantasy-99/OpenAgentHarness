@@ -259,6 +259,8 @@ oah tui
 oah tui --runtime vibe-coding
 ```
 
+The CLI package carries the OAP deploy-root assets used by `oah daemon init` and starts the daemon through the packaged server entrypoint when a source checkout is not present. In a monorepo checkout, the same commands prefer local source/dist paths so development and packaged installs follow the same lifecycle.
+
 In this repository, the development equivalent is:
 
 ```bash
@@ -266,7 +268,11 @@ pnpm install
 pnpm dev:cli -- daemon init
 pnpm dev:cli -- daemon start
 pnpm dev:cli -- daemon status
+pnpm dev:cli -- daemon state
+pnpm dev:cli -- daemon maintenance --dry-run
 ```
+
+`daemon state` summarizes `OAH_HOME/state` disk usage, including shadow SQLite history databases. `daemon maintenance` checkpoints and vacuums local shadow SQLite databases; it refuses to run while the daemon process appears active unless `--force` is supplied.
 
 Manage local OAP assets under `OAH_HOME`:
 
@@ -276,10 +282,19 @@ pnpm dev:cli -- models add ./model.yaml
 pnpm dev:cli -- models default openai-default
 pnpm dev:cli -- runtimes list
 pnpm dev:cli -- tools list
+pnpm dev:cli -- tools enable docs-search
 pnpm dev:cli -- skills list
+pnpm dev:cli -- skills enable summarize
+pnpm dev:cli -- workspace:list --missing
+pnpm dev:cli -- workspace repair <workspace-id> --workspace /new/path/to/repo
+pnpm dev:cli -- workspace migrate-history --workspace /path/to/repo --dry-run
 ```
 
-`models default` updates only `OAH_HOME/config/daemon.yaml`. `tools` and `skills` are listed from the global catalog under `OAH_HOME`; enabling them for a repo remains a workspace operation under `repo/.openharness`.
+`models default` updates only `OAH_HOME/config/daemon.yaml`. `tools list` and `skills list` read the global catalog under `OAH_HOME`; `tools enable <name>` and `skills enable <name>` copy or write the selected asset into the current repo's `.openharness` directory. Use `--workspace /path/to/repo` to target another repo, `--dry-run` to preview writes, and `--overwrite` to replace an existing workspace asset.
+
+If a repo is moved or renamed, use `workspace:list --missing` to find stale local records, then `workspace repair <workspace-id> --workspace /new/path/to/repo` to rebind the existing record. Repair keeps the old workspace id so OAP shadow history, sessions, runs, and messages stay attached; the repaired record updates `externalRef` to `local:path:<resolved-path>`.
+
+For early repo-local history, `workspace migrate-history` copies `repo/.openharness/data/history.db` into OAP shadow storage at `OAH_HOME/state/data/workspace-state/<workspace-id>/history.db`. The source database is never deleted; use `--dry-run` to preview, and `--overwrite` to replace an existing shadow database after backing it up.
 
 Then connect a client to the local daemon:
 
@@ -290,9 +305,11 @@ pnpm dev:cli -- tui --runtime vibe-coding
 pnpm dev:cli -- web
 ```
 
-When no `--base-url` is provided, `oah tui` treats the current directory as the local workspace and registers or reuses it through the OAP daemon. `--runtime <name>` only bootstraps the repo when `.openharness/` is absent; existing OAS config is left untouched.
+When no `--base-url` is provided, `oah tui` treats the current directory as the local workspace and registers or reuses it through the OAP daemon. `--runtime <name>` only bootstraps the repo when `.openharness/` is absent; existing OAS config is left untouched. After opening the workspace, TUI resumes the latest session by default, creates one if none exists, and accepts `--new-session` / `--resume-last` for explicit startup behavior.
 
-Daemon state is kept under `OAH_HOME` (default `~/.openagentharness`): `config/daemon.yaml`, `run/daemon.pid`, `run/token`, and `logs/daemon.log`.
+`oah web` serves the built WebUI bundle when available and falls back to the Vite dev server in a source checkout. In both modes it points the WebUI at the same OAH-compatible API endpoint and forwards the local daemon bearer token when needed.
+
+Daemon state is kept under `OAH_HOME` (default `~/.openagentharness`): `config/daemon.yaml`, `run/daemon.pid`, `run/token`, and `logs/daemon.log`. The local daemon uses `run/token` as its bearer token for non-public API routes; CLI/TUI, `oah web`, and Desktop read or forward it automatically.
 
 ### Enterprise local stack (OAH)
 
@@ -385,6 +402,7 @@ See [Deploy and Run](./docs/deploy.en.md) for production values, credentials, pe
 ### Legacy Single Workspace Mode
 
 Single workspace server mode is now a compatibility path for old scripts and focused internal tests. For normal personal use, prefer the OAP daemon plus `oah tui` from inside the repo.
+Starting the server with `--workspace` prints a deprecation warning so new users do not mistake this path for the OAP product shape.
 
 ```bash
 pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts -- \

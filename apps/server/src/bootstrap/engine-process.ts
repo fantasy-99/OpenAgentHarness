@@ -33,6 +33,14 @@ export interface SingleWorkspaceCliOptions {
   port?: number | undefined;
 }
 
+export function formatSingleWorkspaceLegacyWarning(singleWorkspace: Pick<SingleWorkspaceCliOptions, "rootPath">): string {
+  return [
+    "[oah-bootstrap] Legacy single workspace server mode is deprecated.",
+    `server --workspace is only kept for old scripts and focused internal tests: ${singleWorkspace.rootPath}.`,
+    "For personal local use, prefer `oah daemon start` plus `oah tui` from inside the repo."
+  ].join(" ");
+}
+
 export function parseSingleWorkspaceOptions(argv: string[]): SingleWorkspaceCliOptions | undefined {
   const workspaceRoot = readFlagValue(argv, "--workspace");
   if (!workspaceRoot) {

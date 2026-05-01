@@ -23,6 +23,7 @@ export type WebEntry =
 export type DesktopLaunchPlan = {
   connection: DesktopConnection;
   webEntry: WebEntry;
+  home: string;
 };
 
 const DEFAULT_DAEMON_HOST = "127.0.0.1";
@@ -45,7 +46,8 @@ export async function resolveDesktopLaunchPlan(options: {
 
   return {
     connection: await resolveDesktopConnection(options),
-    webEntry: await resolveWebEntry(options.webUrl)
+    webEntry: await resolveWebEntry(options.webUrl),
+    home: resolveOahHome(options.home)
   };
 }
 
@@ -83,8 +85,11 @@ export async function resolveWebEntry(webUrl = process.env.OAH_DESKTOP_WEB_URL):
   }
 
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-  const webDistIndex = path.resolve(moduleDir, "../../web/dist/index.html");
-  await assertExists(webDistIndex, `WebUI build not found at ${webDistIndex}. Run pnpm --filter @oah/web build first.`);
+  const webDistIndex = await resolveWebDistIndex(moduleDir);
+  await assertExists(
+    webDistIndex,
+    `WebUI build not found. Run pnpm --filter @oah/web build first or set OAH_DESKTOP_WEB_DIST.`
+  );
   return {
     kind: "file",
     filePath: webDistIndex
@@ -95,21 +100,87 @@ export function webEntryToUrl(entry: WebEntry): string {
   return entry.kind === "url" ? entry.url : pathToFileURL(entry.filePath).toString();
 }
 
-async function startLocalDaemon(options: { home?: string | undefined }): Promise<void> {
-  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-  const repoRoot = path.resolve(moduleDir, "../../..");
-  const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-  const args = ["--filter", "@oah/cli", "dev", "--", "daemon", "start", ...(options.home ? ["--home", options.home] : [])];
-
+export async function startLocalDaemon(options: { home?: string | undefined }): Promise<void> {
+  const command = await resolveCliCommand(options);
   await new Promise<void>((resolve) => {
-    const child = spawn(pnpmCommand, args, {
-      cwd: repoRoot,
+    const child = spawn(command.command, command.args, {
+      cwd: command.cwd,
       stdio: "ignore",
       env: process.env
     });
     child.on("error", () => resolve());
     child.on("exit", () => resolve());
   });
+}
+
+async function resolveCliCommand(options: { home?: string | undefined }): Promise<{ command: string; args: string[]; cwd: string }> {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  const repoRoot = path.resolve(moduleDir, "../../..");
+  const homeArgs = options.home ? ["--home", options.home] : [];
+  const explicitCliEntry = process.env.OAH_DESKTOP_CLI_ENTRY?.trim();
+  if (explicitCliEntry) {
+    return {
+      command: process.execPath,
+      args: [explicitCliEntry, "daemon", "start", ...homeArgs],
+      cwd: path.dirname(explicitCliEntry)
+    };
+  }
+
+  const cliSourceEntry = path.join(repoRoot, "apps", "cli", "src", "index.ts");
+  if (await pathExists(cliSourceEntry)) {
+    const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+    return {
+      command: pnpmCommand,
+      args: ["--filter", "@oah/cli", "dev", "--", "daemon", "start", ...homeArgs],
+      cwd: repoRoot
+    };
+  }
+
+  const cliDistCandidates = [
+    path.resolve(moduleDir, "../../cli/dist/index.js"),
+    path.resolve(moduleDir, "../cli/index.js"),
+    path.resolve(moduleDir, "cli/index.js")
+  ];
+
+  for (const cliEntry of cliDistCandidates) {
+    if (await pathExists(cliEntry)) {
+      return {
+        command: process.execPath,
+        args: [cliEntry, "daemon", "start", ...homeArgs],
+        cwd: path.dirname(cliEntry)
+      };
+    }
+  }
+
+  const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+  return {
+    command: pnpmCommand,
+    args: ["--filter", "@oah/cli", "dev", "--", "daemon", "start", ...homeArgs],
+    cwd: repoRoot
+  };
+}
+
+async function resolveWebDistIndex(moduleDir: string): Promise<string> {
+  const distRootCandidates = [
+    process.env.OAH_DESKTOP_WEB_DIST,
+    process.resourcesPath ? path.join(process.resourcesPath, "webui") : undefined,
+    path.resolve(moduleDir, "../webui"),
+    path.resolve(moduleDir, "../../cli/dist/webui"),
+    path.resolve(moduleDir, "../../web/dist"),
+    path.resolve(moduleDir, "../../../apps/cli/dist/webui"),
+    path.resolve(moduleDir, "../../../apps/web/dist")
+  ]
+    .map((candidate) => candidate?.trim())
+    .filter((candidate): candidate is string => Boolean(candidate));
+
+  for (const distRoot of distRootCandidates) {
+    const indexPath = path.join(distRoot, "index.html");
+    if (await pathExists(indexPath)) {
+      return indexPath;
+    }
+  }
+
+  return path.join(distRootCandidates[0] ?? path.resolve(moduleDir, "../../web/dist"), "index.html");
 }
 
 async function readDaemonEndpoint(configPath: string): Promise<string> {
@@ -159,6 +230,13 @@ function parsePort(value: string | undefined, fallback: number): number {
 async function readToken(tokenPath: string): Promise<string | undefined> {
   const token = await readFile(tokenPath, "utf8").catch(() => "");
   return token.trim() || undefined;
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  return access(filePath).then(
+    () => true,
+    () => false
+  );
 }
 
 async function assertExists(filePath: string, message: string): Promise<void> {

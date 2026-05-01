@@ -5,10 +5,18 @@
   "type": "module",
   "main": "./dist/engine-entry.js",
   "types": "./dist/engine-entry.d.ts",
+  "files": [
+    "dist",
+    "package.json"
+  ],
   "exports": {
     ".": {
       "types": "./dist/engine-entry.d.ts",
       "default": "./dist/engine-entry.js"
+    },
+    "./index": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     },
     "./engine-entry": {
       "types": "./dist/engine-entry.d.ts",

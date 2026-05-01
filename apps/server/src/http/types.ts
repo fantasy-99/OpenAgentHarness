@@ -27,6 +27,7 @@ export interface AppDependencies {
   modelGateway?: ModelGateway;
   defaultModel: string;
   systemProfile?: SystemProfile | undefined;
+  localApiAuthToken?: string | undefined;
   logger?: boolean;
   workspaceMode?: "multi" | "single";
   resolveWorkspaceOwnership?: ((workspaceId: string) => Promise<{
@@ -80,6 +81,11 @@ export interface AppDependencies {
     runtime?: string;
     ownerId?: string;
     serviceName?: string;
+  }) => Promise<import("@oah/api-contracts").Workspace>;
+  repairLocalWorkspace?: (input: {
+    workspaceId: string;
+    rootPath: string;
+    name?: string;
   }) => Promise<import("@oah/api-contracts").Workspace>;
   assignWorkspacePlacementOwnerAffinity?: ((input: {
     workspaceId: string;

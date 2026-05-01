@@ -15,15 +15,24 @@ import {
 import { getPromptInputRowCount, getSlashSuggestionRowCount, PromptInput } from "./components/prompt.js";
 import { useTuiInput } from "./input/use-tui-input.js";
 import { useOahReplState } from "./state/use-oah-repl-state.js";
+import type { SessionStartupMode } from "./domain/types.js";
 
 function OahApp(props: { children: React.ReactNode }) {
   return <Box flexDirection="column">{props.children}</Box>;
 }
 
-function OahRepl({ connection, initialWorkspaceId }: { connection: OahConnection; initialWorkspaceId?: string | undefined }) {
+function OahRepl({
+  connection,
+  initialWorkspaceId,
+  sessionStartupMode
+}: {
+  connection: OahConnection;
+  initialWorkspaceId?: string | undefined;
+  sessionStartupMode?: SessionStartupMode | undefined;
+}) {
   const app = useApp();
   const { columns, rows: height } = useWindowSize();
-  const state = useOahReplState(connection, { initialWorkspaceId });
+  const state = useOahReplState(connection, { initialWorkspaceId, sessionStartupMode });
 
   useTuiInput({ state, exit: app.exit });
 
@@ -63,6 +72,7 @@ function OahRepl({ connection, initialWorkspaceId }: { connection: OahConnection
       <SessionDialog
         dialog={state.dialog}
         sessions={state.sessions}
+        sessionLatestRuns={state.sessionLatestRuns}
         currentSession={state.currentSession}
         workspace={state.currentWorkspace}
         rows={dialogRows}
@@ -156,10 +166,18 @@ function splitStaticTranscript(input: {
   };
 }
 
-export function OahTui({ connection, initialWorkspaceId }: { connection: OahConnection; initialWorkspaceId?: string | undefined }) {
+export function OahTui({
+  connection,
+  initialWorkspaceId,
+  sessionStartupMode
+}: {
+  connection: OahConnection;
+  initialWorkspaceId?: string | undefined;
+  sessionStartupMode?: SessionStartupMode | undefined;
+}) {
   return (
     <OahApp>
-      <OahRepl connection={connection} initialWorkspaceId={initialWorkspaceId} />
+      <OahRepl connection={connection} initialWorkspaceId={initialWorkspaceId} sessionStartupMode={sessionStartupMode} />
     </OahApp>
   );
 }

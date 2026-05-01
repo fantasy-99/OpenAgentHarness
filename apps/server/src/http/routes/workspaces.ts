@@ -9,6 +9,7 @@ import {
   moveWorkspaceEntryRequestSchema,
   pageQuerySchema,
   putWorkspaceFileRequestSchema,
+  repairLocalWorkspaceRequestSchema,
   registerLocalWorkspaceRequestSchema,
   sessionPageSchema,
   workspaceDeleteEntryQuerySchema,
@@ -66,6 +67,17 @@ function assertLocalWorkspaceRegistrationAvailable(dependencies: AppDependencies
   if (options.workspaceMode === "single" || !dependencies.registerLocalWorkspace) {
     throw new AppError(501, "local_workspace_registration_unavailable", "Local workspace registration is not available on this server.");
   }
+  assertLocalWorkspacePathCapability(dependencies);
+}
+
+function assertLocalWorkspaceRepairAvailable(dependencies: AppDependencies, options: AppRouteOptions): void {
+  if (options.workspaceMode === "single" || !dependencies.repairLocalWorkspace) {
+    throw new AppError(501, "local_workspace_repair_unavailable", "Local workspace repair is not available on this server.");
+  }
+  assertLocalWorkspacePathCapability(dependencies);
+}
+
+function assertLocalWorkspacePathCapability(dependencies: AppDependencies): void {
   if (
     dependencies.systemProfile?.edition !== "personal" ||
     !dependencies.systemProfile.capabilities.localWorkspacePaths ||
@@ -609,6 +621,18 @@ export async function dispatchRegisteredWorkspaceRoute(
       }
       return reply.status(201).send(projectWorkspaceForPublicApi(dependencies, workspace));
     }
+    case "POST /api/v1/local/workspaces/:workspaceId/repair": {
+      assertLocalWorkspaceRepairAvailable(dependencies, options);
+      const params = createParamsSchema("workspaceId").parse(request.params);
+      assertWorkspaceAccess(toCallerContext(request), params.workspaceId);
+      const input = repairLocalWorkspaceRequestSchema.parse(request.body);
+      const workspace = await dependencies.repairLocalWorkspace!({
+        workspaceId: params.workspaceId,
+        rootPath: input.rootPath,
+        ...(input.name ? { name: input.name } : {})
+      });
+      return reply.send(projectWorkspaceForPublicApi(dependencies, workspace));
+    }
     case "GET /api/v1/workspaces": {
       const query = pageQuerySchema.parse(request.query);
       const page = await dependencies.runtimeService.listWorkspaces(query.pageSize, query.cursor);
@@ -801,6 +825,9 @@ export function registerWorkspaceRoutes(
     dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
   );
   app.post("/api/v1/local/workspaces/register", async (request, reply) =>
+    dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
+  );
+  app.post("/api/v1/local/workspaces/:workspaceId/repair", async (request, reply) =>
     dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
   );
   app.get("/api/v1/workspaces", async (request, reply) =>

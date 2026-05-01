@@ -51,4 +51,15 @@ describe("desktop launch connection", () => {
       url: "http://127.0.0.1:5173"
     });
   });
+
+  it("can load a packaged WebUI dist directory", async () => {
+    const webDist = await createTempDir("oah-desktop-web-dist-");
+    await writeFile(path.join(webDist, "index.html"), "<!doctype html><main>web</main>", "utf8");
+    vi.stubEnv("OAH_DESKTOP_WEB_DIST", webDist);
+
+    await expect(resolveWebEntry()).resolves.toEqual({
+      kind: "file",
+      filePath: path.join(webDist, "index.html")
+    });
+  });
 });

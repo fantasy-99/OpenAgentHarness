@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createReadStream, openSync } from "node:fs";
+import { createReadStream, existsSync, openSync } from "node:fs";
 import { access, cp, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -25,6 +25,7 @@ export type DaemonApiConnection = {
 };
 
 type DaemonPaths = {
+  packageRoot: string;
   repoRoot: string;
   home: string;
   configPath: string;
@@ -52,11 +53,13 @@ export function resolveOahHome(input?: string | undefined): string {
 
 export function resolveDaemonPaths(options: DaemonCommandOptions = {}): DaemonPaths {
   const currentFile = fileURLToPath(import.meta.url);
-  const repoRoot = path.resolve(path.dirname(currentFile), "../../../..");
+  const packageRoot = path.resolve(path.dirname(currentFile), "../..");
+  const repoRoot = resolveSourceRepoRoot(packageRoot) ?? packageRoot;
   const home = resolveOahHome(options.home);
   const runDir = path.join(home, "run");
   const logDir = path.join(home, "logs");
   return {
+    packageRoot,
     repoRoot,
     home,
     configPath: path.join(home, "config", "daemon.yaml"),
@@ -71,7 +74,7 @@ export function resolveDaemonPaths(options: DaemonCommandOptions = {}): DaemonPa
 
 export async function initDaemonHome(options: DaemonCommandOptions = {}): Promise<DaemonPaths> {
   const paths = resolveDaemonPaths(options);
-  const templateRoot = path.join(paths.repoRoot, "template", "deploy-root");
+  const templateRoot = await resolveDeployRootTemplate(paths);
   await assertExists(templateRoot, `template deploy root not found: ${templateRoot}`);
   await mkdir(paths.home, { recursive: true });
   await copyMissingTree(templateRoot, paths.home);
@@ -124,7 +127,8 @@ export async function startDaemon(options: DaemonStartOptions = {}): Promise<str
       ...process.env,
       OAH_HOME: paths.home,
       OAH_DEPLOY_ROOT: process.env.OAH_DEPLOY_ROOT ?? paths.home,
-      OAH_TOKEN: process.env.OAH_TOKEN ?? token
+      OAH_LOCAL_API_TOKEN: token,
+      OAH_TOKEN: token
     }
   });
   child.unref();
@@ -160,6 +164,11 @@ export async function daemonStatus(options: DaemonCommandOptions = {}): Promise<
   return profile
     ? `OAP daemon is running (pid ${current.pid}) at ${endpoint.baseUrl} as ${profile}.`
     : `OAP daemon process is running (pid ${current.pid}), but ${endpoint.baseUrl} is not healthy yet.`;
+}
+
+export async function isDaemonProcessRunning(options: DaemonCommandOptions = {}): Promise<boolean> {
+  const paths = resolveDaemonPaths(options);
+  return (await readPidStatus(paths.pidPath)).kind === "running";
 }
 
 export async function stopDaemon(options: DaemonCommandOptions = {}): Promise<string> {
@@ -225,11 +234,61 @@ async function resolveServerCommand(paths: DaemonPaths): Promise<{ command: stri
   }
 
   const distEntry = path.join(paths.repoRoot, "apps", "server", "dist", "index.js");
-  await assertExists(distEntry, `server entrypoint not found: ${sourceEntry} or ${distEntry}`);
+  if (await pathExists(distEntry)) {
+    return {
+      command: process.execPath,
+      args: [distEntry, "--config", paths.configPath]
+    };
+  }
+
+  const packagedEntry = await resolvePackageEntrypoint("@oah/server/index");
+  if (!packagedEntry || !(await pathExists(packagedEntry))) {
+    throw new Error(`server entrypoint not found: ${sourceEntry}, ${distEntry}, or @oah/server/index`);
+  }
   return {
     command: process.execPath,
-    args: [distEntry, "--config", paths.configPath]
+    args: [packagedEntry, "--config", paths.configPath]
   };
+}
+
+function resolveSourceRepoRoot(packageRoot: string): string | undefined {
+  const candidates = [path.resolve(packageRoot, "../.."), process.cwd()];
+  return candidates.find(
+    (candidate) =>
+      existsSync(path.join(candidate, "pnpm-workspace.yaml")) &&
+      existsSync(path.join(candidate, "template", "deploy-root")) &&
+      existsSync(path.join(candidate, "apps", "server"))
+  );
+}
+
+async function resolveDeployRootTemplate(paths: DaemonPaths): Promise<string> {
+  const candidates = [
+    process.env.OAH_DEPLOY_ROOT_TEMPLATE,
+    path.join(paths.repoRoot, "template", "deploy-root"),
+    path.join(paths.packageRoot, "dist", "assets", "deploy-root"),
+    path.join(paths.packageRoot, "assets", "deploy-root")
+  ]
+    .map((candidate) => candidate?.trim())
+    .filter((candidate): candidate is string => Boolean(candidate));
+
+  for (const candidate of candidates) {
+    if (await pathExists(path.join(candidate, "config", "daemon.yaml"))) {
+      return candidate;
+    }
+  }
+  return candidates[0] ?? path.join(paths.packageRoot, "dist", "assets", "deploy-root");
+}
+
+async function resolvePackageEntrypoint(specifier: string): Promise<string | undefined> {
+  try {
+    const resolved = import.meta.resolve(specifier);
+    if (!resolved.startsWith("file:")) {
+      return undefined;
+    }
+    return fileURLToPath(resolved);
+  } catch {
+    return undefined;
+  }
 }
 
 async function copyMissingTree(source: string, target: string): Promise<void> {

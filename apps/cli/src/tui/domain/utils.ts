@@ -1,4 +1,4 @@
-import type { Message, Run, SessionEventContract, WorkspaceRuntime } from "@oah/api-contracts";
+import type { Message, Run, Session, SessionEventContract, WorkspaceRuntime } from "@oah/api-contracts";
 
 import type { ChatLine, VisibleWindow, WorkspaceCreateDialog, WorkspaceCreateField } from "./types.js";
 
@@ -93,6 +93,52 @@ export function formatTime(value: string | undefined) {
     return value;
   }
   return date.toLocaleTimeString("zh-CN", { hour12: false });
+}
+
+export function latestSessionRun(runs: Run[]): Run | undefined {
+  return [...runs].sort((left, right) => {
+    const leftTime = Date.parse(left.endedAt ?? left.heartbeatAt ?? left.startedAt ?? left.createdAt);
+    const rightTime = Date.parse(right.endedAt ?? right.heartbeatAt ?? right.startedAt ?? right.createdAt);
+    if (Number.isNaN(leftTime) && Number.isNaN(rightTime)) {
+      return left.id.localeCompare(right.id);
+    }
+    if (Number.isNaN(leftTime)) {
+      return 1;
+    }
+    if (Number.isNaN(rightTime)) {
+      return -1;
+    }
+    return rightTime - leftTime;
+  })[0];
+}
+
+export function formatSessionActivity(session: Session, run: Run | undefined): { label: string; tone: string; detail: string } {
+  if (!run) {
+    return {
+      label: session.status,
+      tone: STATUS_COLORS[session.status] ?? "white",
+      detail: `updated ${formatTime(session.updatedAt)}`
+    };
+  }
+  const runTime = run.endedAt ?? run.heartbeatAt ?? run.startedAt ?? run.createdAt;
+  switch (run.status) {
+    case "queued":
+      return { label: "queued", tone: STATUS_COLORS.queued ?? "yellow", detail: `queued ${formatTime(run.createdAt)}` };
+    case "running":
+      return { label: "running", tone: STATUS_COLORS.running ?? "cyan", detail: `started ${formatTime(run.startedAt ?? run.createdAt)}` };
+    case "waiting_tool":
+      return { label: "waiting tool", tone: STATUS_COLORS.waiting_tool ?? "magenta", detail: `waiting ${formatTime(run.heartbeatAt ?? runTime)}` };
+    case "completed":
+      return { label: "completed", tone: STATUS_COLORS.completed ?? "green", detail: `completed ${formatTime(run.endedAt ?? runTime)}` };
+    case "failed":
+      return { label: "failed", tone: STATUS_COLORS.failed ?? "red", detail: `failed ${formatTime(run.endedAt ?? runTime)}` };
+    case "cancelled":
+      return { label: "cancelled", tone: STATUS_COLORS.cancelled ?? "yellow", detail: `cancelled ${formatTime(run.endedAt ?? runTime)}` };
+    case "timed_out":
+      return { label: "timed out", tone: STATUS_COLORS.timed_out ?? "red", detail: `timed out ${formatTime(run.endedAt ?? runTime)}` };
+    default:
+      return { label: run.status, tone: STATUS_COLORS[run.status] ?? "white", detail: `updated ${formatTime(runTime)}` };
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

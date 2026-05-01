@@ -1,10 +1,12 @@
-import { BrowserWindow, Menu, app, shell } from "electron";
+import { BrowserWindow, Menu, app, shell, type MenuItemConstructorOptions } from "electron";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { resolveDesktopLaunchPlan, webEntryToUrl } from "./connection.js";
+import { resolveDesktopLaunchPlan, startLocalDaemon, webEntryToUrl, type DesktopLaunchPlan } from "./connection.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+app.setName("Open Agent Harness");
 
 async function createMainWindow(): Promise<void> {
   const plan = await resolveDesktopLaunchPlan({
@@ -20,12 +22,16 @@ async function createMainWindow(): Promise<void> {
     ...(plan.connection.token ? { token: plan.connection.token } : {})
   });
 
+  installMenu(plan);
+
+  const icon = resolveWindowIcon();
   const window = new BrowserWindow({
     width: 1440,
     height: 960,
     minWidth: 1040,
     minHeight: 720,
     title: "Open Agent Harness",
+    ...(icon ? { icon } : {}),
     backgroundColor: "#f8fafc",
     show: false,
     webPreferences: {
@@ -48,37 +54,84 @@ async function createMainWindow(): Promise<void> {
   await window.loadURL(webEntryToUrl(plan.webEntry));
 }
 
-function installMenu(): void {
-  Menu.setApplicationMenu(
-    Menu.buildFromTemplate([
-      {
-        label: "Open Agent Harness",
-        submenu: [
-          { role: "about" },
-          { type: "separator" },
-          { role: "quit" }
-        ]
-      },
-      {
-        label: "View",
-        submenu: [
-          { role: "reload" },
-          { role: "forceReload" },
-          { role: "toggleDevTools" },
-          { type: "separator" },
-          { role: "resetZoom" },
-          { role: "zoomIn" },
-          { role: "zoomOut" },
-          { type: "separator" },
-          { role: "togglefullscreen" }
-        ]
-      }
-    ])
-  );
+function resolveWindowIcon(): string | undefined {
+  const candidates = [
+    process.env.OAH_DESKTOP_ICON,
+    process.resourcesPath ? path.join(process.resourcesPath, "webui", "favicon.png") : undefined,
+    path.resolve(moduleDir, "../webui/favicon.png"),
+    path.resolve(moduleDir, "../../cli/dist/webui/favicon.png"),
+    path.resolve(moduleDir, "../../../apps/web/public/favicon.png")
+  ]
+    .map((candidate) => candidate?.trim())
+    .filter((candidate): candidate is string => Boolean(candidate));
+
+  return candidates.find((candidate) => existsSync(candidate));
+}
+
+function installMenu(plan: DesktopLaunchPlan): void {
+  const template: MenuItemConstructorOptions[] = [
+    {
+      label: "Open Agent Harness",
+      submenu: [
+        { role: "about" },
+        { type: "separator" },
+        { role: "quit" }
+      ]
+    },
+    {
+      label: "View",
+      submenu: [
+        { role: "reload" },
+        { role: "forceReload" },
+        { role: "toggleDevTools" },
+        { type: "separator" },
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" },
+        { type: "separator" },
+        { role: "togglefullscreen" }
+      ]
+    }
+  ];
+
+  if (plan.connection.source === "local-daemon") {
+    template.splice(1, 0, {
+      label: "Daemon",
+      submenu: [
+        {
+          label: "Start Local Daemon",
+          click: () => {
+            void startLocalDaemon({ home: plan.home });
+          }
+        },
+        {
+          label: "Reconnect to Local Daemon",
+          click: () => {
+            process.env.OAH_DESKTOP_FORCE_CONNECTION = "1";
+            void startLocalDaemon({ home: plan.home }).then(() => BrowserWindow.getFocusedWindow()?.reload());
+          }
+        },
+        { type: "separator" },
+        {
+          label: "Open OAH Home",
+          click: () => {
+            void shell.openPath(plan.home);
+          }
+        },
+        {
+          label: "Open Daemon Log",
+          click: () => {
+            void shell.openPath(path.join(plan.home, "logs", "daemon.log"));
+          }
+        }
+      ]
+    });
+  }
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 app.whenReady().then(async () => {
-  installMenu();
   await createMainWindow();
 
   app.on("activate", () => {

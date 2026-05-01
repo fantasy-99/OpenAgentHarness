@@ -248,6 +248,36 @@ paths:
           $ref: '#/components/responses/ErrorResponse'
         default:
           $ref: '#/components/responses/ErrorResponse'
+  /local/workspaces/{workspaceId}/repair:
+    post:
+      tags: [Workspaces]
+      summary: Repair a local workspace path
+      operationId: repairLocalWorkspace
+      description: >
+        Personal deployment endpoint for OAP local daemons. Rebinds an existing
+        workspace id to a moved or renamed local repo path while preserving
+        session, run, and message history associated with that workspace id.
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RepairLocalWorkspaceRequest'
+      responses:
+        '200':
+          description: Local workspace path repaired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workspace'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/ErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
   /workspaces/{workspaceId}:
     get:
       tags: [Workspaces]
@@ -2726,6 +2756,19 @@ components:
           minLength: 1
           maxLength: 63
           pattern: '^[a-zA-Z0-9](?:[a-zA-Z0-9-_]*[a-zA-Z0-9])?$'
+      additionalProperties: false
+    RepairLocalWorkspaceRequest:
+      type: object
+      required:
+        - rootPath
+      properties:
+        rootPath:
+          type: string
+          minLength: 1
+          description: New local repo path for the existing workspace id.
+        name:
+          type: string
+          minLength: 1
       additionalProperties: false
     CreateSessionRequest:
       type: object

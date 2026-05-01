@@ -1,3 +1,5 @@
+import type { SystemProfile } from "@oah/api-contracts";
+
 import type { AppDependencies } from "./http/types.js";
 import type { BootstrappedRuntime } from "./bootstrap.js";
 import { buildSystemProfile } from "./system-profile.js";
@@ -17,21 +19,33 @@ function normalizeOwnerProxyBaseUrl(input: string | undefined): string | undefin
   }
 }
 
+function resolveLocalApiAuthToken(systemProfile: SystemProfile): string | undefined {
+  if (systemProfile.edition !== "personal" || systemProfile.runtimeMode !== "daemon") {
+    return undefined;
+  }
+
+  const token = process.env.OAH_LOCAL_API_TOKEN?.trim() || process.env.OAH_TOKEN?.trim();
+  return token || undefined;
+}
+
 function buildSharedAppDependencies(runtime: BootstrappedRuntime): AppDependencies {
   const sandboxOwnerFallbackBaseUrl =
     runtime.sandboxHostProviderKind === "self_hosted"
       ? normalizeOwnerProxyBaseUrl(runtime.config.sandbox?.self_hosted?.base_url)
       : undefined;
+  const systemProfile = buildSystemProfile({
+    config: runtime.config,
+    process: runtime.process,
+    workspaceMode: runtime.workspaceMode.kind,
+    storageInspection: Boolean(runtime.adminCapabilities?.storageAdmin)
+  });
+  const localApiAuthToken = resolveLocalApiAuthToken(systemProfile);
 
   return {
     runtimeService: runtime.controlPlaneEngineService,
     defaultModel: runtime.config.llm.default_model,
-    systemProfile: buildSystemProfile({
-      config: runtime.config,
-      process: runtime.process,
-      workspaceMode: runtime.workspaceMode.kind,
-      storageInspection: Boolean(runtime.adminCapabilities?.storageAdmin)
-    }),
+    systemProfile,
+    ...(localApiAuthToken ? { localApiAuthToken } : {}),
     workspaceMode: runtime.workspaceMode.kind,
     healthCheck: () => runtime.healthReport(),
     readinessCheck: () => runtime.readinessReport(),

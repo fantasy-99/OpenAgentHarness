@@ -162,6 +162,9 @@ function resolveNonLoopbackHost(): string | undefined {
 }
 
 const proxyTarget = resolveProxyTarget();
+const proxyAuthorizationHeader = process.env.OAH_TOKEN?.trim()
+  ? { authorization: `Bearer ${process.env.OAH_TOKEN.trim()}` }
+  : undefined;
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -177,11 +180,13 @@ export default defineConfig({
     proxy: {
       "/api": {
         target: proxyTarget,
-        changeOrigin: true
+        changeOrigin: true,
+        ...(proxyAuthorizationHeader ? { headers: proxyAuthorizationHeader } : {})
       },
       "/internal": {
         target: proxyTarget,
-        changeOrigin: true
+        changeOrigin: true,
+        ...(proxyAuthorizationHeader ? { headers: proxyAuthorizationHeader } : {})
       },
       "/healthz": {
         target: proxyTarget,

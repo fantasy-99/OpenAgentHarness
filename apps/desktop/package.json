@@ -2,11 +2,37 @@
   "name": "@oah/desktop",
   "version": "0.1.0",
   "private": true,
+  "productName": "Open Agent Harness",
+  "description": "Desktop client for OAH-compatible enterprise servers and OAP local daemons.",
   "type": "module",
   "main": "./dist/main.js",
   "scripts": {
     "build": "tsc -b",
-    "dev": "pnpm --filter @oah/web build && pnpm build && electron ./dist/main.js"
+    "dev": "pnpm --filter @oah/web build && node ../../scripts/copy-webui-to-cli.mjs && pnpm build && electron ./dist/main.js",
+    "start": "electron ./dist/main.js",
+    "package:dir": "pnpm --filter @oah/web build && node ../../scripts/copy-webui-to-cli.mjs && pnpm build && pnpm dlx electron-builder --dir"
+  },
+  "build": {
+    "appId": "dev.openagentharness.desktop",
+    "productName": "Open Agent Harness",
+    "files": [
+      "dist/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../cli/dist/webui",
+        "to": "webui"
+      }
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "icon": "../web/public/favicon.png",
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "hardenedRuntime": true
+    }
   },
   "dependencies": {
     "@oah/api-contracts": "workspace:*"

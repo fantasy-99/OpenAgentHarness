@@ -29,6 +29,31 @@ describe("OAP daemon lifecycle helpers", () => {
     expect(await readFile(path.join(home, ".oah-home-version"), "utf8")).toBe("1\n");
   });
 
+  it("can initialize OAH_HOME from packaged deploy-root assets", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-daemon-packaged-"));
+    tempDirs.push(tempDir);
+    const templateRoot = path.join(tempDir, "deploy-root");
+    const home = path.join(tempDir, "home");
+    await mkdir(path.join(templateRoot, "config"), { recursive: true });
+    await writeFile(path.join(templateRoot, "README.md"), "packaged template\n", "utf8");
+    await writeFile(path.join(templateRoot, "config", "daemon.yaml"), "server:\n  host: 127.0.0.1\n  port: 18799\n", "utf8");
+
+    const previousTemplate = process.env.OAH_DEPLOY_ROOT_TEMPLATE;
+    process.env.OAH_DEPLOY_ROOT_TEMPLATE = templateRoot;
+    try {
+      await initDaemonHome({ home });
+    } finally {
+      if (previousTemplate === undefined) {
+        delete process.env.OAH_DEPLOY_ROOT_TEMPLATE;
+      } else {
+        process.env.OAH_DEPLOY_ROOT_TEMPLATE = previousTemplate;
+      }
+    }
+
+    expect(await readFile(path.join(home, "README.md"), "utf8")).toBe("packaged template\n");
+    expect(await readFile(path.join(home, "config", "daemon.yaml"), "utf8")).toContain("18799");
+  });
+
   it("reports stale PID files without probing the server endpoint", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "oah-daemon-stale-"));
     tempDirs.push(home);

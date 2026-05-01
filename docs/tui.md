@@ -29,9 +29,13 @@ OpenAgentHarness 本身仍然是 headless runtime，不提供正式产品 UI。
 cd /path/to/repo
 pnpm dev:cli -- tui
 pnpm dev:cli -- tui --runtime vibe-coding
+pnpm dev:cli -- tui --new-session
+pnpm dev:cli -- tui --resume-last
 ```
 
 不传 `--base-url` 时，`oah tui` 会把当前目录注册或复用为本地 workspace。`--runtime <name>` 只在当前目录没有 `.openharness/` 时用于首次 bootstrap；如果已经有 `.openharness/`，会保留现有 OAS 配置并直接注册 / 复用 workspace。
+
+进入 workspace 后，TUI 默认恢复最近的 session；如果该 workspace 还没有 session，会自动创建一个。需要明确开始新对话时使用 `--new-session`，需要显式恢复最近对话时使用 `--resume-last`。session picker 会显示最近 run 的 `queued` / `running` / `completed` 等状态，方便判断是继续等待、恢复还是新建。
 
 连接远端或企业 OAH server 时，显式传入 `--base-url`：
 
@@ -43,19 +47,27 @@ pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui
 
 ```text
 oah
-  daemon init|start|status|stop|restart|logs
+  daemon init|start|status|stop|restart|logs|state|maintenance
   web
   models list|add|default
   runtimes list
   tools list
   skills list
-  tui [--workspace <path>] [--runtime <name>]
+  tui [--workspace <path>] [--runtime <name>] [--new-session|--resume-last]
   workspace:list
   workspaces
+  workspace:list --missing
+  workspace repair <workspace-id> [--workspace <path>]
+  workspaces repair <workspace-id> [--workspace <path>]
+  workspaces:repair <workspace-id> [--workspace <path>]
+  workspace migrate-history [workspace-id] [--workspace <path>] [--dry-run] [--overwrite]
+  workspaces migrate-history [workspace-id] [--workspace <path>] [--dry-run] [--overwrite]
   catalog:show --workspace <id>
+  tools enable <name> [--workspace <path>] [--dry-run] [--overwrite]
+  skills enable <name> [--workspace <path>] [--dry-run] [--overwrite]
 ```
 
-`workspace:list` / `workspaces` 用于列出可见 workspace，`catalog:show` 用于查看指定 workspace 的 catalog JSON，`tui` 则进入交互式终端界面。连接 OAP local daemon 时，`oah tui` 默认注册或复用当前目录，也可以用 `--workspace /path/to/repo` 显式指定路径。`web` 会启动 WebUI 并指向同一套 OAH-compatible API。`models`、`runtimes`、`tools`、`skills` 命令管理或查看 `OAH_HOME` 下的本地资产，其中 tools / skills 仍只是全局 catalog，启用到项目时写入 repo 的 `.openharness`。
+`workspace:list` / `workspaces` 用于列出可见 workspace，`workspace:list --missing` 用于筛出 rootPath 已不存在的本地记录，`workspace repair <workspace-id> --workspace /new/path` 用于在 repo 移动后把旧记录重新绑定到新路径，`workspace migrate-history` 用于把早期 repo-local `.openharness/data/history.db` 复制进 OAP shadow storage。`catalog:show` 用于查看指定 workspace 的 catalog JSON，`tui` 则进入交互式终端界面。连接 OAP local daemon 时，`oah tui` 默认注册或复用当前目录，也可以用 `--workspace /path/to/repo` 显式指定路径。`web` 会启动 WebUI 并指向同一套 OAH-compatible API。`models`、`runtimes`、`tools`、`skills` 命令管理或查看 `OAH_HOME` 下的本地资产，其中 tools / skills 仍只是全局 catalog；只有 `tools enable` / `skills enable` 会把能力写入 repo 的 `.openharness`，随后 WebUI / TUI 看到的是 workspace 当前实际启用后的 catalog。
 
 ## 为什么需要 TUI
 

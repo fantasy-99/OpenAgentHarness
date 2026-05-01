@@ -4,7 +4,16 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { addModel, listModels, listRuntimes, listSkills, listTools, setDefaultModel } from "../apps/cli/src/daemon/assets.js";
+import {
+  addModel,
+  enableSkill,
+  enableTool,
+  listModels,
+  listRuntimes,
+  listSkills,
+  listTools,
+  setDefaultModel
+} from "../apps/cli/src/daemon/assets.js";
 import { initDaemonHome } from "../apps/cli/src/daemon/lifecycle.js";
 
 const tempDirs: string[] = [];
@@ -106,5 +115,92 @@ describe("OAP daemon asset helpers", () => {
 
     await expect(listTools({ home })).resolves.toBe(["docs-search · stdio · docs", "remote-index · http · disabled"].join("\n"));
     await expect(listSkills({ home })).resolves.toBe("summarize · Summarize long project notes.");
+  });
+
+  it("enables a platform tool into a workspace", async () => {
+    const home = await createTempDir("oah-assets-tool-home-");
+    const workspace = await createTempDir("oah-assets-tool-workspace-");
+    await initDaemonHome({ home });
+
+    const sourceServerDir = path.join(home, "tools", "servers", "docs-search");
+    await mkdir(sourceServerDir, { recursive: true });
+    await writeFile(path.join(sourceServerDir, "index.js"), "console.log('docs');\n", "utf8");
+    await writeFile(
+      path.join(home, "tools", "settings.yaml"),
+      [
+        "docs-search:",
+        `  command: node ${path.join(sourceServerDir, "index.js")}`,
+        "  environment:",
+        "    DOCS_ROOT: ./docs",
+        "  expose:",
+        "    tool_prefix: docs",
+        "",
+        "remote-index:",
+        "  url: https://example.com/mcp",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    await expect(enableTool("docs-search", { home, workspace })).resolves.toContain("Enabled tool docs-search");
+
+    const workspaceSettings = await readFile(path.join(workspace, ".openharness", "tools", "settings.yaml"), "utf8");
+    expect(workspaceSettings).toContain("docs-search:");
+    expect(workspaceSettings).toContain("command: node ./.openharness/tools/servers/docs-search/index.js");
+    expect(workspaceSettings).toContain("tool_prefix: docs");
+    expect(await readFile(path.join(workspace, ".openharness", "tools", "servers", "docs-search", "index.js"), "utf8")).toContain(
+      "docs"
+    );
+
+    await expect(enableTool("docs-search", { home, workspace })).rejects.toThrow(/already enabled/u);
+    await expect(enableTool("docs-search", { home, workspace, overwrite: true })).resolves.toContain("Enabled tool docs-search");
+  });
+
+  it("previews a platform tool enable without writing workspace files", async () => {
+    const home = await createTempDir("oah-assets-tool-dry-home-");
+    const workspace = await createTempDir("oah-assets-tool-dry-workspace-");
+    await initDaemonHome({ home });
+    await writeFile(
+      path.join(home, "tools", "settings.yaml"),
+      [
+        "remote-index:",
+        "  url: https://example.com/mcp",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    await expect(enableTool("remote-index", { home, workspace, dryRun: true })).resolves.toContain("Would enable tool remote-index");
+    await expect(readFile(path.join(workspace, ".openharness", "tools", "settings.yaml"), "utf8")).rejects.toThrow();
+  });
+
+  it("enables a platform skill into a workspace", async () => {
+    const home = await createTempDir("oah-assets-skill-home-");
+    const workspace = await createTempDir("oah-assets-skill-workspace-");
+    await initDaemonHome({ home });
+    const sourceSkillDir = path.join(home, "skills", "summarize");
+    await mkdir(sourceSkillDir, { recursive: true });
+    await writeFile(
+      path.join(sourceSkillDir, "SKILL.md"),
+      [
+        "---",
+        "name: summarize",
+        "description: Summarize long project notes.",
+        "---",
+        "Use this skill to summarize long project notes into short decisions.",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    await writeFile(path.join(sourceSkillDir, "examples.md"), "# Examples\n", "utf8");
+
+    await expect(enableSkill("summarize", { home, workspace })).resolves.toContain("Enabled skill summarize");
+
+    const workspaceSkillPath = path.join(workspace, ".openharness", "skills", "summarize");
+    await expect(readFile(path.join(workspaceSkillPath, "SKILL.md"), "utf8")).resolves.toContain("Summarize long project notes");
+    await expect(readFile(path.join(workspaceSkillPath, "examples.md"), "utf8")).resolves.toContain("Examples");
+
+    await expect(enableSkill("summarize", { home, workspace })).rejects.toThrow(/already enabled/u);
+    await expect(enableSkill("summarize", { home, workspace, overwrite: true })).resolves.toContain("Enabled skill summarize");
   });
 });

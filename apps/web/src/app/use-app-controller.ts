@@ -1520,8 +1520,7 @@ export function useAppController() {
             prompt: modelDraft.prompt.trim(),
             ...(modelDraft.model.trim() ? { model: modelDraft.model.trim() } : {})
           })
-        },
-        { auth: false }
+        }
       );
       setGenerateOutput(response);
       setActivity(`内部模型运行时 generate 成功，model=${response.model}`);

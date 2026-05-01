@@ -3,10 +3,12 @@ import type { SetStateAction } from "react";
 import type { Run, Session, SessionEventContract, SystemProfile, Workspace, WorkspaceCatalog, WorkspaceRuntime } from "@oah/api-contracts";
 
 import { OahApiClient, type OahConnection } from "../../api/oah-api.js";
-import type { ChatLine, Dialog, Notice, WorkspaceCreateDialog } from "../domain/types.js";
+import type { ChatLine, Dialog, Notice, SessionStartupMode, WorkspaceCreateDialog } from "../domain/types.js";
 import {
   createWorkspaceDialog,
+  formatSessionActivity,
   insertTextAt,
+  latestSessionRun,
   mergeRefreshedChatLines,
   messageToChatLines,
   runFailureToChatLine,
@@ -18,13 +20,17 @@ function useOahClient(connection: OahConnection) {
   return useMemo(() => new OahApiClient(connection), [connection.baseUrl, connection.token]);
 }
 
-export function useOahReplState(connection: OahConnection, options: { initialWorkspaceId?: string | undefined } = {}) {
+export function useOahReplState(
+  connection: OahConnection,
+  options: { initialWorkspaceId?: string | undefined; sessionStartupMode?: SessionStartupMode | undefined } = {}
+) {
   const client = useOahClient(connection);
   const [systemProfile, setSystemProfile] = useState<SystemProfile | null>(null);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [runtimes, setRuntimes] = useState<WorkspaceRuntime[]>([]);
   const [currentWorkspace, setCurrentWorkspace] = useState<Workspace | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
+  const [sessionLatestRuns, setSessionLatestRuns] = useState<Record<string, Run | undefined>>({});
   const [catalog, setCatalog] = useState<WorkspaceCatalog | null>(null);
   const [currentSession, setCurrentSession] = useState<Session | null>(null);
   const [messages, setMessages] = useState<ChatLine[]>([]);
@@ -39,6 +45,8 @@ export function useOahReplState(connection: OahConnection, options: { initialWor
   const lastCursorRef = useRef<string | undefined>(undefined);
   const composerRef = useRef("");
   const composerCursorRef = useRef(0);
+  const loadingWorkspaceIdRef = useRef<string | null>(null);
+  const startupModeConsumedRef = useRef(false);
 
   const setError = useCallback((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -111,11 +119,48 @@ export function useOahReplState(connection: OahConnection, options: { initialWor
     [client, setError]
   );
 
+  const fetchLatestSessionRuns = useCallback(
+    async (nextSessions: Session[]) => {
+      const entries = await Promise.all(
+        nextSessions.map(async (session) => {
+          try {
+            return [session.id, latestSessionRun(await client.listSessionRuns(session.id))] as const;
+          } catch {
+            return [session.id, undefined] as const;
+          }
+        })
+      );
+      return Object.fromEntries(entries) as Record<string, Run | undefined>;
+    },
+    [client]
+  );
+
+  const createSessionForWorkspace = useCallback(
+    async (workspace: Workspace, title?: string, options?: { noticePrefix?: string | undefined }) => {
+      const session = await client.createSession(workspace.id, {
+        ...(title?.trim() ? { title: title.trim() } : {})
+      });
+      setSessions((current) => [session, ...current.filter((item) => item.id !== session.id)]);
+      setSessionLatestRuns((current) => ({ ...current, [session.id]: undefined }));
+      setCurrentSession(session);
+      resetSessionView();
+      setDialog(null);
+      setNotice({ level: "info", message: `${options?.noticePrefix ?? "Created"} session ${shortId(session.id)}` });
+      return session;
+    },
+    [client, resetSessionView]
+  );
+
   const loadWorkspace = useCallback(
     async (workspace: Workspace) => {
       try {
+        if (loadingWorkspaceIdRef.current === workspace.id) {
+          return;
+        }
+        loadingWorkspaceIdRef.current = workspace.id;
         setCurrentWorkspace(workspace);
         setSessions([]);
+        setSessionLatestRuns({});
         setCatalog(null);
         setCurrentSession(null);
         resetSessionView();
@@ -124,18 +169,32 @@ export function useOahReplState(connection: OahConnection, options: { initialWor
           client.listWorkspaceSessions(workspace.id),
           client.getWorkspaceCatalog(workspace.id).catch(() => null)
         ]);
+        const latestRuns = await fetchLatestSessionRuns(nextSessions);
         setSessions(nextSessions);
+        setSessionLatestRuns(latestRuns);
         setCatalog(nextCatalog);
-        if (nextSessions[0]) {
-          setCurrentSession(nextSessions[0]);
+        const sessionStartupMode = startupModeConsumedRef.current ? "resume" : (options.sessionStartupMode ?? "resume");
+        startupModeConsumedRef.current = true;
+        if (sessionStartupMode === "new") {
+          await createSessionForWorkspace(workspace, undefined, { noticePrefix: "Created fresh" });
+        } else if (nextSessions[0]) {
+          const session = nextSessions[0];
+          const activity = formatSessionActivity(session, latestRuns[session.id]);
+          setCurrentSession(session);
+          setNotice({ level: "info", message: `Resumed ${activity.label} session ${shortId(session.id)} (${activity.detail})` });
+        } else {
+          await createSessionForWorkspace(workspace, undefined, { noticePrefix: "Created first" });
         }
         setDialog(null);
-        setNotice({ level: "info", message: `Workspace ready: ${workspace.name}` });
       } catch (error) {
         setError(error);
+      } finally {
+        if (loadingWorkspaceIdRef.current === workspace.id) {
+          loadingWorkspaceIdRef.current = null;
+        }
       }
     },
-    [client, resetSessionView, setError]
+    [client, createSessionForWorkspace, fetchLatestSessionRuns, options.sessionStartupMode, resetSessionView, setError]
   );
 
   const refreshCurrentWorkspaceSessions = useCallback(async () => {
@@ -143,11 +202,13 @@ export function useOahReplState(connection: OahConnection, options: { initialWor
       return;
     }
     try {
-      setSessions(await client.listWorkspaceSessions(currentWorkspace.id));
+      const nextSessions = await client.listWorkspaceSessions(currentWorkspace.id);
+      setSessions(nextSessions);
+      setSessionLatestRuns(await fetchLatestSessionRuns(nextSessions));
     } catch (error) {
       setError(error);
     }
-  }, [client, currentWorkspace, setError]);
+  }, [client, currentWorkspace, fetchLatestSessionRuns, setError]);
 
   const createWorkspace = useCallback(
     async (draft: WorkspaceCreateDialog) => {
@@ -188,29 +249,23 @@ export function useOahReplState(connection: OahConnection, options: { initialWor
         return;
       }
       try {
-        const session = await client.createSession(currentWorkspace.id, {
-          ...(title?.trim() ? { title: title.trim() } : {})
-        });
-        setSessions((current) => [session, ...current.filter((item) => item.id !== session.id)]);
-        setCurrentSession(session);
-        resetSessionView();
-        setDialog(null);
-        setNotice({ level: "info", message: `Created session ${shortId(session.id)}` });
+        await createSessionForWorkspace(currentWorkspace, title);
       } catch (error) {
         setError(error);
       }
     },
-    [client, currentWorkspace, resetSessionView, setError]
+    [createSessionForWorkspace, currentWorkspace, setError]
   );
 
   const selectSession = useCallback(
     (session: Session) => {
+      const activity = formatSessionActivity(session, sessionLatestRuns[session.id]);
       setCurrentSession(session);
       resetSessionView();
       setDialog(null);
-      setNotice({ level: "info", message: `Selected session ${shortId(session.id)}` });
+      setNotice({ level: "info", message: `Selected ${activity.label} session ${shortId(session.id)} (${activity.detail})` });
     },
-    [resetSessionView]
+    [resetSessionView, sessionLatestRuns]
   );
 
   const applyComposerValue = useCallback((value: string, cursor: number) => {
@@ -397,6 +452,7 @@ export function useOahReplState(connection: OahConnection, options: { initialWor
     currentWorkspace,
     catalog,
     sessions,
+    sessionLatestRuns,
     currentSession,
     messages,
     runs,

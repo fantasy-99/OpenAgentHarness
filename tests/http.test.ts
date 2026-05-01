@@ -239,6 +239,11 @@ async function createStartedAppWithEngineService(
       ownerId?: string;
       serviceName?: string;
     }) => Promise<any>;
+    repairLocalWorkspace?: (input: {
+      workspaceId: string;
+      rootPath: string;
+      name?: string;
+    }) => Promise<any>;
     workspaceMode?: "multi" | "single";
     resolveCallerContext?: (request: import("fastify").FastifyRequest) => Promise<CallerContext | undefined> | CallerContext | undefined;
     resolveWorkspaceOwnership?: (workspaceId: string) => Promise<{
@@ -266,6 +271,7 @@ async function createStartedAppWithEngineService(
     sandboxHostProviderKind?: "embedded" | "self_hosted" | "e2b";
     sandboxOwnerFallbackBaseUrl?: string;
     localOwnerBaseUrl?: string;
+    localApiAuthToken?: string;
   }
 ) {
   const app = createApp({
@@ -296,8 +302,10 @@ async function createStartedAppWithEngineService(
     ...(options?.sandboxHostProviderKind ? { sandboxHostProviderKind: options.sandboxHostProviderKind } : {}),
     ...(options?.sandboxOwnerFallbackBaseUrl ? { sandboxOwnerFallbackBaseUrl: options.sandboxOwnerFallbackBaseUrl } : {}),
     ...(options?.localOwnerBaseUrl ? { localOwnerBaseUrl: options.localOwnerBaseUrl } : {}),
+    ...(options?.localApiAuthToken ? { localApiAuthToken: options.localApiAuthToken } : {}),
     ...(options?.importWorkspace ? { importWorkspace: options.importWorkspace } : {}),
-    ...(options?.registerLocalWorkspace ? { registerLocalWorkspace: options.registerLocalWorkspace } : {})
+    ...(options?.registerLocalWorkspace ? { registerLocalWorkspace: options.registerLocalWorkspace } : {}),
+    ...(options?.repairLocalWorkspace ? { repairLocalWorkspace: options.repairLocalWorkspace } : {})
   });
 
   await app.listen({ host: "127.0.0.1", port: 0 });
@@ -696,6 +704,84 @@ describe("http api", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ rootPath: "/Users/demo/repo" })
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "local_workspace_registration_forbidden"
+      }
+    });
+  });
+
+  it("repairs a local workspace path on personal profiles", async () => {
+    const repairLocalWorkspace = vi.fn(
+      async (input: { workspaceId: string; rootPath: string; name?: string }) =>
+        ({
+          id: input.workspaceId,
+          name: input.name ?? "Moved Repo",
+          rootPath: input.rootPath,
+          externalRef: `local:path:${input.rootPath}`,
+          executionPolicy: "local",
+          status: "active",
+          kind: "project",
+          readOnly: false,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-02T00:00:00.000Z"
+        }) as const
+    );
+    activeApp = await createStartedApp({
+      systemProfile: {
+        apiCompatibility: "oah/v1",
+        product: "open-agent-harness",
+        edition: "personal",
+        runtimeMode: "daemon",
+        deploymentKind: "oap",
+        displayName: "OAP local daemon",
+        capabilities: {
+          localDaemonControl: true,
+          localWorkspacePaths: true,
+          workspaceRegistration: true,
+          storageInspection: true,
+          modelManagement: true,
+          localDaemonSupervisor: true
+        }
+      },
+      repairLocalWorkspace
+    });
+
+    const response = await fetch(`${activeApp.baseUrl}/api/v1/local/workspaces/project-old/repair`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        rootPath: "/Users/demo/moved-repo",
+        name: "Moved Repo"
+      })
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      id: "project-old",
+      name: "Moved Repo",
+      rootPath: "/Users/demo/moved-repo",
+      externalRef: "local:path:/Users/demo/moved-repo"
+    });
+    expect(repairLocalWorkspace).toHaveBeenCalledWith({
+      workspaceId: "project-old",
+      rootPath: "/Users/demo/moved-repo",
+      name: "Moved Repo"
+    });
+  });
+
+  it("rejects local workspace repair on enterprise profiles", async () => {
+    activeApp = await createStartedApp({
+      repairLocalWorkspace: vi.fn()
+    });
+
+    const response = await fetch(`${activeApp.baseUrl}/api/v1/local/workspaces/project-old/repair`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ rootPath: "/Users/demo/moved-repo" })
     });
 
     expect(response.status).toBe(403);
@@ -1564,6 +1650,92 @@ describe("http api", () => {
     });
 
     expect(response.status).toBe(201);
+  });
+
+  it("enforces local API bearer token while leaving OAP public probes readable", async () => {
+    activeApp = await createStartedAppWithEngineService(
+      new EngineService({
+        defaultModel: "openai-default",
+        modelGateway: new FakeModelGateway(20),
+        ...createMemoryRuntimePersistence()
+      }),
+      new FakeModelGateway(20),
+      {
+        localApiAuthToken: "local-token",
+        systemProfile: {
+          apiCompatibility: "oah/v1",
+          product: "open-agent-harness",
+          edition: "personal",
+          runtimeMode: "daemon",
+          deploymentKind: "oap",
+          displayName: "OAP local daemon",
+          capabilities: {
+            localDaemonControl: true,
+            localWorkspacePaths: true,
+            workspaceRegistration: true,
+            storageInspection: false,
+            modelManagement: true,
+            localDaemonSupervisor: true
+          }
+        }
+      }
+    );
+
+    const [
+      profileResponse,
+      healthResponse,
+      missingTokenResponse,
+      wrongTokenResponse,
+      authorizedResponse,
+      internalMissingTokenResponse,
+      internalResponse
+    ] = await Promise.all([
+      fetch(`${activeApp.baseUrl}/api/v1/system/profile`),
+      fetch(`${activeApp.baseUrl}/healthz`),
+      fetch(`${activeApp.baseUrl}/api/v1/workspaces`),
+      fetch(`${activeApp.baseUrl}/api/v1/workspaces`, {
+        headers: {
+          authorization: "Bearer wrong-token"
+        }
+      }),
+      fetch(`${activeApp.baseUrl}/api/v1/workspaces`, {
+        headers: {
+          authorization: "Bearer local-token"
+        }
+      }),
+      fetch(`${activeApp.baseUrl}/internal/v1/models/generate`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          prompt: "hello"
+        })
+      }),
+      fetch(`${activeApp.baseUrl}/internal/v1/models/generate`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer local-token"
+        },
+        body: JSON.stringify({
+          prompt: "hello"
+        })
+      })
+    ]);
+
+    expect(profileResponse.status).toBe(200);
+    expect(healthResponse.status).toBe(200);
+    expect(missingTokenResponse.status).toBe(401);
+    expect(wrongTokenResponse.status).toBe(401);
+    expect(authorizedResponse.status).toBe(200);
+    expect(internalMissingTokenResponse.status).toBe(401);
+    expect(internalResponse.status).toBe(200);
+    await expect(missingTokenResponse.json()).resolves.toMatchObject({
+      error: {
+        code: "unauthorized"
+      }
+    });
   });
 
   it("records workspace owner affinity from workspace creation without rebinding it during session creation", async () => {

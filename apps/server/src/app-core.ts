@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 
 import { isAppError } from "@oah/engine-core";
@@ -18,6 +19,42 @@ function readRequestParam(request: FastifyRequest, key: string): string | undefi
 
   const value = (params as Record<string, unknown>)[key];
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function readBearerToken(request: FastifyRequest): string | undefined {
+  const authorization = request.headers.authorization;
+  if (!authorization) {
+    return undefined;
+  }
+
+  const [scheme, ...rest] = authorization.trim().split(/\s+/u);
+  if (!scheme || scheme.toLowerCase() !== "bearer") {
+    return undefined;
+  }
+
+  const token = rest.join(" ").trim();
+  return token.length > 0 ? token : undefined;
+}
+
+function tokensMatch(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function isLocalAuthPublicPath(url: string): boolean {
+  const pathOnly = url.split("?")[0] ?? url;
+  return (
+    pathOnly === "/" ||
+    pathOnly === "/docs" ||
+    pathOnly === "/openapi.yaml" ||
+    pathOnly === "/openapi.json" ||
+    pathOnly === "/healthz" ||
+    pathOnly === "/readyz" ||
+    pathOnly === "/metrics" ||
+    pathOnly === "/api/v1" ||
+    pathOnly === "/api/v1/system/profile"
+  );
 }
 
 export function createBaseApp(dependencies: AppDependencies) {
@@ -79,6 +116,15 @@ export function createBaseApp(dependencies: AppDependencies) {
   app.addHook("onRequest", async (request, reply) => {
     if (request.url === "/healthz" || request.url === "/readyz" || request.url === "/metrics") {
       return;
+    }
+
+    const localApiAuthToken = dependencies.localApiAuthToken?.trim();
+    if (localApiAuthToken && !isLocalAuthPublicPath(request.url)) {
+      const requestToken = readBearerToken(request);
+      if (!requestToken || !tokensMatch(requestToken, localApiAuthToken)) {
+        await sendError(reply, 401, "unauthorized", "Missing or invalid local API token.");
+        return reply;
+      }
     }
 
     if (request.url.startsWith("/internal/v1/")) {

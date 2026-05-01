@@ -6,10 +6,10 @@
 | --- | --- | --- | --- |
 | **API + Worker combined** | 1 `server` | PostgreSQL; Redis optional | Local dev, PoC, single-node |
 | **API + Controller + Sandbox split** | 1 `server --api-only` + 1 `controller` + N sandbox-hosted `worker` | PostgreSQL + Redis | Production, sandbox scaling, dedicated control plane |
-| **Single Workspace** | 1 `server --workspace <path>` | PostgreSQL; Redis optional | Serving one repo |
+| **Legacy Single Workspace** | 1 `server --workspace <path>` | PostgreSQL; Redis optional | Old-script compatibility and internal tests |
 
 > **tip**
-> Not sure which to pick? Start with combined mode. You can split later without code changes.
+> Not sure which to pick? For enterprise/platform deployments, start with combined mode. For personal local use, prefer the OAP daemon plus `oah tui`. Legacy Single Workspace mode is only kept for old scripts.
 
 ---
 

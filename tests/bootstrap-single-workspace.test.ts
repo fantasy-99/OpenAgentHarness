@@ -506,13 +506,19 @@ openai-default:
       "utf8"
     );
 
-    const runtime = await bootstrapRuntime({
-      argv: ["--workspace", workspaceRoot, "--model-dir", modelsDir, "--default-model", "openai-default"],
-      startWorker: false,
-      processKind: "api"
-    });
+    const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let runtime: Awaited<ReturnType<typeof bootstrapRuntime>> | undefined;
 
     try {
+      runtime = await bootstrapRuntime({
+        argv: ["--workspace", workspaceRoot, "--model-dir", modelsDir, "--default-model", "openai-default"],
+        startWorker: false,
+        processKind: "api"
+      });
+
+      expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining("Legacy single workspace server mode is deprecated"));
+      expect(consoleWarnSpy).toHaveBeenCalledWith(expect.stringContaining("oah daemon start"));
+
       const expectedWorkspaceId = buildWorkspaceId("project", "repo", workspaceRoot);
       expect(runtime.workspaceMode).toEqual({
         kind: "single",
@@ -551,7 +557,8 @@ openai-default:
         }
       });
     } finally {
-      await runtime.close();
+      consoleWarnSpy.mockRestore();
+      await runtime?.close();
     }
   });
 

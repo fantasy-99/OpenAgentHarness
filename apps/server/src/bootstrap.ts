@@ -18,7 +18,7 @@ import type {
 import { AppError } from "../../../packages/engine-core/src/errors.js";
 import { ExecutionEngineService, type ExecutionRuntimeOperations } from "../../../packages/engine-core/src/execution-engine-service.js";
 import { EngineService } from "../../../packages/engine-core/src/engine-service.js";
-import { createId } from "../../../packages/engine-core/src/utils.js";
+import { createId, nowIso } from "../../../packages/engine-core/src/utils.js";
 import type { ControlPlaneRuntimeOperations } from "../../../packages/engine-core/src/control-plane-engine-service.js";
 import type { WorkspaceMaterializationManager } from "./bootstrap/workspace-materialization.js";
 import type { SandboxHost } from "./bootstrap/sandbox-host.js";
@@ -41,6 +41,7 @@ import {
 import {
   buildSingleWorkspaceConfig,
   describeEngineProcess,
+  formatSingleWorkspaceLegacyWarning,
   type EngineProcessDescriptor,
   parseConfigPath,
   parseSingleWorkspaceOptions,
@@ -609,6 +610,11 @@ export interface BootstrappedRuntime {
     ownerId?: string;
     serviceName?: string;
   }) => Promise<import("@oah/api-contracts").Workspace>;
+  repairLocalWorkspace?: (input: {
+    workspaceId: string;
+    rootPath: string;
+    name?: string;
+  }) => Promise<import("@oah/api-contracts").Workspace>;
   resolveWorkspaceOwnership?: (workspaceId: string) => Promise<{
     workspaceId: string;
     version: string;
@@ -922,6 +928,9 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   const runtimeInstanceId = resolveRuntimeInstanceId(processKind);
   const currentWorkerId = runtimeInstanceId;
   const singleWorkspace = parseSingleWorkspaceOptions(argv);
+  if (singleWorkspace !== undefined) {
+    console.warn(formatSingleWorkspaceLegacyWarning(singleWorkspace));
+  }
   const requestedConfig = parseConfigPath(argv);
   const { loadServerConfig } = await loadConfigServerConfigModule();
   const config =
@@ -2002,6 +2011,40 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
                       : existing?.serviceName
                         ? { serviceName: existing.serviceName }
                         : {})
+                  });
+                  return runtimeService.getWorkspace(persisted.id);
+                },
+                async repairLocalWorkspace(input) {
+                  const rootPath = await resolveLocalWorkspaceRoot(input.rootPath);
+                  const existing = await workspaceRepository.getById(input.workspaceId);
+                  if (!existing) {
+                    throw new AppError(404, "workspace_not_found", `Workspace ${input.workspaceId} was not found.`);
+                  }
+
+                  const discovered = await discoverWorkspaceWithEnrichedModels(rootPath, "project");
+                  const conflicting = await workspaceRepository.getById(discovered.id);
+                  if (conflicting && conflicting.id !== existing.id) {
+                    throw new AppError(
+                      409,
+                      "workspace_repair_target_conflict",
+                      `Target path is already registered as workspace ${conflicting.id}. Delete that workspace before repairing ${existing.id}.`
+                    );
+                  }
+
+                  const persisted = await workspaceRepository.upsert({
+                    ...discovered,
+                    id: existing.id,
+                    rootPath,
+                    name: input.name ?? existing.name ?? discovered.name,
+                    createdAt: existing.createdAt,
+                    updatedAt: nowIso(),
+                    externalRef: localWorkspaceExternalRef(rootPath),
+                    catalog: {
+                      ...discovered.catalog,
+                      workspaceId: existing.id
+                    },
+                    ...(existing.ownerId ? { ownerId: existing.ownerId } : {}),
+                    ...(existing.serviceName ? { serviceName: existing.serviceName } : {})
                   });
                   return runtimeService.getWorkspace(persisted.id);
                 }

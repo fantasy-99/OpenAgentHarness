@@ -36,6 +36,18 @@
 
 `serviceName` 设计为 workspace 级归属字段，创建后不建议变更。
 
+### `POST /local/workspaces/register`
+
+OAP personal local daemon 专用接口。将本机已有目录注册为 workspace，必要时可通过 `runtime` 在目录没有 `.openharness/` 时 bootstrap OAS 配置。
+
+请求字段：`rootPath`。可选：`name`、`runtime`、`ownerId`、`serviceName`。
+
+### `POST /local/workspaces/{workspaceId}/repair`
+
+OAP personal local daemon 专用接口。repo 移动或重命名后，用新的 `rootPath` 重新绑定已有 workspace id，避免创建新的 workspace 历史。
+
+请求字段：`rootPath`。可选：`name`。修复后记录的 `externalRef` 更新为 `local:path:<resolved-path>`，原 workspace id 保持不变。
+
 ### `GET /workspaces`
 
 分页读取 workspace 列表。参数：`pageSize`、`cursor`。返回 `items[]`、`nextCursor`。

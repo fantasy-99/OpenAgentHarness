@@ -6,10 +6,10 @@
 | --- | --- | --- | --- |
 | **API + Worker 一体** | 1 个 `server` | PostgreSQL，Redis 可选 | 本地开发、PoC、单机部署 |
 | **API + Controller + Sandbox 分离** | 1 个 `server --api-only` + 1 个 `controller` + N 个 sandbox-hosted `worker` | PostgreSQL + Redis | 生产环境、需要独立控制面与 sandbox 扩缩容 |
-| **单 Workspace** | 1 个 `server --workspace <path>` | PostgreSQL，Redis 可选 | 只服务一个仓库 |
+| **Legacy 单 Workspace** | 1 个 `server --workspace <path>` | PostgreSQL，Redis 可选 | 旧脚本兼容与内部测试 |
 
 > **tip**
-> 不确定选哪个？先用「一体模式」跑通，后续随时可以切到分离部署。
+> 不确定选哪个？企业 / 平台部署先用「一体模式」跑通，个人本地使用优先选择 OAP daemon + `oah tui`。Legacy 单 Workspace 模式只保留给旧脚本。
 
 ## 层级关系
 
