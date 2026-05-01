@@ -525,6 +525,39 @@ describe("storage sqlite", () => {
     await persistenceB.close();
   });
 
+  it("stores writable project history in shadow storage when configured", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-sqlite-shadow-project-"));
+    tempDirs.push(tempDir);
+
+    const workspaceRoot = path.join(tempDir, "workspace");
+    const shadowRoot = path.join(tempDir, "shadow");
+    await mkdir(workspaceRoot, { recursive: true });
+
+    const workspace = createWorkspace({
+      id: "ws_sqlite_shadow_project",
+      rootPath: workspaceRoot
+    });
+
+    const persistence = await createSQLiteRuntimePersistence({
+      shadowRoot,
+      projectDbLocation: "shadow"
+    });
+    await persistence.workspaceRepository.upsert(workspace);
+    await persistence.sessionRepository.create({
+      id: "ses_shadow_project",
+      workspaceId: workspace.id,
+      subjectRef: "dev:test",
+      activeAgentName: "assistant",
+      status: "active",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    });
+    await persistence.close();
+
+    expect(await exists(path.join(workspaceRoot, ".openharness", "data", "history.db"))).toBe(false);
+    expect(await exists(path.join(shadowRoot, workspace.id, "history.db"))).toBe(true);
+  });
+
   it("deletes session-scoped runtime data and records mirror delete events", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-sqlite-delete-session-"));
     tempDirs.push(tempDir);

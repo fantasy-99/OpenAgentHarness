@@ -222,6 +222,32 @@ paths:
                 $ref: '#/components/schemas/Workspace'
         default:
           $ref: '#/components/responses/ErrorResponse'
+  /local/workspaces/register:
+    post:
+      tags: [Workspaces]
+      summary: Register a local workspace path
+      operationId: registerLocalWorkspace
+      description: >
+        Personal deployment endpoint for OAP local daemons. Servers must only
+        enable this when their system profile advertises local workspace path
+        registration capability.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterLocalWorkspaceRequest'
+      responses:
+        '201':
+          description: Local workspace registered or reused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workspace'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
   /workspaces/{workspaceId}:
     get:
       tags: [Workspaces]
@@ -2678,6 +2704,28 @@ components:
           type: string
         externalRef:
           type: string
+      additionalProperties: false
+    RegisterLocalWorkspaceRequest:
+      type: object
+      required:
+        - rootPath
+      properties:
+        rootPath:
+          type: string
+          minLength: 1
+        name:
+          type: string
+        runtime:
+          type: string
+          minLength: 1
+          description: Optional runtime template to apply before registering the local workspace.
+        ownerId:
+          type: string
+        serviceName:
+          type: string
+          minLength: 1
+          maxLength: 63
+          pattern: '^[a-zA-Z0-9](?:[a-zA-Z0-9-_]*[a-zA-Z0-9])?$'
       additionalProperties: false
     CreateSessionRequest:
       type: object

@@ -74,6 +74,13 @@ export interface AppDependencies {
     ownerId?: string;
     serviceName?: string;
   }) => Promise<import("@oah/api-contracts").Workspace>;
+  registerLocalWorkspace?: (input: {
+    rootPath: string;
+    name?: string;
+    runtime?: string;
+    ownerId?: string;
+    serviceName?: string;
+  }) => Promise<import("@oah/api-contracts").Workspace>;
   assignWorkspacePlacementOwnerAffinity?: ((input: {
     workspaceId: string;
     ownerId: string;

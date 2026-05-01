@@ -71,7 +71,8 @@ export function buildApiAppDependencies(runtime: BootstrappedRuntime): AppDepend
     ...(runtime.listWorkspaceRuntimes ? { listWorkspaceRuntimes: runtime.listWorkspaceRuntimes } : {}),
     ...(runtime.uploadWorkspaceRuntime ? { uploadWorkspaceRuntime: runtime.uploadWorkspaceRuntime } : {}),
     ...(runtime.deleteWorkspaceRuntime ? { deleteWorkspaceRuntime: runtime.deleteWorkspaceRuntime } : {}),
-    ...(runtime.importWorkspace ? { importWorkspace: runtime.importWorkspace } : {})
+    ...(runtime.importWorkspace ? { importWorkspace: runtime.importWorkspace } : {}),
+    ...(runtime.registerLocalWorkspace ? { registerLocalWorkspace: runtime.registerLocalWorkspace } : {})
   };
 }
 

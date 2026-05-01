@@ -58,15 +58,12 @@ function resolveProxyTarget(): string {
     return process.env.OAH_WEB_PROXY_TARGET.trim();
   }
 
-  const dockerPublishedTarget = resolveLocalDockerApiProxyTarget();
-  if (dockerPublishedTarget) {
-    return dockerPublishedTarget;
-  }
-
   const repoRoot = path.resolve(__dirname, "../..");
   const configuredPath = process.env.OAH_CONFIG?.trim();
+  const oahHome = path.resolve(process.env.OAH_HOME?.trim() || path.join(os.homedir(), ".openagentharness"));
   const candidateConfigPaths = [
     configuredPath ? path.resolve(repoRoot, configuredPath) : undefined,
+    path.join(oahHome, "config", "daemon.yaml"),
     path.join(repoRoot, "test_server", "server.yaml"),
     path.join(repoRoot, "server.yaml"),
     path.join(repoRoot, "server.example.yaml")
@@ -89,6 +86,11 @@ function resolveProxyTarget(): string {
     } catch {
       continue;
     }
+  }
+
+  const dockerPublishedTarget = resolveLocalDockerApiProxyTarget();
+  if (dockerPublishedTarget) {
+    return dockerPublishedTarget;
   }
 
   return "http://127.0.0.1:8787";

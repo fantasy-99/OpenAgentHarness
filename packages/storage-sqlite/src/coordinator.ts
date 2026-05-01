@@ -72,6 +72,7 @@ export class SQLiteWorkspaceRepository implements WorkspaceRepository {
 
 export class SQLitePersistenceCoordinator {
   readonly #shadowRoot: string;
+  readonly #projectDbLocation: "shadow" | "workspace";
   readonly #registryDbPath: string;
   readonly #workspaceRecords = new Map<string, WorkspaceRecord>();
   readonly #handles = new Map<string, DatabaseHandle>();
@@ -79,8 +80,9 @@ export class SQLitePersistenceCoordinator {
   readonly #runIndex = new Map<string, string>();
   #registryDb: DatabaseSync | undefined;
 
-  constructor(shadowRoot: string) {
+  constructor(shadowRoot: string, options: { projectDbLocation?: "shadow" | "workspace" | undefined } = {}) {
     this.#shadowRoot = shadowRoot;
+    this.#projectDbLocation = options.projectDbLocation ?? "workspace";
     this.#registryDbPath = path.join(shadowRoot, "workspace-registry.db");
   }
 
@@ -282,7 +284,7 @@ export class SQLitePersistenceCoordinator {
   }
 
   dbPathForWorkspace(workspace: Pick<WorkspaceRecord, "id" | "kind" | "readOnly" | "rootPath">): string {
-    if (shouldPersistProjectDbInsideWorkspace(workspace)) {
+    if (this.#projectDbLocation === "workspace" && shouldPersistProjectDbInsideWorkspace(workspace)) {
       return defaultProjectDbPath(workspace);
     }
 

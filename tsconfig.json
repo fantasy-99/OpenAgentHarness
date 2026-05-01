@@ -14,6 +14,7 @@
     { "path": "./packages/storage-redis-control" },
     { "path": "./packages/model-runtime" },
     { "path": "./apps/cli" },
+    { "path": "./apps/desktop" },
     { "path": "./apps/server" },
     { "path": "./apps/worker" },
     { "path": "./apps/controller" },

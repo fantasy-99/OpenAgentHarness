@@ -35,6 +35,9 @@ export function registerWorkspaceRoutes(
   app.post("/api/v1/workspaces/import", async (request, reply) =>
     dispatchWorkspaceRoute(request, reply, dependencies, options)
   );
+  app.post("/api/v1/local/workspaces/register", async (request, reply) =>
+    dispatchWorkspaceRoute(request, reply, dependencies, options)
+  );
   app.get("/api/v1/workspaces", async (request, reply) =>
     dispatchWorkspaceRoute(request, reply, dependencies, options)
   );

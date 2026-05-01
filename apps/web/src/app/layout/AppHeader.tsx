@@ -1,6 +1,6 @@
 import { memo } from "react";
 
-import { Layers3, Network, Orbit, SquareTerminal } from "lucide-react";
+import { Layers3, Network, Orbit, Server, SquareTerminal } from "lucide-react";
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -34,6 +34,10 @@ function AppHeaderImpl(props: HeaderProps) {
   const setConsoleOpen = useUiStore((state) => state.setConsoleOpen);
   const serviceScope = useSettingsStore((state) => state.serviceScope);
   const setServiceScope = useSettingsStore((state) => state.setServiceScope);
+  const serverLabel = props.systemProfile
+    ? `${props.systemProfile.deploymentKind.toUpperCase()} ${props.systemProfile.runtimeMode}`
+    : "unknown";
+  const serverTone: StatusSemanticTone = props.systemProfile?.deploymentKind === "oap" ? "emerald" : props.systemProfile ? "sky" : "amber";
 
   return (
     <header className="app-topbar h-[60px] flex items-center justify-between gap-4 px-4 sm:px-6 overflow-hidden min-w-0">
@@ -52,6 +56,7 @@ function AppHeaderImpl(props: HeaderProps) {
           <div className="mt-1 flex flex-wrap items-center gap-1.5">
             <StatusPill icon={Network} label="Health" value={healthStatus} tone={probeTone(healthStatus)} />
             <StatusPill icon={Orbit} label="Stream" value={streamState} tone={streamTone(streamState)} />
+            <StatusPill icon={Server} label="Server" value={serverLabel} tone={serverTone} />
           </div>
         </div>
       </div>
@@ -82,7 +87,7 @@ function AppHeaderImpl(props: HeaderProps) {
             <TabsTrigger value="engine" className="topbar-tabs-trigger h-7 rounded-xl px-3 text-xs">
               Engine
             </TabsTrigger>
-            <TabsTrigger value="storage" className="topbar-tabs-trigger h-7 rounded-xl px-3 text-xs">
+            <TabsTrigger value="storage" disabled={!props.storageInspectionEnabled} className="topbar-tabs-trigger h-7 rounded-xl px-3 text-xs">
               Storage
             </TabsTrigger>
             <TabsTrigger value="provider" className="topbar-tabs-trigger h-7 rounded-xl px-3 text-xs">

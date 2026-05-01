@@ -7,6 +7,7 @@ import {
   type GuideQueuedRunAccepted,
   healthReportSchema,
   readinessReportSchema,
+  systemProfileSchema,
   type Message,
   type MessageAccepted,
   type MessagePage,
@@ -55,7 +56,8 @@ import {
   type ReadinessReportResponse,
   type RuntimeConsoleEntry,
   type PlatformModelSnapshotResponse,
-  type SseFrame
+  type SseFrame,
+  type SystemProfileResponse
 } from "./support";
 import { buildAiSdkLikeRequest, buildAiSdkLikeStoredMessages } from "./primitives";
 import { useNavigationActions } from "./use-navigation-actions";
@@ -248,12 +250,14 @@ export function useAppController() {
       setGenerateBusy: state.setGenerateBusy
     }))
   );
-  const { healthStatus, healthReport, readinessReport, setHealthStatus, setHealthReport, setReadinessReport } = useHealthStore(
+  const { healthStatus, systemProfile, healthReport, readinessReport, setHealthStatus, setSystemProfile, setHealthReport, setReadinessReport } = useHealthStore(
     useShallow((state) => ({
       healthStatus: state.healthStatus,
+      systemProfile: state.systemProfile,
       healthReport: state.healthReport,
       readinessReport: state.readinessReport,
       setHealthStatus: state.setHealthStatus,
+      setSystemProfile: state.setSystemProfile,
       setHealthReport: state.setHealthReport,
       setReadinessReport: state.setReadinessReport
     }))
@@ -637,9 +641,17 @@ export function useAppController() {
     setLoadingOlderMessages(false);
   }, [activeWorkspaceId, normalizedServiceScope, savedWorkspaces, setCatalog, setSession, setSessionId, setWorkspace, setWorkspaceId, workspace]);
 
+  const storageInspectionEnabled = systemProfile?.capabilities.storageInspection ?? true;
+
+  useEffect(() => {
+    if (!storageInspectionEnabled && surfaceMode === "storage") {
+      setSurfaceMode("engine");
+    }
+  }, [setSurfaceMode, storageInspectionEnabled, surfaceMode]);
+
   const storageController = useStorageController({
     connection,
-    enabled: surfaceMode === "storage",
+    enabled: surfaceMode === "storage" && storageInspectionEnabled,
     serviceScope: normalizedServiceScope,
     healthReport,
     request,
@@ -814,7 +826,11 @@ export function useAppController() {
   async function pingHealth() {
     try {
       setHealthStatus("checking");
-      const [healthResponse, readinessResponse] = await Promise.all([
+      const [profilePayload, healthResponse, readinessResponse] = await Promise.all([
+        fetch(buildUrl(connection.baseUrl, "/api/v1/system/profile"))
+          .then((response) => (response.ok ? readJsonResponse<SystemProfileResponse>(response) : null))
+          .then((payload) => (payload ? systemProfileSchema.parse(payload) : null))
+          .catch(() => null),
         fetch(buildUrl(connection.baseUrl, "/healthz")),
         fetch(buildUrl(connection.baseUrl, "/readyz"))
       ]);
@@ -828,6 +844,7 @@ export function useAppController() {
         .then((payload) => (payload ? readinessReportSchema.parse(payload) : null))
         .catch(() => null);
 
+      setSystemProfile(profilePayload);
       setHealthReport(healthPayload);
       setReadinessReport(readinessPayload);
       setHealthStatus(healthPayload?.status ?? (readinessResponse.ok ? "ok" : "degraded"));
@@ -839,6 +856,7 @@ export function useAppController() {
       clearActiveError();
     } catch (error) {
       setHealthStatus("error");
+      setSystemProfile(null);
       setHealthReport(null);
       setReadinessReport(null);
       reportError(error);
@@ -2294,9 +2312,11 @@ export function useAppController() {
   });
   const headerProps = useMemo(
     () => ({
-      serviceScopeOptions
+      serviceScopeOptions,
+      systemProfile,
+      storageInspectionEnabled
     }),
-    [serviceScopeOptions]
+    [serviceScopeOptions, storageInspectionEnabled, systemProfile]
   );
   const providerSurfaceProps = useMemo(
     () => ({

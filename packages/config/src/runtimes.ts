@@ -323,6 +323,78 @@ export async function initializeWorkspaceFromRuntime(input: InitializeWorkspaceF
   await updateWorkspaceRuntimeSetting(input.rootPath, input.runtimeName);
 }
 
+export async function applyWorkspaceRuntimeToExistingRoot(input: InitializeWorkspaceFromRuntimeInput): Promise<void> {
+  const rootStats = await stat(input.rootPath).catch(() => null);
+  if (!rootStats?.isDirectory()) {
+    throw new Error(`Workspace root was not found: ${input.rootPath}`);
+  }
+
+  const workspaceConfigStats = await stat(path.join(input.rootPath, ".openharness")).catch(() => null);
+  if (workspaceConfigStats) {
+    if (workspaceConfigStats.isDirectory()) {
+      return;
+    }
+    throw new Error(`Workspace config path already exists and is not a directory: ${path.join(input.rootPath, ".openharness")}`);
+  }
+
+  const runtimePath = resolvePathInsideRoot(input.runtimeDir, input.runtimeName, "runtime name");
+  const runtimeStats = await stat(runtimePath).catch(() => null);
+  if (!runtimeStats?.isDirectory()) {
+    throw new Error(`Workspace runtime was not found: ${input.runtimeName}`);
+  }
+
+  await copyRuntimeTreeIntoExistingRoot(runtimePath, input.rootPath);
+
+  const runtimeSettings = await loadWorkspaceSettings(input.rootPath);
+  const importedToolNames = uniqueNames(runtimeSettings.imports?.tools);
+  const importedSkillNames = uniqueNames(runtimeSettings.imports?.skills);
+
+  await importEngineTools(input.rootPath, input.platformToolDir, importedToolNames);
+  await importRuntimeSkills(input.rootPath, input.platformSkillDir, importedSkillNames);
+
+  if (input.agentsMd) {
+    await appendAgentsMd(input.rootPath, input.agentsMd);
+  }
+
+  if (input.toolServers) {
+    await mergeWorkspaceToolSettings(input.rootPath, input.toolServers);
+  }
+
+  if (input.skills) {
+    await writeWorkspaceSkills(input.rootPath, input.skills);
+  }
+
+  await updateWorkspaceRuntimeSetting(input.rootPath, input.runtimeName);
+}
+
+async function copyRuntimeTreeIntoExistingRoot(sourceRoot: string, targetRoot: string): Promise<void> {
+  await mkdir(targetRoot, { recursive: true });
+  for (const entry of await readdir(sourceRoot, { withFileTypes: true })) {
+    const sourcePath = path.join(sourceRoot, entry.name);
+    const targetPath = path.join(targetRoot, entry.name);
+    if (entry.isDirectory()) {
+      const targetStats = await stat(targetPath).catch(() => null);
+      if (targetStats && !targetStats.isDirectory()) {
+        throw new Error(`Cannot apply runtime; target path already exists and is not a directory: ${targetPath}`);
+      }
+      await copyRuntimeTreeIntoExistingRoot(sourcePath, targetPath);
+      continue;
+    }
+
+    if (await pathExists(targetPath)) {
+      throw new Error(`Cannot apply runtime; target file already exists: ${targetPath}`);
+    }
+
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    await cp(sourcePath, targetPath, {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+      preserveTimestamps: true
+    });
+  }
+}
+
 export async function listWorkspaceRuntimes(runtimeDir: string): Promise<WorkspaceRuntimeDescriptor[]> {
   const directoryEntries = await readDirectoryEntriesIfExists(runtimeDir);
   return directoryEntries

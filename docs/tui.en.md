@@ -23,7 +23,17 @@ It is not:
 
 ## Current Entry Point
 
-After the local stack is running, connect the TUI to the local API:
+By default, the TUI connects to the local OAP daemon. If the daemon is not running yet, it attempts to start it first:
+
+```bash
+cd /path/to/repo
+pnpm dev:cli -- tui
+pnpm dev:cli -- tui --runtime vibe-coding
+```
+
+When `--base-url` is omitted, `oah tui` registers or reuses the current directory as a local workspace. `--runtime <name>` only bootstraps the repo when `.openharness/` is absent; existing OAS config is left untouched.
+
+When connecting to a remote or enterprise OAH server, pass `--base-url` explicitly:
 
 ```bash
 pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui
@@ -33,13 +43,19 @@ The current CLI includes:
 
 ```text
 oah
-  tui
+  daemon init|start|status|stop|restart|logs
+  web
+  models list|add|default
+  runtimes list
+  tools list
+  skills list
+  tui [--workspace <path>] [--runtime <name>]
   workspace:list
   workspaces
   catalog:show --workspace <id>
 ```
 
-Use `workspace:list` / `workspaces` to list visible workspaces, `catalog:show` to inspect a workspace catalog as JSON, and `tui` to enter the interactive terminal interface.
+Use `workspace:list` / `workspaces` to list visible workspaces, `catalog:show` to inspect a workspace catalog as JSON, and `tui` to enter the interactive terminal interface. When connected to an OAP local daemon, `oah tui` registers or reuses the current directory by default, and `--workspace /path/to/repo` can point it at a different repo. `web` starts the WebUI against the same OAH-compatible API. The `models`, `runtimes`, `tools`, and `skills` commands manage or inspect local assets under `OAH_HOME`; tools and skills remain a global catalog until they are enabled into a repo's `.openharness` directory.
 
 ## Why TUI
 

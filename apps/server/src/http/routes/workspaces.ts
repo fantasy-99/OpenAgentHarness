@@ -9,6 +9,7 @@ import {
   moveWorkspaceEntryRequestSchema,
   pageQuerySchema,
   putWorkspaceFileRequestSchema,
+  registerLocalWorkspaceRequestSchema,
   sessionPageSchema,
   workspaceDeleteEntryQuerySchema,
   workspaceDeleteResultSchema,
@@ -59,6 +60,23 @@ function parseWorkspaceLifecycleRequest(body: unknown): {
 
 function readRegisteredRouteUrl(request: FastifyRequest): string {
   return typeof request.routeOptions.url === "string" ? request.routeOptions.url : request.url.split("?")[0] ?? request.url;
+}
+
+function assertLocalWorkspaceRegistrationAvailable(dependencies: AppDependencies, options: AppRouteOptions): void {
+  if (options.workspaceMode === "single" || !dependencies.registerLocalWorkspace) {
+    throw new AppError(501, "local_workspace_registration_unavailable", "Local workspace registration is not available on this server.");
+  }
+  if (
+    dependencies.systemProfile?.edition !== "personal" ||
+    !dependencies.systemProfile.capabilities.localWorkspacePaths ||
+    !dependencies.systemProfile.capabilities.workspaceRegistration
+  ) {
+    throw new AppError(
+      403,
+      "local_workspace_registration_forbidden",
+      "Local workspace registration requires a personal server profile with local workspace path capability."
+    );
+  }
 }
 
 function resolveWorkspaceOwnerBaseUrl(
@@ -571,6 +589,26 @@ export async function dispatchRegisteredWorkspaceRoute(
       }
       return reply.status(201).send(projectWorkspaceForPublicApi(dependencies, workspace));
     }
+    case "POST /api/v1/local/workspaces/register": {
+      assertLocalWorkspaceRegistrationAvailable(dependencies, options);
+      const input = registerLocalWorkspaceRequestSchema.parse(request.body);
+      const ownerId = resolveOwnerId(input);
+      const workspace = await dependencies.registerLocalWorkspace!({
+        rootPath: input.rootPath,
+        ...(input.name ? { name: input.name } : {}),
+        ...(input.runtime ? { runtime: input.runtime } : {}),
+        ...(ownerId ? { ownerId } : {}),
+        ...(input.serviceName ? { serviceName: input.serviceName } : {})
+      });
+      if (ownerId) {
+        await dependencies.assignWorkspacePlacementOwnerAffinity?.({
+          workspaceId: workspace.id,
+          ownerId,
+          overwrite: true
+        });
+      }
+      return reply.status(201).send(projectWorkspaceForPublicApi(dependencies, workspace));
+    }
     case "GET /api/v1/workspaces": {
       const query = pageQuerySchema.parse(request.query);
       const page = await dependencies.runtimeService.listWorkspaces(query.pageSize, query.cursor);
@@ -760,6 +798,9 @@ export function registerWorkspaceRoutes(
     dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
   );
   app.post("/api/v1/workspaces/import", async (request, reply) =>
+    dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
+  );
+  app.post("/api/v1/local/workspaces/register", async (request, reply) =>
     dispatchRegisteredWorkspaceRoute(request, reply, dependencies, options)
   );
   app.get("/api/v1/workspaces", async (request, reply) =>

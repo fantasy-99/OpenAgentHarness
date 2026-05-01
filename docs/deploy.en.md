@@ -166,9 +166,9 @@ This baseline already includes:
 
 ---
 
-## Single Workspace Mode
+## Legacy Single Workspace Mode
 
-Skip the multi-workspace directory structure and point directly at one workspace:
+This mode is kept as a compatibility path for old scripts and internal tests. For personal local use, prefer the OAP daemon and `oah tui`.
 
 ```bash
 pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts -- \

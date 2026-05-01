@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Box, Text } from "ink";
-import type { Run, Session, Workspace } from "@oah/api-contracts";
+import type { Run, Session, SystemProfile, Workspace } from "@oah/api-contracts";
 
 import type { ChatLine } from "../domain/types.js";
 import { shortId, SPINNER_FRAMES } from "../domain/utils.js";
@@ -22,6 +22,7 @@ export type TranscriptItem =
       workspace: Workspace | null;
       session: Session | null;
       serviceUrl: string;
+      systemProfile: SystemProfile | null;
       columns: number;
       subtitle: string;
       height: number;
@@ -38,6 +39,7 @@ export function Messages(props: {
   workspace: Workspace | null;
   session: Session | null;
   serviceUrl: string;
+  systemProfile?: SystemProfile | null | undefined;
   height: number;
   columns: number;
   showBanner?: boolean | undefined;
@@ -59,6 +61,7 @@ export function Messages(props: {
           columns={props.columns}
           subtitle={bannerSubtitle}
           serviceUrl={props.serviceUrl}
+          systemProfile={props.systemProfile ?? null}
           workspaceName={props.workspace?.name}
           compact={props.height < 9}
         />
@@ -78,6 +81,7 @@ export function Messages(props: {
           columns={props.columns}
           subtitle={bannerSubtitle}
           serviceUrl={props.serviceUrl}
+          systemProfile={props.systemProfile ?? null}
           workspaceName={props.workspace?.name}
           sessionTitle={props.session.title}
           sessionId={props.session.id}
@@ -96,6 +100,7 @@ export function Messages(props: {
             columns={props.columns}
             subtitle={bannerSubtitle}
             serviceUrl={props.serviceUrl}
+            systemProfile={props.systemProfile ?? null}
             workspaceName={props.workspace?.name}
             sessionTitle={props.session.title}
             sessionId={props.session.id}
@@ -117,6 +122,7 @@ export function getTranscriptItems(input: {
   workspace: Workspace | null;
   session: Session | null;
   serviceUrl: string;
+  systemProfile?: SystemProfile | null | undefined;
   height: number;
   columns: number;
   includeBanner: boolean;
@@ -136,6 +142,7 @@ export function getTranscriptItems(input: {
       workspace: input.workspace,
       session: input.session,
       serviceUrl: input.serviceUrl,
+      systemProfile: input.systemProfile ?? null,
       columns: input.columns,
       subtitle: bannerSubtitle,
       height: hasMessages ? (input.columns >= 70 ? 12 : 7) : input.height,
@@ -167,6 +174,7 @@ export function TranscriptItemView(props: { item: TranscriptItem; columns: numbe
           columns={props.item.columns}
           subtitle={props.item.subtitle}
           serviceUrl={props.item.serviceUrl}
+          systemProfile={props.item.systemProfile}
           workspaceName={props.item.workspace?.name}
           sessionTitle={props.item.session?.title}
           sessionId={props.item.session?.id}

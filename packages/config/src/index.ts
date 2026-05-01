@@ -47,6 +47,7 @@ export type {
 } from "./types.js";
 
 export {
+  applyWorkspaceRuntimeToExistingRoot,
   deleteWorkspaceRuntime,
   initializeWorkspaceFromRuntime,
   listWorkspaceRuntimes,

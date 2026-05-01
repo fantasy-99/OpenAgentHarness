@@ -10,6 +10,7 @@ import type {
   Session,
   SessionEventContract,
   SessionPage,
+  SystemProfile,
   Workspace,
   WorkspaceCatalog,
   WorkspaceRuntime,
@@ -71,6 +72,10 @@ export class OahApiClient {
     return this.#connection.baseUrl;
   }
 
+  async getSystemProfile(): Promise<SystemProfile> {
+    return this.request<SystemProfile>("/api/v1/system/profile");
+  }
+
   async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
     const headers: Record<string, string> = {
       ...options.headers
@@ -126,6 +131,22 @@ export class OahApiClient {
         ...(input.ownerId ? { ownerId: input.ownerId } : {}),
         ...(input.serviceName ? { serviceName: input.serviceName } : {}),
         executionPolicy: "local"
+      })
+    });
+  }
+
+  async registerLocalWorkspace(input: { rootPath: string; name?: string; runtime?: string; ownerId?: string; serviceName?: string }): Promise<Workspace> {
+    return this.request<Workspace>("/api/v1/local/workspaces/register", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        rootPath: input.rootPath,
+        ...(input.name ? { name: input.name } : {}),
+        ...(input.runtime ? { runtime: input.runtime } : {}),
+        ...(input.ownerId ? { ownerId: input.ownerId } : {}),
+        ...(input.serviceName ? { serviceName: input.serviceName } : {})
       })
     });
   }

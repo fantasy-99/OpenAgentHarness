@@ -232,6 +232,13 @@ async function createStartedAppWithEngineService(
       ownerId?: string;
       serviceName?: string;
     }) => Promise<any>;
+    registerLocalWorkspace?: (input: {
+      rootPath: string;
+      name?: string;
+      runtime?: string;
+      ownerId?: string;
+      serviceName?: string;
+    }) => Promise<any>;
     workspaceMode?: "multi" | "single";
     resolveCallerContext?: (request: import("fastify").FastifyRequest) => Promise<CallerContext | undefined> | CallerContext | undefined;
     resolveWorkspaceOwnership?: (workspaceId: string) => Promise<{
@@ -289,7 +296,8 @@ async function createStartedAppWithEngineService(
     ...(options?.sandboxHostProviderKind ? { sandboxHostProviderKind: options.sandboxHostProviderKind } : {}),
     ...(options?.sandboxOwnerFallbackBaseUrl ? { sandboxOwnerFallbackBaseUrl: options.sandboxOwnerFallbackBaseUrl } : {}),
     ...(options?.localOwnerBaseUrl ? { localOwnerBaseUrl: options.localOwnerBaseUrl } : {}),
-    ...(options?.importWorkspace ? { importWorkspace: options.importWorkspace } : {})
+    ...(options?.importWorkspace ? { importWorkspace: options.importWorkspace } : {}),
+    ...(options?.registerLocalWorkspace ? { registerLocalWorkspace: options.registerLocalWorkspace } : {})
   });
 
   await app.listen({ host: "127.0.0.1", port: 0 });
@@ -610,6 +618,90 @@ describe("http api", () => {
         localWorkspacePaths: true,
         modelManagement: true,
         localDaemonSupervisor: true
+      }
+    });
+  });
+
+  it("registers local workspace paths only when the server profile advertises the capability", async () => {
+    const registerLocalWorkspace = vi.fn(
+      async (input: { rootPath: string; name?: string; runtime?: string; ownerId?: string; serviceName?: string }) => ({
+      id: "project-local-demo",
+      name: input.name ?? "local-demo",
+      ...(input.runtime ? { runtime: input.runtime } : {}),
+      rootPath: input.rootPath,
+      externalRef: `local:path:${input.rootPath}`,
+      executionPolicy: "local",
+      status: "active",
+      kind: "project",
+      readOnly: false,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+      })
+    );
+    activeApp = await createStartedApp({
+      systemProfile: {
+        apiCompatibility: "oah/v1",
+        product: "open-agent-harness",
+        edition: "personal",
+        runtimeMode: "daemon",
+        deploymentKind: "oap",
+        displayName: "OAP local daemon",
+        capabilities: {
+          localDaemonControl: true,
+          localWorkspacePaths: true,
+          workspaceRegistration: true,
+          storageInspection: true,
+          modelManagement: true,
+          localDaemonSupervisor: true
+        }
+      },
+      registerLocalWorkspace
+    });
+
+    const response = await fetch(`${activeApp.baseUrl}/api/v1/local/workspaces/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        rootPath: "/Users/demo/repo",
+        name: "Demo Repo",
+        runtime: "vibe-coding",
+        ownerId: "owner-1",
+        serviceName: "Local_Service"
+      })
+    });
+
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toMatchObject({
+      id: "project-local-demo",
+      name: "Demo Repo",
+      runtime: "vibe-coding",
+      rootPath: "/Users/demo/repo",
+      externalRef: "local:path:/Users/demo/repo"
+    });
+    expect(registerLocalWorkspace).toHaveBeenCalledWith({
+      rootPath: "/Users/demo/repo",
+      name: "Demo Repo",
+      runtime: "vibe-coding",
+      ownerId: "owner-1",
+      serviceName: "local_service"
+    });
+  });
+
+  it("rejects local workspace path registration on enterprise profiles", async () => {
+    activeApp = await createStartedApp({
+      registerLocalWorkspace: vi.fn()
+    });
+
+    const response = await fetch(`${activeApp.baseUrl}/api/v1/local/workspaces/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ rootPath: "/Users/demo/repo" })
+    });
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "local_workspace_registration_forbidden"
       }
     });
   });

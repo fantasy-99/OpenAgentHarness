@@ -20,10 +20,10 @@ function OahApp(props: { children: React.ReactNode }) {
   return <Box flexDirection="column">{props.children}</Box>;
 }
 
-function OahRepl({ connection }: { connection: OahConnection }) {
+function OahRepl({ connection, initialWorkspaceId }: { connection: OahConnection; initialWorkspaceId?: string | undefined }) {
   const app = useApp();
   const { columns, rows: height } = useWindowSize();
-  const state = useOahReplState(connection);
+  const state = useOahReplState(connection, { initialWorkspaceId });
 
   useTuiInput({ state, exit: app.exit });
 
@@ -40,6 +40,7 @@ function OahRepl({ connection }: { connection: OahConnection }) {
     workspace: state.currentWorkspace,
     session: state.currentSession,
     serviceUrl: connection.baseUrl,
+    systemProfile: state.systemProfile,
     height: transcriptHeight,
     columns
   });
@@ -82,6 +83,7 @@ function OahRepl({ connection }: { connection: OahConnection }) {
             workspace={state.currentWorkspace}
             session={state.currentSession}
             serviceUrl={connection.baseUrl}
+            systemProfile={state.systemProfile}
             height={transcriptHeight}
             columns={columns}
             showBanner={false}
@@ -99,6 +101,7 @@ function OahRepl({ connection }: { connection: OahConnection }) {
         running={runActive}
         workspace={state.currentWorkspace}
         session={state.currentSession}
+        systemProfile={state.systemProfile}
         run={latestRun}
         notice={state.notice}
         streamState={state.streamState}
@@ -113,6 +116,7 @@ function splitStaticTranscript(input: {
   workspace: ReturnType<typeof useOahReplState>["currentWorkspace"];
   session: ReturnType<typeof useOahReplState>["currentSession"];
   serviceUrl: string;
+  systemProfile: ReturnType<typeof useOahReplState>["systemProfile"];
   height: number;
   columns: number;
 }): { staticItems: TranscriptItem[]; liveLines: ReturnType<typeof useOahReplState>["messages"] } {
@@ -123,6 +127,7 @@ function splitStaticTranscript(input: {
         workspace: input.workspace,
         session: input.session,
         serviceUrl: input.serviceUrl,
+        systemProfile: input.systemProfile,
         height: input.height,
         columns: input.columns,
         includeBanner: true
@@ -140,6 +145,7 @@ function splitStaticTranscript(input: {
         workspace: input.workspace,
         session: input.session,
         serviceUrl: input.serviceUrl,
+        systemProfile: input.systemProfile,
         height: input.height,
         columns: input.columns,
         includeBanner: true
@@ -150,10 +156,10 @@ function splitStaticTranscript(input: {
   };
 }
 
-export function OahTui({ connection }: { connection: OahConnection }) {
+export function OahTui({ connection, initialWorkspaceId }: { connection: OahConnection; initialWorkspaceId?: string | undefined }) {
   return (
     <OahApp>
-      <OahRepl connection={connection} />
+      <OahRepl connection={connection} initialWorkspaceId={initialWorkspaceId} />
     </OahApp>
   );
 }

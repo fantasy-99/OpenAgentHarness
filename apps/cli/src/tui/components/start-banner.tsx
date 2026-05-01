@@ -1,5 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
+import type { SystemProfile } from "@oah/api-contracts";
 
 export function startBannerRows(params: { height: number; columns: number; hasMessages: boolean }) {
   if (params.height < 7) {
@@ -17,6 +18,7 @@ export function StartBanner(props: {
   columns: number;
   subtitle: string;
   serviceUrl: string;
+  systemProfile?: SystemProfile | null | undefined;
   workspaceName?: string | undefined;
   sessionTitle?: string | undefined;
   sessionId?: string | undefined;
@@ -46,12 +48,13 @@ function FullBanner(props: {
   columns: number;
   subtitle: string;
   serviceUrl: string;
+  systemProfile?: SystemProfile | null | undefined;
   workspaceName?: string | undefined;
   sessionTitle?: string | undefined;
   sessionId?: string | undefined;
 }) {
   const title = " Open Agent Harness TUI v0.1.0 ";
-  const rows = bannerRows(props.columns, props.subtitle, props.serviceUrl);
+  const rows = bannerRows(props.columns, props.subtitle, props.serviceUrl, props.systemProfile);
   return (
     <Box flexDirection="column" width="100%" overflow="hidden">
       <FrameTitle columns={props.columns} title={title} />
@@ -79,9 +82,9 @@ function BannerMarkText(props: { index: number; text: string; lastIndex: number 
   return <Text color="cyan">{props.text}</Text>;
 }
 
-function bannerRows(columns: number, subtitle: string, serviceUrl: string) {
+function bannerRows(columns: number, subtitle: string, serviceUrl: string, systemProfile?: SystemProfile | null | undefined) {
   const rawMark = welcomeMarkLines(serviceUrl);
-  const feed = feedLines(subtitle);
+  const feed = feedLines(subtitle, systemProfile);
   const artStart = 1;
   const artEnd = rawMark.length - 1;
   const artWidth = maxWidth(rawMark.slice(artStart, artEnd));
@@ -103,10 +106,12 @@ function formatMarkLine(line: string, index: number, artStart: number, artEnd: n
   return line;
 }
 
-function feedLines(subtitle: string) {
+function feedLines(subtitle: string, systemProfile?: SystemProfile | null | undefined) {
+  const profileLabel = systemProfile ? `${systemProfile.displayName} · ${systemProfile.runtimeMode}` : "Unknown OAH-compatible server";
   return [
     " Tips for getting started",
     ` ${subtitle}`,
+    ` Connected to ${profileLabel}`,
     " Use / for commands, ^W for workspaces, ^O for sessions.",
     ` ${"─".repeat(44)}`,
     " What's new",
@@ -216,6 +221,7 @@ function characterWidth(char: string) {
 
 function CompactBanner(props: {
   subtitle: string;
+  systemProfile?: SystemProfile | null | undefined;
   workspaceName?: string | undefined;
   sessionTitle?: string | undefined;
   sessionId?: string | undefined;
@@ -225,7 +231,7 @@ function CompactBanner(props: {
       <OahMark small />
       <Box flexDirection="column" flexShrink={1}>
         <Text>
-          <Text bold>OAH TUI</Text> <Text dimColor>v0.1.0</Text>
+          <Text bold>{systemShortName(props.systemProfile)} TUI</Text> <Text dimColor>v0.1.0</Text>
         </Text>
         <Text dimColor wrap="truncate-end">
           {props.subtitle}
@@ -233,6 +239,10 @@ function CompactBanner(props: {
       </Box>
     </Box>
   );
+}
+
+function systemShortName(systemProfile?: SystemProfile | null | undefined) {
+  return systemProfile?.deploymentKind === "oap" || systemProfile?.edition === "personal" ? "OAP" : "OAH";
 }
 
 function OahMark(props: { small?: boolean | undefined }) {

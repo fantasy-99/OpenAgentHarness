@@ -13,6 +13,7 @@ import type {
   RunStep,
   SessionEventContract,
   StoragePostgresTableName,
+  SystemProfile,
   Workspace
 } from "@oah/api-contracts";
 
@@ -85,6 +86,7 @@ interface SseFrame {
 
 type HealthReportResponse = HealthReport;
 type ReadinessReportResponse = ReadinessReport;
+type SystemProfileResponse = SystemProfile;
 
 interface ModelProviderListResponse {
   items: ModelProviderRecord[];
@@ -1881,6 +1883,7 @@ export type {
   SseFrame,
   HealthReportResponse,
   ReadinessReportResponse,
+  SystemProfileResponse,
   ModelProviderListResponse,
   PlatformModelListResponse,
   PlatformModelSnapshotResponse,

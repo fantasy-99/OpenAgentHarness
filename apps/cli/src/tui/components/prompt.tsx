@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text, useCursor, useWindowSize } from "ink";
-import type { Run, Session, Workspace } from "@oah/api-contracts";
+import type { Run, Session, SystemProfile, Workspace } from "@oah/api-contracts";
 
 import type { Notice } from "../domain/types.js";
 import { clampIndex, getSlashCommandMatches, shortId } from "../domain/utils.js";
@@ -14,6 +14,7 @@ export function PromptInput(props: {
   running: boolean;
   workspace: Workspace | null;
   session: Session | null;
+  systemProfile: SystemProfile | null;
   run: Run | null;
   notice: Notice;
   streamState: string;
@@ -58,6 +59,7 @@ export function PromptInput(props: {
         {...(props.disabled === undefined ? {} : { disabled: props.disabled })}
         workspace={props.workspace}
         session={props.session}
+        systemProfile={props.systemProfile}
         run={props.run}
         notice={props.notice}
         streamState={props.streamState}
@@ -216,6 +218,7 @@ function PromptFooter(props: {
   disabled?: boolean;
   workspace: Workspace | null;
   session: Session | null;
+  systemProfile: SystemProfile | null;
   run: Run | null;
   notice: Notice;
   streamState: string;
@@ -226,6 +229,8 @@ function PromptFooter(props: {
   const activity = footerActivity(props.run, props.session, props.streamState);
   const shortcuts = props.disabled ? "modal · esc" : "? · ^W ws · ^O sess · ^C";
   const modelAgent = footerModelAgent(props.session, props.agentMode);
+  const systemName = props.systemProfile?.deploymentKind === "oap" || props.systemProfile?.edition === "personal" ? "OAP" : "OAH";
+  const serverLabel = props.systemProfile ? `${props.systemProfile.displayName} · ${props.systemProfile.runtimeMode}` : "server profile unknown";
 
   return (
     <Box paddingX={2} flexDirection="column" width="100%">
@@ -233,7 +238,7 @@ function PromptFooter(props: {
         <Box flexShrink={1} flexGrow={1}>
           <Text dimColor wrap="truncate-end">
             <Text color="cyan" bold>
-              OAH
+              {systemName}
             </Text>{" "}
             {location}
           </Text>
@@ -254,7 +259,7 @@ function PromptFooter(props: {
       <Box flexDirection="row" width="100%">
         <Box flexShrink={1} flexGrow={1}>
           <Text dimColor wrap="truncate-start">
-            {modelAgent}
+            {modelAgent} · {serverLabel}
           </Text>
         </Box>
       </Box>

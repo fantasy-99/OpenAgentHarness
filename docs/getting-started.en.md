@@ -62,9 +62,9 @@ After startup, check:
     OAH_WEB_PROXY_TARGET=http://127.0.0.1:8787 pnpm dev:web
     ```
 
-## Single Workspace Mode
+## Legacy Single Workspace Mode
 
-To serve a single workspace without a config file, point directly at a workspace path:
+This mode is kept for old scripts and internal tests. For personal local use, prefer the OAP daemon, then run `oah tui` or `oah tui --runtime vibe-coding` from inside the repo.
 
 ```bash
 pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts -- \

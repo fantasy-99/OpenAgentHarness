@@ -16,6 +16,11 @@ export interface ServerConfig {
   storage: {
     postgres_url?: string | undefined;
     redis_url?: string | undefined;
+    sqlite?:
+      | {
+          project_db_location?: "shadow" | "workspace" | undefined;
+        }
+      | undefined;
   };
   object_storage?: {
     provider: "s3";

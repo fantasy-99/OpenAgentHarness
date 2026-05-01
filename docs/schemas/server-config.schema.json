@@ -62,6 +62,20 @@
         },
         "redis_url": {
           "type": "string"
+        },
+        "sqlite": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "project_db_location": {
+              "type": "string",
+              "enum": [
+                "shadow",
+                "workspace"
+              ],
+              "description": "Where SQLite stores writable project workspace history databases. Use shadow for OAP local daemon so external repos are not modified by runtime history."
+            }
+          }
         }
       }
     },

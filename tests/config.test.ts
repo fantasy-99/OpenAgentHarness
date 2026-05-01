@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  applyWorkspaceRuntimeToExistingRoot,
   buildWorkspaceId,
   discoverWorkspace,
   discoverWorkspaces,
@@ -51,6 +52,8 @@ deployment:
   runtime_mode: daemon
   display_name: OAP local daemon
 storage:
+  sqlite:
+    project_db_location: shadow
   postgres_url: \${env.DATABASE_URL}
   redis_url: \${env.REDIS_URL}
 paths:
@@ -72,6 +75,7 @@ llm:
       display_name: "OAP local daemon"
     });
     expect(config.storage.postgres_url).toBe("postgres://local/test");
+    expect(config.storage.sqlite?.project_db_location).toBe("shadow");
     expect(config.paths.model_dir).toBe(path.join(tempDir, "models"));
     expect(config.paths.runtime_state_dir).toBe(path.join(tempDir, ".openharness"));
     expect(config.llm.default_model).toBe("openai-default");
@@ -1023,6 +1027,56 @@ compat-main:
 
     const runtimes = await listWorkspaceRuntimes(tempDir);
     expect(runtimes).toEqual([{ name: "starter-kit" }, { name: "workspace" }]);
+  });
+
+  it("applies a runtime template into a local workspace root only when .openharness is absent", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-runtime-apply-"));
+    tempDirs.push(tempDir);
+    const runtimeDir = path.join(tempDir, "runtimes");
+    const runtimeRoot = path.join(runtimeDir, "vibe-coding");
+    const workspaceRoot = path.join(tempDir, "repo");
+
+    await mkdir(path.join(runtimeRoot, ".openharness", "agents"), { recursive: true });
+    await writeFile(path.join(runtimeRoot, ".openharness", "settings.yaml"), "default_agent: build\n", "utf8");
+    await writeFile(path.join(runtimeRoot, ".openharness", "agents", "build.md"), "---\nmode: primary\n---\n# Build\n", "utf8");
+    await mkdir(workspaceRoot, { recursive: true });
+    await writeFile(path.join(workspaceRoot, "README.md"), "# Existing repo\n", "utf8");
+
+    await applyWorkspaceRuntimeToExistingRoot({
+      runtimeDir,
+      runtimeName: "vibe-coding",
+      rootPath: workspaceRoot
+    });
+
+    await expect(readFile(path.join(workspaceRoot, "README.md"), "utf8")).resolves.toBe("# Existing repo\n");
+    await expect(readFile(path.join(workspaceRoot, ".openharness", "agents", "build.md"), "utf8")).resolves.toContain("# Build");
+    await expect(loadWorkspaceSettings(workspaceRoot)).resolves.toMatchObject({
+      defaultAgent: "build",
+      runtime: "vibe-coding"
+    });
+  });
+
+  it("skips runtime template application when the local workspace already has .openharness", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-runtime-skip-"));
+    tempDirs.push(tempDir);
+    const runtimeDir = path.join(tempDir, "runtimes");
+    const runtimeRoot = path.join(runtimeDir, "vibe-coding");
+    const workspaceRoot = path.join(tempDir, "repo");
+
+    await mkdir(path.join(runtimeRoot, ".openharness", "agents"), { recursive: true });
+    await writeFile(path.join(runtimeRoot, ".openharness", "settings.yaml"), "default_agent: build\n", "utf8");
+    await writeFile(path.join(runtimeRoot, ".openharness", "agents", "build.md"), "---\nmode: primary\n---\n# Build\n", "utf8");
+    await mkdir(path.join(workspaceRoot, ".openharness", "memory"), { recursive: true });
+    await writeFile(path.join(workspaceRoot, "README.md"), "# Existing repo\n", "utf8");
+
+    await applyWorkspaceRuntimeToExistingRoot({
+      runtimeDir,
+      runtimeName: "vibe-coding",
+      rootPath: workspaceRoot
+    });
+
+    await expect(readFile(path.join(workspaceRoot, ".openharness", "agents", "build.md"), "utf8")).rejects.toThrow();
+    await expect(loadWorkspaceSettings(workspaceRoot)).resolves.toEqual({});
   });
 
   it("rejects unsupported platform prompt segments in compose order", async () => {

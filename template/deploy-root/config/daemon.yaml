@@ -7,7 +7,9 @@ deployment:
   runtime_mode: daemon
   display_name: OAP local daemon
 
-storage: {}
+storage:
+  sqlite:
+    project_db_location: shadow
 
 sandbox:
   provider: embedded

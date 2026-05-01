@@ -11,12 +11,12 @@ function shouldEnableModifyOtherKeys() {
   return Boolean(process.stdout.isTTY && process.env.OAH_TUI_NO_EXTENDED_KEYS !== "1");
 }
 
-export async function launchTui(connection: OahConnection): Promise<void> {
+export async function launchTui(connection: OahConnection, options: { initialWorkspaceId?: string | undefined } = {}): Promise<void> {
   const modifyOtherKeys = shouldEnableModifyOtherKeys();
   if (modifyOtherKeys) {
     process.stdout.write(ENABLE_MODIFY_OTHER_KEYS);
   }
-  const instance = render(<OahTui connection={connection} />, {
+  const instance = render(<OahTui connection={connection} initialWorkspaceId={options.initialWorkspaceId} />, {
     alternateScreen: false,
     kittyKeyboard: {
       mode: "enabled",

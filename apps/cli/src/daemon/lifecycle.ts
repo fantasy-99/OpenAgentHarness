@@ -1,0 +1,394 @@
+import { spawn } from "node:child_process";
+import { createReadStream, openSync } from "node:fs";
+import { access, cp, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { randomBytes } from "node:crypto";
+
+export type DaemonCommandOptions = {
+  home?: string | undefined;
+};
+
+export type DaemonStartOptions = DaemonCommandOptions & {
+  timeoutMs?: number | undefined;
+};
+
+export type DaemonLogOptions = DaemonCommandOptions & {
+  lines?: number | undefined;
+  follow?: boolean | undefined;
+};
+
+export type DaemonApiConnection = {
+  baseUrl: string;
+  token: string;
+};
+
+type DaemonPaths = {
+  repoRoot: string;
+  home: string;
+  configPath: string;
+  runDir: string;
+  logDir: string;
+  pidPath: string;
+  tokenPath: string;
+  versionPath: string;
+  logPath: string;
+};
+
+type ServerEndpoint = {
+  host: string;
+  port: number;
+  baseUrl: string;
+};
+
+const DEFAULT_DAEMON_HOST = "127.0.0.1";
+const DEFAULT_DAEMON_PORT = 8787;
+const HOME_VERSION = "1";
+
+export function resolveOahHome(input?: string | undefined): string {
+  return path.resolve(input ?? process.env.OAH_HOME ?? path.join(homedir(), ".openagentharness"));
+}
+
+export function resolveDaemonPaths(options: DaemonCommandOptions = {}): DaemonPaths {
+  const currentFile = fileURLToPath(import.meta.url);
+  const repoRoot = path.resolve(path.dirname(currentFile), "../../../..");
+  const home = resolveOahHome(options.home);
+  const runDir = path.join(home, "run");
+  const logDir = path.join(home, "logs");
+  return {
+    repoRoot,
+    home,
+    configPath: path.join(home, "config", "daemon.yaml"),
+    runDir,
+    logDir,
+    pidPath: path.join(runDir, "daemon.pid"),
+    tokenPath: path.join(runDir, "token"),
+    versionPath: path.join(home, ".oah-home-version"),
+    logPath: path.join(logDir, "daemon.log")
+  };
+}
+
+export async function initDaemonHome(options: DaemonCommandOptions = {}): Promise<DaemonPaths> {
+  const paths = resolveDaemonPaths(options);
+  const templateRoot = path.join(paths.repoRoot, "template", "deploy-root");
+  await assertExists(templateRoot, `template deploy root not found: ${templateRoot}`);
+  await mkdir(paths.home, { recursive: true });
+  await copyMissingTree(templateRoot, paths.home);
+  await Promise.all([mkdir(paths.runDir, { recursive: true }), mkdir(paths.logDir, { recursive: true })]);
+  if (!(await pathExists(paths.versionPath))) {
+    await writeFile(paths.versionPath, `${HOME_VERSION}\n`, { mode: 0o644 });
+  }
+  await ensureDaemonToken(paths);
+  return paths;
+}
+
+export async function resolveDaemonApiConnection(options: DaemonCommandOptions = {}): Promise<DaemonApiConnection> {
+  const paths = await initDaemonHome(options);
+  const endpoint = await readDaemonEndpoint(paths.configPath);
+  const token = await ensureDaemonToken(paths);
+  return {
+    baseUrl: endpoint.baseUrl,
+    token
+  };
+}
+
+export async function startDaemon(options: DaemonStartOptions = {}): Promise<string> {
+  const paths = await initDaemonHome(options);
+  const endpoint = await readDaemonEndpoint(paths.configPath);
+  const current = await readPidStatus(paths.pidPath);
+  if (current.kind === "running") {
+    const profile = await fetchSystemProfile(endpoint.baseUrl).catch(() => null);
+    return `OAP daemon is already running (pid ${current.pid}) at ${endpoint.baseUrl}${profile ? ` as ${profile}` : ""}.`;
+  }
+  if (current.kind === "stale") {
+    await rm(paths.pidPath, { force: true });
+  }
+
+  const existingEndpoint = await fetchSystemProfile(endpoint.baseUrl).catch(() => null);
+  const existingHealth = existingEndpoint ? true : await fetchHealth(endpoint.baseUrl).catch(() => false);
+  if (existingHealth) {
+    throw new Error(
+      `Port ${endpoint.port} already responds at ${endpoint.baseUrl} (${existingEndpoint ?? "unknown service"}). Stop that process or change ${paths.configPath}.`
+    );
+  }
+
+  const token = await ensureDaemonToken(paths);
+  const command = await resolveServerCommand(paths);
+  const logFd = openSync(paths.logPath, "a", 0o644);
+  const child = spawn(command.command, command.args, {
+    cwd: paths.repoRoot,
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
+    env: {
+      ...process.env,
+      OAH_HOME: paths.home,
+      OAH_DEPLOY_ROOT: process.env.OAH_DEPLOY_ROOT ?? paths.home,
+      OAH_TOKEN: process.env.OAH_TOKEN ?? token
+    }
+  });
+  child.unref();
+  await writeFile(paths.pidPath, `${child.pid}\n`, { mode: 0o644 });
+
+  const started = await waitForDaemon(endpoint.baseUrl, child.pid, options.timeoutMs ?? 15_000);
+  if (!started.ok) {
+    throw new Error(`OAP daemon did not become ready: ${started.reason}. See ${paths.logPath}.`);
+  }
+
+  return `OAP daemon started (pid ${child.pid}) at ${endpoint.baseUrl}. Logs: ${paths.logPath}`;
+}
+
+export async function daemonStatus(options: DaemonCommandOptions = {}): Promise<string> {
+  const paths = resolveDaemonPaths(options);
+  const endpoint = await readDaemonEndpoint(paths.configPath).catch(() => ({
+    host: DEFAULT_DAEMON_HOST,
+    port: DEFAULT_DAEMON_PORT,
+    baseUrl: `http://${DEFAULT_DAEMON_HOST}:${DEFAULT_DAEMON_PORT}`
+  }));
+  const current = await readPidStatus(paths.pidPath);
+  if (current.kind === "missing") {
+    const profile = await fetchSystemProfile(endpoint.baseUrl).catch(() => null);
+    return profile
+      ? `OAP daemon responds at ${endpoint.baseUrl} (${profile}), but no PID file exists at ${paths.pidPath}.`
+      : `OAP daemon is stopped.`;
+  }
+  if (current.kind === "stale") {
+    return `OAP daemon is stopped; stale PID file found for pid ${current.pid} at ${paths.pidPath}.`;
+  }
+
+  const profile = await fetchSystemProfile(endpoint.baseUrl).catch(() => null);
+  return profile
+    ? `OAP daemon is running (pid ${current.pid}) at ${endpoint.baseUrl} as ${profile}.`
+    : `OAP daemon process is running (pid ${current.pid}), but ${endpoint.baseUrl} is not healthy yet.`;
+}
+
+export async function stopDaemon(options: DaemonCommandOptions = {}): Promise<string> {
+  const paths = resolveDaemonPaths(options);
+  const current = await readPidStatus(paths.pidPath);
+  if (current.kind === "missing") {
+    return "OAP daemon is already stopped.";
+  }
+  if (current.kind === "stale") {
+    await rm(paths.pidPath, { force: true });
+    return `Removed stale OAP daemon PID file for pid ${current.pid}.`;
+  }
+
+  process.kill(current.pid, "SIGTERM");
+  const stopped = await waitForExit(current.pid, 8_000);
+  if (!stopped) {
+    process.kill(current.pid, "SIGKILL");
+    await waitForExit(current.pid, 3_000);
+  }
+  await rm(paths.pidPath, { force: true });
+  return stopped ? `OAP daemon stopped (pid ${current.pid}).` : `OAP daemon force-stopped (pid ${current.pid}).`;
+}
+
+export async function restartDaemon(options: DaemonStartOptions = {}): Promise<string> {
+  const stopMessage = await stopDaemon(options);
+  const startMessage = await startDaemon(options);
+  return `${stopMessage}\n${startMessage}`;
+}
+
+export async function readDaemonLogs(options: DaemonLogOptions = {}): Promise<string> {
+  const paths = resolveDaemonPaths(options);
+  if (!(await pathExists(paths.logPath))) {
+    return `No daemon log file found at ${paths.logPath}.`;
+  }
+  const lineCount = Math.max(1, Math.min(options.lines ?? 80, 1000));
+  return tailFile(paths.logPath, lineCount);
+}
+
+export function followDaemonLogs(options: DaemonLogOptions = {}): void {
+  const paths = resolveDaemonPaths(options);
+  const stream = createReadStream(paths.logPath, { encoding: "utf8", start: 0 });
+  stream.on("data", (chunk) => {
+    process.stdout.write(chunk);
+  });
+  stream.on("end", () => {
+    const child = spawn("tail", ["-f", paths.logPath], {
+      stdio: "inherit"
+    });
+    child.on("exit", (code) => {
+      process.exitCode = code ?? 0;
+    });
+  });
+}
+
+async function resolveServerCommand(paths: DaemonPaths): Promise<{ command: string; args: string[] }> {
+  const sourceEntry = path.join(paths.repoRoot, "apps", "server", "src", "index.ts");
+  if (await pathExists(sourceEntry)) {
+    const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+    return {
+      command: pnpmCommand,
+      args: ["exec", "tsx", "--tsconfig", "./apps/server/tsconfig.json", "./apps/server/src/index.ts", "--", "--config", paths.configPath]
+    };
+  }
+
+  const distEntry = path.join(paths.repoRoot, "apps", "server", "dist", "index.js");
+  await assertExists(distEntry, `server entrypoint not found: ${sourceEntry} or ${distEntry}`);
+  return {
+    command: process.execPath,
+    args: [distEntry, "--config", paths.configPath]
+  };
+}
+
+async function copyMissingTree(source: string, target: string): Promise<void> {
+  const sourceInfo = await stat(source);
+  if (sourceInfo.isDirectory()) {
+    await mkdir(target, { recursive: true });
+    const entries = await readdir(source, { withFileTypes: true });
+    for (const entry of entries) {
+      await copyMissingTree(path.join(source, entry.name), path.join(target, entry.name));
+    }
+    return;
+  }
+  if (!(await pathExists(target))) {
+    await cp(source, target, { force: false, errorOnExist: true });
+  }
+}
+
+async function ensureDaemonToken(paths: DaemonPaths): Promise<string> {
+  if (await pathExists(paths.tokenPath)) {
+    return (await readFile(paths.tokenPath, "utf8")).trim();
+  }
+  await mkdir(paths.runDir, { recursive: true });
+  const token = randomBytes(32).toString("base64url");
+  await writeFile(paths.tokenPath, `${token}\n`, { mode: 0o600 });
+  return token;
+}
+
+async function readDaemonEndpoint(configPath: string): Promise<ServerEndpoint> {
+  const content = await readFile(configPath, "utf8");
+  const server = readYamlSection(content, "server");
+  const host = server.host ?? DEFAULT_DAEMON_HOST;
+  const port = parsePort(server.port, DEFAULT_DAEMON_PORT);
+  return {
+    host,
+    port,
+    baseUrl: `http://${host}:${port}`
+  };
+}
+
+function readYamlSection(content: string, sectionName: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  const lines = content.split(/\r?\n/u);
+  let inSection = false;
+  for (const line of lines) {
+    if (!line.trim() || line.trimStart().startsWith("#")) {
+      continue;
+    }
+    if (!line.startsWith(" ") && line.endsWith(":")) {
+      inSection = line.slice(0, -1).trim() === sectionName;
+      continue;
+    }
+    if (!inSection || !line.startsWith(" ")) {
+      continue;
+    }
+    const match = line.match(/^\s+([A-Za-z0-9_-]+):\s*(.*?)\s*$/u);
+    if (match?.[1] && match[2] !== undefined) {
+      result[match[1]] = match[2].replace(/^["']|["']$/gu, "");
+    }
+  }
+  return result;
+}
+
+function parsePort(value: string | undefined, fallback: number): number {
+  if (!value) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    return fallback;
+  }
+  return parsed;
+}
+
+async function readPidStatus(pidPath: string): Promise<{ kind: "missing" } | { kind: "stale"; pid: number } | { kind: "running"; pid: number }> {
+  if (!(await pathExists(pidPath))) {
+    return { kind: "missing" };
+  }
+  const raw = (await readFile(pidPath, "utf8")).trim();
+  const pid = Number.parseInt(raw, 10);
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return { kind: "stale", pid: 0 };
+  }
+  return isProcessRunning(pid) ? { kind: "running", pid } : { kind: "stale", pid };
+}
+
+function isProcessRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForDaemon(baseUrl: string, pid: number | undefined, timeoutMs: number): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = "health check timed out";
+  while (Date.now() < deadline) {
+    if (pid && !isProcessRunning(pid)) {
+      return { ok: false, reason: `process ${pid} exited early` };
+    }
+    try {
+      if (await fetchHealth(baseUrl)) {
+        return { ok: true };
+      }
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    await delay(250);
+  }
+  return { ok: false, reason: lastError };
+}
+
+async function fetchHealth(baseUrl: string): Promise<boolean> {
+  const response = await fetch(`${baseUrl.replace(/\/+$/u, "")}/healthz`);
+  return response.ok;
+}
+
+async function fetchSystemProfile(baseUrl: string): Promise<string> {
+  const response = await fetch(`${baseUrl.replace(/\/+$/u, "")}/api/v1/system/profile`);
+  if (!response.ok) {
+    throw new Error(`${response.status} ${response.statusText}`);
+  }
+  const payload = (await response.json()) as { displayName?: string; deploymentKind?: string; runtimeMode?: string };
+  return payload.displayName ?? `${payload.deploymentKind ?? "oah"} ${payload.runtimeMode ?? "server"}`;
+}
+
+async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isProcessRunning(pid)) {
+      return true;
+    }
+    await delay(200);
+  }
+  return !isProcessRunning(pid);
+}
+
+async function tailFile(filePath: string, lines: number): Promise<string> {
+  const content = await readFile(filePath, "utf8");
+  const rows = content.split(/\r?\n/u);
+  return rows.slice(-lines).join("\n");
+}
+
+async function assertExists(filePath: string, message: string): Promise<void> {
+  if (!(await pathExists(filePath))) {
+    throw new Error(message);
+  }
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

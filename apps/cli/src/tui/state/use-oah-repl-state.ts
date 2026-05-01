@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SetStateAction } from "react";
-import type { Run, Session, SessionEventContract, Workspace, WorkspaceCatalog, WorkspaceRuntime } from "@oah/api-contracts";
+import type { Run, Session, SessionEventContract, SystemProfile, Workspace, WorkspaceCatalog, WorkspaceRuntime } from "@oah/api-contracts";
 
 import { OahApiClient, type OahConnection } from "../../api/oah-api.js";
 import type { ChatLine, Dialog, Notice, WorkspaceCreateDialog } from "../domain/types.js";
@@ -18,8 +18,9 @@ function useOahClient(connection: OahConnection) {
   return useMemo(() => new OahApiClient(connection), [connection.baseUrl, connection.token]);
 }
 
-export function useOahReplState(connection: OahConnection) {
+export function useOahReplState(connection: OahConnection, options: { initialWorkspaceId?: string | undefined } = {}) {
   const client = useOahClient(connection);
+  const [systemProfile, setSystemProfile] = useState<SystemProfile | null>(null);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [runtimes, setRuntimes] = useState<WorkspaceRuntime[]>([]);
   const [currentWorkspace, setCurrentWorkspace] = useState<Workspace | null>(null);
@@ -61,17 +62,27 @@ export function useOahReplState(connection: OahConnection) {
 
   const refreshWorkspaces = useCallback(async () => {
     try {
-      const [nextWorkspaces, nextRuntimes] = await Promise.all([client.listAllWorkspaces(), client.listWorkspaceRuntimes().catch(() => [])]);
+      const [nextProfile, nextWorkspaces, nextRuntimes] = await Promise.all([
+        client.getSystemProfile().catch(() => null),
+        client.listAllWorkspaces(),
+        client.listWorkspaceRuntimes().catch(() => [])
+      ]);
+      setSystemProfile(nextProfile);
       setWorkspaces(nextWorkspaces);
       setRuntimes(nextRuntimes);
-      if (!currentWorkspace && nextWorkspaces[0]) {
-        setCurrentWorkspace(nextWorkspaces[0]);
+      if (!currentWorkspace) {
+        const initialWorkspace = options.initialWorkspaceId
+          ? nextWorkspaces.find((workspace) => workspace.id === options.initialWorkspaceId)
+          : undefined;
+        if (initialWorkspace ?? nextWorkspaces[0]) {
+          setCurrentWorkspace(initialWorkspace ?? nextWorkspaces[0]!);
+        }
       }
-      setNotice({ level: "info", message: `Loaded ${nextWorkspaces.length} workspaces from ${client.baseUrl}` });
+      setNotice({ level: "info", message: `Loaded ${nextWorkspaces.length} workspaces from ${nextProfile?.displayName ?? client.baseUrl}` });
     } catch (error) {
       setError(error);
     }
-  }, [client, currentWorkspace, setError]);
+  }, [client, currentWorkspace, options.initialWorkspaceId, setError]);
 
   const refreshSession = useCallback(
     async (session: Session) => {
@@ -380,6 +391,7 @@ export function useOahReplState(connection: OahConnection) {
   }, [client, currentSession?.id, refreshSession, refreshSessionRuns, setError]);
 
   return {
+    systemProfile,
     workspaces,
     runtimes,
     currentWorkspace,

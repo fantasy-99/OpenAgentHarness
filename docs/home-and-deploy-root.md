@@ -127,7 +127,9 @@ server:
   host: 127.0.0.1
   port: 8787
 
-storage: {}
+storage:
+  sqlite:
+    project_db_location: shadow
 
 sandbox:
   provider: embedded
@@ -177,37 +179,49 @@ config/kubernetes.server.yaml
 
 ## 建议的命令语义
 
-未来 CLI 可以按下面约定实现：
+CLI 的 daemon lifecycle 命令按下面约定实现：
 
 ```bash
+oah daemon init
 oah daemon start
 oah daemon status
 oah daemon stop
+oah daemon restart
 oah daemon logs
 
+oah tui
 oah tui --workspace /path/to/repo
+oah tui --runtime vibe-coding
+oah web
 oah models list
 oah models add ./model.yaml
 oah models default openai-default
+oah runtimes list
+oah tools list
+oah skills list
 ```
 
-`oah tui --workspace /path/to/repo` 应：
+这些本地资产命令默认读写 `OAH_HOME`。`models add` 会校验 model YAML schema 后复制到 `OAH_HOME/models`，`models default` 只修改 `config/daemon.yaml` 的 `llm.default_model`。`tools list` 和 `skills list` 读取的是 `OAH_HOME/tools` / `OAH_HOME/skills` 全局 catalog；真正启用到项目仍应写入 repo 的 `.openharness/tools` / `.openharness/skills`。
+
+`oah tui` 应：
 
 1. 解析 `OAH_HOME`，缺省为 `~/.openagentharness`。
 2. 如果 home 不存在，用 `template/deploy-root` 初始化。
 3. 如果 daemon 未运行，使用 `config/daemon.yaml` 启动。
-4. 注册或打开传入 workspace。
-5. 通过 daemon API 进入 TUI。
+4. 没有显式 `--workspace` 且没有显式 `--base-url` 时，将当前目录作为本地 workspace。
+5. 如果传入 `--runtime <name>` 且 workspace 目录没有 `.openharness/`，先用 runtime 模板 bootstrap；已有 `.openharness/` 时保持现有 OAS 配置。
+6. 注册或打开传入 workspace。
+7. 通过 daemon API 进入 TUI。
 
-## 当前缺口
+## SQLite Shadow Storage
 
-`@oah/storage-sqlite` 当前对普通可写 project workspace 会优先写入：
+OAP daemon 默认让普通可写 project workspace 的运行时历史写入 `OAH_HOME/state` 下的 shadow storage：
 
 ```text
-<workspace>/.openharness/data/history.db
+~/.openagentharness/state/data/workspace-state/<workspace-id>/history.db
 ```
 
-桌面 / daemon 形态通常更希望会话历史始终留在 `OAH_HOME/state`，避免污染用户 repo。建议后续补一个配置开关：
+这样打开外部 repo 时不会默认生成 repo-local `.openharness/data/history.db`。配置项是：
 
 ```yaml
 storage:
@@ -215,15 +229,7 @@ storage:
     project_db_location: shadow
 ```
 
-或：
-
-```yaml
-storage:
-  sqlite:
-    force_shadow: true
-```
-
-在该能力落地前，daemon 可以先把受管 workspace 放在 `OAH_HOME/workspaces`；对外部 repo workspace，要明确告知会生成 repo-local `.openharness/data/history.db`。
+需要兼容旧的 workspace-local history 时，可以显式设置为 `workspace`。
 
 ## 兼容原则
 

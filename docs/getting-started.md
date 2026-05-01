@@ -62,9 +62,9 @@ TUI 会连接同一个 `oah-api`，用于选择 workspace、进入 session、发
     OAH_WEB_PROXY_TARGET=http://127.0.0.1:8787 pnpm dev:web
     ```
 
-## Single Workspace 模式
+## Legacy Single Workspace 模式
 
-只服务一个 Workspace 时，跳过配置文件，直接指定路径：
+该模式仅保留给旧脚本和内部测试。个人本地使用请优先运行 OAP daemon，然后在 repo 内执行 `oah tui` 或 `oah tui --runtime vibe-coding`。
 
 ```bash
 pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts -- \

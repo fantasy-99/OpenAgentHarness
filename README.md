@@ -179,12 +179,18 @@ For terminal-first work, OAH also ships an Ink-based TUI:
 The TUI talks to the same API and SSE surfaces as the WebUI. It is useful when you are already working inside a repository or shell and want to select a workspace, create or resume a session, and stream assistant output without opening the browser.
 
 ```bash
-pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui
+pnpm dev:cli -- tui
 ```
 
 ## Desktop
 
 Desktop is the planned desktop client shape, not an OAP-only product. It should connect to the same OAH-compatible API as WebUI and TUI, show whether the current endpoint is OAH or OAP from the server profile, and only enable local daemon supervision when the connected server advertises that capability.
+
+The current desktop baseline is a thin Electron shell around the existing WebUI. It does not embed the daemon or engine; by default it starts or reuses the local OAP daemon and injects that API endpoint into the WebUI settings.
+
+```bash
+pnpm dev:desktop
+```
 
 ## Architecture At A Glance
 
@@ -212,6 +218,7 @@ apps/
   controller/   # control-plane process
   worker/       # worker package wrapper
   web/          # WebUI
+  desktop/      # Electron shell around WebUI
   cli/          # TUI and terminal command entry
 packages/
   engine-core/      # runtime orchestration and native tool layer
@@ -244,29 +251,48 @@ Choose a deployment shape first:
 The packaged daemon command is the intended product shape:
 
 ```bash
+oah daemon init
 oah daemon start
-oah tui --workspace /path/to/repo
+oah daemon status
+cd /path/to/repo
+oah tui
+oah tui --runtime vibe-coding
 ```
 
-Until that command is wired into the CLI, the current development equivalent is:
+In this repository, the development equivalent is:
 
 ```bash
 pnpm install
-
-export OAH_HOME="${OAH_HOME:-$HOME/.openagentharness}"
-test -f "$OAH_HOME/config/daemon.yaml" || mkdir -p "$OAH_HOME"
-test -f "$OAH_HOME/config/daemon.yaml" || cp -R ./template/deploy-root/. "$OAH_HOME"/
-
-pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts -- \
-  --config "$OAH_HOME/config/daemon.yaml"
+pnpm dev:cli -- daemon init
+pnpm dev:cli -- daemon start
+pnpm dev:cli -- daemon status
 ```
+
+Manage local OAP assets under `OAH_HOME`:
+
+```bash
+pnpm dev:cli -- models list
+pnpm dev:cli -- models add ./model.yaml
+pnpm dev:cli -- models default openai-default
+pnpm dev:cli -- runtimes list
+pnpm dev:cli -- tools list
+pnpm dev:cli -- skills list
+```
+
+`models default` updates only `OAH_HOME/config/daemon.yaml`. `tools` and `skills` are listed from the global catalog under `OAH_HOME`; enabling them for a repo remains a workspace operation under `repo/.openharness`.
 
 Then connect a client to the local daemon:
 
 ```bash
-pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui
-pnpm dev:web
+cd /path/to/repo
+pnpm dev:cli -- tui
+pnpm dev:cli -- tui --runtime vibe-coding
+pnpm dev:cli -- web
 ```
+
+When no `--base-url` is provided, `oah tui` treats the current directory as the local workspace and registers or reuses it through the OAP daemon. `--runtime <name>` only bootstraps the repo when `.openharness/` is absent; existing OAS config is left untouched.
+
+Daemon state is kept under `OAH_HOME` (default `~/.openagentharness`): `config/daemon.yaml`, `run/daemon.pid`, `run/token`, and `logs/daemon.log`.
 
 ### Enterprise local stack (OAH)
 
@@ -356,9 +382,9 @@ helm upgrade --install oah ./deploy/charts/open-agent-harness \
 
 See [Deploy and Run](./docs/deploy.en.md) for production values, credentials, persistence, and hardening.
 
-### Single Workspace Mode
+### Legacy Single Workspace Mode
 
-Use one repo directly, without the managed multi-workspace path:
+Single workspace server mode is now a compatibility path for old scripts and focused internal tests. For normal personal use, prefer the OAP daemon plus `oah tui` from inside the repo.
 
 ```bash
 pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts -- \
@@ -400,8 +426,9 @@ These are initialization templates for new workspaces, not the active runtime co
 pnpm build
 pnpm test
 pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts -- --config "$HOME/.openagentharness/config/daemon.yaml"
-pnpm dev:web
-pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui
+pnpm dev:cli -- web
+pnpm dev:cli -- tui --workspace .
+pnpm dev:desktop
 OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync
 OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync -- --include-workspaces
 OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm local:up

@@ -23,7 +23,17 @@ OpenAgentHarness 本身仍然是 headless runtime，不提供正式产品 UI。
 
 ## 当前入口
 
-本地 stack 启动后，可以直接连接本地 API：
+默认情况下，TUI 会连接本地 OAP daemon；如果 daemon 尚未运行，会尝试先启动：
+
+```bash
+cd /path/to/repo
+pnpm dev:cli -- tui
+pnpm dev:cli -- tui --runtime vibe-coding
+```
+
+不传 `--base-url` 时，`oah tui` 会把当前目录注册或复用为本地 workspace。`--runtime <name>` 只在当前目录没有 `.openharness/` 时用于首次 bootstrap；如果已经有 `.openharness/`，会保留现有 OAS 配置并直接注册 / 复用 workspace。
+
+连接远端或企业 OAH server 时，显式传入 `--base-url`：
 
 ```bash
 pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui
@@ -33,13 +43,19 @@ pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui
 
 ```text
 oah
-  tui
+  daemon init|start|status|stop|restart|logs
+  web
+  models list|add|default
+  runtimes list
+  tools list
+  skills list
+  tui [--workspace <path>] [--runtime <name>]
   workspace:list
   workspaces
   catalog:show --workspace <id>
 ```
 
-`workspace:list` / `workspaces` 用于列出可见 workspace，`catalog:show` 用于查看指定 workspace 的 catalog JSON，`tui` 则进入交互式终端界面。
+`workspace:list` / `workspaces` 用于列出可见 workspace，`catalog:show` 用于查看指定 workspace 的 catalog JSON，`tui` 则进入交互式终端界面。连接 OAP local daemon 时，`oah tui` 默认注册或复用当前目录，也可以用 `--workspace /path/to/repo` 显式指定路径。`web` 会启动 WebUI 并指向同一套 OAH-compatible API。`models`、`runtimes`、`tools`、`skills` 命令管理或查看 `OAH_HOME` 下的本地资产，其中 tools / skills 仍只是全局 catalog，启用到项目时写入 repo 的 `.openharness`。
 
 ## 为什么需要 TUI
 

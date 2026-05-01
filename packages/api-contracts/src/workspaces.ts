@@ -92,6 +92,21 @@ export const createWorkspaceRequestSchema = z
     executionPolicy: z.enum(["local", "container", "remote_runner"]).default("local")
   });
 
+export const registerLocalWorkspaceRequestSchema = z.object({
+  rootPath: z.string().min(1),
+  name: z.string().trim().min(1).optional(),
+  runtime: z.string().trim().min(1).optional(),
+  ownerId: z.string().trim().min(1).optional(),
+  serviceName: z
+    .string()
+    .trim()
+    .min(1)
+    .max(63)
+    .regex(/^[a-z0-9](?:[a-z0-9-_]*[a-z0-9])?$/i, "serviceName may only contain letters, numbers, hyphen, and underscore.")
+    .transform((value) => value.toLowerCase())
+    .optional()
+});
+
 export const putWorkspaceFileRequestSchema = z.object({
   path: z.string().min(1),
   content: z.string(),
@@ -153,6 +168,7 @@ export type WorkspaceFileContent = z.infer<typeof workspaceFileContentSchema>;
 export type WorkspaceDeleteResult = z.infer<typeof workspaceDeleteResultSchema>;
 export type WorkspaceSkillInput = z.infer<typeof workspaceSkillInputSchema>;
 export type CreateWorkspaceRequest = z.infer<typeof createWorkspaceRequestSchema>;
+export type RegisterLocalWorkspaceRequest = z.infer<typeof registerLocalWorkspaceRequestSchema>;
 export type PutWorkspaceFileRequest = z.infer<typeof putWorkspaceFileRequestSchema>;
 export type CreateWorkspaceDirectoryRequest = z.infer<typeof createWorkspaceDirectoryRequestSchema>;
 export type MoveWorkspaceEntryRequest = z.infer<typeof moveWorkspaceEntryRequestSchema>;

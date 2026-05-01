@@ -1,5 +1,5 @@
 import path from "node:path";
-import { access } from "node:fs/promises";
+import { access, realpath, stat } from "node:fs/promises";
 
 import {
   platformModelSnapshotSchema,
@@ -535,6 +535,24 @@ function withManagedWorkspaceExternalRef(
   return externalRef ? { ...workspace, externalRef } : workspace;
 }
 
+async function resolveLocalWorkspaceRoot(rootPath: string): Promise<string> {
+  const resolvedRoot = path.resolve(rootPath);
+  let info;
+  try {
+    info = await stat(resolvedRoot);
+  } catch {
+    throw new AppError(400, "workspace_path_not_found", `Workspace root does not exist: ${rootPath}`);
+  }
+  if (!info.isDirectory()) {
+    throw new AppError(400, "workspace_path_not_directory", `Workspace root must be a directory: ${rootPath}`);
+  }
+  return realpath(resolvedRoot);
+}
+
+function localWorkspaceExternalRef(rootPath: string): string {
+  return `local:path:${rootPath.replaceAll("\\", "/")}`;
+}
+
 export interface BootstrappedRuntime {
   config: ServerConfig;
   controlPlaneEngineService: ControlPlaneRuntimeOperations;
@@ -581,6 +599,13 @@ export interface BootstrappedRuntime {
     kind?: "project";
     name?: string;
     externalRef?: string;
+    ownerId?: string;
+    serviceName?: string;
+  }) => Promise<import("@oah/api-contracts").Workspace>;
+  registerLocalWorkspace?: (input: {
+    rootPath: string;
+    name?: string;
+    runtime?: string;
     ownerId?: string;
     serviceName?: string;
   }) => Promise<import("@oah/api-contracts").Workspace>;
@@ -1104,7 +1129,8 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         );
       })
     : await sqliteStorageModule!.createSQLiteRuntimePersistence({
-        shadowRoot: sqliteShadowRoot
+        shadowRoot: sqliteShadowRoot,
+        projectDbLocation: config.storage.sqlite?.project_db_location
       });
   const primaryStorageMode = "driver" in persistence && persistence.driver === "sqlite" ? "sqlite" : "postgres";
   const postgresMetadataRetentionConfig = resolvePostgresMetadataRetentionConfig({
@@ -1933,6 +1959,39 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
                     name: input.name ?? existing?.name ?? discovered.name,
                     createdAt: existing?.createdAt ?? discovered.createdAt,
                     externalRef: input.externalRef ?? existing?.externalRef ?? inferredExternalRef,
+                    ...(input.ownerId
+                      ? { ownerId: input.ownerId }
+                      : existing?.ownerId
+                        ? { ownerId: existing.ownerId }
+                        : {}),
+                    ...(input.serviceName
+                      ? { serviceName: input.serviceName }
+                      : existing?.serviceName
+                        ? { serviceName: existing.serviceName }
+                        : {})
+                  });
+                  return runtimeService.getWorkspace(persisted.id);
+                },
+                async registerLocalWorkspace(input) {
+                  const rootPath = await resolveLocalWorkspaceRoot(input.rootPath);
+                  if (input.runtime) {
+                    const { applyWorkspaceRuntimeToExistingRoot } = await loadConfigRuntimesModule();
+                    await applyWorkspaceRuntimeToExistingRoot({
+                      runtimeDir: config.paths.runtime_dir,
+                      runtimeName: input.runtime,
+                      rootPath,
+                      platformToolDir: config.paths.tool_dir,
+                      platformSkillDir: config.paths.skill_dir
+                    });
+                  }
+                  const discovered = await discoverWorkspaceWithEnrichedModels(rootPath, "project");
+                  const existing = await workspaceRepository.getById(discovered.id);
+                  const persisted = await workspaceRepository.upsert({
+                    ...discovered,
+                    rootPath,
+                    name: input.name ?? existing?.name ?? discovered.name,
+                    createdAt: existing?.createdAt ?? discovered.createdAt,
+                    externalRef: existing?.externalRef ?? localWorkspaceExternalRef(rootPath),
                     ...(input.ownerId
                       ? { ownerId: input.ownerId }
                       : existing?.ownerId

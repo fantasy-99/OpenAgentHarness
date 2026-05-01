@@ -235,9 +235,9 @@ git push origin master
 
 ---
 
-## 单 Workspace 模式
+## Legacy 单 Workspace 模式
 
-跳过多 Workspace 目录结构，直接指定一个 workspace 路径：
+该模式只作为旧脚本和内部测试的兼容入口。个人本地使用请优先选择 OAP daemon 与 `oah tui`。
 
 ```bash
 pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts -- \

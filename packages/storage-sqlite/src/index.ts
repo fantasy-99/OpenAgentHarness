@@ -50,13 +50,14 @@ export interface SQLiteRuntimePersistence {
 
 export interface CreateSQLiteRuntimePersistenceOptions {
   shadowRoot: string;
+  projectDbLocation?: "shadow" | "workspace" | undefined;
 }
 
 export function sqliteWorkspaceHistoryDbPath(
   workspace: Pick<WorkspaceRecord, "id" | "kind" | "readOnly" | "rootPath">,
   options: CreateSQLiteRuntimePersistenceOptions
 ): string {
-  if (shouldPersistProjectDbInsideWorkspace(workspace)) {
+  if ((options.projectDbLocation ?? "workspace") === "workspace" && shouldPersistProjectDbInsideWorkspace(workspace)) {
     return defaultProjectDbPath(workspace);
   }
 
@@ -66,7 +67,9 @@ export function sqliteWorkspaceHistoryDbPath(
 export async function createSQLiteRuntimePersistence(
   options: CreateSQLiteRuntimePersistenceOptions
 ): Promise<SQLiteRuntimePersistence> {
-  const coordinator = new SQLitePersistenceCoordinator(options.shadowRoot);
+  const coordinator = new SQLitePersistenceCoordinator(options.shadowRoot, {
+    projectDbLocation: options.projectDbLocation
+  });
   const workspaceRepository = new SQLiteWorkspaceRepository({
     onUpsert: async (workspace) => {
       await coordinator.upsertWorkspace(workspace);
