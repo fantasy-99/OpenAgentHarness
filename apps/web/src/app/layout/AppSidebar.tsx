@@ -1,10 +1,16 @@
 import { memo, useMemo, useRef, useState, type ReactNode } from "react";
 
+import { formatSystemProfileDisplayName, type Run } from "@oah/api-contracts";
 import {
   Bot,
+  ChevronDown,
+  ChevronsLeft,
+  ChevronsRight,
   Database,
   FolderPlus,
   Lock,
+  Layers3,
+  MessageSquareText,
   Network,
   Orbit,
   Palette,
@@ -12,7 +18,10 @@ import {
   RotateCcw,
   Rows3,
   Search,
+  Server,
   Settings2,
+  Sparkles,
+  SquareTerminal,
   Table2,
   Trash2,
   Upload,
@@ -41,6 +50,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useShallow } from "zustand/shallow";
 
 import { useHealthStore } from "../stores/health-store";
@@ -48,7 +58,7 @@ import { useModelsStore } from "../stores/models-store";
 import { useSettingsStore } from "../stores/settings-store";
 import { useStreamStore } from "../stores/stream-store";
 import { useUiStore } from "../stores/ui-store";
-import { probeTone, streamTone, toneBadgeClass, type SavedSessionRecord, type StatusSemanticTone, type SurfaceMode } from "../support";
+import { probeTone, streamTone, toneBadgeClass, type MainViewMode, type SavedSessionRecord, type StatusSemanticTone, type SurfaceMode } from "../support";
 import { appThemeOptions, isAppThemeName, type AppThemeName } from "../theme";
 import type { useAppController } from "../use-app-controller";
 import { SessionNavItem, WorkspaceNavItem } from "./sidebar-items";
@@ -135,6 +145,17 @@ function SidebarMetric(props: {
   );
 }
 
+function StatusPill(props: { label: string; value: string; tone: StatusSemanticTone; icon: typeof Network }) {
+  const Icon = props.icon;
+  return (
+    <div className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] ${toneBadgeClass(props.tone)}`}>
+      <Icon className="h-3.5 w-3.5" />
+      <span className="uppercase tracking-[0.14em] opacity-72">{props.label}</span>
+      <span className="font-medium normal-case tracking-normal">{props.value}</span>
+    </div>
+  );
+}
+
 function SidebarFilterField(props: { label: string; value: string; onChange: (value: string) => void; placeholder: string }) {
   return (
     <label className="space-y-1">
@@ -153,25 +174,28 @@ function SidebarModeToggle(props: {
   items: Array<{ key: string; label: string; icon: ReactNode }>;
   activeKey: string;
   onChange: (key: string) => void;
+  iconOnly?: boolean;
 }) {
   return (
     <div
-      className="sidebar-mode-toggle info-panel grid gap-1.5 rounded-[1.7rem] p-1.5"
+      className={`sidebar-mode-toggle info-panel grid gap-1 rounded-[1.35rem] p-1 ${props.iconOnly ? "shrink-0" : ""}`}
       style={{ gridTemplateColumns: `repeat(${Math.max(1, props.items.length)}, minmax(0, 1fr))` }}
     >
       {props.items.map((item) => (
         <Button
           key={item.key}
           variant="ghost"
-          className={`h-12 justify-center rounded-[1.25rem] px-3 text-sm transition-all ${
+          className={`${props.iconOnly ? "h-8 w-8 px-0" : "h-10 min-w-0 px-2"} justify-center rounded-[0.9rem] text-sm transition-all ${
             props.activeKey === item.key
-              ? "border border-black/10 bg-white text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.85),0_10px_24px_-18px_rgba(17,17,17,0.4)]"
+              ? "border border-black/10 bg-white text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.85),0_8px_18px_-16px_rgba(17,17,17,0.38)]"
               : "text-muted-foreground hover:bg-white/55 hover:text-foreground"
           }`}
           onClick={() => props.onChange(item.key)}
+          title={item.label}
+          aria-label={item.label}
         >
-          <span className="mr-2.5 opacity-80">{item.icon}</span>
-          <span>{item.label}</span>
+          <span className="shrink-0 opacity-80">{item.icon}</span>
+          {props.iconOnly ? null : <span className="min-w-0 truncate">{item.label}</span>}
         </Button>
       ))}
     </div>
@@ -220,6 +244,12 @@ function SidebarActionItem(props: {
 
 function RuntimeSidebar(props: SidebarProps) {
   const [runtimeWorkspaceDeleteBusy, setRuntimeWorkspaceDeleteBusy] = useState(false);
+  const { mainViewMode, setMainViewMode } = useUiStore(
+    useShallow((state) => ({
+      mainViewMode: state.mainViewMode,
+      setMainViewMode: state.setMainViewMode
+    }))
+  );
   const { workspaceRuntimeFilter, setWorkspaceRuntimeFilter, serviceScope } = useSettingsStore(
     useShallow((state) => ({
       workspaceRuntimeFilter: state.workspaceRuntimeFilter,
@@ -227,16 +257,9 @@ function RuntimeSidebar(props: SidebarProps) {
       serviceScope: state.serviceScope
     }))
   );
-  const showFilteredWorkspaceCount = props.filteredSavedWorkspaces.length !== props.orderedSavedWorkspaces.length;
-  const workspaceCountLabel = showFilteredWorkspaceCount
-    ? `${props.filteredSavedWorkspaces.length} of ${props.orderedSavedWorkspaces.length} workspaces`
-    : `${props.orderedSavedWorkspaces.length} workspaces`;
-  const sessionCountLabel =
-    props.savedSessionsCount === props.totalSavedSessionsCount
-      ? `${props.savedSessionsCount} sessions`
-      : `${props.savedSessionsCount} of ${props.totalSavedSessionsCount} sessions`;
   const expandedWorkspaceIdSet = useMemo(() => new Set(props.expandedWorkspaceIds), [props.expandedWorkspaceIds]);
   const expandedSessionIdSet = useMemo(() => new Set(props.expandedSessionIds), [props.expandedSessionIds]);
+  const engineViewLabel = mainViewMode === "inspector" ? "Inspector" : "Conversation";
   const selectedRuntimeWorkspaceIds = useMemo(
     () => (workspaceRuntimeFilter.trim() ? props.filteredSavedWorkspaces.map((entry) => entry.id) : []),
     [props.filteredSavedWorkspaces, workspaceRuntimeFilter]
@@ -285,6 +308,29 @@ function RuntimeSidebar(props: SidebarProps) {
       }),
     [props.filteredSavedWorkspaces, props.sessionsByWorkspaceId]
   );
+  const sessionRunStatusById = useMemo(() => {
+    const statusRank: Record<Run["status"], number> = {
+      running: 0,
+      waiting_tool: 1,
+      queued: 2,
+      failed: 3,
+      timed_out: 4,
+      cancelled: 5,
+      completed: 6
+    };
+    const next = new Map<string, Run["status"]>();
+    for (const sessionRun of props.sessionRuns) {
+      const sessionIdValue = sessionRun.sessionId?.trim();
+      if (!sessionIdValue) {
+        continue;
+      }
+      const current = next.get(sessionIdValue);
+      if (!current || statusRank[sessionRun.status] < statusRank[current]) {
+        next.set(sessionIdValue, sessionRun.status);
+      }
+    }
+    return next;
+  }, [props.sessionRuns]);
 
   function hasActiveDescendant(
     sessionId: string,
@@ -328,6 +374,7 @@ function RuntimeSidebar(props: SidebarProps) {
             entry={sessionEntry}
             depth={depth}
             active={sessionEntry.id === props.sessionId}
+            runStatus={sessionRunStatusById.get(sessionEntry.id)}
             expanded={shouldExpand}
             hasChildren={childSessions.length > 0}
             onSelect={() => {
@@ -368,67 +415,77 @@ function RuntimeSidebar(props: SidebarProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-2 py-3">
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-2.5">
         <div className="space-y-3">
-          <div className="flex items-center justify-between gap-2 px-2">
-            <div>
-              <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">Workspaces</p>
-              <p className="mt-1 text-[11px] text-muted-foreground">
-                {workspaceCountLabel} · {sessionCountLabel} · {props.selectedServiceScopeLabel}
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-1">
-              <Button
-                size="icon"
-                variant="ghost"
-                className="h-8 w-8"
-                onClick={() => {
-                  void props.refreshWorkspaceIndex();
-                }}
-                title="Refresh workspace list"
-              >
-                <RotateCcw className="h-4 w-4" />
-              </Button>
-              {props.workspaceManagementEnabled ? (
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <SidebarModeToggle
+                activeKey={mainViewMode}
+                onChange={(key) => setMainViewMode(key as MainViewMode)}
+                iconOnly
+                items={[
+                  { key: "conversation", label: "Conversation", icon: <MessageSquareText className="h-4 w-4" /> },
+                  { key: "inspector", label: "Inspector", icon: <Sparkles className="h-4 w-4" /> }
+                ]}
+              />
+              <div className="flex shrink-0 items-center gap-0.5">
                 <Button
                   size="icon"
                   variant="ghost"
-                  className="h-8 w-8"
+                  className="h-7 w-7"
                   onClick={() => {
-                    props.setWorkspaceDraft((current) => ({ ...current, runtime: "" }));
-                    props.setShowWorkspaceCreator(true);
+                    void props.refreshWorkspaceIndex();
                   }}
-                  title="New Workspace"
+                  title="Refresh workspace list"
                 >
-                  <FolderPlus className="h-4 w-4" />
+                  <RotateCcw className="h-3.5 w-3.5" />
                 </Button>
-              ) : null}
-              <Button
-                size="icon"
-                variant="ghost"
-                className="h-8 w-8"
-                disabled={!props.activeWorkspaceId.trim()}
-                title="New Session"
-                onClick={() => {
-                  if (!props.activeWorkspaceId.trim()) {
-                    return;
-                  }
-                  props.expandWorkspaceInSidebar(props.activeWorkspaceId);
-                  props.createSession();
-                }}
-              >
-                <Bot className="h-4 w-4" />
-              </Button>
+                {props.workspaceManagementEnabled ? (
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-7 w-7"
+                    onClick={() => {
+                      props.setWorkspaceDraft((current) => ({ ...current, runtime: "" }));
+                      props.setShowWorkspaceCreator(true);
+                    }}
+                    title="New Workspace"
+                  >
+                    <FolderPlus className="h-3.5 w-3.5" />
+                  </Button>
+                ) : null}
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-7 w-7"
+                  disabled={!props.activeWorkspaceId.trim()}
+                  title="New Session"
+                  onClick={() => {
+                    if (!props.activeWorkspaceId.trim()) {
+                      return;
+                    }
+                    props.expandWorkspaceInSidebar(props.activeWorkspaceId);
+                    props.createSession();
+                  }}
+                >
+                  <Bot className="h-3.5 w-3.5" />
+                </Button>
+              </div>
             </div>
+            <p className="truncate px-1 text-[12px] font-medium leading-4 text-muted-foreground">
+              Engine View <span className="text-muted-foreground/50">·</span> <span className="text-foreground">{engineViewLabel}</span>
+            </p>
           </div>
-          <div className="space-y-1 px-2">
-            <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Runtime</span>
-            <div className="flex items-center gap-1.5">
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-medium leading-4 text-muted-foreground">Runtime</span>
+            </div>
+            <div className="flex items-center gap-1">
               <Select
                 value={workspaceRuntimeFilter || "__all_runtimes__"}
                 onValueChange={(value) => setWorkspaceRuntimeFilter(value === "__all_runtimes__" ? "" : value)}
               >
-                <SelectTrigger className="h-8 min-w-0 flex-1 rounded-xl border-black/10 bg-white/68 text-xs shadow-none" aria-label="Workspace runtime filter">
+                <SelectTrigger className="h-8 min-w-0 flex-1 rounded-lg border-black/10 bg-white/58 text-xs shadow-none" aria-label="Workspace runtime filter">
                   <SelectValue placeholder="All runtimes" />
                 </SelectTrigger>
                 <SelectContent align="start">
@@ -444,7 +501,7 @@ function RuntimeSidebar(props: SidebarProps) {
                 <Button
                   size="icon"
                   variant="ghost"
-                  className="h-8 w-8 shrink-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  className="h-7 w-7 shrink-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
                   disabled={!canDeleteRuntimeWorkspaces}
                   onClick={() => {
                     void handleDeleteCurrentRuntimeWorkspaces();
@@ -455,7 +512,7 @@ function RuntimeSidebar(props: SidebarProps) {
                       : "Select a runtime to delete its workspaces"
                   }
                 >
-                  <Trash2 className="h-4 w-4" />
+                  <Trash2 className="h-3.5 w-3.5" />
                 </Button>
               ) : null}
             </div>
@@ -474,36 +531,38 @@ function RuntimeSidebar(props: SidebarProps) {
               </p>
             </div>
           ) : (
-            workspaceSessionGroups.map(({ entry, workspaceSessions, childSessionsByParentId, topLevelSessions, lastEditedAt }) => {
-              const isExpanded = expandedWorkspaceIdSet.has(entry.id);
-              return (
-                <div key={entry.id} className="runtime-workspace-group space-y-1.5">
-                  <WorkspaceNavItem
-                    entry={entry}
-                    active={entry.id === props.activeWorkspaceId}
-                    expanded={isExpanded}
-                    sessionCount={workspaceSessions.length}
-                    {...(lastEditedAt ? { lastEditedAt } : {})}
-                    canRemove={props.workspaceManagementEnabled}
-                    onSelect={() => props.openWorkspace(entry.id)}
-                    onToggleExpanded={() => props.toggleWorkspaceExpansion(entry.id)}
-                    onRemove={() => props.deleteWorkspace(entry.id)}
-                  />
-                  {isExpanded ? (
-                    <div className="runtime-session-tree ml-2 space-y-1.5 pl-1">
-                      {topLevelSessions.length === 0 ? (
-                        <div className="rounded-lg px-3 py-2.5 text-xs text-muted-foreground">No sessions yet.</div>
-                      ) : (
-                        renderSessionTree(topLevelSessions, {
-                          childSessionsByParentId,
-                          workspaceId: entry.id
-                        })
-                      )}
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })
+            <div className="space-y-0.5">
+              {workspaceSessionGroups.map(({ entry, workspaceSessions, childSessionsByParentId, topLevelSessions, lastEditedAt }) => {
+                const isExpanded = expandedWorkspaceIdSet.has(entry.id);
+                return (
+                  <div key={entry.id} className="runtime-workspace-group space-y-1">
+                    <WorkspaceNavItem
+                      entry={entry}
+                      active={entry.id === props.activeWorkspaceId}
+                      expanded={isExpanded}
+                      sessionCount={workspaceSessions.length}
+                      {...(lastEditedAt ? { lastEditedAt } : {})}
+                      canRemove={props.workspaceManagementEnabled}
+                      onSelect={() => props.openWorkspace(entry.id)}
+                      onToggleExpanded={() => props.toggleWorkspaceExpansion(entry.id)}
+                      onRemove={() => props.deleteWorkspace(entry.id)}
+                    />
+                    {isExpanded ? (
+                      <div className="runtime-session-tree ml-2 space-y-1.5 pl-1">
+                        {topLevelSessions.length === 0 ? (
+                          <div className="rounded-lg px-3 py-2.5 text-xs text-muted-foreground">No sessions yet.</div>
+                        ) : (
+                          renderSessionTree(topLevelSessions, {
+                            childSessionsByParentId,
+                            workspaceId: entry.id
+                          })
+                        )}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
       </div>
@@ -936,10 +995,30 @@ function ProviderSidebar(props: SidebarProps) {
 }
 
 function AppSidebarImpl(props: SidebarProps) {
+  const healthStatus = useHealthStore((state) => state.healthStatus);
+  const streamState = useStreamStore((state) => state.streamState);
   const { surfaceMode, setSurfaceMode } = useUiStore(
     useShallow((state) => ({
       surfaceMode: state.surfaceMode,
       setSurfaceMode: state.setSurfaceMode
+    }))
+  );
+  const { consoleOpen, setConsoleOpen } = useUiStore(
+    useShallow((state) => ({
+      consoleOpen: state.consoleOpen,
+      setConsoleOpen: state.setConsoleOpen
+    }))
+  );
+  const { sidebarCollapsed, setSidebarCollapsed } = useUiStore(
+    useShallow((state) => ({
+      sidebarCollapsed: state.sidebarCollapsed,
+      setSidebarCollapsed: state.setSidebarCollapsed
+    }))
+  );
+  const { serviceScope, setServiceScope } = useSettingsStore(
+    useShallow((state) => ({
+      serviceScope: state.serviceScope,
+      setServiceScope: state.setServiceScope
     }))
   );
   const uploadTemplateInputRef = useRef<HTMLInputElement>(null);
@@ -948,8 +1027,8 @@ function AppSidebarImpl(props: SidebarProps) {
   const [uploadTemplateFile, setUploadTemplateFile] = useState<File | null>(null);
   const [showUploadTemplateDialog, setShowUploadTemplateDialog] = useState(false);
 
-  const icon =
-    surfaceMode === "storage" ? <Table2 className="h-4 w-4" /> : surfaceMode === "provider" ? <Network className="h-4 w-4" /> : <Bot className="h-4 w-4" />;
+  const icon = surfaceIcon(surfaceMode);
+  const title = surfaceTitle(surfaceMode);
   const subtitle =
     surfaceMode === "storage"
       ? "Inspect Postgres tables and Redis keyspace."
@@ -957,49 +1036,116 @@ function AppSidebarImpl(props: SidebarProps) {
         ? "Connection, health, and provider registry."
         : "Navigate workspaces and sessions.";
   const currentThemeLabel = appThemeOptions.find((option) => option.value === props.theme)?.label ?? props.theme;
+  const serviceScopeOptions = props.serviceScopeOptions ?? [];
+  const serverLabel = props.systemProfile ? formatSystemProfileDisplayName(props.systemProfile) : "unknown";
+  const serverTone: StatusSemanticTone = props.systemProfile?.deploymentKind === "oap" ? "emerald" : props.systemProfile ? "sky" : "amber";
+  const collapseButton = (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      className="h-8 w-8 rounded-xl text-muted-foreground hover:bg-white/55 hover:text-foreground"
+      onClick={() => setSidebarCollapsed((current) => !current)}
+      title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+      aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+    >
+      {sidebarCollapsed ? <ChevronsRight className="h-4 w-4" /> : <ChevronsLeft className="h-4 w-4" />}
+    </Button>
+  );
 
   return (
     <>
-      <aside className="app-sidebar-surface flex min-h-0 w-[288px] shrink-0 flex-col border-r border-black/10">
-        <div className="sidebar-surface-hero border-b border-black/8 bg-gradient-to-b from-white/34 to-transparent px-3 py-3">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex min-w-0 items-start gap-3">
-              <div className="sidebar-surface-hero-icon flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-black/10 bg-white/72 shadow-[inset_0_1px_0_rgba(255,255,255,0.74),0_14px_24px_-22px_rgba(17,17,17,0.42)]">
-                {icon}
-              </div>
-              <div className="min-w-0">
-                <Select value={surfaceMode} onValueChange={(value) => setSurfaceMode(value as SurfaceMode)}>
-                  <SelectTrigger
-                    size="sm"
-                    className="h-7 w-[156px] rounded-xl border-black/10 bg-white/68 px-2 text-sm font-semibold tracking-tight text-foreground shadow-none focus-visible:ring-2 focus-visible:ring-black/10"
-                    aria-label="Surface"
-                  >
-                    <SelectValue placeholder="Surface" />
-                  </SelectTrigger>
-                  <SelectContent align="start" className="min-w-[156px]">
-                    <SelectItem value="engine">Engine</SelectItem>
-                    <SelectItem value="storage" disabled={!props.storageInspectionEnabled}>
-                      Storage
-                    </SelectItem>
-                    <SelectItem value="provider">Provider</SelectItem>
-                  </SelectContent>
-                </Select>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">{subtitle}</p>
-              </div>
-            </div>
-            {surfaceMode === "storage" ? (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-9 w-9 shrink-0 rounded-xl"
-                onClick={props.onRefreshStorageOverview}
-                disabled={props.storageBusy}
-                title="Refresh storage overview"
-              >
-                <RefreshCw className="h-4 w-4" />
-              </Button>
-            ) : null}
+      <div
+        className={`relative min-h-0 shrink-0 overflow-visible transition-[width] duration-300 ease-out ${
+          sidebarCollapsed ? "w-0" : "w-[288px]"
+        }`}
+      >
+        <div
+          className={`absolute left-3 top-3 z-40 transition-all duration-300 ease-out ${
+            sidebarCollapsed
+              ? "pointer-events-auto translate-x-0 opacity-100"
+              : "pointer-events-none -translate-x-2 opacity-0"
+          }`}
+        >
+          <div className="rounded-2xl border border-border/70 bg-background/86 p-1 shadow-[0_10px_24px_-20px_rgba(17,17,17,0.38)] backdrop-blur-md">
+            {collapseButton}
           </div>
+        </div>
+        <aside
+          className={`app-sidebar-surface absolute inset-y-0 left-0 flex min-h-0 w-[288px] shrink-0 flex-col border-r border-black/10 transition-[transform,opacity] duration-300 ease-out ${
+            sidebarCollapsed ? "pointer-events-none -translate-x-full opacity-0" : "translate-x-0 opacity-100"
+          }`}
+        >
+          <>
+            <div className="sidebar-surface-hero border-b border-black/8 px-4 py-3">
+              <div className="flex items-center gap-3">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="sidebar-surface-brand-logo flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-black/8 bg-white/50 p-1.5">
+                      <img src="/oah-logo.png" alt="Open Agent Harness logo" className="h-full w-full object-contain dark:hidden" />
+                      <img src="/oah-logo-dark.png" alt="" aria-hidden="true" className="hidden h-full w-full object-contain dark:block" />
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent side="right" sideOffset={10} align="start" className="max-w-none items-start rounded-2xl bg-popover p-3 text-popover-foreground shadow-[0_24px_48px_-32px_rgba(17,17,17,0.45)] ring-1 ring-foreground/10">
+                    <div className="space-y-2">
+                      <p className="px-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Server Status</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        <StatusPill icon={Network} label="Health" value={healthStatus} tone={probeTone(healthStatus)} />
+                        <StatusPill icon={Orbit} label="Stream" value={streamState} tone={streamTone(streamState)} />
+                        <StatusPill icon={Server} label="Server" value={serverLabel} tone={serverTone} />
+                      </div>
+                    </div>
+                  </TooltipContent>
+                </Tooltip>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[14px] font-semibold leading-5 tracking-tight text-foreground">Open Agent Harness</p>
+                  <div className="mt-0.5 flex min-w-0 items-center gap-2">
+                    <p className="truncate text-xs leading-4 text-muted-foreground">WebUI</p>
+                    <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[9px] font-medium uppercase tracking-[0.14em] text-foreground/52">
+                      Beta
+                    </Badge>
+                  </div>
+                </div>
+                {collapseButton}
+              </div>
+
+              <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="sidebar-surface-switch group mt-3 flex h-10 w-full items-center gap-2 rounded-xl border border-black/8 bg-white/34 px-2.5 text-left transition hover:bg-white/54 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black/10"
+                aria-label="Surface"
+              >
+                <span className="sidebar-surface-hero-icon flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground">
+                  {icon}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-medium leading-5 tracking-tight text-foreground">{title}</span>
+                </span>
+                <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition group-data-[state=open]:rotate-180" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-[260px] rounded-2xl p-1.5">
+              <DropdownMenuLabel className="px-2 pt-1 pb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                Surface
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              <DropdownMenuRadioGroup value={surfaceMode} onValueChange={(value) => setSurfaceMode(value as SurfaceMode)}>
+                <DropdownMenuRadioItem value="engine" className="mx-1 rounded-xl px-2 py-2">
+                  <Bot className="h-4 w-4 text-muted-foreground" />
+                  Engine
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="storage" disabled={!props.storageInspectionEnabled} className="mx-1 rounded-xl px-2 py-2">
+                  <Table2 className="h-4 w-4 text-muted-foreground" />
+                  Storage
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="provider" className="mx-1 rounded-xl px-2 py-2">
+                  <Network className="h-4 w-4 text-muted-foreground" />
+                  Provider
+                </DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
         <div className="min-h-0 flex-1 overflow-hidden">
@@ -1038,6 +1184,39 @@ function AppSidebarImpl(props: SidebarProps) {
               <DropdownMenuSeparator />
               <div className="px-2 py-2">
                 <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                  <Layers3 className="h-3.5 w-3.5" />
+                  Service
+                </div>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">Choose which service namespace the sidebar and storage views use.</p>
+                <Select value={serviceScope} onValueChange={setServiceScope}>
+                  <SelectTrigger className="mt-2 h-9 w-full rounded-xl border-black/10 bg-white/68 text-xs shadow-none" aria-label="Service scope">
+                    <SelectValue placeholder="Service" />
+                  </SelectTrigger>
+                  <SelectContent align="start">
+                    {serviceScopeOptions.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <DropdownMenuSeparator />
+              <div className="px-2 py-2">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                      <SquareTerminal className="h-3.5 w-3.5" />
+                      Console
+                    </div>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">Show the runtime event console below the engine view.</p>
+                  </div>
+                  <Switch checked={consoleOpen} onCheckedChange={setConsoleOpen} aria-label="Toggle console" />
+                </div>
+              </div>
+              <DropdownMenuSeparator />
+              <div className="px-2 py-2">
+                <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
                   <Palette className="h-3.5 w-3.5" />
                   Theme
                 </div>
@@ -1060,7 +1239,9 @@ function AppSidebarImpl(props: SidebarProps) {
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
-      </aside>
+        </>
+        </aside>
+      </div>
 
       <Dialog open={props.showWorkspaceCreator} onOpenChange={props.setShowWorkspaceCreator}>
         <DialogContent>
@@ -1246,6 +1427,26 @@ function AppSidebarImpl(props: SidebarProps) {
       </Dialog>
     </>
   );
+}
+
+function surfaceIcon(surfaceMode: SurfaceMode) {
+  if (surfaceMode === "storage") {
+    return <Table2 className="h-4 w-4" />;
+  }
+  if (surfaceMode === "provider") {
+    return <Network className="h-4 w-4" />;
+  }
+  return <Bot className="h-4 w-4" />;
+}
+
+function surfaceTitle(surfaceMode: SurfaceMode) {
+  if (surfaceMode === "storage") {
+    return "Storage";
+  }
+  if (surfaceMode === "provider") {
+    return "Provider";
+  }
+  return "Engine";
 }
 
 export const AppSidebar = memo(AppSidebarImpl);

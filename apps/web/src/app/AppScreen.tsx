@@ -1,6 +1,5 @@
 import { Suspense, lazy } from "react";
 
-import { AppHeader } from "./layout/AppHeader";
 import { AppSidebar } from "./layout/AppSidebar";
 import { useUiStore } from "./stores/ui-store";
 import { toneBadgeClass } from "./support";
@@ -41,8 +40,6 @@ export function AppScreen({ theme, onThemeChange }: AppScreenProps) {
 
   return (
     <div className="app-shell h-screen flex flex-col overflow-x-hidden">
-      <AppHeader {...controller.headerProps} />
-
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         <div className="flex-1 min-h-0 flex overflow-hidden">
           <AppSidebar {...controller.sidebarSurfaceProps} theme={theme} onThemeChange={onThemeChange} />

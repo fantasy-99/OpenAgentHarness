@@ -2310,14 +2310,6 @@ export function useAppController() {
   const handleInspectConsoleEntry = useEffectEvent((entry: RuntimeConsoleEntry) => {
     inspectConsoleEntry(entry);
   });
-  const headerProps = useMemo(
-    () => ({
-      serviceScopeOptions,
-      systemProfile,
-      storageInspectionEnabled
-    }),
-    [serviceScopeOptions, storageInspectionEnabled, systemProfile]
-  );
   const providerSurfaceProps = useMemo(
     () => ({
       pingHealth: handlePingHealth,
@@ -2330,6 +2322,8 @@ export function useAppController() {
   const sidebarSurfaceProps = useMemo(
     () => ({
       serviceScope: normalizedServiceScope,
+      serviceScopeOptions,
+      systemProfile,
       selectedServiceScopeLabel,
       workspaceRuntimeFilterOptions,
       filteredSavedWorkspaces,
@@ -2351,6 +2345,7 @@ export function useAppController() {
       refreshWorkspaceIndex: navigationActions.refreshWorkspaceIndex,
       createSession: navigationActions.createSession,
       sessionId,
+      sessionRuns,
       refreshSessionById: navigationActions.refreshSession,
       removeSavedSession: navigationActions.removeSavedSession,
       renameSession: navigationActions.renameSession,
@@ -2428,13 +2423,16 @@ export function useAppController() {
       normalizedServiceScope,
       orderedSavedWorkspaces,
       savedSessions.length,
+      serviceScopeOptions,
       selectedServiceScopeLabel,
       sessionId,
+      sessionRuns,
       sessionsByWorkspaceId,
       setExpandedSessionIds,
       setShowWorkspaceCreator,
       setWorkspaceDraft,
       showWorkspaceCreator,
+      systemProfile,
       storageController.storageSurfaceProps.onClearStorageTableFilters,
       storageController.storageSurfaceProps.onRedisKeyPatternChange,
       storageController.storageSurfaceProps.onRefreshRedisKeys,
@@ -2616,7 +2614,6 @@ export function useAppController() {
     errorMessage,
     activeError,
     surfaceMode,
-    headerProps,
     storageSurfaceProps: storageController.storageSurfaceProps,
     providerSurfaceProps,
     sidebarSurfaceProps,

@@ -22,6 +22,7 @@ type UiState = {
   consoleOpen: boolean;
   consoleHeight: number;
   consoleFilter: ConsoleFilter;
+  sidebarCollapsed: boolean;
   activity: string;
   errorMessage: string;
   activeError: AppRequestErrorSummary | null;
@@ -37,6 +38,7 @@ type UiState = {
   setConsoleOpen: (value: boolean | ((current: boolean) => boolean)) => void;
   setConsoleHeight: (value: number) => void;
   setConsoleFilter: (value: ConsoleFilter) => void;
+  setSidebarCollapsed: (value: boolean | ((current: boolean) => boolean)) => void;
   setActivity: (value: string) => void;
   setErrorMessage: (value: string) => void;
   setActiveError: (value: AppRequestErrorSummary | null | ((current: AppRequestErrorSummary | null) => AppRequestErrorSummary | null)) => void;
@@ -55,6 +57,7 @@ export const useUiStore = create<UiState>((set) => ({
   consoleOpen: false,
   consoleHeight: 280,
   consoleFilter: "all",
+  sidebarCollapsed: false,
   activity: "等待连接",
   errorMessage: "",
   activeError: null,
@@ -71,6 +74,8 @@ export const useUiStore = create<UiState>((set) => ({
     set((state) => ({ consoleOpen: typeof value === "function" ? value(state.consoleOpen) : value })),
   setConsoleHeight: (consoleHeight) => set({ consoleHeight }),
   setConsoleFilter: (consoleFilter) => set({ consoleFilter }),
+  setSidebarCollapsed: (value) =>
+    set((state) => ({ sidebarCollapsed: typeof value === "function" ? value(state.sidebarCollapsed) : value })),
   setActivity: (activity) => set({ activity }),
   setErrorMessage: (errorMessage) => set({ errorMessage }),
   setActiveError: (value) =>

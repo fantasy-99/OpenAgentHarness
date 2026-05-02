@@ -4,8 +4,10 @@ import remarkGfm from "remark-gfm";
 import { Archive, ArrowRight, Bot, ChevronRight, CornerDownRight, Folder, ImagePlus, Loader2, RefreshCw, Send, Sparkles, Square, Wrench, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 
+import { useSessionAgentStore } from "../stores/session-agent-store";
 import { useStreamStore } from "../stores/stream-store";
 import { useUiStore } from "../stores/ui-store";
 import { formatTimestamp, statusTone, toneBadgeClass } from "../support";
@@ -19,6 +21,7 @@ import type { DraftImageAttachment } from "./composer-content";
 type RuntimeProps = ReturnType<typeof useAppController>["runtimeDetailSurfaceProps"];
 type ToolStatus = "running" | "started" | "completed" | "failed";
 const MARKDOWN_REMARK_PLUGINS = [remarkGfm];
+const AUTO_SESSION_MODEL_VALUE = "__session_model_auto__";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -26,6 +29,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isImageFile(file: File) {
   return file.type.startsWith("image/");
+}
+
+function sessionAgentLabel(agent: { name: string; mode: "primary" | "subagent" | "all" }) {
+  return `${agent.name} · ${agent.mode}`;
 }
 
 function createClientId() {
@@ -1440,25 +1447,179 @@ const QueuedRunsPanel = memo(function QueuedRunsPanel(props: QueuedRunsPanelProp
 type ConversationStatusBarProps = {
   hasActiveSession: boolean;
   isRunning: boolean;
+  messagesCount: number;
+  session: RuntimeProps["session"];
+  workspace: RuntimeProps["workspace"];
+  workspaceId: RuntimeProps["workspaceId"];
+  catalog: RuntimeProps["catalog"];
+  sessionRuns: RuntimeProps["sessionRuns"];
+  isSwitchingSessionAgent: RuntimeProps["isSwitchingSessionAgent"];
+  switchSessionAgent: RuntimeProps["switchSessionAgent"];
+  isSwitchingSessionModel: RuntimeProps["isSwitchingSessionModel"];
+  updateSessionModel: RuntimeProps["updateSessionModel"];
 };
 
 const ConversationStatusBar = memo(function ConversationStatusBar(props: ConversationStatusBarProps) {
   const run = useStreamStore((state) => state.run);
+  const pendingSessionAgentName = useSessionAgentStore((state) => state.pendingSessionAgentName);
+  const pendingSessionModelRef = useSessionAgentStore((state) => state.pendingSessionModelRef);
+  const sessionWorkspaceCatalog =
+    props.session && (props.workspace?.id === props.session.workspaceId || props.workspaceId === props.session.workspaceId)
+      ? props.catalog
+      : null;
+  const selectedAgentName = pendingSessionAgentName ?? props.session?.activeAgentName ?? run?.effectiveAgentName ?? "";
+  const visibleSessionAgents = [...new Map(
+    (sessionWorkspaceCatalog?.agents ?? [])
+      .filter((agent) => agent.mode === "primary" || agent.mode === "all")
+      .sort((left, right) => {
+        if (left.source === right.source) {
+          return left.name.localeCompare(right.name);
+        }
 
-  if (!props.hasActiveSession || (!props.isRunning && !run?.status)) {
+        return left.source === "workspace" ? -1 : 1;
+      })
+      .map((agent) => [agent.name, agent] as const)
+  ).values()];
+  const selectedAgent = visibleSessionAgents.find((agent) => agent.name === selectedAgentName);
+  const selectedAgentValue = selectedAgent?.name;
+  const agentSelectorSession = visibleSessionAgents.length > 0 && props.session ? props.session : null;
+  const selectedAgentSelectValue = selectedAgentValue ?? agentSelectorSession?.activeAgentName ?? visibleSessionAgents[0]?.name;
+  const sessionModelOptions = [
+    ...new Map(
+      (sessionWorkspaceCatalog?.models ?? [])
+        .map((model) => [model.ref, model] as const)
+        .concat(
+          props.session?.modelRef
+            ? [
+                [
+                  props.session.modelRef,
+                  {
+                    ref: props.session.modelRef,
+                    name: props.session.modelRef.replace(/^(platform|workspace)\//, ""),
+                    source: props.session.modelRef.startsWith("workspace/") ? "workspace" : "platform",
+                    provider: "custom"
+                  }
+                ] as const
+              ]
+            : []
+        )
+    ).values()
+  ].sort((left, right) => {
+    if (left.source === right.source) {
+      return left.name.localeCompare(right.name);
+    }
+
+    return left.source === "workspace" ? -1 : 1;
+  });
+  const selectedSessionModelValue = pendingSessionModelRef ?? props.session?.modelRef ?? AUTO_SESSION_MODEL_VALUE;
+  const sessionModelLocked =
+    props.messagesCount > 0 ||
+    props.sessionRuns.length > 0 ||
+    (run?.sessionId != null && run.sessionId === props.session?.id) ||
+    props.isRunning;
+
+  if (!props.hasActiveSession) {
     return null;
   }
 
   return (
-    <div className="sticky top-0 z-10 flex items-center justify-end gap-2 px-4 py-1.5 pointer-events-none min-h-[36px]">
-      {props.isRunning ? (
-        <Badge variant="secondary" className="pointer-events-auto animate-pulse gap-1.5">
-          <Loader2 className="h-3 w-3 animate-spin" />
-          {run?.effectiveAgentName ?? "running"}
-        </Badge>
-      ) : run?.status ? (
-        <Badge className={`pointer-events-auto ${statusTone(run.status)}`}>{run.status}</Badge>
-      ) : null}
+    <div className="pointer-events-none absolute right-4 top-4 z-30 flex items-start justify-end">
+      <div className="pointer-events-auto w-[248px] rounded-2xl border border-border/70 bg-background/86 p-3 shadow-[0_8px_20px_-18px_rgba(17,17,17,0.35)] backdrop-blur-md">
+        <div className="space-y-2.5">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Session</p>
+            <div className="mt-1.5 flex items-center justify-between gap-3">
+              {props.isRunning ? (
+                <Badge variant="secondary" className="animate-pulse gap-1.5">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  {run?.effectiveAgentName ?? "running"}
+                </Badge>
+              ) : run?.status ? (
+                <Badge className={statusTone(run.status)}>{run.status}</Badge>
+              ) : (
+                <Badge variant="secondary">idle</Badge>
+              )}
+              <span className="text-xs text-muted-foreground">{props.messagesCount} messages</span>
+            </div>
+          </div>
+
+          <div className="h-px bg-border/60" />
+
+        {agentSelectorSession ? (
+          <div className="space-y-2.5">
+            <div className="space-y-1">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Model</p>
+            <Select
+              value={selectedSessionModelValue}
+              disabled={!props.session || props.isSwitchingSessionModel || sessionModelLocked}
+              onValueChange={(value) => {
+                if (!props.session) {
+                  return;
+                }
+
+                const nextModelRef = value === AUTO_SESSION_MODEL_VALUE ? null : value;
+                const currentModelRef = props.session.modelRef ?? null;
+                if (nextModelRef !== currentModelRef) {
+                  props.updateSessionModel(props.session.id, nextModelRef);
+                }
+              }}
+            >
+              <SelectTrigger className="h-8 w-full rounded-lg bg-background/72 text-xs shadow-none" size="sm" aria-label="Session model">
+                <SelectValue placeholder="Select model">
+                  {selectedSessionModelValue === AUTO_SESSION_MODEL_VALUE
+                    ? "Model · Auto"
+                    : `Model · ${
+                        sessionModelOptions.find((model) => model.ref === selectedSessionModelValue)?.name ??
+                        selectedSessionModelValue
+                      }`}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={AUTO_SESSION_MODEL_VALUE}>Auto · workspace / agent default</SelectItem>
+                {sessionModelOptions.map((model) => (
+                  <SelectItem key={model.ref} value={model.ref}>
+                    {model.name} · {model.source} · {model.provider}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            </div>
+            <div className="space-y-1">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Agent</p>
+            <Select
+              value={selectedAgentSelectValue ?? ""}
+              disabled={props.isSwitchingSessionAgent}
+              onValueChange={(value) => {
+                if (value !== agentSelectorSession.activeAgentName) {
+                  props.switchSessionAgent(agentSelectorSession.id, value);
+                }
+              }}
+            >
+              <SelectTrigger className="h-8 w-full rounded-lg bg-background/72 text-xs shadow-none" size="sm" aria-label="Session agent">
+                <SelectValue placeholder="Select agent">{selectedAgent ? sessionAgentLabel(selectedAgent) : undefined}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {visibleSessionAgents.map((agent) => (
+                  <SelectItem key={agent.name} value={agent.name}>
+                    {sessionAgentLabel(agent)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            </div>
+          </div>
+        ) : (
+          <Badge variant="secondary">{selectedAgentName || "no agent"}</Badge>
+        )}
+        {props.isSwitchingSessionAgent ? (
+          <p className="text-xs text-muted-foreground">Updating...</p>
+        ) : props.isSwitchingSessionModel ? (
+          <p className="text-xs text-muted-foreground">Updating model...</p>
+        ) : props.isRunning ? (
+          <p className="text-xs text-muted-foreground">Applies to the next run.</p>
+        ) : null}
+        </div>
+      </div>
     </div>
   );
 });
@@ -1924,6 +2085,21 @@ function ConversationWorkspaceImpl(props: RuntimeProps) {
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
+      <ConversationStatusBar
+        hasActiveSession={props.hasActiveSession}
+        isRunning={isRunning}
+        messagesCount={props.messageFeed.length}
+        session={props.session}
+        workspace={props.workspace}
+        workspaceId={props.workspaceId}
+        catalog={props.catalog}
+        sessionRuns={props.sessionRuns}
+        isSwitchingSessionAgent={props.isSwitchingSessionAgent}
+        switchSessionAgent={props.switchSessionAgent}
+        isSwitchingSessionModel={props.isSwitchingSessionModel}
+        updateSessionModel={props.updateSessionModel}
+      />
+
       <div
         ref={(el) => {
           (scrollContainerRef as React.MutableRefObject<HTMLDivElement | null>).current = el;
@@ -1934,8 +2110,6 @@ function ConversationWorkspaceImpl(props: RuntimeProps) {
         className="flex-1 overflow-y-auto min-h-0"
         onScroll={handleScroll}
       >
-        <ConversationStatusBar hasActiveSession={props.hasActiveSession} isRunning={isRunning} />
-
         <div className="mx-auto flex w-full max-w-4xl flex-col px-4 py-6 md:px-6 md:py-8">
           <ConversationFeed
             hasActiveSession={props.hasActiveSession}

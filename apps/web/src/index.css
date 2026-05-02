@@ -331,9 +331,9 @@ body {
 }
 
 .ob-list-item-active {
-  border-color: var(--app-list-item-active-border);
-  background: var(--app-list-item-active-background);
-  box-shadow: var(--app-list-item-active-shadow);
+  border-color: transparent;
+  background: color-mix(in srgb, var(--foreground) 6%, transparent);
+  box-shadow: none;
 }
 
 .ob-list-item-child-active {
@@ -343,12 +343,12 @@ body {
 }
 
 .ob-list-item-icon {
-  background: var(--app-list-item-icon-background);
+  background: transparent;
   color: var(--app-list-item-icon-foreground);
 }
 
 .ob-list-item-icon-active {
-  background: var(--app-list-item-icon-active-background);
+  background: transparent;
   color: var(--app-list-item-icon-active-foreground);
 }
 
@@ -373,9 +373,9 @@ body {
 }
 
 .ob-workspace-item {
-  border-color: color-mix(in srgb, var(--foreground) 6%, transparent);
-  background: color-mix(in srgb, var(--background) 42%, transparent);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.36);
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
   transition:
     background-color 180ms ease,
     border-color 180ms ease,
@@ -384,30 +384,26 @@ body {
 }
 
 .ob-workspace-item:hover {
-  border-color: color-mix(in srgb, var(--foreground) 9%, transparent);
-  background: color-mix(in srgb, var(--background) 62%, transparent);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.42),
-    0 14px 24px -24px rgba(17, 17, 17, 0.26);
-  transform: translateY(-1px);
+  border-color: transparent;
+  background: color-mix(in srgb, var(--foreground) 4%, transparent);
+  box-shadow: none;
+  transform: none;
 }
 
 .ob-workspace-item.ob-list-item-active {
-  border-color: var(--app-list-item-active-border);
-  background: var(--app-list-item-active-background);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.46),
-    var(--app-list-item-active-shadow);
+  border-color: transparent;
+  background: color-mix(in srgb, var(--foreground) 7%, transparent);
+  box-shadow: none;
 }
 
 .ob-workspace-item-icon {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.34);
+  box-shadow: none;
 }
 
 .ob-session-item {
-  border-color: color-mix(in srgb, var(--foreground) 4%, transparent);
-  background: color-mix(in srgb, var(--background) 24%, transparent);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
   transition:
     background-color 180ms ease,
     border-color 180ms ease,
@@ -416,24 +412,20 @@ body {
 }
 
 .ob-session-item:hover {
-  border-color: color-mix(in srgb, var(--foreground) 8%, transparent);
-  background: color-mix(in srgb, var(--background) 40%, transparent);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.3),
-    0 12px 20px -24px rgba(17, 17, 17, 0.22);
-  transform: translateY(-1px);
+  border-color: transparent;
+  background: color-mix(in srgb, var(--foreground) 4%, transparent);
+  box-shadow: none;
+  transform: none;
 }
 
 .ob-session-item.ob-list-item-active {
-  border-color: var(--app-list-item-active-border);
-  background: var(--app-list-item-active-background);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.36),
-    var(--app-list-item-active-shadow);
+  border-color: transparent;
+  background: color-mix(in srgb, var(--foreground) 7%, transparent);
+  box-shadow: none;
 }
 
 .ob-session-item-icon {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  box-shadow: none;
 }
 
 .ob-session-item-child {
@@ -441,7 +433,7 @@ body {
 }
 
 .runtime-workspace-group + .runtime-workspace-group {
-  margin-top: 4px;
+  margin-top: 2px;
 }
 
 .runtime-session-tree {
@@ -596,9 +588,7 @@ body {
 
 .app-sidebar-surface {
   background: var(--app-sidebar-background);
-  box-shadow:
-    inset -1px 0 0 var(--app-sidebar-border),
-    24px 0 42px -36px var(--app-sidebar-shadow);
+  box-shadow: inset -1px 0 0 var(--app-sidebar-border);
 }
 
 .app-main-surface {
