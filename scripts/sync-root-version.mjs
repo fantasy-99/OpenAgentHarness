@@ -85,6 +85,52 @@ async function syncOpenApiVersion(rootVersion) {
   return { filePath: openApiPath, currentVersion };
 }
 
+async function syncCliVersionConstant(rootVersion) {
+  const filePath = path.join(repoRoot, "apps", "cli", "src", "release", "version.ts");
+  const content = await readFile(filePath, "utf8");
+  const match = content.match(/^(export const OAH_VERSION = ")([^"]+)(";)\s*$/m);
+
+  if (!match) {
+    throw new Error(`Unable to find OAH_VERSION constant in ${filePath}`);
+  }
+
+  const currentVersion = match[2];
+  if (currentVersion === rootVersion) {
+    return null;
+  }
+
+  if (checkOnly) {
+    return { filePath, currentVersion };
+  }
+
+  const nextContent = content.replace(/^(export const OAH_VERSION = ")([^"]+)(";)\s*$/m, `$1${rootVersion}$3`);
+  await writeFile(filePath, nextContent);
+  return { filePath, currentVersion };
+}
+
+async function syncNativeWorkspaceVersion(rootVersion) {
+  const filePath = path.join(repoRoot, "native", "Cargo.toml");
+  const content = await readFile(filePath, "utf8");
+  const match = content.match(/^(\s*version\s*=\s*")([^"]+)(")\s*$/m);
+
+  if (!match) {
+    throw new Error(`Unable to find native workspace package version in ${filePath}`);
+  }
+
+  const currentVersion = match[2];
+  if (currentVersion === rootVersion) {
+    return null;
+  }
+
+  if (checkOnly) {
+    return { filePath, currentVersion };
+  }
+
+  const nextContent = content.replace(/^(\s*version\s*=\s*")([^"]+)(")\s*$/m, `$1${rootVersion}$3`);
+  await writeFile(filePath, nextContent);
+  return { filePath, currentVersion };
+}
+
 async function main() {
   const rootPackagePath = path.join(repoRoot, "package.json");
   const rootPackageJson = await readJson(rootPackagePath);
@@ -99,6 +145,8 @@ async function main() {
     workspacePackageJsonPaths.map((filePath) => syncWorkspacePackageVersion(filePath, rootVersion))
   );
   results.push(await syncOpenApiVersion(rootVersion));
+  results.push(await syncCliVersionConstant(rootVersion));
+  results.push(await syncNativeWorkspaceVersion(rootVersion));
 
   const mismatches = results.filter(Boolean);
 
@@ -112,12 +160,12 @@ async function main() {
       return;
     }
 
-    console.log(`All workspace package versions match root version ${rootVersion}.`);
+    console.log(`All tracked versions match root version ${rootVersion}.`);
     return;
   }
 
   if (mismatches.length === 0) {
-    console.log(`All workspace package versions already match root version ${rootVersion}.`);
+    console.log(`All tracked versions already match root version ${rootVersion}.`);
     return;
   }
 

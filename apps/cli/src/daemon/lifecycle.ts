@@ -48,7 +48,7 @@ const DEFAULT_DAEMON_PORT = 8787;
 const HOME_VERSION = "1";
 
 export function resolveOahHome(input?: string | undefined): string {
-  return path.resolve(input ?? process.env.OAH_HOME ?? path.join(homedir(), ".openagentharness"));
+  return path.resolve(input ?? process.env.OAH_HOME ?? process.env.OAH_INSTALL_ROOT ?? path.join(homedir(), ".openagentharness"));
 }
 
 export function resolveDaemonPaths(options: DaemonCommandOptions = {}): DaemonPaths {

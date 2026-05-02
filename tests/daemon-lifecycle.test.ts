@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { daemonStatus, initDaemonHome, readDaemonLogs } from "../apps/cli/src/daemon/lifecycle.js";
+import { daemonStatus, initDaemonHome, readDaemonLogs, resolveOahHome } from "../apps/cli/src/daemon/lifecycle.js";
 
 const tempDirs: string[] = [];
 
@@ -13,6 +13,29 @@ afterEach(async () => {
 });
 
 describe("OAP daemon lifecycle helpers", () => {
+  it("uses OAH_INSTALL_ROOT as the default daemon home when OAH_HOME is unset", async () => {
+    const installRoot = await mkdtemp(path.join(os.tmpdir(), "oah-install-root-home-"));
+    tempDirs.push(installRoot);
+    const previousHome = process.env.OAH_HOME;
+    const previousInstallRoot = process.env.OAH_INSTALL_ROOT;
+    delete process.env.OAH_HOME;
+    process.env.OAH_INSTALL_ROOT = installRoot;
+    try {
+      expect(resolveOahHome()).toBe(installRoot);
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.OAH_HOME;
+      } else {
+        process.env.OAH_HOME = previousHome;
+      }
+      if (previousInstallRoot === undefined) {
+        delete process.env.OAH_INSTALL_ROOT;
+      } else {
+        process.env.OAH_INSTALL_ROOT = previousInstallRoot;
+      }
+    }
+  });
+
   it("initializes OAH_HOME from the deploy-root template without overwriting user config", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "oah-daemon-home-"));
     tempDirs.push(home);

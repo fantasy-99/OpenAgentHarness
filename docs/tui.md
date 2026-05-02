@@ -47,6 +47,9 @@ pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui
 
 ```text
 oah
+  version
+  update [version]
+  rollback [version]
   daemon init|start|status|stop|restart|logs|state|maintenance
   web
   models list|add|default
@@ -70,7 +73,7 @@ oah
   skills enable <name> [--workspace <path>] [--dry-run] [--overwrite]
 ```
 
-`workspace:list` / `workspaces` 用于列出可见 workspace，`workspace:list --missing` 用于筛出 rootPath 已不存在的本地记录，`workspace repair <workspace-id> --workspace /new/path` 用于在 repo 移动后把旧记录重新绑定到新路径，`workspace cleanup <workspace-id>` 默认清理指定 workspace 的可重建 materialized/cache 状态且不删除历史；如需删除该 workspace 的 session/run/event history，先用 `--include-history --dry-run` 预览，再用 `--include-history` 并输入 workspace id 二次确认。`workspace migrate-history` 用于把早期 repo-local `.openharness/data/history.db` 复制进 OAP shadow storage。`catalog:show` 用于查看指定 workspace 的 catalog JSON，`tui` 则进入交互式终端界面。连接 OAP local daemon 时，`oah tui` 默认注册或复用当前目录，也可以用 `--workspace /path/to/repo` 显式指定路径。`web` 会启动 WebUI 并指向同一套 OAH-compatible API。`models`、`runtimes`、`tools`、`skills` 命令管理或查看 `OAH_HOME` 下的本地资产，其中 tools / skills 仍只是全局 catalog；只有 `tools enable` / `skills enable` 会把能力写入 repo 的 `.openharness`，随后 WebUI / TUI 看到的是 workspace 当前实际启用后的 catalog。
+`version` 查看当前 CLI 与本地 release 安装信息，`update` 下载 GitHub Release tarball 并切换 `OAH_HOME/current`，`rollback` 切回已有版本。`workspace:list` / `workspaces` 用于列出可见 workspace，`workspace:list --missing` 用于筛出 rootPath 已不存在的本地记录，`workspace repair <workspace-id> --workspace /new/path` 用于在 repo 移动后把旧记录重新绑定到新路径，`workspace cleanup <workspace-id>` 默认清理指定 workspace 的可重建 materialized/cache 状态且不删除历史；如需删除该 workspace 的 session/run/event history，先用 `--include-history --dry-run` 预览，再用 `--include-history` 并输入 workspace id 二次确认。`workspace migrate-history` 用于把早期 repo-local `.openharness/data/history.db` 复制进 OAP shadow storage。`catalog:show` 用于查看指定 workspace 的 catalog JSON，`tui` 则进入交互式终端界面。连接 OAP local daemon 时，`oah tui` 默认注册或复用当前目录，也可以用 `--workspace /path/to/repo` 显式指定路径。`web` 会启动 WebUI 并指向同一套 OAH-compatible API。`models`、`runtimes`、`tools`、`skills` 命令管理或查看 `OAH_HOME` 下的本地资产，其中 tools / skills 仍只是全局 catalog；只有 `tools enable` / `skills enable` 会把能力写入 repo 的 `.openharness`，随后 WebUI / TUI 看到的是 workspace 当前实际启用后的 catalog。
 
 ## 为什么需要 TUI
 

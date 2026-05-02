@@ -241,14 +241,26 @@ Choose a deployment shape first:
 
 ### Prerequisites
 
-- Node.js `24+`
-- `pnpm` `10+`
+- Node.js `24+` and `pnpm` `10+` for source/development workflows. Release tarballs can include a bundled Node runtime.
 - Docker + Docker Compose for the OAH split stack
 - Helm and `kubectl` for Kubernetes deployments
 
 ### Personal local daemon (OAP)
 
-The packaged daemon command is the intended product shape:
+The packaged daemon command is the intended product shape. A release install should feel like a normal local CLI:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fairyshine/OpenAgentHarness/master/scripts/install.sh | sh
+export PATH="$HOME/.openagentharness/bin:$PATH"
+oah daemon init
+oah daemon start
+cd /path/to/repo
+oah tui
+```
+
+The installer places program files under `~/.openagentharness/versions/<version>`, keeps `~/.openagentharness/current` as the active release pointer, and exposes a stable `~/.openagentharness/bin/oah` shim. User config, state, logs, tools, skills, models, and workspaces remain under the same `OAH_HOME` but outside `versions/`, so updates do not rewrite local data.
+
+After installation, the normal commands are:
 
 ```bash
 oah daemon init
@@ -257,9 +269,11 @@ oah daemon status
 cd /path/to/repo
 oah tui
 oah tui --runtime vibe-coding
+oah update
+oah rollback
 ```
 
-The CLI package carries the OAP deploy-root assets used by `oah daemon init` and starts the daemon through the packaged server entrypoint when a source checkout is not present. In a monorepo checkout, the same commands prefer local source/dist paths so development and packaged installs follow the same lifecycle.
+The CLI package carries the OAP deploy-root assets used by `oah daemon init` and starts the daemon through the packaged server entrypoint when a source checkout is not present. In a release tarball, `bin/oah` launches the packaged CLI from `lib/node_modules/@oah/cli`, optionally using a bundled Node runtime when the bundle includes one. In a monorepo checkout, the same commands prefer local source/dist paths so development and packaged installs follow the same lifecycle.
 
 In this repository, the development equivalent is:
 
@@ -270,6 +284,7 @@ pnpm dev:cli -- daemon start
 pnpm dev:cli -- daemon status
 pnpm dev:cli -- daemon state
 pnpm dev:cli -- daemon maintenance --dry-run
+pnpm build:release-bundle
 ```
 
 `daemon state` summarizes `OAH_HOME/state` disk usage, including per-workspace shadow SQLite history and materialized cache. `daemon maintenance` checkpoints and vacuums local shadow SQLite databases; it refuses to run while the daemon process appears active unless `--force` is supplied.

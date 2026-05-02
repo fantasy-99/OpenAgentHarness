@@ -1543,7 +1543,7 @@ dependencies = [
 
 [[package]]
 name = "oah-archive-export"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "clap",
  "rusqlite",
@@ -1555,14 +1555,14 @@ dependencies = [
 
 [[package]]
 name = "oah-compose-scaler"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "oah-workspace-sync"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "aws-credential-types",
  "aws-sdk-s3",

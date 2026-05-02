@@ -2,6 +2,10 @@
 members = ["oah-workspace-sync", "oah-archive-export", "oah-compose-scaler"]
 resolver = "2"
 
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+
 [profile.release]
 codegen-units = 1
 lto = "thin"

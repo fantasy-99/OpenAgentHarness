@@ -1,5 +1,7 @@
 import { Command } from "commander";
 
+import { OAH_VERSION } from "../release/version.js";
+
 type GlobalOptions = {
   baseUrl?: string;
   token?: string;
@@ -51,6 +53,21 @@ type DaemonMaintenanceOptions = {
   vacuum?: boolean;
 };
 
+type UpdateOptions = {
+  installRoot?: string;
+  repo?: string;
+  apiBaseUrl?: string;
+  releaseBaseUrl?: string;
+  channel?: "latest" | "latest-prerelease";
+  dryRun?: boolean;
+  force?: boolean;
+  verifyChecksum?: boolean;
+};
+
+type RollbackOptions = {
+  installRoot?: string;
+};
+
 export function resolveConnection(options: GlobalOptions) {
   return {
     baseUrl: options.baseUrl ?? process.env.OAH_BASE_URL ?? "http://127.0.0.1:8787",
@@ -64,10 +81,59 @@ export function createProgram(): Command {
   program
     .name("oah")
     .description("OpenAgentHarness terminal client")
-    .version("0.1.0")
+    .version(OAH_VERSION)
     .option("--base-url <url>", "OpenAgentHarness server URL", process.env.OAH_BASE_URL)
     .option("--token <token>", "Bearer token for API requests", process.env.OAH_TOKEN)
     .option("--home <path>", "OAH home directory for local daemon defaults", process.env.OAH_HOME);
+
+  program
+    .command("version")
+    .description("Show CLI and local installation version information")
+    .option("--install-root <path>", "OAH installation root; defaults to OAH_INSTALL_ROOT or OAH_HOME")
+    .action(async (options: { installRoot?: string }) => {
+      const { describeInstallation } = await import("../release/installation.js");
+      console.log(await describeInstallation({ home: program.opts<GlobalOptions>().home, installRoot: options.installRoot }));
+    });
+
+  program
+    .command("update")
+    .description("Download and switch to a GitHub Release build")
+    .argument("[version]", "Release version or tag; defaults to the selected channel")
+    .option("--install-root <path>", "OAH installation root; defaults to OAH_INSTALL_ROOT or OAH_HOME")
+    .option("--repo <owner/repo>", "GitHub repository that publishes OAH releases")
+    .option("--api-base-url <url>", "GitHub API base URL for release metadata")
+    .option("--release-base-url <url>", "Release download base URL")
+    .option("--channel <channel>", "Release channel: latest or latest-prerelease")
+    .option("--dry-run", "Show the release and paths without downloading")
+    .option("--force", "Reinstall even if the target version already exists")
+    .option("--no-verify-checksum", "Skip .sha256 verification")
+    .action(async (version: string | undefined, options: UpdateOptions) => {
+      const { updateInstallation } = await import("../release/installation.js");
+      console.log(
+        await updateInstallation({
+          home: program.opts<GlobalOptions>().home,
+          installRoot: options.installRoot,
+          repo: options.repo,
+          apiBaseUrl: options.apiBaseUrl,
+          releaseBaseUrl: options.releaseBaseUrl,
+          version,
+          channel: options.channel,
+          dryRun: options.dryRun,
+          force: options.force,
+          verifyChecksum: options.verifyChecksum
+        })
+      );
+    });
+
+  program
+    .command("rollback")
+    .description("Switch current to a previously installed release")
+    .argument("[version]", "Installed release version to switch to; defaults to the newest non-current version")
+    .option("--install-root <path>", "OAH installation root; defaults to OAH_INSTALL_ROOT or OAH_HOME")
+    .action(async (version: string | undefined, options: RollbackOptions) => {
+      const { rollbackInstallation } = await import("../release/installation.js");
+      console.log(await rollbackInstallation({ home: program.opts<GlobalOptions>().home, installRoot: options.installRoot, version }));
+    });
 
   const daemon = program.command("daemon").description("Manage the local OAP daemon").option("--home <path>", "OAH home directory");
 

@@ -1,6 +1,6 @@
 {
   "name": "@oah/desktop",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "private": true,
   "productName": "Open Agent Harness",
   "description": "Desktop client for OAH-compatible enterprise servers and OAP local daemons.",

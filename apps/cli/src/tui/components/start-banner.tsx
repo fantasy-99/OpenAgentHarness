@@ -2,6 +2,8 @@ import React from "react";
 import { Box, Text } from "ink";
 import type { SystemProfile } from "@oah/api-contracts";
 
+import { OAH_VERSION } from "../../release/version.js";
+
 export function startBannerRows(params: { height: number; columns: number; hasMessages: boolean }) {
   if (params.height < 7) {
     return 0;
@@ -53,7 +55,7 @@ function FullBanner(props: {
   sessionTitle?: string | undefined;
   sessionId?: string | undefined;
 }) {
-  const title = " Open Agent Harness TUI v0.1.0 ";
+  const title = ` Open Agent Harness TUI v${OAH_VERSION} `;
   const rows = bannerRows(props.columns, props.subtitle, props.serviceUrl, props.systemProfile);
   return (
     <Box flexDirection="column" width="100%" overflow="hidden">
@@ -231,7 +233,7 @@ function CompactBanner(props: {
       <OahMark small />
       <Box flexDirection="column" flexShrink={1}>
         <Text>
-          <Text bold>{systemShortName(props.systemProfile)} TUI</Text> <Text dimColor>v0.1.0</Text>
+          <Text bold>{systemShortName(props.systemProfile)} TUI</Text> <Text dimColor>v{OAH_VERSION}</Text>
         </Text>
         <Text dimColor wrap="truncate-end">
           {props.subtitle}

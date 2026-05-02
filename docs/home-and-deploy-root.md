@@ -47,6 +47,15 @@ Desktop   ┘          └── OAP local daemon
 
 ```text
 ~/.openagentharness/
+  bin/
+    oah
+  current -> versions/<version>
+  versions/
+    <version>/
+      bin/oah
+      lib/
+      node/
+      native/
   models/
   runtimes/
   tools/
@@ -64,6 +73,8 @@ Desktop   ┘          └── OAP local daemon
 
 其中：
 
+- `bin/` 是稳定命令入口，通常只放 `oah` shim。
+- `versions/` 保存 release tarball 展开的程序文件；`current` 指向当前版本，`oah update` / `oah rollback` 只切换这一层。
 - `models/`、`runtimes/`、`tools/`、`skills/`、`workspaces/` 是可发布、可同步、可迁移的平台资产。
 - `config/` 是本地与集群 profile 配置。
 - `config/server.docker.yaml` 是 Docker Compose / `OAH_DEPLOY_ROOT` 入口；旧的根目录 `server.docker.yaml` 仍兼容。
@@ -190,6 +201,9 @@ oah daemon restart
 oah daemon logs
 oah daemon state
 oah daemon maintenance --dry-run
+oah version
+oah update
+oah rollback
 
 oah tui
 oah tui --workspace /path/to/repo
@@ -208,7 +222,9 @@ oah workspace repair <workspace-id> --workspace /new/path/to/repo
 oah workspace migrate-history --workspace /path/to/repo --dry-run
 ```
 
-发布包安装时，`oah daemon init` 会从 CLI 包内置的 deploy-root assets 初始化 `OAH_HOME`，其中包含默认的 `config/daemon.yaml`、`server.docker.yaml`、runtimes、models、tools、skills 目录样例。源码 checkout 中同一命令优先使用仓库里的 `template/deploy-root`，因此开发模式和 packaged install 模式共享同一套目录语义。
+发布包安装时，`scripts/install.sh` 会把 release tarball 展开到 `OAH_HOME/versions/<version>`，再把 `OAH_HOME/current` 指向该版本，并写入 `OAH_HOME/bin/oah` 稳定 shim。`oah update` 下载新的 GitHub Release tarball、校验 `.sha256`、安装到新的 `versions/<version>` 并切换 `current`；`oah rollback` 可以切回已有版本。`config/`、`state/`、`logs/`、`models/`、`tools/`、`skills/` 和 `workspaces/` 不属于程序版本目录，升级时不应被覆盖。
+
+`oah daemon init` 会从 CLI 包内置的 deploy-root assets 初始化 `OAH_HOME`，其中包含默认的 `config/daemon.yaml`、`server.docker.yaml`、runtimes、models、tools、skills 目录样例。源码 checkout 中同一命令优先使用仓库里的 `template/deploy-root`，因此开发模式和 packaged install 模式共享同一套目录语义。
 
 这些本地资产命令默认读写 `OAH_HOME`。`models add` 会校验 model YAML schema 后复制到 `OAH_HOME/models`，`models default` 只修改 `config/daemon.yaml` 的 `llm.default_model`。`tools list` 和 `skills list` 读取的是 `OAH_HOME/tools` / `OAH_HOME/skills` 全局 catalog；`tools enable <name>` 和 `skills enable <name>` 才会把选中的能力写入当前 repo 的 `.openharness/tools` / `.openharness/skills`。需要作用到其他 repo 时使用 `--workspace /path/to/repo`，预览写入用 `--dry-run`，覆盖已有 workspace asset 用 `--overwrite`。
 
