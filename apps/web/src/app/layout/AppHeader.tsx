@@ -4,9 +4,8 @@ import { formatSystemProfileDisplayName } from "@oah/api-contracts";
 import { Layers3, Network, Orbit, Server, SquareTerminal } from "lucide-react";
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-import { probeTone, streamTone, toneBadgeClass, type StatusSemanticTone, type SurfaceMode } from "../support";
+import { probeTone, streamTone, toneBadgeClass, type StatusSemanticTone } from "../support";
 import { useHealthStore } from "../stores/health-store";
 import { useSettingsStore } from "../stores/settings-store";
 import { useStreamStore } from "../stores/stream-store";
@@ -29,8 +28,6 @@ function StatusPill(props: { label: string; value: string; tone: StatusSemanticT
 function AppHeaderImpl(props: HeaderProps) {
   const healthStatus = useHealthStore((state) => state.healthStatus);
   const streamState = useStreamStore((state) => state.streamState);
-  const surfaceMode = useUiStore((state) => state.surfaceMode);
-  const setSurfaceMode = useUiStore((state) => state.setSurfaceMode);
   const consoleOpen = useUiStore((state) => state.consoleOpen);
   const setConsoleOpen = useUiStore((state) => state.setConsoleOpen);
   const serviceScope = useSettingsStore((state) => state.serviceScope);
@@ -81,19 +78,6 @@ function AppHeaderImpl(props: HeaderProps) {
             </SelectContent>
           </Select>
         </div>
-        <Tabs value={surfaceMode} onValueChange={(value) => setSurfaceMode(value as SurfaceMode)}>
-          <TabsList className="topbar-chip h-9 rounded-2xl p-1">
-            <TabsTrigger value="engine" className="topbar-tabs-trigger h-7 rounded-xl px-3 text-xs">
-              Engine
-            </TabsTrigger>
-            <TabsTrigger value="storage" disabled={!props.storageInspectionEnabled} className="topbar-tabs-trigger h-7 rounded-xl px-3 text-xs">
-              Storage
-            </TabsTrigger>
-            <TabsTrigger value="provider" className="topbar-tabs-trigger h-7 rounded-xl px-3 text-xs">
-              Provider
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
         <button
           type="button"
           onClick={() => setConsoleOpen((current) => !current)}

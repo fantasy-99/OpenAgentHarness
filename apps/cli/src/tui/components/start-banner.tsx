@@ -1,8 +1,10 @@
 import React from "react";
 import { Box, Text } from "ink";
-import { formatSystemProfileDisplayName, type SystemProfile } from "@oah/api-contracts";
+import type { SystemProfile } from "@oah/api-contracts";
 
 import { OAH_VERSION } from "../../release/version.js";
+
+type BannerFeedLine = { kind: "text"; text: string } | { kind: "divider" };
 
 export function startBannerRows(params: { height: number; columns: number; hasMessages: boolean }) {
   if (params.height < 7) {
@@ -65,7 +67,7 @@ function FullBanner(props: {
           <Text color="cyan">│</Text>
           <BannerMarkText index={index} text={row.mark} lastIndex={rows.length - 1} />
           <Text color="cyan">│</Text>
-          <Text>{row.feed}</Text>
+          <Text {...(row.feedKind === "divider" ? { color: "cyan" } : {})}>{row.feed}</Text>
           <Text color="cyan">│</Text>
         </Text>
       ))}
@@ -95,10 +97,14 @@ function bannerRows(columns: number, subtitle: string, serviceUrl: string, syste
   const markWidth = Math.min(Math.max(markContentWidth + 2, 24), Math.max(24, innerWidth - 24));
   const feedWidth = Math.max(0, innerWidth - markWidth - 1);
   const rowCount = Math.max(rawMark.length, feed.length);
-  return Array.from({ length: rowCount }, (_, index) => ({
-    mark: padCenter(formatMarkLine(rawMark[index] ?? "", index, artStart, artEnd, artWidth), markWidth),
-    feed: padEnd(clipText(feed[index] ?? "", feedWidth), feedWidth)
-  }));
+  return Array.from({ length: rowCount }, (_, index) => {
+    const feedRow = feed[index];
+    return {
+      mark: padCenter(formatMarkLine(rawMark[index] ?? "", index, artStart, artEnd, artWidth), markWidth),
+      feed: feedRow?.kind === "divider" ? dividerLine(feedWidth) : padEnd(clipText(feedRow?.text ?? "", feedWidth), feedWidth),
+      feedKind: feedRow?.kind ?? "text"
+    };
+  });
 }
 
 function formatMarkLine(line: string, index: number, artStart: number, artEnd: number, artWidth: number) {
@@ -108,18 +114,16 @@ function formatMarkLine(line: string, index: number, artStart: number, artEnd: n
   return line;
 }
 
-function feedLines(subtitle: string, systemProfile?: SystemProfile | null | undefined) {
-  const profileLabel = systemProfile ? formatSystemProfileDisplayName(systemProfile) : "Unknown OAH-compatible server";
+function feedLines(subtitle: string, systemProfile?: SystemProfile | null | undefined): BannerFeedLine[] {
   return [
-    " Tips for getting started",
-    ` ${subtitle}`,
-    ` Connected to ${profileLabel}`,
-    " Use / for commands, ^W for workspaces, ^O for sessions.",
-    ` ${"─".repeat(44)}`,
-    " What's new",
-    " Workspace and session details stay visible in the status bar.",
-    " SSE output streams live and remains pinned to the bottom.",
-    ""
+    { kind: "text", text: " Tips for getting started" },
+    { kind: "text", text: ` ${subtitle}` },
+    { kind: "text", text: " Use / for commands, ^W for workspaces, ^O for sessions." },
+    { kind: "divider" },
+    { kind: "text", text: " What's new" },
+    { kind: "text", text: " Workspace and session details stay visible in the status bar." },
+    { kind: "text", text: " SSE output streams live and remains pinned to the bottom." },
+    { kind: "text", text: "" }
   ];
 }
 
@@ -169,6 +173,10 @@ function padCenter(value: string, width: number) {
 
 function padEnd(value: string, width: number) {
   return `${value}${" ".repeat(Math.max(0, width - terminalWidth(value)))}`;
+}
+
+function dividerLine(width: number) {
+  return "─".repeat(Math.max(0, width));
 }
 
 function clipText(value: string, width: number) {

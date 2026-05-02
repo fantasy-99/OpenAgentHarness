@@ -48,7 +48,7 @@ import { useModelsStore } from "../stores/models-store";
 import { useSettingsStore } from "../stores/settings-store";
 import { useStreamStore } from "../stores/stream-store";
 import { useUiStore } from "../stores/ui-store";
-import { probeTone, streamTone, toneBadgeClass, type SavedSessionRecord, type StatusSemanticTone } from "../support";
+import { probeTone, streamTone, toneBadgeClass, type SavedSessionRecord, type StatusSemanticTone, type SurfaceMode } from "../support";
 import { appThemeOptions, isAppThemeName, type AppThemeName } from "../theme";
 import type { useAppController } from "../use-app-controller";
 import { SessionNavItem, WorkspaceNavItem } from "./sidebar-items";
@@ -936,9 +936,10 @@ function ProviderSidebar(props: SidebarProps) {
 }
 
 function AppSidebarImpl(props: SidebarProps) {
-  const { surfaceMode } = useUiStore(
+  const { surfaceMode, setSurfaceMode } = useUiStore(
     useShallow((state) => ({
-      surfaceMode: state.surfaceMode
+      surfaceMode: state.surfaceMode,
+      setSurfaceMode: state.setSurfaceMode
     }))
   );
   const uploadTemplateInputRef = useRef<HTMLInputElement>(null);
@@ -949,7 +950,6 @@ function AppSidebarImpl(props: SidebarProps) {
 
   const icon =
     surfaceMode === "storage" ? <Table2 className="h-4 w-4" /> : surfaceMode === "provider" ? <Network className="h-4 w-4" /> : <Bot className="h-4 w-4" />;
-  const title = surfaceMode === "storage" ? "Storage" : surfaceMode === "provider" ? "Provider" : "Engine";
   const subtitle =
     surfaceMode === "storage"
       ? "Inspect Postgres tables and Redis keyspace."
@@ -968,7 +968,22 @@ function AppSidebarImpl(props: SidebarProps) {
                 {icon}
               </div>
               <div className="min-w-0">
-                <p className="text-sm font-semibold tracking-tight text-foreground">{title}</p>
+                <Select value={surfaceMode} onValueChange={(value) => setSurfaceMode(value as SurfaceMode)}>
+                  <SelectTrigger
+                    size="sm"
+                    className="h-7 w-[156px] rounded-xl border-black/10 bg-white/68 px-2 text-sm font-semibold tracking-tight text-foreground shadow-none focus-visible:ring-2 focus-visible:ring-black/10"
+                    aria-label="Surface"
+                  >
+                    <SelectValue placeholder="Surface" />
+                  </SelectTrigger>
+                  <SelectContent align="start" className="min-w-[156px]">
+                    <SelectItem value="engine">Engine</SelectItem>
+                    <SelectItem value="storage" disabled={!props.storageInspectionEnabled}>
+                      Storage
+                    </SelectItem>
+                    <SelectItem value="provider">Provider</SelectItem>
+                  </SelectContent>
+                </Select>
                 <p className="mt-1 text-xs leading-5 text-muted-foreground">{subtitle}</p>
               </div>
             </div>
