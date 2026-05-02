@@ -30,3 +30,19 @@ export type SystemRuntimeMode = z.infer<typeof systemRuntimeModeSchema>;
 export type SystemDeploymentKind = z.infer<typeof systemDeploymentKindSchema>;
 export type SystemCapabilities = z.infer<typeof systemCapabilitiesSchema>;
 export type SystemProfile = z.infer<typeof systemProfileSchema>;
+
+export function formatSystemProfileDisplayName(profile: Pick<SystemProfile, "deploymentKind" | "edition" | "runtimeMode">): string {
+  if (profile.deploymentKind === "oap" || profile.edition === "personal") {
+    return "OAP Local";
+  }
+
+  if (profile.runtimeMode === "kubernetes") {
+    return "OAH Kubernetes";
+  }
+
+  if (profile.runtimeMode === "compose" || profile.runtimeMode === "split") {
+    return "OAH Docker";
+  }
+
+  return "OAH Server";
+}

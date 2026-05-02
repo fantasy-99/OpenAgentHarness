@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { SystemProfile } from "@oah/api-contracts";
+import { formatSystemProfileDisplayName, type SystemProfile } from "@oah/api-contracts";
 
 import { OAH_VERSION } from "../../release/version.js";
 
@@ -109,7 +109,7 @@ function formatMarkLine(line: string, index: number, artStart: number, artEnd: n
 }
 
 function feedLines(subtitle: string, systemProfile?: SystemProfile | null | undefined) {
-  const profileLabel = systemProfile ? `${systemProfile.displayName} · ${systemProfile.runtimeMode}` : "Unknown OAH-compatible server";
+  const profileLabel = systemProfile ? formatSystemProfileDisplayName(systemProfile) : "Unknown OAH-compatible server";
   return [
     " Tips for getting started",
     ` ${subtitle}`,

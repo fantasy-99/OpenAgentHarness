@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text, useCursor, useWindowSize } from "ink";
-import type { Run, Session, SystemProfile, Workspace } from "@oah/api-contracts";
+import { formatSystemProfileDisplayName, type Run, type Session, type SystemProfile, type Workspace } from "@oah/api-contracts";
 
 import type { Notice } from "../domain/types.js";
 import { clampIndex, getSlashCommandMatches, shortId } from "../domain/utils.js";
@@ -229,8 +229,8 @@ function PromptFooter(props: {
   const activity = footerActivity(props.run, props.session, props.streamState);
   const shortcuts = props.disabled ? "modal · esc" : "? · ^W ws · ^O sess · ^C";
   const modelAgent = footerModelAgent(props.session, props.agentMode);
-  const systemName = props.systemProfile?.deploymentKind === "oap" || props.systemProfile?.edition === "personal" ? "OAP" : "OAH";
-  const serverLabel = props.systemProfile ? `${props.systemProfile.displayName} · ${props.systemProfile.runtimeMode}` : "server profile unknown";
+  const systemName = props.systemProfile ? formatSystemProfileDisplayName(props.systemProfile) : "OAH";
+  const serverLabel = props.systemProfile ? systemName : "server profile unknown";
 
   return (
     <Box paddingX={2} flexDirection="column" width="100%">

@@ -1,5 +1,6 @@
 import { memo } from "react";
 
+import { formatSystemProfileDisplayName } from "@oah/api-contracts";
 import { Layers3, Network, Orbit, Server, SquareTerminal } from "lucide-react";
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -34,9 +35,7 @@ function AppHeaderImpl(props: HeaderProps) {
   const setConsoleOpen = useUiStore((state) => state.setConsoleOpen);
   const serviceScope = useSettingsStore((state) => state.serviceScope);
   const setServiceScope = useSettingsStore((state) => state.setServiceScope);
-  const serverLabel = props.systemProfile
-    ? `${props.systemProfile.deploymentKind.toUpperCase()} ${props.systemProfile.runtimeMode}`
-    : "unknown";
+  const serverLabel = props.systemProfile ? formatSystemProfileDisplayName(props.systemProfile) : "unknown";
   const serverTone: StatusSemanticTone = props.systemProfile?.deploymentKind === "oap" ? "emerald" : props.systemProfile ? "sky" : "amber";
 
   return (

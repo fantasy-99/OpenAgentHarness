@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { formatSystemProfileDisplayName } from "@oah/api-contracts";
 import type { ServerConfig } from "@oah/config";
 
 import { buildSystemProfile } from "../apps/server/src/system-profile.ts";
@@ -98,5 +99,22 @@ describe("system profile", () => {
     });
 
     expect(profile.capabilities.workspaceRegistration).toBe(false);
+  });
+
+  it("formats user-facing deployment names without exposing internal split mode", () => {
+    expect(
+      formatSystemProfileDisplayName({
+        deploymentKind: "oah",
+        edition: "enterprise",
+        runtimeMode: "split"
+      })
+    ).toBe("OAH Docker");
+    expect(
+      formatSystemProfileDisplayName({
+        deploymentKind: "oap",
+        edition: "personal",
+        runtimeMode: "daemon"
+      })
+    ).toBe("OAP Local");
   });
 });

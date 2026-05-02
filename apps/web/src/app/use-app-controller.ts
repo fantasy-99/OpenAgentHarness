@@ -1961,6 +1961,7 @@ export function useAppController() {
   }, [sessionId]);
 
   useEffect(() => {
+    void pingHealth();
     void navigationActions.refreshWorkspaceIndex(true);
     void navigationActions.refreshWorkspaceRuntimes(true);
     void refreshModelProviders(true);
