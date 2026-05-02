@@ -87,6 +87,7 @@ services:
       args:
         BASE_BUILD_IMAGE: ${OAH_DOCKER_BUILD_BASE_IMAGE:-node:24-alpine}
         BASE_RUNTIME_IMAGE: ${OAH_DOCKER_RUNTIME_BASE_IMAGE:-alpine:3.22}
+        BASE_RUST_IMAGE: ${OAH_DOCKER_RUST_BASE_IMAGE:-rust:1.95-alpine}
     restart: unless-stopped
     command:
       - node
@@ -133,6 +134,7 @@ services:
       args:
         BASE_BUILD_IMAGE: ${OAH_DOCKER_BUILD_BASE_IMAGE:-node:24-alpine}
         BASE_RUNTIME_IMAGE: ${OAH_DOCKER_RUNTIME_BASE_IMAGE:-alpine:3.22}
+        BASE_RUST_IMAGE: ${OAH_DOCKER_RUST_BASE_IMAGE:-rust:1.95-alpine}
     restart: unless-stopped
     command:
       - node
@@ -167,6 +169,7 @@ services:
       args:
         BASE_BUILD_IMAGE: ${OAH_DOCKER_BUILD_BASE_IMAGE:-node:24-alpine}
         BASE_RUNTIME_IMAGE: ${OAH_DOCKER_RUNTIME_BASE_IMAGE:-alpine:3.22}
+        BASE_RUST_IMAGE: ${OAH_DOCKER_RUST_BASE_IMAGE:-rust:1.95-alpine}
     restart: unless-stopped
     environment:
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME}
@@ -213,6 +216,7 @@ services:
       args:
         BASE_BUILD_IMAGE: ${OAH_DOCKER_BUILD_BASE_IMAGE:-node:24-alpine}
         BASE_RUNTIME_IMAGE: ${OAH_DOCKER_RUNTIME_BASE_IMAGE:-alpine:3.22}
+        BASE_RUST_IMAGE: ${OAH_DOCKER_RUST_BASE_IMAGE:-rust:1.95-alpine}
     restart: unless-stopped
     command:
       - node

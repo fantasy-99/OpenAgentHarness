@@ -221,6 +221,9 @@ Additional checks:
 | `REDIS_URL` | Redis connection string | `redis://127.0.0.1:6379` |
 | `OAH_WEB_PROXY_TARGET` | Frontend proxy target (when backend is not at the default address) | `http://127.0.0.1:8787` |
 | `OAH_DOCKER_HOST_ALIAS` | Hostname used from containers to reach host-local services | `host.docker.internal` |
+| `OAH_DOCKER_BUILD_BASE_IMAGE` | Node builder base image for local Compose builds | `node:24-alpine` |
+| `OAH_DOCKER_RUNTIME_BASE_IMAGE` | Runtime base image for local Compose builds | `alpine:3.22` |
+| `OAH_DOCKER_RUST_BASE_IMAGE` | Rust builder base image for local native helper builds | `rust:1.95-alpine` |
 
 Reference environment variables in `server.yaml` with `${env.DATABASE_URL}` syntax.
 
@@ -232,6 +235,8 @@ If OAH itself runs inside Docker while an HTTP MCP server runs on the host machi
 - override it with `OAH_DOCKER_HOST_ALIAS` when needed
 
 The local `docker-compose.local.yml` already injects `host.docker.internal:host-gateway` for `oah-api`, `oah-controller`, `oah-compose-scaler`, and `oah-sandbox`, so the default alias also works on Linux in the local stack.
+
+`pnpm local:up` prefetches the preferred Alpine-family base images and passes Node builder, runtime, and Rust native builder build args into Compose. If you override these manually, set `OAH_DOCKER_BUILD_BASE_IMAGE`, `OAH_DOCKER_RUNTIME_BASE_IMAGE`, and `OAH_DOCKER_RUST_BASE_IMAGE` together; overriding only the first two does not affect the native Rust build stage.
 
 When using containers started by `docker-compose.local.yml`, the default connection strings are:
 

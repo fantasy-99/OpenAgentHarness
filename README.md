@@ -251,12 +251,16 @@ The packaged daemon command is the intended product shape. A release install sho
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/fairyshine/OpenAgentHarness/master/scripts/install.sh | sh
+export OAH_HOME="$HOME/.openagentharness"
+export OAH_INSTALL_ROOT="$HOME/.openagentharness"
 export PATH="$HOME/.openagentharness/bin:$PATH"
 oah daemon init
 oah daemon start
 cd /path/to/repo
 oah tui
 ```
+
+If a new terminal cannot find `oah`, add the `OAH_HOME`, `OAH_INSTALL_ROOT`, and `PATH` lines above to `~/.zshrc` and reload it with `source ~/.zshrc`. As an alternative, keep the two environment variables and add `alias oah="$OAH_INSTALL_ROOT/bin/oah"`.
 
 The installer places program files under `~/.openagentharness/versions/<version>`, keeps `~/.openagentharness/current` as the active release pointer, and exposes a stable `~/.openagentharness/bin/oah` shim. User config, state, logs, tools, skills, models, and workspaces remain under the same `OAH_HOME` but outside `versions/`, so updates do not rewrite local data.
 

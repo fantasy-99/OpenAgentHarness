@@ -580,9 +580,13 @@ const serviceLocalImageNames = {
 };
 
 function ensureDockerBuildBaseImages() {
-  if (process.env.OAH_DOCKER_BUILD_BASE_IMAGE && process.env.OAH_DOCKER_RUNTIME_BASE_IMAGE) {
+  if (
+    process.env.OAH_DOCKER_BUILD_BASE_IMAGE &&
+    process.env.OAH_DOCKER_RUNTIME_BASE_IMAGE &&
+    process.env.OAH_DOCKER_RUST_BASE_IMAGE
+  ) {
     console.log(
-      `Using preconfigured Docker base images: build=${process.env.OAH_DOCKER_BUILD_BASE_IMAGE} runtime=${process.env.OAH_DOCKER_RUNTIME_BASE_IMAGE}`
+      `Using preconfigured Docker base images: build=${process.env.OAH_DOCKER_BUILD_BASE_IMAGE} runtime=${process.env.OAH_DOCKER_RUNTIME_BASE_IMAGE} rust=${process.env.OAH_DOCKER_RUST_BASE_IMAGE}`
     );
     return;
   }
@@ -591,7 +595,8 @@ function ensureDockerBuildBaseImages() {
     {
       build: "node:24-alpine",
       runtime: "alpine:3.22",
-      description: "Docker Hub Node 24 Alpine build image + Alpine runtime"
+      rust: "rust:1.95-alpine",
+      description: "Docker Hub Node 24 Alpine build image + Alpine runtime + Rust Alpine native build image"
     }
   ];
 
@@ -612,14 +617,22 @@ function ensureDockerBuildBaseImages() {
       continue;
     }
 
+    const rustReady =
+      dockerImageExists(candidate.rust) ||
+      runMaybe("docker", ["pull", candidate.rust], { stdio: ["ignore", "inherit", "inherit"] }).status === 0;
+    if (!rustReady) {
+      continue;
+    }
+
     process.env.OAH_DOCKER_BUILD_BASE_IMAGE = candidate.build;
     process.env.OAH_DOCKER_RUNTIME_BASE_IMAGE = candidate.runtime;
+    process.env.OAH_DOCKER_RUST_BASE_IMAGE = candidate.rust;
     console.log(`Using Docker base image source: ${candidate.description}`);
     return;
   }
 
   console.warn(
-    "Could not prefetch a preferred Node base image pair. Docker build will fall back to the compose defaults and may still need Docker Hub access."
+    "Could not prefetch preferred Alpine base images. Docker build will fall back to the compose defaults and may still need Docker Hub access."
   );
 }
 

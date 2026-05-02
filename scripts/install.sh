@@ -194,5 +194,18 @@ echo "  oah daemon init"
 echo "  oah daemon start"
 echo "  cd /path/to/repo && oah tui"
 echo
+echo "Optional zsh setup. Add this to ~/.zshrc so new terminals use the same OAH home and command:"
+echo "  export OAH_HOME=\"$INSTALL_ROOT\""
+echo "  export OAH_INSTALL_ROOT=\"$INSTALL_ROOT\""
+echo "  export PATH=\"\$OAH_INSTALL_ROOT/bin:\$PATH\""
+echo
+echo "Or create an alias instead:"
+echo "  export OAH_HOME=\"$INSTALL_ROOT\""
+echo "  export OAH_INSTALL_ROOT=\"$INSTALL_ROOT\""
+echo "  alias oah=\"\$OAH_INSTALL_ROOT/bin/oah\""
+echo
+echo "Then reload zsh:"
+echo "  source ~/.zshrc"
+echo
 echo "Update later:"
 echo "  oah update"

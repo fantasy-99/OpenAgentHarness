@@ -290,6 +290,9 @@ curl http://127.0.0.1:8787/readyz
 | `REDIS_URL` | Redis 连接串 | `redis://127.0.0.1:6379` |
 | `OAH_WEB_PROXY_TARGET` | 前端代理目标（后端地址不是默认时使用） | `http://127.0.0.1:8787` |
 | `OAH_DOCKER_HOST_ALIAS` | 容器内访问宿主机服务时使用的主机名 | `host.docker.internal` |
+| `OAH_DOCKER_BUILD_BASE_IMAGE` | 本地 Compose 构建 Node builder 基础镜像 | `node:24-alpine` |
+| `OAH_DOCKER_RUNTIME_BASE_IMAGE` | 本地 Compose runtime 基础镜像 | `alpine:3.22` |
+| `OAH_DOCKER_RUST_BASE_IMAGE` | 本地 Compose native helper Rust builder 基础镜像 | `rust:1.95-alpine` |
 
 在 `server.yaml` 中通过 `${env.DATABASE_URL}` 语法引用环境变量。
 
@@ -301,6 +304,8 @@ curl http://127.0.0.1:8787/readyz
 - 如有需要可通过 `OAH_DOCKER_HOST_ALIAS` 覆盖
 
 本地 `docker-compose.local.yml` 已为 `oah-api`、`oah-controller`、`oah-compose-scaler`、`oah-sandbox` 注入 `host.docker.internal:host-gateway`，因此 Linux 环境下也能直接使用该别名。
+
+`pnpm local:up` 会优先预拉 Alpine 系基础镜像，并把 Node builder、runtime、Rust native builder 三类 build arg 都传给 Compose。若需要手动覆盖，请同时设置 `OAH_DOCKER_BUILD_BASE_IMAGE`、`OAH_DOCKER_RUNTIME_BASE_IMAGE`、`OAH_DOCKER_RUST_BASE_IMAGE`；只覆盖前两个不会影响 native Rust build stage。
 
 本地开发使用 `docker-compose.local.yml` 启动的容器时，默认连接串为：
 
