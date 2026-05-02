@@ -60,6 +60,9 @@ oah
   workspace repair <workspace-id> [--workspace <path>]
   workspaces repair <workspace-id> [--workspace <path>]
   workspaces:repair <workspace-id> [--workspace <path>]
+  workspace cleanup <workspace-id> [--dry-run] [--force] [--include-history] [--yes]
+  workspaces cleanup <workspace-id> [--dry-run] [--force] [--include-history] [--yes]
+  workspaces:cleanup <workspace-id> [--dry-run] [--force] [--include-history] [--yes]
   workspace migrate-history [workspace-id] [--workspace <path>] [--dry-run] [--overwrite]
   workspaces migrate-history [workspace-id] [--workspace <path>] [--dry-run] [--overwrite]
   catalog:show --workspace <id>
@@ -67,7 +70,7 @@ oah
   skills enable <name> [--workspace <path>] [--dry-run] [--overwrite]
 ```
 
-Use `workspace:list` / `workspaces` to list visible workspaces, `workspace:list --missing` to filter local records whose root path no longer exists, `workspace repair <workspace-id> --workspace /new/path` to rebind a moved repo, `workspace migrate-history` to copy early repo-local `.openharness/data/history.db` into OAP shadow storage, `catalog:show` to inspect a workspace catalog as JSON, and `tui` to enter the interactive terminal interface. When connected to an OAP local daemon, `oah tui` registers or reuses the current directory by default, and `--workspace /path/to/repo` can point it at a different repo. `web` starts the WebUI against the same OAH-compatible API. The `models`, `runtimes`, `tools`, and `skills` commands manage or inspect local assets under `OAH_HOME`; tools and skills remain a global catalog until `tools enable` / `skills enable` writes them into a repo's `.openharness` directory. WebUI and TUI then show the workspace catalog that is actually enabled for that repo.
+Use `workspace:list` / `workspaces` to list visible workspaces, `workspace:list --missing` to filter local records whose root path no longer exists, `workspace repair <workspace-id> --workspace /new/path` to rebind a moved repo, and `workspace cleanup <workspace-id>` to remove cleanup-safe materialized/cache state without deleting history. To delete that workspace's session/run/event history, preview with `--include-history --dry-run`, then rerun with `--include-history` and type the workspace id to confirm. `workspace migrate-history` copies early repo-local `.openharness/data/history.db` into OAP shadow storage, `catalog:show` inspects a workspace catalog as JSON, and `tui` enters the interactive terminal interface. When connected to an OAP local daemon, `oah tui` registers or reuses the current directory by default, and `--workspace /path/to/repo` can point it at a different repo. `web` starts the WebUI against the same OAH-compatible API. The `models`, `runtimes`, `tools`, and `skills` commands manage or inspect local assets under `OAH_HOME`; tools and skills remain a global catalog until `tools enable` / `skills enable` writes them into a repo's `.openharness` directory. WebUI and TUI then show the workspace catalog that is actually enabled for that repo.
 
 ## Why TUI
 

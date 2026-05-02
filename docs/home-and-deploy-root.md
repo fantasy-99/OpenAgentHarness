@@ -229,7 +229,7 @@ repo 移动或重命名后，`oah workspace:list --missing` 可以筛出 registr
 
 `oah web` 会优先使用已经构建好的 WebUI static bundle，并在同一进程内代理 `/api`、`/internal`、`/healthz`、`/readyz` 到当前 OAH-compatible API endpoint。源码 checkout 中如果找不到 WebUI dist，则回退到 `@oah/web` 的 Vite dev server。
 
-`oah daemon state` 用于查看 `OAH_HOME/state` 的磁盘占用，包括 shadow SQLite history、archive、materialization cache 等目录。`oah daemon maintenance` 会对本地 shadow SQLite 数据库执行 checkpoint / vacuum；默认检测到 daemon 正在运行时拒绝执行，避免影响活跃 run，需要人工确认时再使用 `--force`。
+`oah daemon state` 用于查看 `OAH_HOME/state` 的磁盘占用，包括按 workspace 汇总的 shadow SQLite history 与 materialization cache。`oah daemon maintenance` 会对本地 shadow SQLite 数据库执行 checkpoint / vacuum；默认检测到 daemon 正在运行时拒绝执行，避免影响活跃 run，需要人工确认时再使用 `--force`。`oah workspace cleanup <workspace-id>` 默认只清理指定 workspace 的可重建 materialized/cache 状态，不删除 session / run / event history；预览使用 `--dry-run`。如需删除该 workspace 的历史，先用 `--include-history --dry-run` 预览，再用 `--include-history` 并输入 workspace id 二次确认。
 
 ## SQLite Shadow Storage
 

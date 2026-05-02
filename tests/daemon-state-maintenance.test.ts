@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { maintainDaemonState, summarizeDaemonState } from "../apps/cli/src/daemon/state-maintenance.js";
+import { cleanupWorkspaceState, maintainDaemonState, summarizeDaemonState } from "../apps/cli/src/daemon/state-maintenance.js";
 import { initDaemonHome } from "../apps/cli/src/daemon/lifecycle.js";
 
 const tempDirs: string[] = [];
@@ -44,7 +44,26 @@ describe("OAP daemon state maintenance", () => {
 
     expect(summary).toContain(`OAH_HOME: ${home}`);
     expect(summary).toContain("workspace-state:");
+    expect(summary).toContain("workspaces:");
+    expect(summary).toContain("ws_demo:");
     expect(summary).toContain("sqlite: 0 db files");
+  });
+
+  it("summarizes workspace history and cache usage separately", async () => {
+    const home = await createTempDir("oah-state-workspace-home-");
+    await initDaemonHome({ home });
+    const historyFile = path.join(home, "state", "data", "workspace-state", "ws_demo", "history.db");
+    const cacheFile = path.join(home, "state", "__materialized__", "ws_demo", "cache.txt");
+    await mkdir(path.dirname(historyFile), { recursive: true });
+    await mkdir(path.dirname(cacheFile), { recursive: true });
+    await writeFile(historyFile, "history", "utf8");
+    await writeFile(cacheFile, "cache", "utf8");
+
+    const summary = await summarizeDaemonState({ home });
+
+    expect(summary).toContain("- ws_demo:");
+    expect(summary).toContain("history");
+    expect(summary).toContain("cache");
   });
 
   it("previews SQLite maintenance without touching databases", async () => {
@@ -78,5 +97,103 @@ describe("OAP daemon state maintenance", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("previews workspace cleanup without deleting history or cache", async () => {
+    const home = await createTempDir("oah-state-cleanup-dry-home-");
+    await initDaemonHome({ home });
+    const historyFile = path.join(home, "state", "data", "workspace-state", "ws_demo", "history.db");
+    const cacheFile = path.join(home, "state", "__materialized__", "ws_demo", "cache.txt");
+    await mkdir(path.dirname(historyFile), { recursive: true });
+    await mkdir(path.dirname(cacheFile), { recursive: true });
+    await writeFile(historyFile, "history", "utf8");
+    await writeFile(cacheFile, "cache", "utf8");
+
+    const message = await cleanupWorkspaceState({ home, workspaceId: "ws_demo", dryRun: true });
+
+    expect(message).toContain("Would remove");
+    expect(message).toContain(path.dirname(cacheFile));
+    await expect(readFile(historyFile, "utf8")).resolves.toBe("history");
+    await expect(readFile(cacheFile, "utf8")).resolves.toBe("cache");
+  });
+
+  it("removes workspace cache while preserving shadow history", async () => {
+    const home = await createTempDir("oah-state-cleanup-home-");
+    await initDaemonHome({ home });
+    const historyFile = path.join(home, "state", "data", "workspace-state", "ws_demo", "history.db");
+    const cacheFile = path.join(home, "state", "__materialized__", "ws_demo", "cache.txt");
+    await mkdir(path.dirname(historyFile), { recursive: true });
+    await mkdir(path.dirname(cacheFile), { recursive: true });
+    await writeFile(historyFile, "history", "utf8");
+    await writeFile(cacheFile, "cache", "utf8");
+
+    const message = await cleanupWorkspaceState({ home, workspaceId: "ws_demo" });
+
+    expect(message).toContain("Removed");
+    expect(message).toContain("History databases were not removed.");
+    await expect(readFile(historyFile, "utf8")).resolves.toBe("history");
+    await expect(readFile(cacheFile, "utf8")).rejects.toThrow();
+  });
+
+  it("previews destructive workspace history cleanup without deleting files", async () => {
+    const home = await createTempDir("oah-state-cleanup-history-dry-home-");
+    await initDaemonHome({ home });
+    const historyFile = path.join(home, "state", "data", "workspace-state", "ws_demo", "history.db");
+    const cacheFile = path.join(home, "state", "__materialized__", "ws_demo", "cache.txt");
+    await mkdir(path.dirname(historyFile), { recursive: true });
+    await mkdir(path.dirname(cacheFile), { recursive: true });
+    await writeFile(historyFile, "history", "utf8");
+    await writeFile(cacheFile, "cache", "utf8");
+
+    const message = await cleanupWorkspaceState({ home, workspaceId: "ws_demo", dryRun: true, includeHistory: true });
+
+    expect(message).toContain("Would remove");
+    expect(message).toContain("history:");
+    expect(message).toContain("destructive");
+    await expect(readFile(historyFile, "utf8")).resolves.toBe("history");
+    await expect(readFile(cacheFile, "utf8")).resolves.toBe("cache");
+  });
+
+  it("requires confirmation before deleting workspace history", async () => {
+    const home = await createTempDir("oah-state-cleanup-history-refuse-home-");
+    await initDaemonHome({ home });
+    const historyFile = path.join(home, "state", "data", "workspace-state", "ws_demo", "history.db");
+    await mkdir(path.dirname(historyFile), { recursive: true });
+    await writeFile(historyFile, "history", "utf8");
+
+    const message = await cleanupWorkspaceState({ home, workspaceId: "ws_demo", includeHistory: true });
+
+    expect(message).toContain("Refusing to remove session/run/event history");
+    await expect(readFile(historyFile, "utf8")).resolves.toBe("history");
+  });
+
+  it("rejects path-like workspace ids during cleanup", async () => {
+    const home = await createTempDir("oah-state-cleanup-invalid-home-");
+    await initDaemonHome({ home });
+
+    await expect(cleanupWorkspaceState({ home, workspaceId: "..", dryRun: true })).rejects.toThrow("Invalid workspace id");
+    await expect(cleanupWorkspaceState({ home, workspaceId: ".", dryRun: true })).rejects.toThrow("Invalid workspace id");
+  });
+
+  it("removes workspace history only after explicit confirmation", async () => {
+    const home = await createTempDir("oah-state-cleanup-history-home-");
+    await initDaemonHome({ home });
+    const historyFile = path.join(home, "state", "data", "workspace-state", "ws_demo", "history.db");
+    const cacheFile = path.join(home, "state", "__materialized__", "ws_demo", "cache.txt");
+    await mkdir(path.dirname(historyFile), { recursive: true });
+    await mkdir(path.dirname(cacheFile), { recursive: true });
+    await writeFile(historyFile, "history", "utf8");
+    await writeFile(cacheFile, "cache", "utf8");
+
+    const message = await cleanupWorkspaceState({
+      home,
+      workspaceId: "ws_demo",
+      includeHistory: true,
+      confirmHistoryDeletion: true
+    });
+
+    expect(message).toContain("History databases were removed for this workspace.");
+    await expect(readFile(historyFile, "utf8")).rejects.toThrow();
+    await expect(readFile(cacheFile, "utf8")).rejects.toThrow();
   });
 });

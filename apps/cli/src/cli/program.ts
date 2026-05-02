@@ -37,6 +37,13 @@ type WorkspaceMigrateHistoryOptions = {
   autoStart?: boolean;
 };
 
+type WorkspaceCleanupOptions = {
+  dryRun?: boolean;
+  force?: boolean;
+  includeHistory?: boolean;
+  yes?: boolean;
+};
+
 type DaemonMaintenanceOptions = {
   dryRun?: boolean;
   force?: boolean;
@@ -313,6 +320,18 @@ export function createProgram(): Command {
     });
 
   workspace
+    .command("cleanup")
+    .description("Remove local state for a workspace")
+    .argument("<workspace-id>", "Existing workspace id to clean")
+    .option("--dry-run", "Preview cleanup without deleting files")
+    .option("--force", "Run even if the local daemon process appears to be running")
+    .option("--include-history", "Also remove session/run/event history for this workspace")
+    .option("--yes", "Confirm destructive history cleanup without prompting")
+    .action(async (workspaceId: string, options: WorkspaceCleanupOptions) => {
+      await cleanupWorkspaceCommand(program.opts<GlobalOptions>(), workspaceId, options);
+    });
+
+  workspace
     .command("migrate-history")
     .description("Copy repo-local .openharness/data/history.db into OAP shadow storage")
     .argument("[workspace-id]", "Existing workspace id; defaults to registering or reusing the selected local path")
@@ -353,6 +372,18 @@ export function createProgram(): Command {
     });
 
   workspaces
+    .command("cleanup")
+    .description("Remove local state for a workspace")
+    .argument("<workspace-id>", "Existing workspace id to clean")
+    .option("--dry-run", "Preview cleanup without deleting files")
+    .option("--force", "Run even if the local daemon process appears to be running")
+    .option("--include-history", "Also remove session/run/event history for this workspace")
+    .option("--yes", "Confirm destructive history cleanup without prompting")
+    .action(async (workspaceId: string, options: WorkspaceCleanupOptions) => {
+      await cleanupWorkspaceCommand(program.opts<GlobalOptions>(), workspaceId, options);
+    });
+
+  workspaces
     .command("migrate-history")
     .description("Copy repo-local .openharness/data/history.db into OAP shadow storage")
     .argument("[workspace-id]", "Existing workspace id; defaults to registering or reusing the selected local path")
@@ -374,6 +405,18 @@ export function createProgram(): Command {
     .option("--no-auto-start", "Do not auto-start the local OAP daemon when no --base-url is provided")
     .action(async (workspaceId: string, options: WorkspaceRepairOptions) => {
       await repairWorkspace(program.opts<GlobalOptions>(), workspaceId, options);
+    });
+
+  program
+    .command("workspaces:cleanup")
+    .description("Remove local state for a workspace")
+    .argument("<workspace-id>", "Existing workspace id to clean")
+    .option("--dry-run", "Preview cleanup without deleting files")
+    .option("--force", "Run even if the local daemon process appears to be running")
+    .option("--include-history", "Also remove session/run/event history for this workspace")
+    .option("--yes", "Confirm destructive history cleanup without prompting")
+    .action(async (workspaceId: string, options: WorkspaceCleanupOptions) => {
+      await cleanupWorkspaceCommand(program.opts<GlobalOptions>(), workspaceId, options);
     });
 
   program
@@ -488,6 +531,46 @@ async function migrateWorkspaceHistoryCommand(
     backup: options.backup
   });
   console.log(message);
+}
+
+async function cleanupWorkspaceCommand(globalOptions: GlobalOptions, workspaceId: string, options: WorkspaceCleanupOptions) {
+  if (globalOptions.baseUrl ?? process.env.OAH_BASE_URL) {
+    throw new Error("Workspace cleanup operates on local OAP state. Omit --base-url and use a local OAH_HOME.");
+  }
+  let confirmHistoryDeletion = options.yes === true;
+  if (options.includeHistory && !options.dryRun && !confirmHistoryDeletion) {
+    confirmHistoryDeletion = await confirmWorkspaceHistoryCleanup(workspaceId);
+    if (!confirmHistoryDeletion) {
+      console.log("Workspace history cleanup aborted.");
+      return;
+    }
+  }
+  const { cleanupWorkspaceState } = await import("../daemon/state-maintenance.js");
+  console.log(
+    await cleanupWorkspaceState({
+      home: globalOptions.home,
+      workspaceId,
+      dryRun: options.dryRun,
+      force: options.force,
+      includeHistory: options.includeHistory,
+      confirmHistoryDeletion
+    })
+  );
+}
+
+async function confirmWorkspaceHistoryCleanup(workspaceId: string): Promise<boolean> {
+  if (!process.stdin.isTTY || !process.stderr.isTTY) {
+    throw new Error("Destructive workspace history cleanup requires an interactive terminal or --yes.");
+  }
+  const { createInterface } = await import("node:readline/promises");
+  const readline = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    process.stderr.write(`This will delete session/run/event history for workspace "${workspaceId}".\n`);
+    const answer = await readline.question(`Type the workspace id to confirm: `);
+    return answer === workspaceId;
+  } finally {
+    readline.close();
+  }
 }
 
 async function isMissingLocalPath(rootPath: string): Promise<boolean> {

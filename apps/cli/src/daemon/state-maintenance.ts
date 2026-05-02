@@ -1,4 +1,4 @@
-import { readdir, stat } from "node:fs/promises";
+import { readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -13,6 +13,14 @@ export type DaemonStateMaintenanceOptions = DaemonCommandOptions & {
   vacuum?: boolean | undefined;
 };
 
+export type WorkspaceStateCleanupOptions = DaemonCommandOptions & {
+  workspaceId: string;
+  dryRun?: boolean | undefined;
+  force?: boolean | undefined;
+  includeHistory?: boolean | undefined;
+  confirmHistoryDeletion?: boolean | undefined;
+};
+
 type StatePathSummary = {
   label: string;
   path: string;
@@ -25,6 +33,20 @@ type SQLiteFile = {
   bytes: number;
   walBytes: number;
   shmBytes: number;
+};
+
+type WorkspaceStateSummary = {
+  workspaceId: string;
+  bytes: number;
+  files: number;
+  historyBytes: number;
+  cacheBytes: number;
+};
+
+type WorkspaceCleanupTarget = {
+  label: "cache" | "history";
+  path: string;
+  destructive: boolean;
 };
 
 export async function summarizeDaemonState(options: DaemonCommandOptions = {}): Promise<string> {
@@ -48,7 +70,9 @@ export async function summarizeDaemonState(options: DaemonCommandOptions = {}): 
     formatPathSummary(archives),
     formatPathSummary(archivePayloads),
     formatPathSummary(materialized),
-    `sqlite: ${sqliteFiles.length} db file${sqliteFiles.length === 1 ? "" : "s"} · ${formatBytes(sqliteBytes)}`
+    `sqlite: ${sqliteFiles.length} db file${sqliteFiles.length === 1 ? "" : "s"} · ${formatBytes(sqliteBytes)}`,
+    "",
+    ...(await formatWorkspaceStateSummaries(paths.stateRoot))
   ].join("\n");
 }
 
@@ -95,6 +119,54 @@ export async function maintainDaemonState(options: DaemonStateMaintenanceOptions
   return `Maintained ${results.length} SQLite database${results.length === 1 ? "" : "s"} under ${paths.stateRoot}. Size: ${formatBytes(beforeBytes)} -> ${formatBytes(afterBytes)}.`;
 }
 
+export async function cleanupWorkspaceState(options: WorkspaceStateCleanupOptions): Promise<string> {
+  const workspaceId = validateWorkspaceId(options.workspaceId);
+  const paths = await resolveStatePaths(options);
+  const running = await isDaemonProcessRunning(options);
+  if (running && !options.force) {
+    return [
+      "OAP daemon appears to be running.",
+      "Stop the daemon before workspace state cleanup, or pass --force if you know no runs are active."
+    ].join("\n");
+  }
+
+  if (options.includeHistory && !options.dryRun && !options.confirmHistoryDeletion) {
+    return [
+      `Refusing to remove session/run/event history for ${workspaceId} without confirmation.`,
+      "Run with --dry-run first, then confirm the destructive cleanup."
+    ].join("\n");
+  }
+
+  const cleanupTargets = await resolveWorkspaceCleanupTargets(paths.stateRoot, workspaceId, { includeHistory: options.includeHistory === true });
+  if (cleanupTargets.length === 0) {
+    return `No workspace state cleanup targets found for ${workspaceId} under ${paths.stateRoot}.`;
+  }
+
+  const summaries = await Promise.all(
+    cleanupTargets.map(async (target) => ({ ...target, ...(await scanDirectory(target.path)) }))
+  );
+  const totalBytes = summaries.reduce((total, summary) => total + summary.bytes, 0);
+  const totalFiles = summaries.reduce((total, summary) => total + summary.files, 0);
+  const header = `${options.dryRun ? "Would remove" : "Removed"} ${formatBytes(totalBytes)} · ${totalFiles} file${totalFiles === 1 ? "" : "s"} of workspace state for ${workspaceId}.`;
+
+  if (options.dryRun) {
+    return [
+      header,
+      ...summaries.map(
+        (summary) =>
+          `- ${summary.label}: ${summary.path} (${formatBytes(summary.bytes)} · ${summary.files} file${summary.files === 1 ? "" : "s"}${summary.destructive ? " · destructive" : ""})`
+      )
+    ].join("\n");
+  }
+
+  await Promise.all(cleanupTargets.map((target) => rm(target.path, { recursive: true, force: true })));
+  return [
+    header,
+    ...summaries.map((summary) => `- ${summary.label}: ${summary.path}`),
+    options.includeHistory ? "History databases were removed for this workspace." : "History databases were not removed."
+  ].join("\n");
+}
+
 async function resolveStatePaths(options: DaemonCommandOptions) {
   const daemonPaths = await initDaemonHome(options);
   const config = await loadServerConfig(daemonPaths.configPath);
@@ -113,6 +185,54 @@ async function summarizePath(label: string, targetPath: string): Promise<StatePa
     bytes: summary.bytes,
     files: summary.files
   };
+}
+
+async function formatWorkspaceStateSummaries(stateRoot: string): Promise<string[]> {
+  const summaries = await summarizeWorkspaceState(stateRoot);
+  if (summaries.length === 0) {
+    return ["workspaces: none"];
+  }
+  return [
+    "workspaces:",
+    ...summaries.map(
+      (summary) =>
+        `- ${summary.workspaceId}: ${formatBytes(summary.bytes)} · ${summary.files} file${summary.files === 1 ? "" : "s"} (history ${formatBytes(summary.historyBytes)}, cache ${formatBytes(summary.cacheBytes)})`
+    )
+  ];
+}
+
+async function summarizeWorkspaceState(stateRoot: string): Promise<WorkspaceStateSummary[]> {
+  const workspaceIds = new Set<string>();
+  for (const parent of [path.join(stateRoot, "data", "workspace-state"), path.join(stateRoot, "__materialized__")]) {
+    for (const child of await listChildDirectories(parent)) {
+      workspaceIds.add(child);
+    }
+  }
+
+  const summaries = await Promise.all(
+    [...workspaceIds].sort().map(async (workspaceId) => {
+      const historyPath = path.join(stateRoot, "data", "workspace-state", workspaceId);
+      const cachePath = path.join(stateRoot, "__materialized__", workspaceId);
+      const [history, cache] = await Promise.all([scanDirectory(historyPath), scanDirectory(cachePath)]);
+      return {
+        workspaceId,
+        bytes: history.bytes + cache.bytes,
+        files: history.files + cache.files,
+        historyBytes: history.bytes,
+        cacheBytes: cache.bytes
+      };
+    })
+  );
+  return summaries.sort((left, right) => right.bytes - left.bytes || left.workspaceId.localeCompare(right.workspaceId));
+}
+
+async function listChildDirectories(parentPath: string): Promise<string[]> {
+  const parentStats = await stat(parentPath).catch(() => null);
+  if (!parentStats?.isDirectory()) {
+    return [];
+  }
+  const entries = await readdir(parentPath, { withFileTypes: true });
+  return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
 }
 
 async function scanDirectory(targetPath: string): Promise<{ bytes: number; files: number }> {
@@ -166,6 +286,30 @@ async function findSQLiteFiles(rootPath: string): Promise<SQLiteFile[]> {
   return files.sort((left, right) => left.path.localeCompare(right.path));
 }
 
+async function resolveWorkspaceCleanupTargets(stateRoot: string, workspaceId: string, options: { includeHistory: boolean }): Promise<WorkspaceCleanupTarget[]> {
+  const candidates: WorkspaceCleanupTarget[] = [
+    { label: "cache", path: path.join(stateRoot, "__materialized__", workspaceId), destructive: false }
+  ];
+  if (options.includeHistory) {
+    candidates.push({
+      label: "history",
+      path: path.join(stateRoot, "data", "workspace-state", workspaceId),
+      destructive: true
+    });
+  }
+
+  const targets: WorkspaceCleanupTarget[] = [];
+  for (const candidate of candidates) {
+    const resolved = path.resolve(candidate.path);
+    assertPathInside(path.resolve(stateRoot), resolved);
+    const targetStats = await stat(resolved).catch(() => null);
+    if (targetStats?.isDirectory()) {
+      targets.push({ ...candidate, path: resolved });
+    }
+  }
+  return targets;
+}
+
 async function maintainSqliteFile(dbPath: string, operations: { checkpoint: boolean; vacuum: boolean }): Promise<{ ok: true; path: string } | { ok: false; path: string; error: string }> {
   let db: DatabaseSync | undefined;
   try {
@@ -190,6 +334,20 @@ async function maintainSqliteFile(dbPath: string, operations: { checkpoint: bool
 
 async function fileSize(targetPath: string): Promise<number> {
   return (await stat(targetPath).catch(() => null))?.size ?? 0;
+}
+
+function validateWorkspaceId(workspaceId: string): string {
+  if (!/^[A-Za-z0-9_.:-]+$/u.test(workspaceId) || workspaceId === "." || workspaceId === "..") {
+    throw new Error(`Invalid workspace id: ${workspaceId}`);
+  }
+  return workspaceId;
+}
+
+function assertPathInside(parentPath: string, childPath: string): void {
+  const relative = path.relative(parentPath, childPath);
+  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`Refusing to clean path outside state root: ${childPath}`);
+  }
 }
 
 function formatPathSummary(summary: StatePathSummary): string {

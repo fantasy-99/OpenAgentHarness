@@ -272,7 +272,7 @@ pnpm dev:cli -- daemon state
 pnpm dev:cli -- daemon maintenance --dry-run
 ```
 
-`daemon state` summarizes `OAH_HOME/state` disk usage, including shadow SQLite history databases. `daemon maintenance` checkpoints and vacuums local shadow SQLite databases; it refuses to run while the daemon process appears active unless `--force` is supplied.
+`daemon state` summarizes `OAH_HOME/state` disk usage, including per-workspace shadow SQLite history and materialized cache. `daemon maintenance` checkpoints and vacuums local shadow SQLite databases; it refuses to run while the daemon process appears active unless `--force` is supplied.
 
 Manage local OAP assets under `OAH_HOME`:
 
@@ -287,12 +287,16 @@ pnpm dev:cli -- skills list
 pnpm dev:cli -- skills enable summarize
 pnpm dev:cli -- workspace:list --missing
 pnpm dev:cli -- workspace repair <workspace-id> --workspace /new/path/to/repo
+pnpm dev:cli -- workspace cleanup <workspace-id> --dry-run
+pnpm dev:cli -- workspace cleanup <workspace-id> --include-history --dry-run
 pnpm dev:cli -- workspace migrate-history --workspace /path/to/repo --dry-run
 ```
 
 `models default` updates only `OAH_HOME/config/daemon.yaml`. `tools list` and `skills list` read the global catalog under `OAH_HOME`; `tools enable <name>` and `skills enable <name>` copy or write the selected asset into the current repo's `.openharness` directory. Use `--workspace /path/to/repo` to target another repo, `--dry-run` to preview writes, and `--overwrite` to replace an existing workspace asset.
 
 If a repo is moved or renamed, use `workspace:list --missing` to find stale local records, then `workspace repair <workspace-id> --workspace /new/path/to/repo` to rebind the existing record. Repair keeps the old workspace id so OAP shadow history, sessions, runs, and messages stay attached; the repaired record updates `externalRef` to `local:path:<resolved-path>`.
+
+`workspace cleanup <workspace-id>` removes cleanup-safe materialized/cache state for one workspace and preserves shadow history databases by default. To delete that workspace's session/run/event history, first preview with `--include-history --dry-run`, then rerun with `--include-history` and type the workspace id to confirm. Use `--force` only when the daemon is running but no runs are active.
 
 For early repo-local history, `workspace migrate-history` copies `repo/.openharness/data/history.db` into OAP shadow storage at `OAH_HOME/state/data/workspace-state/<workspace-id>/history.db`. The source database is never deleted; use `--dry-run` to preview, and `--overwrite` to replace an existing shadow database after backing it up.
 
