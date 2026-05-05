@@ -17,6 +17,7 @@ import type {
   EngineToolSet,
   SkillDefinition,
   ToolServerDefinition,
+  WorkspaceFileSystem,
   WorkspaceRecord
 } from "../types.js";
 
@@ -324,6 +325,7 @@ export interface BuildEngineToolsInput {
   awaitDelegatedRuns: (input: { runIds: string[]; mode: "all" | "any" }) => Promise<string>;
   switchAgent: (targetAgentName: string, currentAgentName: string) => Promise<void>;
   commandExecutor?: import("../types.js").WorkspaceCommandExecutor | undefined;
+  fileSystem?: WorkspaceFileSystem | undefined;
 }
 
 function configuredNativeToolNameSet(workspace: WorkspaceRecord): Set<string> {
@@ -353,7 +355,8 @@ export function buildEngineTools(input: BuildEngineToolsInput): EngineToolSet {
           sessionId: session.id,
           modelGateway,
           webFetchModel: defaultModel,
-          ...(input.commandExecutor ? { commandExecutor: input.commandExecutor } : {})
+          ...(input.commandExecutor ? { commandExecutor: input.commandExecutor } : {}),
+          ...(input.fileSystem ? { fileSystem: input.fileSystem } : {})
         }
       )
     ),

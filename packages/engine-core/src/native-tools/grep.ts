@@ -96,7 +96,8 @@ export function createGrepTool(context: NativeToolFactoryContext): EngineToolSet
           rgArgs.push("--count");
         }
 
-        rgArgs.push(input.pattern, root.absolutePath);
+        const rgSearchPath = root.relativePath === "." ? "." : root.relativePath;
+        rgArgs.push(input.pattern, rgSearchPath);
 
         try {
           const rgResult = await context.commandExecutor.runProcess({
@@ -131,6 +132,7 @@ export function createGrepTool(context: NativeToolFactoryContext): EngineToolSet
             },
             executable: "rg",
             args: rgArgs,
+            cwd: context.workspaceRoot,
             ...(executionContext.abortSignal ? { signal: executionContext.abortSignal } : {})
           });
           if (rgResult.exitCode !== 0 && rgResult.exitCode !== 1) {
@@ -151,6 +153,10 @@ export function createGrepTool(context: NativeToolFactoryContext): EngineToolSet
               if (firstColon >= 0) {
                 return `${prefix}${rest.slice(firstColon)}`;
               }
+            }
+
+            if (line.startsWith(`.${path.sep}`)) {
+              return normalizePathForMatch(line.slice(2));
             }
 
             if (line.startsWith(context.workspaceRoot + path.sep)) {

@@ -217,6 +217,18 @@ describe("native tools", () => {
     const grep = String(await tools.Grep.execute({ pattern: "value", path: "src", output_mode: "content" }, {}));
     expect(grep).toContain("src/app.ts:1:export const value = 1;");
     expect(commandExecutor.runProcess).toHaveBeenCalledTimes(1);
+    expect(commandExecutor.runProcess).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executable: "rg",
+        args: expect.arrayContaining(["value", "src"]),
+        cwd: workspaceRoot
+      })
+    );
+    expect(commandExecutor.runProcess).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        args: expect.arrayContaining([path.join(workspaceRoot, "src")])
+      })
+    );
   });
 
   it("routes native tool file access through the injected workspace file system", async () => {

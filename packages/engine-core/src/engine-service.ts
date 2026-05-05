@@ -767,6 +767,7 @@ export class EngineService {
       modelGateway: this.#modelGateway,
       defaultModel: this.#defaultModel,
       commandExecutor: this.#workspaceCommandExecutor,
+      fileSystem: this.#workspaceFileSystem,
       executeAction: async (action, input, context) => this.#executeAction(workspace, action, run, context.abortSignal, input),
       delegateAgent: async ({ targetAgentName, task, handoffSummary, taskId, notifyParentOnCompletion }, currentAgentName) => {
         const accepted = await this.#ensureExecutionServices().agentCoordination.delegateAgentRun({

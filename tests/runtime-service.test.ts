@@ -1008,6 +1008,206 @@ describe("runtime service", () => {
     }
   });
 
+  it("routes native Read through the execution workspace file system", async () => {
+    const sourceRoot = "/source/workspace/ws_read";
+    const activeRoot = "/__sandbox__/workspace/ws_read";
+    const readCalls: string[] = [];
+    const files = new Map<string, Buffer>([
+      [path.posix.join(activeRoot, "evaluation_context", "run_context.json"), Buffer.from('{"task":"demo"}\n', "utf8")]
+    ]);
+    const directories = new Set<string>([
+      activeRoot,
+      path.posix.join(activeRoot, "evaluation_context")
+    ]);
+    const normalizeVirtualPath = (targetPath: string) => targetPath.split(path.sep).join("/");
+    const ensureVirtualParentDirectories = (targetPath: string) => {
+      let current = path.posix.dirname(normalizeVirtualPath(targetPath));
+      const pending: string[] = [];
+      while (current && current !== "/" && !directories.has(current)) {
+        pending.push(current);
+        current = path.posix.dirname(current);
+      }
+      for (const directory of pending.reverse()) {
+        directories.add(directory);
+      }
+    };
+    const missing = (targetPath: string) => Object.assign(new Error(`ENOENT: ${targetPath}`), { code: "ENOENT" });
+    const fileSystem: WorkspaceFileSystem = {
+      async realpath(targetPath) {
+        const normalized = normalizeVirtualPath(targetPath);
+        if (files.has(normalized) || directories.has(normalized)) {
+          return normalized;
+        }
+        throw missing(targetPath);
+      },
+      async stat(targetPath) {
+        const normalized = normalizeVirtualPath(targetPath);
+        const data = files.get(normalized);
+        if (data) {
+          return {
+            kind: "file",
+            size: data.byteLength,
+            mtimeMs: 1,
+            birthtimeMs: 1
+          };
+        }
+        if (directories.has(normalized)) {
+          return {
+            kind: "directory",
+            size: 0,
+            mtimeMs: 1,
+            birthtimeMs: 1
+          };
+        }
+        throw missing(targetPath);
+      },
+      async readFile(targetPath) {
+        const normalized = normalizeVirtualPath(targetPath);
+        readCalls.push(normalized);
+        const data = files.get(normalized);
+        if (!data) {
+          throw missing(targetPath);
+        }
+        return data;
+      },
+      openReadStream() {
+        throw new Error("not used");
+      },
+      async readdir() {
+        return [];
+      },
+      async mkdir(targetPath) {
+        directories.add(normalizeVirtualPath(targetPath));
+      },
+      async writeFile(targetPath, data) {
+        const normalized = normalizeVirtualPath(targetPath);
+        ensureVirtualParentDirectories(normalized);
+        files.set(normalized, data);
+      },
+      async rm() {
+        return undefined;
+      },
+      async rename() {
+        return undefined;
+      }
+    };
+    const gateway = new FakeModelGateway();
+    gateway.streamScenarioFactory = () => ({
+      text: "Done.",
+      toolSteps: [
+        {
+          toolName: "Read",
+          input: {
+            file_path: "evaluation_context/run_context.json"
+          },
+          toolCallId: "call_read_context"
+        }
+      ]
+    });
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence,
+      workspaceFileSystem: fileSystem,
+      workspaceExecutionProvider: {
+        async acquire({ workspace }) {
+          return {
+            workspace: {
+              ...workspace,
+              rootPath: activeRoot
+            },
+            async release() {
+              return undefined;
+            }
+          };
+        }
+      },
+      workspaceInitializer: {
+        async initialize(input) {
+          return {
+            rootPath: input.rootPath,
+            settings: {
+              defaultAgent: "builder",
+              skillDirs: []
+            },
+            defaultAgent: "builder",
+            workspaceModels: {},
+            agents: {
+              builder: {
+                name: "builder",
+                mode: "primary",
+                prompt: "You are builder.",
+                tools: {
+                  native: ["Read"]
+                },
+                switch: [],
+                subagents: []
+              }
+            },
+            actions: {},
+            skills: {},
+            toolServers: {},
+            hooks: {},
+            catalog: {
+              workspaceId: "runtime",
+              agents: [
+                {
+                  name: "builder",
+                  mode: "primary",
+                  source: "workspace" as const
+                }
+              ],
+              models: [],
+              actions: [],
+              skills: [],
+              tools: [],
+              hooks: [],
+              nativeTools: ["Read"]
+            }
+          };
+        }
+      }
+    });
+
+    const workspace = await runtimeService.createWorkspace({
+      input: {
+        name: "demo",
+        runtime: "workspace",
+        rootPath: sourceRoot,
+        executionPolicy: "local"
+      }
+    });
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+    const session = await runtimeService.createSession({
+      workspaceId: workspace.id,
+      caller,
+      input: {}
+    });
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Read evaluation context." }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+    const messages = await runtimeService.listSessionMessages(session.id, 50);
+    const readToolMessage = messages.items.find(
+      (message) => message.role === "tool" && messageToolCallId(message) === "call_read_context"
+    );
+
+    expect(readCalls).toContain(path.posix.join(activeRoot, "evaluation_context", "run_context.json"));
+    expect(messageText(readToolMessage)).toContain('1: {"task":"demo"}');
+  });
+
   it("keeps a read lease open for workspace downloads until the caller releases it", async () => {
     const sourceRoot = await mkdtemp(path.join(tmpdir(), "oah-workspace-source-"));
     const materializedRoot = await mkdtemp(path.join(tmpdir(), "oah-workspace-materialized-"));
@@ -1456,6 +1656,169 @@ describe("runtime service", () => {
           role: "user",
           content: multimodalContent
         }
+      ])
+    );
+  });
+
+  it("loads workspace message attachments from the file access lease workspace", async () => {
+    const sourceRoot = "/source/workspace/ws_attachment";
+    const activeRoot = "/__sandbox__/workspace/ws_attachment";
+    const imageBytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z0a4AAAAASUVORK5CYII=", "base64");
+    const readCalls: string[] = [];
+    const files = new Map<string, Buffer>([
+      [path.posix.join(activeRoot, "assets", "pixel.png"), imageBytes]
+    ]);
+    const directories = new Set<string>([
+      activeRoot,
+      path.posix.join(activeRoot, "assets")
+    ]);
+    const normalizeVirtualPath = (targetPath: string) => targetPath.split(path.sep).join("/");
+    const missing = (targetPath: string) => Object.assign(new Error(`ENOENT: ${targetPath}`), { code: "ENOENT" });
+    const fileSystem: WorkspaceFileSystem = {
+      async realpath(targetPath) {
+        const normalized = normalizeVirtualPath(targetPath);
+        if (files.has(normalized) || directories.has(normalized)) {
+          return normalized;
+        }
+        throw missing(targetPath);
+      },
+      async stat(targetPath) {
+        const normalized = normalizeVirtualPath(targetPath);
+        const data = files.get(normalized);
+        if (data) {
+          return {
+            kind: "file",
+            size: data.byteLength,
+            mtimeMs: 1,
+            birthtimeMs: 1
+          };
+        }
+        if (directories.has(normalized)) {
+          return {
+            kind: "directory",
+            size: 0,
+            mtimeMs: 1,
+            birthtimeMs: 1
+          };
+        }
+        throw missing(targetPath);
+      },
+      async readFile(targetPath) {
+        const normalized = normalizeVirtualPath(targetPath);
+        readCalls.push(normalized);
+        const data = files.get(normalized);
+        if (!data) {
+          throw missing(targetPath);
+        }
+        return data;
+      },
+      openReadStream() {
+        throw new Error("not used");
+      },
+      async readdir() {
+        return [];
+      },
+      async mkdir() {
+        return undefined;
+      },
+      async writeFile() {
+        return undefined;
+      },
+      async rm() {
+        return undefined;
+      },
+      async rename() {
+        return undefined;
+      }
+    };
+    const gateway = new FakeModelGateway();
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence,
+      workspaceFileSystem: fileSystem,
+      workspaceFileAccessProvider: {
+        async acquire({ workspace }) {
+          return {
+            workspace: {
+              ...workspace,
+              rootPath: activeRoot
+            },
+            async release() {
+              return undefined;
+            }
+          };
+        }
+      },
+      workspaceInitializer: {
+        async initialize(input) {
+          return {
+            rootPath: input.rootPath,
+            settings: {
+              defaultAgent: "default",
+              skillDirs: []
+            },
+            defaultAgent: "default",
+            workspaceModels: {},
+            agents: {},
+            actions: {},
+            skills: {},
+            toolServers: {},
+            hooks: {},
+            catalog: {
+              workspaceId: "runtime",
+              agents: [],
+              models: [],
+              actions: [],
+              skills: [],
+              tools: [],
+              hooks: [],
+              nativeTools: []
+            }
+          };
+        }
+      }
+    });
+    const workspace = await runtimeService.createWorkspace({
+      input: {
+        name: "demo",
+        runtime: "workspace",
+        rootPath: sourceRoot,
+        executionPolicy: "local"
+      }
+    });
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+    const session = await runtimeService.createSession({
+      workspaceId: workspace.id,
+      caller,
+      input: {}
+    });
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Please inspect @assets/pixel.png" }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+    await waitFor(() => gateway.invocations.length > 0);
+    const userMessage = gateway.invocations.at(-1)?.input.messages.find((message) => message.role === "user");
+
+    expect(readCalls).toContain(path.posix.join(activeRoot, "assets", "pixel.png"));
+    expect(userMessage?.content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "image",
+          mediaType: "image/png"
+        })
       ])
     );
   });

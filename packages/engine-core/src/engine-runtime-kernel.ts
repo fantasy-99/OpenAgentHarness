@@ -393,6 +393,7 @@ export function buildRuntimeEngineTools(input: {
   modelGateway: EngineServiceOptions["modelGateway"];
   defaultModel: string;
   commandExecutor: WorkspaceCommandExecutor;
+  fileSystem: WorkspaceFileSystem;
   executeAction: (
     action: WorkspaceRecord["actions"][string],
     value: unknown,
@@ -419,6 +420,7 @@ export function buildRuntimeEngineTools(input: {
     modelGateway: input.modelGateway,
     defaultModel: input.defaultModel,
     commandExecutor: input.commandExecutor,
+    fileSystem: input.fileSystem,
     executeAction: async (action, value, context) => input.executeAction(action, value, context),
     delegateAgent: (options, currentAgentName) => input.delegateAgent(options, currentAgentName),
     awaitDelegatedRuns: (options) => input.awaitDelegatedRuns(options),

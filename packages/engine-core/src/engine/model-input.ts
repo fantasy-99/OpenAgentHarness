@@ -119,7 +119,7 @@ export class ModelInputService {
     let contextMessages: ChatMessage[];
     try {
       contextMessages = await this.#modelMessageSerializer.toAiSdkMessages(modelProjection.messages, {
-        workspace
+        workspace: workspaceFileAccess?.workspace ?? workspace
       });
     } finally {
       await workspaceFileAccess?.release();
