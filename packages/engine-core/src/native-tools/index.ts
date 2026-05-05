@@ -9,6 +9,9 @@ import { createGrepTool } from "./grep.js";
 import { createReadTool } from "./read.js";
 import { READ_STATE_DIRECTORY, TODO_STATE_DIRECTORY } from "./constants.js";
 import { ensureParentDirectory, readJsonFile } from "./fs-utils.js";
+import { createTaskInputTool } from "./task-input.js";
+import { createTaskOutputTool } from "./task-output.js";
+import { createTaskStopTool } from "./task-stop.js";
 import { createTodoWriteTool } from "./todo-write.js";
 import { createWebFetchTool } from "./web-fetch.js";
 import { createWriteTool } from "./write.js";
@@ -89,6 +92,9 @@ export function createNativeToolSet(
     ...createGlobTool(context),
     ...createGrepTool(context),
     ...createWebFetchTool(context),
-    ...createTodoWriteTool(context)
+    ...createTodoWriteTool(context),
+    ...createTaskOutputTool(context),
+    ...createTaskInputTool(context),
+    ...createTaskStopTool(context)
   };
 }

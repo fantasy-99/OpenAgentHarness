@@ -12,6 +12,7 @@
     }
   },
   "dependencies": {
+    "@lydell/node-pty": "1.2.0-beta.12",
     "ajv": "8.18.0",
     "ajv-formats": "3.0.1",
     "drizzle-orm": "0.45.2",

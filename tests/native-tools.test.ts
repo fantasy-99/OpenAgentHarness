@@ -142,7 +142,7 @@ describe("native tools", () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-native-tools-background-"));
     tempDirs.push(workspaceRoot);
 
-    const tools = createNativeToolSet(workspaceRoot, () => ["Bash", "Read"], {
+    const tools = createNativeToolSet(workspaceRoot, () => ["Bash", "Read", "TaskOutput"], {
       sessionId: "session-background"
     });
 
@@ -172,6 +172,258 @@ describe("native tools", () => {
     }
 
     expect(output).toContain("background-ok");
+
+    const taskIdMatch = backgroundResult.match(/task_id: (.+)/);
+    expect(taskIdMatch?.[1]).toBeTruthy();
+    const taskOutput = String(await tools.TaskOutput.execute({ task_id: taskIdMatch?.[1] ?? "" }, {}));
+    expect(taskOutput).toContain("status:");
+    expect(taskOutput).toContain("output_path:");
+    expect(taskOutput).toContain("background-ok");
+  });
+
+  it("can send input to a running Bash background task", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-native-tools-background-input-"));
+    tempDirs.push(workspaceRoot);
+
+    const tools = createNativeToolSet(workspaceRoot, () => ["Bash", "TaskInput", "TaskOutput", "TaskStop"], {
+      sessionId: "session-background-input"
+    });
+
+    const backgroundResult = String(
+      await tools.Bash.execute(
+        {
+          command: "cat",
+          run_in_background: true,
+          description: "Echo stdin"
+        },
+        {}
+      )
+    );
+    const taskId = backgroundResult.match(/task_id: (.+)/)?.[1] ?? "";
+    expect(taskId).toBeTruthy();
+
+    try {
+      const inputResult = String(await tools.TaskInput.execute({ task_id: taskId, input: "hello-background-stdin" }, {}));
+      expect(inputResult).toContain("input_written: true");
+
+      let taskOutput = "";
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        taskOutput = String(await tools.TaskOutput.execute({ task_id: taskId }, {}));
+        if (taskOutput.includes("hello-background-stdin")) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      expect(taskOutput).toContain("input_writable: true");
+      expect(taskOutput).toContain("hello-background-stdin");
+    } finally {
+      await tools.TaskStop.execute({ task_id: taskId }, {}).catch(() => undefined);
+    }
+  });
+
+  it("runs Bash background tasks inside a PTY when available", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-native-tools-background-pty-"));
+    tempDirs.push(workspaceRoot);
+
+    const tools = createNativeToolSet(workspaceRoot, () => ["Bash", "TaskOutput"], {
+      sessionId: "session-background-pty"
+    });
+
+    const backgroundResult = String(
+      await tools.Bash.execute(
+        {
+          command: "if [ -t 0 ]; then printf tty-yes; else printf tty-no; fi",
+          run_in_background: true,
+          description: "Check terminal mode"
+        },
+        {}
+      )
+    );
+    const taskId = backgroundResult.match(/task_id: (.+)/)?.[1] ?? "";
+    expect(taskId).toBeTruthy();
+
+    let taskOutput = "";
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      taskOutput = String(await tools.TaskOutput.execute({ task_id: taskId }, {}));
+      if (taskOutput.includes("tty-yes") || taskOutput.includes("tty-no")) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    expect(taskOutput).toContain("terminal_kind: pty");
+    expect(taskOutput).toContain("tty-yes");
+  });
+
+  it("can stop a Bash background task", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-native-tools-background-stop-"));
+    tempDirs.push(workspaceRoot);
+
+    const tools = createNativeToolSet(workspaceRoot, () => ["Bash", "TaskOutput", "TaskStop"], {
+      sessionId: "session-background-stop"
+    });
+
+    const backgroundResult = String(
+      await tools.Bash.execute(
+        {
+          command: "while true; do printf tick; sleep 1; done",
+          run_in_background: true,
+          description: "Loop until stopped"
+        },
+        {}
+      )
+    );
+    const taskId = backgroundResult.match(/task_id: (.+)/)?.[1] ?? "";
+    expect(taskId).toBeTruthy();
+
+    const stopResult = String(await tools.TaskStop.execute({ task_id: taskId }, {}));
+    expect(stopResult).toContain("status: stopped");
+
+    const taskOutput = String(await tools.TaskOutput.execute({ task_id: taskId }, {}));
+    expect(taskOutput).toContain("status: stopped");
+  });
+
+  it("supports Bash persistent terminal sessions", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-native-tools-persistent-bash-"));
+    tempDirs.push(workspaceRoot);
+    await mkdir(path.join(workspaceRoot, "subdir"), { recursive: true });
+
+    const tools = createNativeToolSet(workspaceRoot, () => ["Bash"], {
+      sessionId: "session-persistent-bash"
+    });
+
+    const exportResult = String(
+      await tools.Bash.execute(
+        {
+          command: "export OAH_PERSISTENT_VALUE=kept",
+          persistent_session_id: "shell-a",
+          timeout: 2_000
+        },
+        {}
+      )
+    );
+    expect(exportResult).toContain("persistent_session_id: shell-a");
+    expect(exportResult).toContain("status: completed");
+
+    const envResult = String(
+      await tools.Bash.execute(
+        {
+          command: "printf \"$OAH_PERSISTENT_VALUE\"",
+          persistent_session_id: "shell-a",
+          timeout: 2_000
+        },
+        {}
+      )
+    );
+    expect(envResult).toContain("kept");
+
+    await tools.Bash.execute(
+      {
+        command: "cd subdir",
+        persistent_session_id: "shell-a",
+        timeout: 2_000
+      },
+      {}
+    );
+    const pwdResult = String(
+      await tools.Bash.execute(
+        {
+          command: "pwd",
+          persistent_session_id: "shell-a",
+          timeout: 2_000
+        },
+        {}
+      )
+    );
+    expect(pwdResult).toContain(path.join(workspaceRoot, "subdir"));
+
+    const isolatedResult = String(
+      await tools.Bash.execute(
+        {
+          command: "printf \"${OAH_PERSISTENT_VALUE:-missing}\"",
+          persistent_session_id: "shell-b",
+          timeout: 2_000
+        },
+        {}
+      )
+    );
+    expect(isolatedResult).toContain("missing");
+
+    await tools.Bash.execute({ persistent_session_id: "shell-a", close_persistent_session: true }, {});
+    await tools.Bash.execute({ persistent_session_id: "shell-b", close_persistent_session: true }, {});
+  });
+
+  it("supports Bash persistent input mode for interactive processes", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-native-tools-persistent-input-"));
+    tempDirs.push(workspaceRoot);
+
+    const tools = createNativeToolSet(workspaceRoot, () => ["Bash"], {
+      sessionId: "session-persistent-input"
+    });
+
+    const catStart = String(
+      await tools.Bash.execute(
+        {
+          command: "cat",
+          persistent_session_id: "interactive",
+          persistent_mode: "input",
+          timeout: 200
+        },
+        {}
+      )
+    );
+    expect(catStart).toContain("persistent_session_id: interactive");
+
+    const inputResult = String(
+      await tools.Bash.execute(
+        {
+          command: "hello-through-stdin",
+          persistent_session_id: "interactive",
+          persistent_mode: "input",
+          timeout: 200
+        },
+        {}
+      )
+    );
+    expect(inputResult).toContain("hello-through-stdin");
+
+    const closeResult = String(
+      await tools.Bash.execute(
+        {
+          persistent_session_id: "interactive",
+          close_persistent_session: true
+        },
+        {}
+      )
+    );
+    expect(closeResult).toContain("persistent_session_id: interactive");
+    expect(closeResult).toContain("status: exited");
+  });
+
+  it("rejects unsupported persistent Bash executors", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-native-tools-persistent-unsupported-"));
+    tempDirs.push(workspaceRoot);
+
+    const commandExecutor: WorkspaceCommandExecutor = {
+      runForeground: vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 })),
+      runProcess: vi.fn(async () => ({ stdout: "", stderr: "", exitCode: 0 })),
+      runBackground: vi.fn(async () => ({ outputPath: "/tmp/task.log", taskId: "task-1", pid: 1 }))
+    };
+    const tools = createNativeToolSet(workspaceRoot, () => ["Bash"], {
+      sessionId: "session-persistent-unsupported",
+      commandExecutor
+    });
+
+    await expect(
+      tools.Bash.execute(
+        {
+          command: "printf no",
+          persistent_session_id: "unsupported"
+        },
+        {}
+      )
+    ).rejects.toThrow(/Persistent Bash terminals are not supported/);
   });
 
   it("routes Bash through the injected workspace command executor", async () => {
@@ -193,13 +445,36 @@ describe("native tools", () => {
         outputPath: path.join(workspaceRoot, ".openharness", "state", "background", "session-executor", "task.log"),
         taskId: "task-executor",
         pid: 1234
+      })),
+      getBackgroundTask: vi.fn(async () => null),
+      stopBackgroundTask: vi.fn(async () => null),
+      writeBackgroundTaskInput: vi.fn(async (input) => ({
+        taskId: input.taskId,
+        outputPath: ".openharness/state/background/session-executor/task.log",
+        status: "running",
+        pid: 1234,
+        inputWritable: true
+      })),
+      runPersistentTerminal: vi.fn(async (input) => ({
+        terminalId: input.terminalId,
+        output: "persistent-ok",
+        status: "completed",
+        pid: 4321,
+        exitCode: 0
+      })),
+      stopPersistentTerminal: vi.fn(async (input) => ({
+        terminalId: input.terminalId,
+        output: "closed-ok",
+        status: "exited",
+        pid: 4321,
+        exitCode: 0
       }))
     };
 
     await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
     await writeFile(path.join(workspaceRoot, "src", "app.ts"), "export const value = 1;\n", "utf8");
 
-    const tools = createNativeToolSet(workspaceRoot, () => ["Bash", "Grep"], {
+    const tools = createNativeToolSet(workspaceRoot, () => ["Bash", "Grep", "TaskInput"], {
       sessionId: "session-executor",
       commandExecutor
     });
@@ -213,6 +488,36 @@ describe("native tools", () => {
     );
     expect(background).toContain("task_id: task-executor");
     expect(commandExecutor.runBackground).toHaveBeenCalledTimes(1);
+
+    const taskInput = String(await tools.TaskInput.execute({ task_id: "task-executor", input: "ignored" }, {}));
+    expect(taskInput).toContain("input_written: true");
+    expect(commandExecutor.writeBackgroundTaskInput).toHaveBeenCalledTimes(1);
+    expect(commandExecutor.writeBackgroundTaskInput).toHaveBeenCalledWith(
+      expect.objectContaining({
+        taskId: "task-executor",
+        sessionId: "session-executor",
+        inputText: "ignored"
+      })
+    );
+
+    const persistent = String(
+      await tools.Bash.execute({ command: "printf ignored", persistent_session_id: "executor-shell" }, {})
+    );
+    expect(persistent).toContain("persistent-ok");
+    expect(commandExecutor.runPersistentTerminal).toHaveBeenCalledTimes(1);
+    expect(commandExecutor.runPersistentTerminal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        terminalId: "executor-shell",
+        sessionId: "session-executor",
+        command: "printf ignored",
+        mode: "command"
+      })
+    );
+    const closePersistent = String(
+      await tools.Bash.execute({ persistent_session_id: "executor-shell", close_persistent_session: true }, {})
+    );
+    expect(closePersistent).toContain("closed-ok");
+    expect(commandExecutor.stopPersistentTerminal).toHaveBeenCalledTimes(1);
 
     const grep = String(await tools.Grep.execute({ pattern: "value", path: "src", output_mode: "content" }, {}));
     expect(grep).toContain("src/app.ts:1:export const value = 1;");

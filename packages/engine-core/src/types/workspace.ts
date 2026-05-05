@@ -245,6 +245,37 @@ export interface WorkspaceBackgroundCommandExecutionResult {
   pid: number;
 }
 
+export type WorkspaceBackgroundTaskStatus = "running" | "completed" | "failed" | "stopped" | "unknown";
+
+export interface WorkspaceBackgroundTaskState {
+  taskId: string;
+  outputPath: string;
+  status: WorkspaceBackgroundTaskStatus;
+  pid?: number | undefined;
+  inputWritable?: boolean | undefined;
+  terminalKind?: "pty" | "pipe" | undefined;
+  description?: string | undefined;
+  command?: string | undefined;
+  exitCode?: number | undefined;
+  signal?: string | undefined;
+  createdAt?: string | undefined;
+  updatedAt?: string | undefined;
+  endedAt?: string | undefined;
+}
+
+export type WorkspacePersistentTerminalMode = "command" | "input";
+
+export type WorkspacePersistentTerminalStatus = "running" | "completed" | "exited";
+
+export interface WorkspacePersistentTerminalExecutionResult {
+  terminalId: string;
+  output: string;
+  status: WorkspacePersistentTerminalStatus;
+  pid?: number | undefined;
+  exitCode?: number | undefined;
+  timedOut?: boolean | undefined;
+}
+
 export interface WorkspaceFileStat {
   kind: "file" | "directory" | "other";
   size: number;
@@ -300,6 +331,40 @@ export interface WorkspaceCommandExecutor {
     cwd?: string | undefined;
     env?: Record<string, string> | undefined;
   }): Promise<WorkspaceBackgroundCommandExecutionResult>;
+  getBackgroundTask?(input: {
+    workspace: WorkspaceRecord;
+    sessionId: string;
+    taskId: string;
+  }): Promise<WorkspaceBackgroundTaskState | null>;
+  stopBackgroundTask?(input: {
+    workspace: WorkspaceRecord;
+    sessionId: string;
+    taskId: string;
+  }): Promise<WorkspaceBackgroundTaskState | null>;
+  writeBackgroundTaskInput?(input: {
+    workspace: WorkspaceRecord;
+    sessionId: string;
+    taskId: string;
+    inputText: string;
+    appendNewline?: boolean | undefined;
+  }): Promise<WorkspaceBackgroundTaskState | null>;
+  runPersistentTerminal?(input: {
+    workspace: WorkspaceRecord;
+    sessionId: string;
+    terminalId: string;
+    command: string;
+    mode?: WorkspacePersistentTerminalMode | undefined;
+    appendNewline?: boolean | undefined;
+    cwd?: string | undefined;
+    env?: Record<string, string> | undefined;
+    timeoutMs?: number | undefined;
+    signal?: AbortSignal | undefined;
+  }): Promise<WorkspacePersistentTerminalExecutionResult>;
+  stopPersistentTerminal?(input: {
+    workspace: WorkspaceRecord;
+    sessionId: string;
+    terminalId: string;
+  }): Promise<WorkspacePersistentTerminalExecutionResult | null>;
 }
 
 export interface SandboxHost {

@@ -3,7 +3,9 @@ import type {
   Session,
   WorkspaceExecutionLease,
   WorkspaceFileAccessLease,
-  WorkspaceRecord
+  WorkspaceRecord,
+  WorkspaceCommandExecutor,
+  WorkspaceFileSystem
 } from "@oah/engine-core";
 import { AppError, createLocalWorkspaceCommandExecutor, createLocalWorkspaceFileSystem } from "@oah/engine-core";
 
@@ -29,8 +31,8 @@ export interface SandboxHostDiagnostics {
  */
 export interface SandboxHost {
   providerKind: "embedded" | "self_hosted" | "e2b";
-  workspaceCommandExecutor: ReturnType<typeof createLocalWorkspaceCommandExecutor>;
-  workspaceFileSystem: ReturnType<typeof createLocalWorkspaceFileSystem>;
+  workspaceCommandExecutor: WorkspaceCommandExecutor;
+  workspaceFileSystem: WorkspaceFileSystem;
   workspaceExecutionProvider: {
     acquire(input: { workspace: WorkspaceRecord; run: Run; session?: Session | undefined }): Promise<WorkspaceExecutionLease>;
   };
@@ -73,6 +75,21 @@ export function createLazySandboxHost(options: {
       },
       runBackground(input) {
         return getHost().workspaceCommandExecutor.runBackground(input);
+      },
+      getBackgroundTask(input) {
+        return getHost().workspaceCommandExecutor.getBackgroundTask?.(input) ?? Promise.resolve(null);
+      },
+      stopBackgroundTask(input) {
+        return getHost().workspaceCommandExecutor.stopBackgroundTask?.(input) ?? Promise.resolve(null);
+      },
+      writeBackgroundTaskInput(input) {
+        return getHost().workspaceCommandExecutor.writeBackgroundTaskInput?.(input) ?? Promise.resolve(null);
+      },
+      runPersistentTerminal(input) {
+        return getHost().workspaceCommandExecutor.runPersistentTerminal?.(input) ?? Promise.reject(new AppError(501, "persistent_terminal_unsupported", "Persistent terminals are not supported by this sandbox host."));
+      },
+      stopPersistentTerminal(input) {
+        return getHost().workspaceCommandExecutor.stopPersistentTerminal?.(input) ?? Promise.resolve(null);
       }
     },
     workspaceFileSystem: {

@@ -9,7 +9,10 @@ export const NATIVE_TOOL_NAMES = [
   "Glob",
   "Grep",
   "WebFetch",
-  "TodoWrite"
+  "TodoWrite",
+  "TaskOutput",
+  "TaskInput",
+  "TaskStop"
 ] as const;
 
 export type NativeToolName = (typeof NATIVE_TOOL_NAMES)[number];
@@ -22,7 +25,10 @@ const NATIVE_TOOL_RETRY_POLICY: Record<NativeToolName, ActionRetryPolicy> = {
   Glob: "safe",
   Grep: "safe",
   WebFetch: "safe",
-  TodoWrite: "manual"
+  TodoWrite: "manual",
+  TaskOutput: "safe",
+  TaskInput: "manual",
+  TaskStop: "manual"
 };
 
 export interface NativeToolSetOptions {

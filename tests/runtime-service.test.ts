@@ -10866,7 +10866,10 @@ describe("runtime service", () => {
       "Glob",
       "Grep",
       "WebFetch",
-      "TodoWrite"
+      "TodoWrite",
+      "TaskOutput",
+      "TaskInput",
+      "TaskStop"
     ]);
     expect(catalog.engineTools).toEqual(expect.arrayContaining(["Bash", "Read", "run_action", "Skill", "AgentSwitch", "SubAgent"]));
 
