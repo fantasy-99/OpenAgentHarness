@@ -66,6 +66,9 @@ return 0
 
 const requeuePendingSessionScript = `
 if redis.call("llen", KEYS[1]) > 0 then
+  if ARGV[2] ~= "" then
+    redis.call("set", KEYS[3], ARGV[2])
+  end
   local readyEntries = redis.call("lrange", KEYS[2], 0, -1)
   for _, readySessionId in ipairs(readyEntries) do
     if readySessionId == ARGV[1] then
@@ -299,6 +302,11 @@ export class RedisSessionRunQueue implements SessionRunQueue {
     return Number(result) === 1;
   }
 
+  async peekRun(sessionId: string): Promise<string | undefined> {
+    const runId = await this.#commands.lIndex(this.#sessionQueueKey(sessionId), 0);
+    return typeof runId === "string" ? runId : undefined;
+  }
+
   async dequeueRun(sessionId: string): Promise<string | undefined> {
     const runId = await this.#commands.eval(dequeueSessionRunScript, {
       keys: [
@@ -312,10 +320,14 @@ export class RedisSessionRunQueue implements SessionRunQueue {
     return typeof runId === "string" ? runId : undefined;
   }
 
-  async requeueSessionIfPending(sessionId: string): Promise<boolean> {
+  async requeueSessionIfPending(
+    sessionId: string,
+    options?: { preferredWorkerId?: string | undefined }
+  ): Promise<boolean> {
+    const preferredWorkerId = options?.preferredWorkerId?.trim() ?? "";
     const result = await this.#commands.eval(requeuePendingSessionScript, {
-      keys: [this.#sessionQueueKey(sessionId), this.#readyQueueKey()],
-      arguments: [sessionId]
+      keys: [this.#sessionQueueKey(sessionId), this.#readyQueueKey(), this.#preferredWorkerKey(sessionId)],
+      arguments: [sessionId, preferredWorkerId]
     });
 
     return Number(result) === 1;

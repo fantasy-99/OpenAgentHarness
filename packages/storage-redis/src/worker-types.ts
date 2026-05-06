@@ -10,7 +10,9 @@ export interface RedisRunWorkerOptions {
   queue: SessionRunQueue;
   runtimeService: {
     processQueuedRun(runId: string): Promise<void>;
-    describeQueuedRun?(runId: string): Promise<{ workspaceId?: string | undefined } | undefined>;
+    describeQueuedRun?(
+      runId: string
+    ): Promise<{ workspaceId?: string | undefined; preferredWorkerId?: string | undefined } | undefined>;
     recoverStaleRuns?(options?: {
       staleBefore?: string | undefined;
       limit?: number | undefined;

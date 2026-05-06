@@ -995,7 +995,7 @@ describe("server runtime process modes", () => {
     ]);
   });
 
-  it("does not inject worker affinity for ownerless workspaces", async () => {
+  it("injects worker affinity for ownerless active workspace placements", async () => {
     const enqueues: Array<{
       sessionId: string;
       runId: string;
@@ -1040,7 +1040,58 @@ describe("server runtime process modes", () => {
       {
         sessionId: "ses_shared",
         runId: "run_shared",
-        priority: "normal"
+        priority: "normal",
+        preferredWorkerId: "worker_hint"
+      }
+    ]);
+  });
+
+  it("falls back to owner worker affinity for ownerless active workspace placements", async () => {
+    const enqueues: Array<{
+      sessionId: string;
+      runId: string;
+      priority?: "normal" | "subagent";
+      preferredWorkerId?: string;
+    }> = [];
+
+    const queue = createPlacementAwareSessionRunQueue({
+      queue: {
+        async enqueue(sessionId, runId, input) {
+          enqueues.push({
+            sessionId,
+            runId,
+            ...(input?.priority ? { priority: input.priority } : {}),
+            ...(input?.preferredWorkerId ? { preferredWorkerId: input.preferredWorkerId } : {})
+          });
+        }
+      },
+      runRepository: {
+        async getById() {
+          return {
+            workspaceId: "ws_shared"
+          };
+        }
+      },
+      workspacePlacementRegistry: {
+        async getByWorkspaceId() {
+          return {
+            state: "active",
+            ownerWorkerId: "worker_owner"
+          };
+        }
+      }
+    });
+
+    await queue.enqueue("ses_shared", "run_shared", {
+      priority: "normal"
+    });
+
+    expect(enqueues).toEqual([
+      {
+        sessionId: "ses_shared",
+        runId: "run_shared",
+        priority: "normal",
+        preferredWorkerId: "worker_owner"
       }
     ]);
   });

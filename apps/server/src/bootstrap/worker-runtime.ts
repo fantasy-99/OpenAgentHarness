@@ -93,7 +93,9 @@ export function createWorkerRuntimeControl(options: {
   redisRunQueue?: SessionRunQueue | undefined;
   redisWorkerRegistry?: WorkerRegistry | undefined;
   runtimeService: ExecutionRuntimeOperations;
-  describeQueuedRun?: ((runId: string) => Promise<{ workspaceId?: string | undefined } | undefined>) | undefined;
+  describeQueuedRun?:
+    | ((runId: string) => Promise<{ workspaceId?: string | undefined; preferredWorkerId?: string | undefined } | undefined>)
+    | undefined;
   logger?: RedisRunWorkerLogger | undefined;
   hostFactory?: WorkerHostFactory | undefined;
 }): WorkerRuntimeControl {

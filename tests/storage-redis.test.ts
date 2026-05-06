@@ -162,6 +162,9 @@ function createQueueStub(overrides: Record<string, unknown> = {}) {
     async releaseSessionLock() {
       return true;
     },
+    async peekRun() {
+      return undefined;
+    },
     async dequeueRun() {
       return undefined;
     },
@@ -201,6 +204,9 @@ function createInMemoryQueueRedisClients() {
       const values = lists.get(key) ?? [];
       const normalizedEnd = end < 0 ? values.length - 1 : end;
       return values.slice(start, normalizedEnd + 1);
+    },
+    async lIndex(key: string, index: number) {
+      return lists.get(key)?.[index] ?? null;
     },
     async mGet(keys: string[]) {
       return keys.map((key) => strings.get(key) ?? null);
@@ -279,6 +285,28 @@ function createInMemoryQueueRedisClients() {
         }
 
         return runId;
+      }
+
+      if (input.keys.length === 3 && args.length === 2) {
+        const [sessionQueueKey, readyQueueKey, preferredWorkerKey] = input.keys;
+        const [sessionId, preferredWorkerId] = args;
+        const sessionQueue = lists.get(sessionQueueKey) ?? [];
+        if (sessionQueue.length === 0) {
+          return 0;
+        }
+
+        if (preferredWorkerId) {
+          strings.set(preferredWorkerKey, preferredWorkerId);
+        }
+
+        const readyQueue = lists.get(readyQueueKey) ?? [];
+        if (!readyQueue.includes(sessionId)) {
+          readyQueue.push(sessionId);
+          lists.set(readyQueueKey, readyQueue);
+          return 1;
+        }
+
+        return 0;
       }
 
       throw new Error(`Unsupported eval invocation: keys=${input.keys.length} args=${args.length}`);
@@ -439,6 +467,9 @@ describe("storage redis", () => {
         released += 1;
         return true;
       },
+      async peekRun() {
+        return dequeuedRuns[0];
+      },
       async dequeueRun() {
         return dequeuedRuns.shift();
       }
@@ -479,6 +510,9 @@ describe("storage redis", () => {
       async tryAcquireSessionLock() {
         acquireAttempts += 1;
         return acquireAttempts > 1;
+      },
+      async peekRun(sessionId: string) {
+        return sessionRuns.get(sessionId)?.[0];
       },
       async dequeueRun(sessionId: string) {
         return sessionRuns.get(sessionId)?.shift();
@@ -1020,6 +1054,74 @@ describe("storage redis", () => {
     await expect(queue.dequeueRun("ses_runtime_targeted")).resolves.toBe("run_targeted");
   });
 
+  it("restores a claimed session with a refreshed worker hint before dequeueing mismatched runs", async () => {
+    const restored: Array<{ sessionId: string; preferredWorkerId?: string }> = [];
+    const processedRunIds: string[] = [];
+    let claimed = false;
+    const queue = createQueueStub({
+      async claimNextSession() {
+        if (claimed) {
+          await new Promise((resolve) => setTimeout(resolve, 1));
+          return undefined;
+        }
+
+        claimed = true;
+        return "ses_mismatch";
+      },
+      async peekRun() {
+        return "run_mismatch";
+      },
+      async dequeueRun() {
+        throw new Error("dequeue should not run for the wrong worker");
+      },
+      async requeueSessionIfPending(sessionId: string, options?: { preferredWorkerId?: string }) {
+        restored.push({
+          sessionId,
+          ...(options?.preferredWorkerId ? { preferredWorkerId: options.preferredWorkerId } : {})
+        });
+        return true;
+      }
+    });
+
+    const worker = new RedisRunWorker({
+      workerId: "worker_local",
+      queue,
+      runtimeService: {
+        async describeQueuedRun() {
+          return {
+            workspaceId: "ws_remote",
+            preferredWorkerId: "worker_owner"
+          };
+        },
+        async processQueuedRun(runId) {
+          processedRunIds.push(runId);
+        }
+      },
+      pollTimeoutMs: 20,
+      lockTtlMs: 2_000,
+      logger: {
+        warn() {
+          return undefined;
+        },
+        error() {
+          return undefined;
+        }
+      }
+    });
+
+    worker.start();
+    await waitForCondition(() => restored.length === 1, 1_000);
+    await worker.close();
+
+    expect(restored).toEqual([
+      {
+        sessionId: "ses_mismatch",
+        preferredWorkerId: "worker_owner"
+      }
+    ]);
+    expect(processedRunIds).toEqual([]);
+  });
+
   it("publishes worker leases and removes them on shutdown", async () => {
     let claims = 0;
     const dequeuedRuns = ["run_1"];
@@ -1043,6 +1145,9 @@ describe("storage redis", () => {
         await new Promise((resolve) => setTimeout(resolve, 1));
         claims += 1;
         return claims === 1 ? "ses_1" : undefined;
+      },
+      async peekRun() {
+        return dequeuedRuns[0];
       },
       async dequeueRun() {
         return dequeuedRuns.shift();
@@ -1122,6 +1227,9 @@ describe("storage redis", () => {
 
         claimed = true;
         return "ses_1";
+      },
+      async peekRun() {
+        return returnedRun ? undefined : "run_1";
       },
       async dequeueRun() {
         if (returnedRun) {

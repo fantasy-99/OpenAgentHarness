@@ -34,8 +34,9 @@ export interface SessionRunQueue {
   tryAcquireSessionLock(sessionId: string, token: string, ttlMs: number): Promise<boolean>;
   renewSessionLock(sessionId: string, token: string, ttlMs: number): Promise<boolean>;
   releaseSessionLock(sessionId: string, token: string): Promise<boolean>;
+  peekRun(sessionId: string): Promise<string | undefined>;
   dequeueRun(sessionId: string): Promise<string | undefined>;
-  requeueSessionIfPending?(sessionId: string): Promise<boolean>;
+  requeueSessionIfPending?(sessionId: string, options?: { preferredWorkerId?: string | undefined }): Promise<boolean>;
   getSchedulingPressure?(): Promise<SessionRunQueuePressure>;
   getReadySessionCount?(): Promise<number>;
   ping(): Promise<boolean>;

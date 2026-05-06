@@ -209,7 +209,9 @@ export function createWorkerHost(options: {
   redisRunQueue?: SessionRunQueue | undefined;
   redisWorkerRegistry?: WorkerRegistry | undefined;
   runtimeService: ExecutionRuntimeOperations;
-  describeQueuedRun?: ((runId: string) => Promise<{ workspaceId?: string | undefined } | undefined>) | undefined;
+  describeQueuedRun?:
+    | ((runId: string) => Promise<{ workspaceId?: string | undefined; preferredWorkerId?: string | undefined } | undefined>)
+    | undefined;
   logger?: RedisRunWorkerLogger | undefined;
   poolFactory?: ((options: ConstructorParameters<typeof RedisRunWorkerPool>[0]) => WorkerPoolLike) | undefined;
 }): WorkerHost {

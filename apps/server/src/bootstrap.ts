@@ -260,18 +260,13 @@ function selectPlacementPreferredWorkerId(placement: {
   ownerWorkerId?: string | undefined;
   preferredWorkerId?: string | undefined;
 } | null | undefined): string | undefined {
-  const ownerId = placement?.ownerId?.trim();
-  if (!ownerId) {
+  if (placement?.state === "evicted" || placement?.state === "unassigned") {
     return undefined;
   }
 
   const preferredWorkerId = placement?.preferredWorkerId?.trim();
   if (preferredWorkerId) {
     return preferredWorkerId;
-  }
-
-  if (placement?.state === "evicted" || placement?.state === "unassigned") {
-    return undefined;
   }
 
   const ownerWorkerId = placement?.ownerWorkerId?.trim();
@@ -302,8 +297,9 @@ interface PlacementAwareSessionRunQueueLike {
   tryAcquireSessionLock(sessionId: string, token: string, ttlMs: number): Promise<boolean>;
   renewSessionLock(sessionId: string, token: string, ttlMs: number): Promise<boolean>;
   releaseSessionLock(sessionId: string, token: string): Promise<boolean>;
+  peekRun(sessionId: string): Promise<string | undefined>;
   dequeueRun(sessionId: string): Promise<string | undefined>;
-  requeueSessionIfPending?(sessionId: string): Promise<boolean>;
+  requeueSessionIfPending?(sessionId: string, input?: { preferredWorkerId?: string | undefined }): Promise<boolean>;
   getSchedulingPressure?(): Promise<unknown>;
   getReadySessionCount?(): Promise<number>;
   ping(): Promise<boolean>;
@@ -364,13 +360,16 @@ export function createPlacementAwareSessionRunQueue<TQueue extends PlacementAwar
     releaseSessionLock(sessionId, token) {
       return queue.releaseSessionLock(sessionId, token);
     },
+    peekRun(sessionId) {
+      return queue.peekRun(sessionId);
+    },
     dequeueRun(sessionId) {
       return queue.dequeueRun(sessionId);
     },
     ...(queue.requeueSessionIfPending
       ? {
-          requeueSessionIfPending(sessionId: string) {
-            return queue.requeueSessionIfPending!(sessionId);
+          requeueSessionIfPending(sessionId: string, input?: { preferredWorkerId?: string | undefined }) {
+            return queue.requeueSessionIfPending!(sessionId, input);
           }
         }
       : {}),
@@ -1736,11 +1735,25 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   const describeQueuedRun = controlPlaneRuntime
     ? (runId: string) =>
         import("./bootstrap/scoped-repositories.js").then(({ describeQueuedRunWithScopedVisibility }) =>
-          describeQueuedRunWithScopedVisibility(persistence.runRepository, visibleWorkspaceIds, runId)
+          describeQueuedRunWithScopedVisibility(
+            persistence.runRepository,
+            visibleWorkspaceIds,
+            runId,
+            redisWorkspacePlacementRegistry
+          )
         )
     : async (runId: string) => {
         const run = await persistence.runRepository.getById(runId);
-        return run ? { workspaceId: run.workspaceId } : undefined;
+        if (!run) {
+          return undefined;
+        }
+
+        const placement = await redisWorkspacePlacementRegistry?.getByWorkspaceId(run.workspaceId);
+        const preferredWorkerId = selectPlacementPreferredWorkerId(placement);
+        return {
+          workspaceId: run.workspaceId,
+          ...(preferredWorkerId ? { preferredWorkerId } : {})
+        };
       };
   const workerRuntime = assemblyProfile.enableWorkerRuntime
     ? (await loadWorkerRuntimeModule()).createWorkerRuntimeControl({

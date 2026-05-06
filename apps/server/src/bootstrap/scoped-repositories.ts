@@ -30,16 +30,29 @@ async function listVisibleWorkspaces(
 export async function describeQueuedRunWithScopedVisibility(
   repository: Pick<RunRepository, "getById">,
   visibleWorkspaceIds: Set<string>,
-  runId: string
-): Promise<{ workspaceId?: string | undefined } | undefined> {
+  runId: string,
+  workspacePlacementRegistry?: {
+    getByWorkspaceId?(workspaceId: string): Promise<{
+      state?: "unassigned" | "active" | "idle" | "draining" | "evicted" | undefined;
+      ownerWorkerId?: string | undefined;
+      preferredWorkerId?: string | undefined;
+    } | undefined>;
+  } | undefined
+): Promise<{ workspaceId?: string | undefined; preferredWorkerId?: string | undefined } | undefined> {
   const run = await repository.getById(runId);
   if (!run) {
     return undefined;
   }
 
   visibleWorkspaceIds.add(run.workspaceId);
+  const placement = await workspacePlacementRegistry?.getByWorkspaceId?.(run.workspaceId);
+  const preferredWorkerId =
+    placement?.state === "evicted" || placement?.state === "unassigned"
+      ? undefined
+      : placement?.preferredWorkerId?.trim() || placement?.ownerWorkerId?.trim() || undefined;
   return {
-    workspaceId: run.workspaceId
+    workspaceId: run.workspaceId,
+    ...(preferredWorkerId ? { preferredWorkerId } : {})
   };
 }
 

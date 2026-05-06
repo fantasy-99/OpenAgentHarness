@@ -174,15 +174,44 @@ export class RedisRunWorker {
 
         try {
           while (this.#active) {
+            const candidateRunId = await this.#queue.peekRun(sessionId);
+            if (!candidateRunId) {
+              break;
+            }
+
+            let queuedRun:
+              | {
+                  workspaceId?: string | undefined;
+                  preferredWorkerId?: string | undefined;
+                }
+              | undefined;
+            try {
+              queuedRun = this.#runtimeService.describeQueuedRun
+                ? await this.#runtimeService.describeQueuedRun(candidateRunId)
+                : undefined;
+            } catch (error) {
+              this.#logger?.error(`Failed to inspect queued run ${candidateRunId}.`, error);
+              await this.#restoreClaimedSession(sessionId);
+              break;
+            }
+
+            const preferredWorkerId = queuedRun?.preferredWorkerId?.trim();
+            if (preferredWorkerId && !this.#matchesWorker(preferredWorkerId)) {
+              this.#logger?.warn(
+                `Rejecting queued run ${candidateRunId} for ${sessionId}; preferred worker is ${preferredWorkerId}, current worker is ${this.#workerId}.`
+              );
+              await this.#restoreClaimedSession(sessionId, {
+                preferredWorkerId
+              });
+              break;
+            }
+
             const runId = await this.#queue.dequeueRun(sessionId);
             if (!runId) {
               break;
             }
 
             try {
-              const queuedRun = this.#runtimeService.describeQueuedRun
-                ? await this.#runtimeService.describeQueuedRun(runId)
-                : undefined;
               this.#setState("busy", sessionId, runId, queuedRun?.workspaceId);
               await this.#publishLease();
               await this.#runtimeService.processQueuedRun(runId);
@@ -238,13 +267,20 @@ export class RedisRunWorker {
     }
   }
 
-  async #restoreClaimedSession(sessionId: string): Promise<void> {
+  #matchesWorker(preferredWorkerId: string): boolean {
+    return preferredWorkerId === this.#workerId || (Boolean(this.#runtimeInstanceId) && preferredWorkerId === this.#runtimeInstanceId);
+  }
+
+  async #restoreClaimedSession(
+    sessionId: string,
+    options?: { preferredWorkerId?: string | undefined }
+  ): Promise<void> {
     if (typeof this.#queue.requeueSessionIfPending !== "function") {
       return;
     }
 
     try {
-      await this.#queue.requeueSessionIfPending(sessionId);
+      await this.#queue.requeueSessionIfPending(sessionId, options);
     } catch (error) {
       this.#logger?.warn(`Failed to restore claimed Redis session ${sessionId} back to the ready queue.`, error);
     }
