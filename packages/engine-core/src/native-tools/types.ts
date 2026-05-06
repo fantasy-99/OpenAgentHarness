@@ -8,7 +8,7 @@ import type {
 } from "../types.js";
 import { AppError } from "../errors.js";
 
-export const NATIVE_TOOL_NAMES = [
+export const PUBLIC_NATIVE_TOOL_NAMES = [
   "Bash",
   "Read",
   "Write",
@@ -17,10 +17,12 @@ export const NATIVE_TOOL_NAMES = [
   "Grep",
   "WebFetch",
   "TodoWrite",
-  "TaskOutput",
-  "TaskInput",
-  "TaskStop"
+  "TerminalOutput",
+  "TerminalInput",
+  "TerminalStop"
 ] as const;
+
+export const NATIVE_TOOL_NAMES = [...PUBLIC_NATIVE_TOOL_NAMES] as const;
 
 export type NativeToolName = (typeof NATIVE_TOOL_NAMES)[number];
 
@@ -33,9 +35,9 @@ const NATIVE_TOOL_RETRY_POLICY: Record<NativeToolName, ActionRetryPolicy> = {
   Grep: "safe",
   WebFetch: "safe",
   TodoWrite: "manual",
-  TaskOutput: "safe",
-  TaskInput: "manual",
-  TaskStop: "manual"
+  TerminalOutput: "safe",
+  TerminalInput: "manual",
+  TerminalStop: "manual"
 };
 
 export interface NativeToolSetOptions {

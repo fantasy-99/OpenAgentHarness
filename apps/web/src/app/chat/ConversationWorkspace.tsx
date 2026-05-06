@@ -1,7 +1,30 @@
 import { memo, useEffect, useRef, useCallback, useMemo, useState, type ReactNode, type RefObject } from "react";
 import ReactMarkdown, { type Components as MarkdownComponents } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Archive, ArrowRight, Bot, ChevronRight, CornerDownRight, Folder, ImagePlus, Loader2, RefreshCw, Send, Sparkles, Square, Wrench, X } from "lucide-react";
+import {
+  Archive,
+  ArrowRight,
+  Bot,
+  CheckCircle2,
+  ChevronRight,
+  Circle,
+  CircleDot,
+  Clock3,
+  CornerDownRight,
+  Folder,
+  GitBranch,
+  GitCompare,
+  ImagePlus,
+  ListTodo,
+  Loader2,
+  Radio,
+  RefreshCw,
+  Send,
+  Sparkles,
+  Square,
+  Wrench,
+  X
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -20,6 +43,19 @@ import type { DraftImageAttachment } from "./composer-content";
 
 type RuntimeProps = ReturnType<typeof useAppController>["runtimeDetailSurfaceProps"];
 type ToolStatus = "running" | "started" | "completed" | "failed";
+type TodoStatus = "pending" | "in_progress" | "completed";
+type TodoProgressItem = {
+  content: string;
+  activeForm?: string | undefined;
+  status: TodoStatus;
+};
+type ConversationTodoProgress = {
+  items: TodoProgressItem[];
+  updatedAt?: string | undefined;
+  completedCount: number;
+  activeCount: number;
+  pendingCount: number;
+};
 const MARKDOWN_REMARK_PLUGINS = [remarkGfm];
 const AUTO_SESSION_MODEL_VALUE = "__session_model_auto__";
 
@@ -182,6 +218,77 @@ function readToolMeta(messageMetadata: Message["metadata"] | undefined) {
         : undefined,
     durationMs: typeof messageMetadata.toolDurationMs === "number" ? messageMetadata.toolDurationMs : undefined,
     sourceType: typeof messageMetadata.toolSourceType === "string" ? messageMetadata.toolSourceType : undefined
+  };
+}
+
+function isTodoStatus(value: unknown): value is TodoStatus {
+  return value === "pending" || value === "in_progress" || value === "completed";
+}
+
+function normalizeTodoProgressItem(value: unknown): TodoProgressItem | null {
+  if (!isRecord(value) || !isTodoStatus(value.status)) {
+    return null;
+  }
+
+  const content = typeof value.content === "string" ? value.content.trim() : "";
+  const activeForm = typeof value.activeForm === "string" ? value.activeForm.trim() : "";
+  const label = content || activeForm;
+  if (!label) {
+    return null;
+  }
+
+  return {
+    content: label,
+    ...(activeForm ? { activeForm } : {}),
+    status: value.status
+  };
+}
+
+function readTodoWriteItemsFromToolCall(part: Extract<MessagePart, { type: "tool-call" }>) {
+  if (part.toolName !== "TodoWrite" || !isRecord(part.input) || !Array.isArray(part.input.todos)) {
+    return null;
+  }
+
+  const items = part.input.todos
+    .map((item) => normalizeTodoProgressItem(item))
+    .filter((item): item is TodoProgressItem => item !== null);
+  return items.length > 0 ? items : null;
+}
+
+function buildConversationTodoProgress(messages: Message[]): ConversationTodoProgress | null {
+  let latestItems: TodoProgressItem[] | null = null;
+  let updatedAt: string | undefined;
+
+  for (const message of messages) {
+    if (typeof message.content === "string") {
+      continue;
+    }
+
+    for (const part of message.content) {
+      if (part.type !== "tool-call") {
+        continue;
+      }
+
+      const items = readTodoWriteItemsFromToolCall(part);
+      if (!items) {
+        continue;
+      }
+
+      latestItems = items;
+      updatedAt = message.createdAt;
+    }
+  }
+
+  if (!latestItems) {
+    return null;
+  }
+
+  return {
+    items: latestItems,
+    updatedAt,
+    completedCount: latestItems.filter((item) => item.status === "completed").length,
+    activeCount: latestItems.filter((item) => item.status === "in_progress").length,
+    pendingCount: latestItems.filter((item) => item.status === "pending").length
   };
 }
 
@@ -1448,6 +1555,7 @@ type ConversationStatusBarProps = {
   hasActiveSession: boolean;
   isRunning: boolean;
   messagesCount: number;
+  todoProgress: ConversationTodoProgress | null;
   session: RuntimeProps["session"];
   workspace: RuntimeProps["workspace"];
   workspaceId: RuntimeProps["workspaceId"];
@@ -1458,6 +1566,111 @@ type ConversationStatusBarProps = {
   isSwitchingSessionModel: RuntimeProps["isSwitchingSessionModel"];
   updateSessionModel: RuntimeProps["updateSessionModel"];
 };
+
+function TodoProgressIcon({ status }: { status: TodoStatus }) {
+  if (status === "completed") {
+    return (
+      <span className="mt-0.5 inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-foreground/38 text-background">
+        <CheckCircle2 className="h-4 w-4" />
+      </span>
+    );
+  }
+
+  if (status === "in_progress") {
+    return (
+      <span className="mt-0.5 inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full border border-foreground/26 bg-background/50 text-foreground/62">
+        <CircleDot className="h-3.5 w-3.5 animate-pulse" />
+      </span>
+    );
+  }
+
+  return (
+    <span className="mt-0.5 inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-foreground/36">
+      <Circle className="h-5 w-5" />
+    </span>
+  );
+}
+
+function TodoProgressPanel({ progress, isRunning }: { progress: ConversationTodoProgress | null; isRunning: boolean }) {
+  const visibleItems = progress?.items.slice(0, 6) ?? [];
+  const hiddenCount = Math.max(0, (progress?.items.length ?? 0) - visibleItems.length);
+  const totalCount = progress?.items.length ?? 0;
+  const progressLabel = progress
+    ? `${progress.completedCount}/${totalCount}`
+    : isRunning
+      ? "等待计划"
+      : "暂无计划";
+
+  return (
+    <section className="space-y-2.5">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-[13px] font-medium text-muted-foreground/76">
+          <ListTodo className="h-3.5 w-3.5" />
+          <span>进度</span>
+        </div>
+        <span className="rounded-full border border-foreground/8 bg-background/45 px-2 py-0.5 text-[11px] font-medium text-muted-foreground/72">
+          {progressLabel}
+        </span>
+      </div>
+
+      {visibleItems.length > 0 ? (
+        <div className="space-y-2.5">
+          {visibleItems.map((item, index) => (
+            <div key={`${item.status}:${item.content}:${index}`} className="flex items-start gap-2.5">
+              <TodoProgressIcon status={item.status} />
+              <span
+                className={`min-w-0 flex-1 text-[13px] leading-6 ${
+                  item.status === "completed"
+                    ? "text-muted-foreground/70"
+                    : item.status === "in_progress"
+                      ? "font-medium text-foreground/82"
+                      : "text-muted-foreground/78"
+                }`}
+              >
+                {item.status === "in_progress" && item.activeForm ? item.activeForm : item.content}
+              </span>
+            </div>
+          ))}
+          {hiddenCount > 0 ? (
+            <div className="pl-7 text-[11px] font-medium text-muted-foreground/62">
+              另有 {hiddenCount} 项
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <div className="rounded-xl border border-foreground/8 bg-background/32 px-3 py-2 text-xs leading-5 text-muted-foreground/64">
+          {isRunning ? "等待 TodoWrite 更新当前任务。" : "本会话还没有 TodoWrite 进度。"}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ConversationDetailRow({
+  icon,
+  label,
+  value,
+  valueClassName = "text-muted-foreground/78"
+}: {
+  icon: ReactNode;
+  label: ReactNode;
+  value?: ReactNode;
+  valueClassName?: string;
+}) {
+  return (
+    <div className="flex min-h-7 items-center justify-between gap-3">
+      <div className="flex min-w-0 items-center gap-2.5 text-[13px] font-medium text-foreground/74">
+        <span className="inline-flex h-5 w-5 flex-shrink-0 items-center justify-center text-foreground/58">{icon}</span>
+        <span className="min-w-0 truncate">{label}</span>
+      </div>
+      {value ? (
+        <div className={`flex-shrink-0 text-right text-[13px] font-medium ${valueClassName}`}>
+          {value}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 const ConversationStatusBar = memo(function ConversationStatusBar(props: ConversationStatusBarProps) {
   const run = useStreamStore((state) => state.run);
@@ -1512,112 +1725,136 @@ const ConversationStatusBar = memo(function ConversationStatusBar(props: Convers
     return left.source === "workspace" ? -1 : 1;
   });
   const selectedSessionModelValue = pendingSessionModelRef ?? props.session?.modelRef ?? AUTO_SESSION_MODEL_VALUE;
+  const selectedSessionModelLabel =
+    selectedSessionModelValue === AUTO_SESSION_MODEL_VALUE
+      ? "Auto"
+      : (sessionModelOptions.find((model) => model.ref === selectedSessionModelValue)?.name ?? selectedSessionModelValue);
   const sessionModelLocked =
     props.messagesCount > 0 ||
     props.sessionRuns.length > 0 ||
     (run?.sessionId != null && run.sessionId === props.session?.id) ||
     props.isRunning;
+  const runStatusLabel = props.isRunning ? "运行中" : run?.status ? run.status : "idle";
+  const runAgentLabel = run?.effectiveAgentName ?? (selectedAgentName || "agent");
+  const statusDetail = props.isSwitchingSessionAgent
+    ? "正在更新 Agent"
+    : props.isSwitchingSessionModel
+      ? "正在更新模型"
+      : props.isRunning
+        ? "设置会在下一轮生效"
+        : null;
 
   if (!props.hasActiveSession) {
     return null;
   }
 
   return (
-    <div className="pointer-events-none absolute right-4 top-4 z-30 flex items-start justify-end">
-      <div className="pointer-events-auto w-[248px] rounded-2xl border border-border/70 bg-background/86 p-3 shadow-[0_8px_20px_-18px_rgba(17,17,17,0.35)] backdrop-blur-md">
-        <div className="space-y-2.5">
-          <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Session</p>
-            <div className="mt-1.5 flex items-center justify-between gap-3">
-              {props.isRunning ? (
-                <Badge variant="secondary" className="animate-pulse gap-1.5">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  {run?.effectiveAgentName ?? "running"}
-                </Badge>
-              ) : run?.status ? (
-                <Badge className={statusTone(run.status)}>{run.status}</Badge>
-              ) : (
-                <Badge variant="secondary">idle</Badge>
-              )}
-              <span className="text-xs text-muted-foreground">{props.messagesCount} messages</span>
+    <div className="pointer-events-none absolute right-3 top-3 z-30 flex items-start justify-end md:right-5 md:top-5">
+      <div
+        className="pointer-events-auto max-h-[calc(100vh-9rem)] w-[min(calc(100vw-1.5rem),340px)] overflow-y-auto rounded-[24px] border px-4 py-4 shadow-[0_18px_40px_-30px_rgba(17,17,17,0.45)] backdrop-blur-xl md:w-[330px]"
+        style={{
+          background: "color-mix(in srgb, var(--background) 84%, transparent)",
+          borderColor: "color-mix(in srgb, var(--foreground) 9%, transparent)",
+          boxShadow:
+            "inset 0 1px 0 rgba(255,255,255,0.54), 0 18px 40px -30px rgba(17,17,17,0.45)"
+        }}
+      >
+        <div className="space-y-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-[13px] font-medium text-muted-foreground/76">
+                {props.isRunning ? <Radio className="h-3.5 w-3.5 animate-pulse" /> : <Clock3 className="h-3.5 w-3.5" />}
+                <span>会话</span>
+              </div>
+              <div className="mt-1 truncate text-[13px] font-medium text-foreground/78">{runAgentLabel}</div>
+            </div>
+            <div className="flex flex-col items-end gap-1">
+              <span
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium ${
+                  props.isRunning ? toneBadgeClass("amber") : run?.status ? statusTone(run.status) : "border-border/60 bg-muted/60 text-muted-foreground"
+                }`}
+              >
+                {props.isRunning ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                {runStatusLabel}
+              </span>
+              <span className="text-[11px] font-medium text-muted-foreground/62">{props.messagesCount} messages</span>
             </div>
           </div>
+
+          <TodoProgressPanel progress={props.todoProgress} isRunning={props.isRunning} />
 
           <div className="h-px bg-border/60" />
 
-        {agentSelectorSession ? (
-          <div className="space-y-2.5">
-            <div className="space-y-1">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Model</p>
-            <Select
-              value={selectedSessionModelValue}
-              disabled={!props.session || props.isSwitchingSessionModel || sessionModelLocked}
-              onValueChange={(value) => {
-                if (!props.session) {
-                  return;
-                }
+          <section className="space-y-2.5">
+            <div className="text-[13px] font-medium text-muted-foreground/76">会话详情</div>
+            <ConversationDetailRow
+              icon={<GitCompare className="h-4 w-4" />}
+              label="消息"
+              value={props.messagesCount.toLocaleString()}
+              valueClassName="text-foreground/70"
+            />
+            <ConversationDetailRow
+              icon={<GitBranch className="h-4 w-4" />}
+              label="Agent"
+              value={selectedAgentName || "no agent"}
+            />
 
-                const nextModelRef = value === AUTO_SESSION_MODEL_VALUE ? null : value;
-                const currentModelRef = props.session.modelRef ?? null;
-                if (nextModelRef !== currentModelRef) {
-                  props.updateSessionModel(props.session.id, nextModelRef);
-                }
-              }}
-            >
-              <SelectTrigger className="h-8 w-full rounded-lg bg-background/72 text-xs shadow-none" size="sm" aria-label="Session model">
-                <SelectValue placeholder="Select model">
-                  {selectedSessionModelValue === AUTO_SESSION_MODEL_VALUE
-                    ? "Model · Auto"
-                    : `Model · ${
-                        sessionModelOptions.find((model) => model.ref === selectedSessionModelValue)?.name ??
-                        selectedSessionModelValue
-                      }`}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={AUTO_SESSION_MODEL_VALUE}>Auto · workspace / agent default</SelectItem>
-                {sessionModelOptions.map((model) => (
-                  <SelectItem key={model.ref} value={model.ref}>
-                    {model.name} · {model.source} · {model.provider}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div className="space-y-2 pt-1">
+              <Select
+                value={selectedSessionModelValue}
+                disabled={!props.session || props.isSwitchingSessionModel || sessionModelLocked}
+                onValueChange={(value) => {
+                  if (!props.session) {
+                    return;
+                  }
+
+                  const nextModelRef = value === AUTO_SESSION_MODEL_VALUE ? null : value;
+                  const currentModelRef = props.session.modelRef ?? null;
+                  if (nextModelRef !== currentModelRef) {
+                    props.updateSessionModel(props.session.id, nextModelRef);
+                  }
+                }}
+              >
+                <SelectTrigger className="h-8 w-full rounded-xl border-foreground/10 bg-background/52 text-xs shadow-none" size="sm" aria-label="Session model">
+                  <SelectValue placeholder="Select model">模型 · {selectedSessionModelLabel}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={AUTO_SESSION_MODEL_VALUE}>Auto · workspace / agent default</SelectItem>
+                  {sessionModelOptions.map((model) => (
+                    <SelectItem key={model.ref} value={model.ref}>
+                      {model.name} · {model.source} · {model.provider}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              {agentSelectorSession ? (
+                <Select
+                  value={selectedAgentSelectValue ?? ""}
+                  disabled={props.isSwitchingSessionAgent}
+                  onValueChange={(value) => {
+                    if (value !== agentSelectorSession.activeAgentName) {
+                      props.switchSessionAgent(agentSelectorSession.id, value);
+                    }
+                  }}
+                >
+                  <SelectTrigger className="h-8 w-full rounded-xl border-foreground/10 bg-background/52 text-xs shadow-none" size="sm" aria-label="Session agent">
+                    <SelectValue placeholder="Select agent">
+                      Agent · {selectedAgent ? sessionAgentLabel(selectedAgent) : (selectedAgentName || "no agent")}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {visibleSessionAgents.map((agent) => (
+                      <SelectItem key={agent.name} value={agent.name}>
+                        {sessionAgentLabel(agent)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : null}
             </div>
-            <div className="space-y-1">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Agent</p>
-            <Select
-              value={selectedAgentSelectValue ?? ""}
-              disabled={props.isSwitchingSessionAgent}
-              onValueChange={(value) => {
-                if (value !== agentSelectorSession.activeAgentName) {
-                  props.switchSessionAgent(agentSelectorSession.id, value);
-                }
-              }}
-            >
-              <SelectTrigger className="h-8 w-full rounded-lg bg-background/72 text-xs shadow-none" size="sm" aria-label="Session agent">
-                <SelectValue placeholder="Select agent">{selectedAgent ? sessionAgentLabel(selectedAgent) : undefined}</SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {visibleSessionAgents.map((agent) => (
-                  <SelectItem key={agent.name} value={agent.name}>
-                    {sessionAgentLabel(agent)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            </div>
-          </div>
-        ) : (
-          <Badge variant="secondary">{selectedAgentName || "no agent"}</Badge>
-        )}
-        {props.isSwitchingSessionAgent ? (
-          <p className="text-xs text-muted-foreground">Updating...</p>
-        ) : props.isSwitchingSessionModel ? (
-          <p className="text-xs text-muted-foreground">Updating model...</p>
-        ) : props.isRunning ? (
-          <p className="text-xs text-muted-foreground">Applies to the next run.</p>
-        ) : null}
+            {statusDetail ? <p className="text-xs leading-5 text-muted-foreground/62">{statusDetail}</p> : null}
+          </section>
         </div>
       </div>
     </div>
@@ -1971,6 +2208,7 @@ function ConversationWorkspaceImpl(props: RuntimeProps) {
   const hasStreamingMessage = useMemo(() => props.messageFeed.some((message) => message.id.startsWith("live:")), [props.messageFeed]);
   const isRunning = props.isRunning;
   const queuedSessionRuns = props.queuedSessionRuns;
+  const todoProgress = useMemo(() => buildConversationTodoProgress(props.messageFeed), [props.messageFeed]);
 
   // Reset restored flag when session changes
   useEffect(() => {
@@ -2089,6 +2327,7 @@ function ConversationWorkspaceImpl(props: RuntimeProps) {
         hasActiveSession={props.hasActiveSession}
         isRunning={isRunning}
         messagesCount={props.messageFeed.length}
+        todoProgress={todoProgress}
         session={props.session}
         workspace={props.workspace}
         workspaceId={props.workspaceId}

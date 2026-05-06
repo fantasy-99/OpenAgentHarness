@@ -41,6 +41,20 @@ spec:
               value: "true"
             - name: OAH_OBJECT_STORAGE_SYNC_TRUST_MANAGED_PREFIXES
               value: "true"
+            - name: OAH_POSTGRES_POOL_MAX
+              value: "3"
+            - name: OAH_REDIS_READY_QUEUE_READINESS_LIMIT
+              value: "100"
+            - name: OAH_WORKER_DISK_METRICS_PATH
+              value: /var/lib/oah/workspaces
+            - name: OAH_WORKER_DISK_READINESS_THRESHOLD
+              value: "0.95"
+            - name: OAH_OBJECT_STORAGE_SYNC_MAX_OBJECTS
+              value: "50000"
+            - name: OAH_OBJECT_STORAGE_SYNC_MAX_BYTES
+              value: "4294967296"
+            - name: OAH_OBJECT_STORAGE_SYNC_MAX_FILE_BYTES
+              value: "536870912"
             - name: OAH_WORKER_DRAIN_TIMEOUT_MS
               value: "110000"
             - name: OAH_WORKER_DRAIN_TIMEOUT_STRATEGY
@@ -52,10 +66,14 @@ spec:
             httpGet:
               path: /readyz
               port: http
+            timeoutSeconds: 5
+            failureThreshold: 6
           livenessProbe:
             httpGet:
               path: /healthz
               port: http
+            timeoutSeconds: 5
+            failureThreshold: 6
           lifecycle:
             preStop:
               exec:
@@ -86,7 +104,8 @@ spec:
           configMap:
             name: oah-config
         - name: oah-workspaces
-          emptyDir: {}
+          emptyDir:
+            sizeLimit: 8Gi
 ---
 apiVersion: v1
 kind: Service
@@ -101,3 +120,13 @@ spec:
     - name: http
       port: 8787
       targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: oah-sandbox
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: oah-sandbox

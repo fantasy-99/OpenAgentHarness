@@ -204,7 +204,7 @@ describe("native tools", () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-native-tools-background-"));
     tempDirs.push(workspaceRoot);
 
-    const tools = createNativeToolSet(workspaceRoot, () => ["Bash", "Read", "TaskOutput"], {
+    const tools = createNativeToolSet(workspaceRoot, () => ["Bash", "Read", "TerminalOutput"], {
       sessionId: "session-background"
     });
 
@@ -235,9 +235,10 @@ describe("native tools", () => {
 
     expect(output).toContain("background-ok");
 
-    const taskIdMatch = backgroundResult.match(/task_id: (.+)/);
+    const taskIdMatch = backgroundResult.match(/terminal_id: (.+)/);
     expect(taskIdMatch?.[1]).toBeTruthy();
-    const taskOutput = String(await tools.TaskOutput.execute({ task_id: taskIdMatch?.[1] ?? "" }, {}));
+    const taskOutput = String(await tools.TerminalOutput.execute({ terminal_id: taskIdMatch?.[1] ?? "" }, {}));
+    expect(taskOutput).toContain("terminal_id:");
     expect(taskOutput).toContain("status:");
     expect(taskOutput).toContain("output_path:");
     expect(taskOutput).toContain("background-ok");
@@ -247,7 +248,7 @@ describe("native tools", () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-native-tools-background-input-"));
     tempDirs.push(workspaceRoot);
 
-    const tools = createNativeToolSet(workspaceRoot, () => ["Bash", "TaskInput", "TaskOutput", "TaskStop"], {
+    const tools = createNativeToolSet(workspaceRoot, () => ["Bash", "TerminalInput", "TerminalOutput", "TerminalStop"], {
       sessionId: "session-background-input"
     });
 
@@ -261,16 +262,17 @@ describe("native tools", () => {
         {}
       )
     );
-    const taskId = backgroundResult.match(/task_id: (.+)/)?.[1] ?? "";
+    const taskId = backgroundResult.match(/terminal_id: (.+)/)?.[1] ?? "";
     expect(taskId).toBeTruthy();
 
     try {
-      const inputResult = String(await tools.TaskInput.execute({ task_id: taskId, input: "hello-background-stdin" }, {}));
+      const inputResult = String(await tools.TerminalInput.execute({ terminal_id: taskId, input: "hello-background-stdin" }, {}));
+      expect(inputResult).toContain("terminal_id:");
       expect(inputResult).toContain("input_written: true");
 
       let taskOutput = "";
       for (let attempt = 0; attempt < 20; attempt += 1) {
-        taskOutput = String(await tools.TaskOutput.execute({ task_id: taskId }, {}));
+        taskOutput = String(await tools.TerminalOutput.execute({ terminal_id: taskId }, {}));
         if (taskOutput.includes("hello-background-stdin")) {
           break;
         }
@@ -280,7 +282,7 @@ describe("native tools", () => {
       expect(taskOutput).toContain("input_writable: true");
       expect(taskOutput).toContain("hello-background-stdin");
     } finally {
-      await tools.TaskStop.execute({ task_id: taskId }, {}).catch(() => undefined);
+      await tools.TerminalStop.execute({ terminal_id: taskId }, {}).catch(() => undefined);
     }
   });
 
@@ -288,7 +290,7 @@ describe("native tools", () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-native-tools-background-pty-"));
     tempDirs.push(workspaceRoot);
 
-    const tools = createNativeToolSet(workspaceRoot, () => ["Bash", "TaskOutput"], {
+    const tools = createNativeToolSet(workspaceRoot, () => ["Bash", "TerminalOutput"], {
       sessionId: "session-background-pty"
     });
 
@@ -302,12 +304,12 @@ describe("native tools", () => {
         {}
       )
     );
-    const taskId = backgroundResult.match(/task_id: (.+)/)?.[1] ?? "";
+    const taskId = backgroundResult.match(/terminal_id: (.+)/)?.[1] ?? "";
     expect(taskId).toBeTruthy();
 
     let taskOutput = "";
     for (let attempt = 0; attempt < 20; attempt += 1) {
-      taskOutput = String(await tools.TaskOutput.execute({ task_id: taskId }, {}));
+      taskOutput = String(await tools.TerminalOutput.execute({ terminal_id: taskId }, {}));
       if (taskOutput.includes("tty-yes") || taskOutput.includes("tty-no")) {
         break;
       }
@@ -322,7 +324,7 @@ describe("native tools", () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-native-tools-background-stop-"));
     tempDirs.push(workspaceRoot);
 
-    const tools = createNativeToolSet(workspaceRoot, () => ["Bash", "TaskOutput", "TaskStop"], {
+    const tools = createNativeToolSet(workspaceRoot, () => ["Bash", "TerminalOutput", "TerminalStop"], {
       sessionId: "session-background-stop"
     });
 
@@ -336,13 +338,14 @@ describe("native tools", () => {
         {}
       )
     );
-    const taskId = backgroundResult.match(/task_id: (.+)/)?.[1] ?? "";
+    const taskId = backgroundResult.match(/terminal_id: (.+)/)?.[1] ?? "";
     expect(taskId).toBeTruthy();
 
-    const stopResult = String(await tools.TaskStop.execute({ task_id: taskId }, {}));
+    const stopResult = String(await tools.TerminalStop.execute({ terminal_id: taskId }, {}));
+    expect(stopResult).toContain("terminal_id:");
     expect(stopResult).toContain("status: stopped");
 
-    const taskOutput = String(await tools.TaskOutput.execute({ task_id: taskId }, {}));
+    const taskOutput = String(await tools.TerminalOutput.execute({ terminal_id: taskId }, {}));
     expect(taskOutput).toContain("status: stopped");
   });
 
@@ -536,7 +539,7 @@ describe("native tools", () => {
     await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
     await writeFile(path.join(workspaceRoot, "src", "app.ts"), "export const value = 1;\n", "utf8");
 
-    const tools = createNativeToolSet(workspaceRoot, () => ["Bash", "Grep", "TaskInput"], {
+    const tools = createNativeToolSet(workspaceRoot, () => ["Bash", "Grep", "TerminalInput"], {
       sessionId: "session-executor",
       commandExecutor
     });
@@ -548,10 +551,10 @@ describe("native tools", () => {
     const background = String(
       await tools.Bash.execute({ command: "printf ignored", run_in_background: true }, {})
     );
-    expect(background).toContain("task_id: task-executor");
+    expect(background).toContain("terminal_id: task-executor");
     expect(commandExecutor.runBackground).toHaveBeenCalledTimes(1);
 
-    const taskInput = String(await tools.TaskInput.execute({ task_id: "task-executor", input: "ignored" }, {}));
+    const taskInput = String(await tools.TerminalInput.execute({ terminal_id: "task-executor", input: "ignored" }, {}));
     expect(taskInput).toContain("input_written: true");
     expect(commandExecutor.writeBackgroundTaskInput).toHaveBeenCalledTimes(1);
     expect(commandExecutor.writeBackgroundTaskInput).toHaveBeenCalledWith(

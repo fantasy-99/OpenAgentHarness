@@ -5,15 +5,15 @@ import { formatToolOutput, type ToolOutputValue } from "../capabilities/tool-out
 import type { EngineToolSet, WorkspaceRecord } from "../types.js";
 import { getNativeToolRetryPolicy, type NativeToolFactoryContext } from "./types.js";
 
-const TASK_STOP_DESCRIPTION = `Stop a background Bash task.
+const TERMINAL_STOP_DESCRIPTION = `Stop a background terminal.
 
-- Use task_id from a Bash command started with run_in_background
+- Use terminal_id from a Bash command started with run_in_background
 - Stops the process when the command executor supports background task control
 - Returns the recorded final status`;
 
-const TaskStopInputSchema = z
+const TerminalStopInputSchema = z
   .object({
-    task_id: z.string().min(1).describe("The background task ID to stop")
+    terminal_id: z.string().min(1).describe("The background terminal ID to stop")
   })
   .strict();
 
@@ -49,15 +49,15 @@ function syntheticWorkspace(workspaceRoot: string): WorkspaceRecord {
   };
 }
 
-export function createTaskStopTool(context: NativeToolFactoryContext): EngineToolSet {
+function createTerminalStopToolDefinition(context: NativeToolFactoryContext) {
   return {
-    TaskStop: {
-      description: TASK_STOP_DESCRIPTION,
-      retryPolicy: getNativeToolRetryPolicy("TaskStop"),
-      inputSchema: TaskStopInputSchema,
-      async execute(rawInput) {
-        context.assertVisible("TaskStop");
-        const input = TaskStopInputSchema.parse(rawInput);
+    description: TERMINAL_STOP_DESCRIPTION,
+    retryPolicy: getNativeToolRetryPolicy("TerminalStop"),
+    inputSchema: TerminalStopInputSchema,
+    async execute(rawInput: unknown) {
+      context.assertVisible("TerminalStop");
+      const input = TerminalStopInputSchema.parse(rawInput);
+      const terminalId = input.terminal_id;
         if (!context.commandExecutor.stopBackgroundTask) {
           throw new AppError(501, "native_tool_background_stop_unsupported", "Background task stopping is not supported by this command executor.");
         }
@@ -66,15 +66,15 @@ export function createTaskStopTool(context: NativeToolFactoryContext): EngineToo
         const task = await context.commandExecutor.stopBackgroundTask({
           workspace,
           sessionId: context.sessionId,
-          taskId: input.task_id
+        taskId: terminalId
         });
 
         if (!task) {
-          throw new AppError(404, "native_tool_background_task_not_found", `Background task ${input.task_id} was not found.`);
+          throw new AppError(404, "native_tool_background_task_not_found", `Background terminal ${terminalId} was not found.`);
         }
 
         const fields: Array<[string, ToolOutputValue]> = [
-          ["task_id", task.taskId],
+          ["terminal_id", task.taskId],
           ["status", task.status],
           ["output_path", task.outputPath]
         ];
@@ -90,6 +90,11 @@ export function createTaskStopTool(context: NativeToolFactoryContext): EngineToo
 
         return formatToolOutput(fields);
       }
-    }
+  };
+}
+
+export function createTerminalStopTool(context: NativeToolFactoryContext): EngineToolSet {
+  return {
+    TerminalStop: createTerminalStopToolDefinition(context)
   };
 }

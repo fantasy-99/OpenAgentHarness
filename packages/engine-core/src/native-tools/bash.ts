@@ -76,7 +76,12 @@ function formatBackgroundBashOutput(input: {
   outputPath: string;
   description?: string | undefined;
 }): string {
-  const lines = ["started: true", `task_id: ${input.taskId}`, `pid: ${input.pid}`, `output_path: ${input.outputPath}`];
+  const lines = [
+    "started: true",
+    `terminal_id: ${input.taskId}`,
+    `pid: ${input.pid}`,
+    `output_path: ${input.outputPath}`
+  ];
 
   if (input.description) {
     lines.push(`description: ${input.description}`);

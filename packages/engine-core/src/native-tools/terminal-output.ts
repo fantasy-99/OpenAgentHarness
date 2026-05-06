@@ -9,15 +9,15 @@ import { formatReadLines } from "./fs-utils.js";
 import { resolveWorkspacePath } from "./paths.js";
 import { getNativeToolRetryPolicy, type NativeToolFactoryContext } from "./types.js";
 
-const TASK_OUTPUT_DESCRIPTION = `Read output and status for a background Bash task.
+const TERMINAL_OUTPUT_DESCRIPTION = `Read output and status for a background terminal.
 
-- Use task_id from a Bash command started with run_in_background
-- Returns task status, exit code when known, and log content
+- Use terminal_id from a Bash command started with run_in_background
+- Returns terminal status, exit code when known, and log content
 - Prefer this for status checks; Read can still read the output_path directly`;
 
-const TaskOutputInputSchema = z
+const TerminalOutputInputSchema = z
   .object({
-    task_id: z.string().min(1).describe("The background task ID"),
+    terminal_id: z.string().min(1).describe("The background terminal ID"),
     offset: z.number().int().nonnegative().optional().describe("The line number to start reading from"),
     limit: z.number().int().positive().optional().describe("The number of output lines to read")
   })
@@ -55,15 +55,15 @@ function syntheticWorkspace(workspaceRoot: string): WorkspaceRecord {
   };
 }
 
-export function createTaskOutputTool(context: NativeToolFactoryContext): EngineToolSet {
+function createTerminalOutputToolDefinition(context: NativeToolFactoryContext) {
   return {
-    TaskOutput: {
-      description: TASK_OUTPUT_DESCRIPTION,
-      retryPolicy: getNativeToolRetryPolicy("TaskOutput"),
-      inputSchema: TaskOutputInputSchema,
-      async execute(rawInput) {
-        context.assertVisible("TaskOutput");
-        const input = TaskOutputInputSchema.parse(rawInput);
+    description: TERMINAL_OUTPUT_DESCRIPTION,
+    retryPolicy: getNativeToolRetryPolicy("TerminalOutput"),
+    inputSchema: TerminalOutputInputSchema,
+    async execute(rawInput: unknown) {
+      context.assertVisible("TerminalOutput");
+      const input = TerminalOutputInputSchema.parse(rawInput);
+      const terminalId = input.terminal_id;
         if (!context.commandExecutor.getBackgroundTask) {
           throw new AppError(501, "native_tool_background_output_unsupported", "Background task output lookup is not supported by this command executor.");
         }
@@ -72,11 +72,11 @@ export function createTaskOutputTool(context: NativeToolFactoryContext): EngineT
         const task = await context.commandExecutor.getBackgroundTask({
           workspace,
           sessionId: context.sessionId,
-          taskId: input.task_id
+        taskId: terminalId
         });
 
         if (!task) {
-          throw new AppError(404, "native_tool_background_task_not_found", `Background task ${input.task_id} was not found.`);
+          throw new AppError(404, "native_tool_background_task_not_found", `Background terminal ${terminalId} was not found.`);
         }
 
         const resolved = await resolveWorkspacePath(context.fileSystem, context.workspaceRoot, task.outputPath);
@@ -87,7 +87,7 @@ export function createTaskOutputTool(context: NativeToolFactoryContext): EngineT
         const { rendered, truncated, totalLines } = formatReadLines(content, offset, limit);
 
         const fields: Array<[string, ToolOutputValue]> = [
-          ["task_id", task.taskId],
+          ["terminal_id", task.taskId],
           ["status", task.status],
           ["output_path", path.posix.normalize(task.outputPath)],
           ["offset", Math.max(1, offset || 1)],
@@ -124,6 +124,11 @@ export function createTaskOutputTool(context: NativeToolFactoryContext): EngineT
           ]
         );
       }
-    }
+  };
+}
+
+export function createTerminalOutputTool(context: NativeToolFactoryContext): EngineToolSet {
+  return {
+    TerminalOutput: createTerminalOutputToolDefinition(context)
   };
 }

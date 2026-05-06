@@ -3,7 +3,7 @@ import path from "node:path";
 import type { Workspace, WorkspaceCatalog } from "@oah/api-contracts";
 
 import { AppError } from "../errors.js";
-import { NATIVE_TOOL_NAMES } from "../native-tools.js";
+import { PUBLIC_NATIVE_TOOL_NAMES } from "../native-tools.js";
 import { engineToolNamesForCatalog as listEngineToolNamesForCatalog } from "../capabilities/engine-capabilities.js";
 import type {
   CreateWorkspaceParams,
@@ -471,7 +471,7 @@ export class WorkspaceEngineService {
     return {
       ...workspace.catalog,
       tools,
-      nativeTools: [...NATIVE_TOOL_NAMES],
+      nativeTools: [...PUBLIC_NATIVE_TOOL_NAMES],
       engineTools: listEngineToolNamesForCatalog(workspace)
     };
   }

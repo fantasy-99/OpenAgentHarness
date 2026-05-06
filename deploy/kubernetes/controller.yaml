@@ -39,6 +39,12 @@ spec:
               value: /etc/oah/server.yaml
             - name: NODE_OPTIONS
               value: "--max-old-space-size=80"
+            - name: OAH_PROCESS_ROLE
+              value: controller
+            - name: OAH_POSTGRES_POOL_MAX
+              value: "2"
+            - name: OAH_METADATA_RETENTION_ROLE
+              value: auto
             - name: OAH_CONTROLLER_LEADER_ELECTION_TYPE
               value: kubernetes
             - name: OAH_CONTROLLER_LEASE_NAMESPACE
@@ -59,14 +65,25 @@ spec:
             httpGet:
               path: /readyz
               port: http
+            timeoutSeconds: 5
+            failureThreshold: 6
           livenessProbe:
             httpGet:
               path: /healthz
               port: http
+            timeoutSeconds: 5
+            failureThreshold: 6
           volumeMounts:
             - name: oah-config
               mountPath: /etc/oah
               readOnly: true
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
       volumes:
         - name: oah-config
           configMap:
@@ -87,3 +104,13 @@ spec:
     - name: http
       port: 8788
       targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: oah-controller
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: oah-controller

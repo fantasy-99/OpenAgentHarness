@@ -5,15 +5,15 @@ import { formatToolOutput, type ToolOutputValue } from "../capabilities/tool-out
 import type { EngineToolSet, WorkspaceRecord } from "../types.js";
 import { getNativeToolRetryPolicy, type NativeToolFactoryContext } from "./types.js";
 
-const TASK_INPUT_DESCRIPTION = `Send input to a running background Bash task.
+const TERMINAL_INPUT_DESCRIPTION = `Send input to a running background terminal.
 
-- Use task_id from a Bash command started with run_in_background
-- Sends text to the task stdin; by default a newline is appended
-- Use TaskOutput afterwards to inspect new output`;
+- Use terminal_id from a Bash command started with run_in_background
+- Sends text to the terminal stdin; by default a newline is appended
+- Use TerminalOutput afterwards to inspect new output`;
 
-const TaskInputInputSchema = z
+const TerminalInputInputSchema = z
   .object({
-    task_id: z.string().min(1).describe("The background task ID"),
+    terminal_id: z.string().min(1).describe("The background terminal ID"),
     input: z.string().describe("Text to write to the background task stdin"),
     append_newline: z.boolean().optional().describe("Append a newline after input text; defaults to true")
   })
@@ -51,15 +51,15 @@ function syntheticWorkspace(workspaceRoot: string): WorkspaceRecord {
   };
 }
 
-export function createTaskInputTool(context: NativeToolFactoryContext): EngineToolSet {
+function createTerminalInputToolDefinition(context: NativeToolFactoryContext) {
   return {
-    TaskInput: {
-      description: TASK_INPUT_DESCRIPTION,
-      retryPolicy: getNativeToolRetryPolicy("TaskInput"),
-      inputSchema: TaskInputInputSchema,
-      async execute(rawInput) {
-        context.assertVisible("TaskInput");
-        const input = TaskInputInputSchema.parse(rawInput);
+    description: TERMINAL_INPUT_DESCRIPTION,
+    retryPolicy: getNativeToolRetryPolicy("TerminalInput"),
+    inputSchema: TerminalInputInputSchema,
+    async execute(rawInput: unknown) {
+      context.assertVisible("TerminalInput");
+      const input = TerminalInputInputSchema.parse(rawInput);
+      const terminalId = input.terminal_id;
         if (!context.commandExecutor.writeBackgroundTaskInput) {
           throw new AppError(
             501,
@@ -72,31 +72,31 @@ export function createTaskInputTool(context: NativeToolFactoryContext): EngineTo
         const task = await context.commandExecutor.writeBackgroundTaskInput({
           workspace,
           sessionId: context.sessionId,
-          taskId: input.task_id,
+        taskId: terminalId,
           inputText: input.input,
           ...(input.append_newline !== undefined ? { appendNewline: input.append_newline } : {})
         });
 
         if (!task) {
-          throw new AppError(404, "native_tool_background_task_not_found", `Background task ${input.task_id} was not found.`);
+        throw new AppError(404, "native_tool_background_task_not_found", `Background terminal ${terminalId} was not found.`);
         }
         if (task.status !== "running") {
           throw new AppError(
             409,
             "native_tool_background_task_not_running",
-            `Background task ${input.task_id} is not running; current status is ${task.status}.`
+            `Background terminal ${terminalId} is not running; current status is ${task.status}.`
           );
         }
         if (task.inputWritable === false) {
           throw new AppError(
             409,
             "native_tool_background_input_unavailable",
-            `Background task ${input.task_id} is running, but its stdin is not available in this executor process.`
+            `Background terminal ${terminalId} is running, but its stdin is not available in this executor process.`
           );
         }
 
         const fields: Array<[string, ToolOutputValue]> = [
-          ["task_id", task.taskId],
+          ["terminal_id", task.taskId],
           ["status", task.status],
           ["input_written", true],
           ["append_newline", input.append_newline ?? true],
@@ -111,6 +111,11 @@ export function createTaskInputTool(context: NativeToolFactoryContext): EngineTo
 
         return formatToolOutput(fields);
       }
-    }
+  };
+}
+
+export function createTerminalInputTool(context: NativeToolFactoryContext): EngineToolSet {
+  return {
+    TerminalInput: createTerminalInputToolDefinition(context)
   };
 }

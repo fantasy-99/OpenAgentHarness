@@ -113,7 +113,7 @@ config:
 
 apiServer:
   enabled: true
-  replicaCount: 1
+  replicaCount: 2
   minReadySeconds: 5
   terminationGracePeriodSeconds: 30
   nodeOptions: "--max-old-space-size=2048 --max-semi-space-size=32"
@@ -129,8 +129,8 @@ apiServer:
     maxUnavailable: 0
     maxSurge: 1
   podDisruptionBudget:
-    enabled: false
-    minAvailable: ""
+    enabled: true
+    minAvailable: 1
     maxUnavailable: ""
   podAnnotations: {}
   podLabels: {}
@@ -153,10 +153,14 @@ apiServer:
     httpGet:
       path: /readyz
       port: http
+    timeoutSeconds: 5
+    failureThreshold: 6
   livenessProbe:
     httpGet:
       path: /healthz
       port: http
+    timeoutSeconds: 5
+    failureThreshold: 6
   service:
     port: 8787
     type: ClusterIP
@@ -173,7 +177,7 @@ apiServer:
 
 worker:
   enabled: true
-  replicaCount: 1
+  replicaCount: 2
   minReadySeconds: 5
   terminationGracePeriodSeconds: 120
   nodeOptions: "--max-old-space-size=2048 --max-semi-space-size=32"
@@ -183,9 +187,9 @@ worker:
   diskReadiness:
     threshold: "0.95"
   workspacePolicy:
-    maxObjects: ""
-    maxBytes: ""
-    maxFileBytes: ""
+    maxObjects: "50000"
+    maxBytes: "4294967296"
+    maxFileBytes: "536870912"
   drain:
     timeoutMs: 110000
     timeoutStrategy: requeue_running
@@ -201,8 +205,8 @@ worker:
     maxUnavailable: 0
     maxSurge: 1
   podDisruptionBudget:
-    enabled: false
-    minAvailable: ""
+    enabled: true
+    minAvailable: 1
     maxUnavailable: ""
   podAnnotations: {}
   podLabels: {}
@@ -225,10 +229,14 @@ worker:
     httpGet:
       path: /readyz
       port: http
+    timeoutSeconds: 5
+    failureThreshold: 6
   livenessProbe:
     httpGet:
       path: /healthz
       port: http
+    timeoutSeconds: 5
+    failureThreshold: 6
   service:
     port: 8787
   workspaceVolume:
@@ -255,7 +263,7 @@ objectStorage:
 
 controller:
   enabled: true
-  replicaCount: 1
+  replicaCount: 2
   minReadySeconds: 5
   terminationGracePeriodSeconds: 30
   nodeOptions: "--max-old-space-size=128 --max-semi-space-size=4"
@@ -267,8 +275,8 @@ controller:
     maxUnavailable: 0
     maxSurge: 1
   podDisruptionBudget:
-    enabled: false
-    minAvailable: ""
+    enabled: true
+    minAvailable: 1
     maxUnavailable: ""
   podAnnotations: {}
   podLabels: {}
@@ -290,10 +298,14 @@ controller:
     httpGet:
       path: /readyz
       port: http
+    timeoutSeconds: 5
+    failureThreshold: 6
   livenessProbe:
     httpGet:
       path: /healthz
       port: http
+    timeoutSeconds: 5
+    failureThreshold: 6
   serviceAccount:
     create: true
     name: ""

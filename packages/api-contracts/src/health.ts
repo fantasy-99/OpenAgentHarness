@@ -10,7 +10,12 @@ export const sessionSerialBoundarySchema = z.literal("session");
 
 export const healthCheckStatusSchema = z.enum(["up", "down", "not_configured"]);
 export const readinessStatusSchema = z.enum(["ready", "not_ready"]);
-export const readinessReasonSchema = z.enum(["draining", "worker_disk_pressure", "checks_down"]);
+export const readinessReasonSchema = z.enum([
+  "draining",
+  "worker_disk_pressure",
+  "redis_ready_queue_pressure",
+  "checks_down"
+]);
 export const healthStatusSchema = z.enum(["ok", "degraded"]);
 export const runtimeProcessSchema = z.object({
   mode: z.enum(["api_embedded_worker", "api_only", "standalone_worker"]),
@@ -216,6 +221,12 @@ export const readinessReportSchema = z.object({
   reason: readinessReasonSchema.optional(),
   draining: z.boolean().optional(),
   checks: healthChecksSchema,
+  queue: z
+    .object({
+      readySessionDepth: z.number().int().min(0),
+      readinessLimit: z.number().int().min(1).optional()
+    })
+    .optional(),
   resources: z
     .object({
       workerDisk: z

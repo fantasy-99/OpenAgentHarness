@@ -75,6 +75,7 @@ const MAX_SERVICE_ROUTING_REGISTRY_READ_LIMIT = 100_000;
 export interface CreateServiceRoutedPostgresRuntimePersistenceOptions {
   connectionString: string;
   archivePayloadRoot?: string | undefined;
+  poolConfig?: CreatePostgresRuntimePersistenceOptions["poolConfig"] | undefined;
   persistenceFactory?: PostgresPersistenceFactory | undefined;
 }
 
@@ -785,6 +786,7 @@ class ServiceBackendRouter {
   readonly #defaultBackend: PostgresRuntimePersistence;
   readonly #connectionString: string;
   readonly #archivePayloadRoot: string | undefined;
+  readonly #poolConfig: CreatePostgresRuntimePersistenceOptions["poolConfig"] | undefined;
   readonly #persistenceFactory: PostgresPersistenceFactory;
   readonly #registry: PostgresServiceRoutingRegistry;
   readonly #serviceBackends = new Map<string, Promise<PostgresRuntimePersistence>>();
@@ -793,12 +795,14 @@ class ServiceBackendRouter {
     defaultBackend: PostgresRuntimePersistence;
     connectionString: string;
     archivePayloadRoot?: string | undefined;
+    poolConfig?: CreatePostgresRuntimePersistenceOptions["poolConfig"] | undefined;
     persistenceFactory: PostgresPersistenceFactory;
     registry: PostgresServiceRoutingRegistry;
   }) {
     this.#defaultBackend = input.defaultBackend;
     this.#connectionString = input.connectionString;
     this.#archivePayloadRoot = input.archivePayloadRoot;
+    this.#poolConfig = input.poolConfig;
     this.#persistenceFactory = input.persistenceFactory;
     this.#registry = input.registry;
   }
@@ -821,6 +825,7 @@ class ServiceBackendRouter {
       normalizedServiceName,
       this.#persistenceFactory({
         connectionString: buildServiceDatabaseConnectionString(this.#connectionString, normalizedServiceName),
+        ...(this.#poolConfig ? { poolConfig: this.#poolConfig } : {}),
         ...(this.#archivePayloadRoot
           ? { archivePayloadRoot: path.join(this.#archivePayloadRoot, normalizedServiceName) }
           : {})
@@ -1343,6 +1348,7 @@ export async function createServiceRoutedPostgresRuntimePersistence(
   const persistenceFactory = options.persistenceFactory ?? createPostgresRuntimePersistence;
   const defaultBackend = await persistenceFactory({
     connectionString: options.connectionString,
+    ...(options.poolConfig ? { poolConfig: options.poolConfig } : {}),
     ...(options.archivePayloadRoot ? { archivePayloadRoot: options.archivePayloadRoot } : {})
   });
   await ensureServiceRoutingRegistrySchema(defaultBackend.pool);
@@ -1352,6 +1358,7 @@ export async function createServiceRoutedPostgresRuntimePersistence(
     defaultBackend,
     connectionString: options.connectionString,
     archivePayloadRoot: options.archivePayloadRoot,
+    poolConfig: options.poolConfig,
     persistenceFactory,
     registry: new PostgresServiceRoutingRegistry(defaultBackend.pool)
   });

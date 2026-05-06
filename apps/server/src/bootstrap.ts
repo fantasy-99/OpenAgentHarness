@@ -440,6 +440,16 @@ function parsePositiveIntEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function parseOptionalPositiveIntEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (!raw || raw.trim().length === 0) {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 function parsePositiveIntEnvWithMin(name: string, fallback: number, minimum: number): number {
   return Math.max(minimum, parsePositiveIntEnv(name, fallback));
 }
@@ -686,7 +696,14 @@ function isTruthyEnvValue(value: string | undefined): boolean {
 }
 
 function resolvePostgresMetadataRetentionConfig(input: { processKind: "api" | "worker"; startWorker: boolean }) {
-  const defaultEnabled = input.processKind === "worker" || input.startWorker;
+  const role = process.env.OAH_METADATA_RETENTION_ROLE?.trim().toLowerCase() || "auto";
+  const processRole =
+    input.processKind === "worker" ? "worker" : input.startWorker ? "embedded_worker" : "api";
+  const defaultEnabled =
+    role === "all" ||
+    role === processRole ||
+    (role === "worker" && processRole === "embedded_worker") ||
+    (role === "auto" && process.env.OAH_PROCESS_ROLE?.trim().toLowerCase() === "controller");
   return {
     enabled: parseBooleanEnv("OAH_METADATA_RETENTION_ENABLED", defaultEnabled),
     intervalMs: parsePositiveIntEnv("OAH_METADATA_RETENTION_INTERVAL_MS", 60 * 60 * 1000),
@@ -695,6 +712,37 @@ function resolvePostgresMetadataRetentionConfig(input: { processKind: "api" | "w
     sessionEventRetentionDays: parseNonNegativeIntEnv("OAH_SESSION_EVENT_RETENTION_DAYS", 14),
     runRetentionDays: parseNonNegativeIntEnv("OAH_RUN_RETENTION_DAYS", 0)
   };
+}
+
+function resolvePostgresPoolConfig(input: { processKind: "api" | "worker"; startWorker: boolean }) {
+  const roleDefault =
+    input.processKind === "api" && !input.startWorker
+      ? 5
+      : input.processKind === "worker"
+        ? 3
+        : 8;
+  return {
+    max: parsePositiveIntEnv("OAH_POSTGRES_POOL_MAX", roleDefault),
+    idleTimeoutMillis: parsePositiveIntEnv("OAH_POSTGRES_POOL_IDLE_TIMEOUT_MS", 30_000),
+    connectionTimeoutMillis: parsePositiveIntEnv("OAH_POSTGRES_POOL_CONNECTION_TIMEOUT_MS", 5_000)
+  };
+}
+
+async function resolveRedisReadyQueueDepth(input: {
+  redisRunQueue: unknown;
+}): Promise<number | undefined> {
+  const queue = input.redisRunQueue as { readyQueueLength?: unknown; getReadySessionCount?: unknown } | undefined;
+  if (typeof queue?.readyQueueLength === "function") {
+    return await (queue.readyQueueLength as () => Promise<number>)();
+  }
+  if (typeof queue?.getReadySessionCount === "function") {
+    return await (queue.getReadySessionCount as () => Promise<number>)();
+  }
+  return undefined;
+}
+
+function resolveRedisReadyQueueReadinessLimit(): number | undefined {
+  return parseOptionalPositiveIntEnv("OAH_REDIS_READY_QUEUE_READINESS_LIMIT");
 }
 
 function isRemoteSandboxProvider(config: Pick<ServerConfig, "sandbox">): boolean {
@@ -1141,6 +1189,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   const persistence = postgresConfigured
     ? await (await loadServiceRoutedPostgresModule()).createServiceRoutedPostgresRuntimePersistence({
         connectionString: config.storage.postgres_url!,
+        poolConfig: resolvePostgresPoolConfig({ processKind, startWorker }),
         archivePayloadRoot: resolvePostgresArchivePayloadRoot(config.paths)
       }).catch((error) => {
         throw new Error(
@@ -2218,16 +2267,33 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         redisEvents: await redisEventsCheck(),
         redisRunQueue: await redisRunQueueCheck()
       };
+      const readyQueueDepth = await resolveRedisReadyQueueDepth({ redisRunQueue });
+      const readyQueueLimit = resolveRedisReadyQueueReadinessLimit();
       const checksDown = Object.values(checks).includes("down");
       const workerDiskPressure = workerDiskReadiness?.status === "pressure";
+      const redisReadyQueuePressure =
+        readyQueueDepth !== undefined && readyQueueLimit !== undefined && readyQueueDepth >= readyQueueLimit;
 
       return {
-        status: workerStatus.draining || workerDiskPressure || checksDown ? "not_ready" : "ready",
+        status: workerStatus.draining || workerDiskPressure || redisReadyQueuePressure || checksDown ? "not_ready" : "ready",
         ...(workerStatus.draining ? { reason: "draining" as const, draining: true } : {}),
         ...(!workerStatus.draining && workerDiskPressure ? { reason: "worker_disk_pressure" as const } : {}),
-        ...(!workerStatus.draining && !workerDiskPressure && checksDown ? { reason: "checks_down" as const } : {}),
+        ...(!workerStatus.draining && !workerDiskPressure && redisReadyQueuePressure
+          ? { reason: "redis_ready_queue_pressure" as const }
+          : {}),
+        ...(!workerStatus.draining && !workerDiskPressure && !redisReadyQueuePressure && checksDown
+          ? { reason: "checks_down" as const }
+          : {}),
         checks,
-        ...(workerDiskReadiness && workerDiskPressure ? { resources: { workerDisk: workerDiskReadiness } } : {})
+        ...(workerDiskReadiness && workerDiskPressure ? { resources: { workerDisk: workerDiskReadiness } } : {}),
+        ...(readyQueueDepth !== undefined
+          ? {
+              queue: {
+                readySessionDepth: readyQueueDepth,
+                ...(readyQueueLimit !== undefined ? { readinessLimit: readyQueueLimit } : {})
+              }
+            }
+          : {})
       };
     },
     async beginDrain() {

@@ -58,6 +58,12 @@ spec:
               value: {{ printf "%s/server.yaml" .Values.config.mountPath }}
             - name: NODE_OPTIONS
               value: {{ .Values.controller.nodeOptions | quote }}
+            - name: OAH_PROCESS_ROLE
+              value: controller
+            - name: OAH_POSTGRES_POOL_MAX
+              value: "2"
+            - name: OAH_METADATA_RETENTION_ROLE
+              value: auto
             - name: OAH_CONTROLLER_LEADER_ELECTION_TYPE
               value: kubernetes
             - name: OAH_CONTROLLER_LEASE_NAMESPACE

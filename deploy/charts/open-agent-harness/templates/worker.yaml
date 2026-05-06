@@ -60,6 +60,10 @@ spec:
               value: {{ ternary "true" "false" .Values.worker.runtimeOptimizations.allowPrivateInternalRoutes | quote }}
             - name: OAH_OBJECT_STORAGE_SYNC_TRUST_MANAGED_PREFIXES
               value: {{ ternary "true" "false" .Values.worker.runtimeOptimizations.objectStorageTrustManagedPrefixes | quote }}
+            - name: OAH_POSTGRES_POOL_MAX
+              value: "3"
+            - name: OAH_REDIS_READY_QUEUE_READINESS_LIMIT
+              value: {{ .Values.prometheusRule.thresholds.redisReadyQueueDepth | quote }}
             - name: OAH_WORKER_DISK_METRICS_PATH
               value: {{ .Values.worker.workspaceVolume.mountPath | quote }}
             - name: OAH_WORKER_DISK_READINESS_THRESHOLD

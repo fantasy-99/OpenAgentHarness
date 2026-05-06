@@ -9,6 +9,9 @@ interface SqlQueryable {
 }
 
 const schemaLockKey = 20_260_401;
+const persistedDataNormalizationMigrationId = "2026-05-06_normalize_persisted_message_payloads";
+const DEFAULT_POSTGRES_NORMALIZATION_PAGE_SIZE = 500;
+const MAX_POSTGRES_NORMALIZATION_PAGE_SIZE = 5_000;
 
 const schemaStatements = [
   `create table if not exists workspaces (
@@ -311,143 +314,284 @@ const schemaStatements = [
     created_at timestamptz not null
   )`,
   `create unique index if not exists session_events_session_cursor_idx on session_events (session_id, cursor)`,
-  `create index if not exists session_events_session_run_cursor_idx on session_events (session_id, run_id, cursor)`
+  `create index if not exists session_events_session_run_cursor_idx on session_events (session_id, run_id, cursor)`,
+  `create table if not exists oah_schema_migrations (
+    id text primary key,
+    applied_at timestamptz not null default now()
+  )`
 ];
 
-async function normalizePostgresPersistedData(queryable: SqlQueryable): Promise<void> {
-  const messageResult = await queryable.query(
-    "select id, session_id, run_id, role, content, metadata, created_at from messages order by session_id asc, created_at asc, id asc"
-  );
-  const messagesBySession = new Map<string, Message[]>();
-
-  for (const row of messageResult.rows) {
-    if (typeof row.id !== "string" || typeof row.session_id !== "string" || typeof row.role !== "string" || typeof row.created_at !== "string") {
-      continue;
-    }
-
-    const message = createMessage({
-      id: row.id,
-      sessionId: row.session_id,
-      runId: typeof row.run_id === "string" ? row.run_id : undefined,
-      role: row.role,
-      content: row.content,
-      metadata: row.metadata,
-      createdAt: row.created_at
-    });
-
-    const existing = messagesBySession.get(message.sessionId);
-    if (existing) {
-      existing.push(message);
-    } else {
-      messagesBySession.set(message.sessionId, [message]);
-    }
+function resolvePostgresNormalizationPageSize(): number {
+  const raw = process.env.OAH_POSTGRES_SCHEMA_NORMALIZATION_PAGE_SIZE?.trim();
+  const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_POSTGRES_NORMALIZATION_PAGE_SIZE;
   }
 
-  for (const [sessionId, messages] of messagesBySession.entries()) {
-    const normalized = normalizePersistedMessages(messages);
-    if (!normalized.changed) {
-      continue;
-    }
+  return Math.min(Math.floor(parsed), MAX_POSTGRES_NORMALIZATION_PAGE_SIZE);
+}
 
-    await queryable.query("delete from messages where session_id = $1", [sessionId]);
-    for (const message of normalized.messages) {
-      await queryable.query(
-        "insert into messages (id, session_id, run_id, role, content, metadata, created_at) values ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7)",
-        [
-          message.id,
-          message.sessionId,
-          message.runId ?? null,
-          message.role,
-          message.content,
-          message.metadata ?? null,
-          message.createdAt
-        ]
-      );
-    }
+async function isSchemaMigrationApplied(queryable: SqlQueryable, id: string): Promise<boolean> {
+  const result = await queryable.query("select id from oah_schema_migrations where id = $1 limit 1", [id]);
+  return result.rows.length > 0;
+}
+
+async function recordSchemaMigration(queryable: SqlQueryable, id: string): Promise<void> {
+  await queryable.query("insert into oah_schema_migrations (id) values ($1) on conflict (id) do nothing", [id]);
+}
+
+function messageFromRow(row: Record<string, unknown>): Message | undefined {
+  if (typeof row.id !== "string" || typeof row.session_id !== "string" || typeof row.role !== "string" || typeof row.created_at !== "string") {
+    return undefined;
   }
 
-  const runStepResult = await queryable.query(
-    "select id, run_id, seq, step_type, name, agent_name, status, input, output, started_at, ended_at from run_steps"
-  );
-  for (const row of runStepResult.rows) {
+  return createMessage({
+    id: row.id,
+    sessionId: row.session_id,
+    runId: typeof row.run_id === "string" ? row.run_id : undefined,
+    role: row.role,
+    content: row.content,
+    metadata: row.metadata,
+    createdAt: row.created_at
+  });
+}
+
+async function normalizeMessageSession(queryable: SqlQueryable, sessionId: string, messages: Message[]): Promise<void> {
+  const normalized = normalizePersistedMessages(messages);
+  if (!normalized.changed) {
+    return;
+  }
+
+  await queryable.query("delete from messages where session_id = $1", [sessionId]);
+  for (const message of normalized.messages) {
+    await queryable.query(
+      "insert into messages (id, session_id, run_id, role, content, metadata, created_at) values ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7)",
+      [message.id, message.sessionId, message.runId ?? null, message.role, message.content, message.metadata ?? null, message.createdAt]
+    );
+  }
+}
+
+async function normalizePostgresMessages(queryable: SqlQueryable, pageSize: number): Promise<void> {
+  let lastSessionId: string | undefined;
+  let lastCreatedAt: string | undefined;
+  let lastId: string | undefined;
+  let currentSessionId: string | undefined;
+  let currentSessionMessages: Message[] = [];
+
+  for (;;) {
+    const result =
+      lastSessionId && lastCreatedAt && lastId
+        ? await queryable.query(
+            `select id, session_id, run_id, role, content, metadata, created_at
+             from messages
+             where (session_id, created_at, id) > ($1, $2, $3)
+             order by session_id asc, created_at asc, id asc
+             limit $4`,
+            [lastSessionId, lastCreatedAt, lastId, pageSize]
+          )
+        : await queryable.query(
+            `select id, session_id, run_id, role, content, metadata, created_at
+             from messages
+             order by session_id asc, created_at asc, id asc
+             limit $1`,
+            [pageSize]
+          );
+
+    if (result.rows.length === 0) {
+      break;
+    }
+
+    for (const row of result.rows) {
+      const message = messageFromRow(row);
+      if (!message) {
+        continue;
+      }
+
+      if (currentSessionId && message.sessionId !== currentSessionId) {
+        await normalizeMessageSession(queryable, currentSessionId, currentSessionMessages);
+        currentSessionMessages = [];
+      }
+
+      currentSessionId = message.sessionId;
+      currentSessionMessages.push(message);
+    }
+
+    const lastRow = result.rows.at(-1);
     if (
-      typeof row.id !== "string" ||
-      typeof row.run_id !== "string" ||
-      typeof row.seq !== "number" ||
-      typeof row.step_type !== "string" ||
-      typeof row.status !== "string"
+      typeof lastRow?.session_id !== "string" ||
+      typeof lastRow.created_at !== "string" ||
+      typeof lastRow.id !== "string" ||
+      result.rows.length < pageSize
     ) {
-      continue;
+      break;
     }
-
-    const step: RunStep = {
-      id: row.id,
-      runId: row.run_id,
-      seq: row.seq,
-      stepType: row.step_type as RunStep["stepType"],
-      status: row.status as RunStep["status"],
-      ...(typeof row.name === "string" ? { name: row.name } : {}),
-      ...(typeof row.agent_name === "string" ? { agentName: row.agent_name } : {}),
-      ...(row.input !== undefined && row.input !== null ? { input: row.input } : {}),
-      ...(row.output !== undefined && row.output !== null ? { output: row.output } : {}),
-      ...(typeof row.started_at === "string" ? { startedAt: row.started_at } : {}),
-      ...(typeof row.ended_at === "string" ? { endedAt: row.ended_at } : {})
-    };
-
-    const normalized = normalizePersistedRunStep(step);
-    if (!normalized.changed) {
-      continue;
-    }
-
-    await queryable.query("update run_steps set input = $2::jsonb, output = $3::jsonb where id = $1", [
-      normalized.step.id,
-      normalized.step.input ?? null,
-      normalized.step.output ?? null
-    ]);
+    lastSessionId = lastRow.session_id;
+    lastCreatedAt = lastRow.created_at;
+    lastId = lastRow.id;
   }
 
-  const historyResult = await queryable.query("select id, entity_type, payload from history_events");
-  for (const row of historyResult.rows) {
-    if (typeof row.id !== "number" || typeof row.entity_type !== "string") {
-      continue;
-    }
-
-    if (row.entity_type === "message" && isRecord(row.payload)) {
-      const role = isMessageRole(row.payload.role) ? row.payload.role : "assistant";
-      const normalized = normalizePersistedMessageRecord({
-        id: String(row.payload.id ?? ""),
-        sessionId: String(row.payload.sessionId ?? ""),
-        runId: typeof row.payload.runId === "string" ? row.payload.runId : undefined,
-        role,
-        content: row.payload.content as Message["content"],
-        ...(isRecord(row.payload.metadata) ? { metadata: row.payload.metadata } : {}),
-        createdAt: String(row.payload.createdAt ?? "")
-      } as Message);
-      if (normalized.changed) {
-        await queryable.query("update history_events set payload = $2::jsonb where id = $1", [row.id, normalized.message]);
-      }
-      continue;
-    }
-
-    if (row.entity_type === "run_step" && isRecord(row.payload)) {
-      const normalized = normalizePersistedRunStep({
-        id: String(row.payload.id ?? ""),
-        runId: String(row.payload.runId ?? ""),
-        seq: typeof row.payload.seq === "number" ? row.payload.seq : 0,
-        stepType: row.payload.stepType as RunStep["stepType"],
-        status: row.payload.status as RunStep["status"],
-        ...(typeof row.payload.name === "string" ? { name: row.payload.name } : {}),
-        ...(typeof row.payload.agentName === "string" ? { agentName: row.payload.agentName } : {}),
-        ...(row.payload.input !== undefined ? { input: row.payload.input } : {}),
-        ...(row.payload.output !== undefined ? { output: row.payload.output } : {}),
-        ...(typeof row.payload.startedAt === "string" ? { startedAt: row.payload.startedAt } : {}),
-        ...(typeof row.payload.endedAt === "string" ? { endedAt: row.payload.endedAt } : {})
-      });
-      if (normalized.changed) {
-        await queryable.query("update history_events set payload = $2::jsonb where id = $1", [row.id, normalized.step]);
-      }
-    }
+  if (currentSessionId && currentSessionMessages.length > 0) {
+    await normalizeMessageSession(queryable, currentSessionId, currentSessionMessages);
   }
+}
+
+function legacyRunStepFromRow(row: Record<string, unknown>): RunStep | undefined {
+  if (
+    typeof row.id !== "string" ||
+    typeof row.run_id !== "string" ||
+    typeof row.seq !== "number" ||
+    typeof row.step_type !== "string" ||
+    typeof row.status !== "string"
+  ) {
+    return undefined;
+  }
+
+  return {
+    id: row.id,
+    runId: row.run_id,
+    seq: row.seq,
+    stepType: row.step_type as RunStep["stepType"],
+    status: row.status as RunStep["status"],
+    ...(typeof row.name === "string" ? { name: row.name } : {}),
+    ...(typeof row.agent_name === "string" ? { agentName: row.agent_name } : {}),
+    ...(row.input !== undefined && row.input !== null ? { input: row.input } : {}),
+    ...(row.output !== undefined && row.output !== null ? { output: row.output } : {}),
+    ...(typeof row.started_at === "string" ? { startedAt: row.started_at } : {}),
+    ...(typeof row.ended_at === "string" ? { endedAt: row.ended_at } : {})
+  };
+}
+
+async function normalizePostgresRunSteps(queryable: SqlQueryable, pageSize: number): Promise<void> {
+  let lastId: string | undefined;
+
+  for (;;) {
+    const result = await queryable.query(
+      lastId
+        ? `select id, run_id, seq, step_type, name, agent_name, status, input, output, started_at, ended_at
+           from run_steps
+           where id > $1
+           order by id asc
+           limit $2`
+        : `select id, run_id, seq, step_type, name, agent_name, status, input, output, started_at, ended_at
+           from run_steps
+           order by id asc
+           limit $1`,
+      lastId ? [lastId, pageSize] : [pageSize]
+    );
+
+    if (result.rows.length === 0) {
+      break;
+    }
+
+    for (const row of result.rows) {
+      const step = legacyRunStepFromRow(row);
+      if (!step) {
+        continue;
+      }
+
+      const normalized = normalizePersistedRunStep(step);
+      if (!normalized.changed) {
+        continue;
+      }
+
+      await queryable.query("update run_steps set input = $2::jsonb, output = $3::jsonb where id = $1", [
+        normalized.step.id,
+        normalized.step.input ?? null,
+        normalized.step.output ?? null
+      ]);
+    }
+
+    const lastRow = result.rows.at(-1);
+    if (typeof lastRow?.id !== "string" || result.rows.length < pageSize) {
+      break;
+    }
+    lastId = lastRow.id;
+  }
+}
+
+async function normalizePostgresHistoryEvents(queryable: SqlQueryable, pageSize: number): Promise<void> {
+  let lastId: number | undefined;
+
+  for (;;) {
+    const result = await queryable.query(
+      lastId
+        ? `select id, entity_type, payload
+           from history_events
+           where id > $1 and entity_type in ('message', 'run_step')
+           order by id asc
+           limit $2`
+        : `select id, entity_type, payload
+           from history_events
+           where entity_type in ('message', 'run_step')
+           order by id asc
+           limit $1`,
+      lastId === undefined ? [pageSize] : [lastId, pageSize]
+    );
+
+    if (result.rows.length === 0) {
+      break;
+    }
+
+    for (const row of result.rows) {
+      if (typeof row.id !== "number" || typeof row.entity_type !== "string") {
+        continue;
+      }
+
+      if (row.entity_type === "message" && isRecord(row.payload)) {
+        const role = isMessageRole(row.payload.role) ? row.payload.role : "assistant";
+        const normalized = normalizePersistedMessageRecord({
+          id: String(row.payload.id ?? ""),
+          sessionId: String(row.payload.sessionId ?? ""),
+          runId: typeof row.payload.runId === "string" ? row.payload.runId : undefined,
+          role,
+          content: row.payload.content as Message["content"],
+          ...(isRecord(row.payload.metadata) ? { metadata: row.payload.metadata } : {}),
+          createdAt: String(row.payload.createdAt ?? "")
+        } as Message);
+        if (normalized.changed) {
+          await queryable.query("update history_events set payload = $2::jsonb where id = $1", [row.id, normalized.message]);
+        }
+        continue;
+      }
+
+      if (row.entity_type === "run_step" && isRecord(row.payload)) {
+        const normalized = normalizePersistedRunStep({
+          id: String(row.payload.id ?? ""),
+          runId: String(row.payload.runId ?? ""),
+          seq: typeof row.payload.seq === "number" ? row.payload.seq : 0,
+          stepType: row.payload.stepType as RunStep["stepType"],
+          status: row.payload.status as RunStep["status"],
+          ...(typeof row.payload.name === "string" ? { name: row.payload.name } : {}),
+          ...(typeof row.payload.agentName === "string" ? { agentName: row.payload.agentName } : {}),
+          ...(row.payload.input !== undefined ? { input: row.payload.input } : {}),
+          ...(row.payload.output !== undefined ? { output: row.payload.output } : {}),
+          ...(typeof row.payload.startedAt === "string" ? { startedAt: row.payload.startedAt } : {}),
+          ...(typeof row.payload.endedAt === "string" ? { endedAt: row.payload.endedAt } : {})
+        });
+        if (normalized.changed) {
+          await queryable.query("update history_events set payload = $2::jsonb where id = $1", [row.id, normalized.step]);
+        }
+      }
+    }
+
+    const lastRow = result.rows.at(-1);
+    if (typeof lastRow?.id !== "number" || result.rows.length < pageSize) {
+      break;
+    }
+    lastId = lastRow.id;
+  }
+}
+
+async function normalizePostgresPersistedData(queryable: SqlQueryable): Promise<void> {
+  if (await isSchemaMigrationApplied(queryable, persistedDataNormalizationMigrationId)) {
+    return;
+  }
+
+  const pageSize = resolvePostgresNormalizationPageSize();
+  await normalizePostgresMessages(queryable, pageSize);
+  await normalizePostgresRunSteps(queryable, pageSize);
+  await normalizePostgresHistoryEvents(queryable, pageSize);
+  await recordSchemaMigration(queryable, persistedDataNormalizationMigrationId);
 }
 
 export async function ensurePostgresSchema(pool: Pool): Promise<void> {

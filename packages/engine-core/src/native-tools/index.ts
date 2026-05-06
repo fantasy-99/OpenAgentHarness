@@ -9,9 +9,9 @@ import { createGrepTool } from "./grep.js";
 import { createReadTool } from "./read.js";
 import { READ_STATE_DIRECTORY, TODO_STATE_DIRECTORY } from "./constants.js";
 import { ensureParentDirectory, readJsonFile } from "./fs-utils.js";
-import { createTaskInputTool } from "./task-input.js";
-import { createTaskOutputTool } from "./task-output.js";
-import { createTaskStopTool } from "./task-stop.js";
+import { createTerminalInputTool } from "./terminal-input.js";
+import { createTerminalOutputTool } from "./terminal-output.js";
+import { createTerminalStopTool } from "./terminal-stop.js";
 import { createTodoWriteTool } from "./todo-write.js";
 import { createWebFetchTool } from "./web-fetch.js";
 import { createWriteTool } from "./write.js";
@@ -22,11 +22,12 @@ import {
   type NativeToolSetOptions,
   type NativeToolName,
   NATIVE_TOOL_NAMES,
+  PUBLIC_NATIVE_TOOL_NAMES,
   getNativeToolRetryPolicy,
   isNativeToolName
 } from "./types.js";
 
-export { NATIVE_TOOL_NAMES, getNativeToolRetryPolicy, isNativeToolName };
+export { NATIVE_TOOL_NAMES, PUBLIC_NATIVE_TOOL_NAMES, getNativeToolRetryPolicy, isNativeToolName };
 export type { NativeToolName, NativeToolSetOptions };
 
 export function createNativeToolSet(
@@ -120,8 +121,8 @@ export function createNativeToolSet(
     ...createGrepTool(context),
     ...createWebFetchTool(context),
     ...createTodoWriteTool(context),
-    ...createTaskOutputTool(context),
-    ...createTaskInputTool(context),
-    ...createTaskStopTool(context)
+    ...createTerminalOutputTool(context),
+    ...createTerminalInputTool(context),
+    ...createTerminalStopTool(context)
   };
 }

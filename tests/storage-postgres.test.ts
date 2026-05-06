@@ -330,7 +330,11 @@ describe("storage postgres", () => {
     const query = vi.fn(async (statement: unknown) => {
       const sql = String(statement);
 
-      if (sql.startsWith("select id, session_id, run_id, role, content, metadata, created_at from messages")) {
+      if (sql.startsWith("select id from oah_schema_migrations")) {
+        return { rows: [] };
+      }
+
+      if (sql.includes("from messages") && sql.includes("order by session_id asc, created_at asc, id asc")) {
         return {
           rows: [
             {
@@ -393,7 +397,7 @@ describe("storage postgres", () => {
         };
       }
 
-      if (sql.startsWith("select id, run_id, seq, step_type, name, agent_name, status, input, output, started_at, ended_at from run_steps")) {
+      if (sql.includes("from run_steps") && sql.includes("order by id asc")) {
         return {
           rows: [
             {
@@ -442,7 +446,7 @@ describe("storage postgres", () => {
         };
       }
 
-      if (sql.startsWith("select id, entity_type, payload from history_events")) {
+      if (sql.includes("from history_events") && sql.includes("order by id asc")) {
         return {
           rows: [
             {
@@ -513,5 +517,36 @@ describe("storage postgres", () => {
           values[0] === 1
       )
     ).toBe(true);
+    expect(
+      query.mock.calls.some(
+        ([statement, values]) =>
+          String(statement) === "insert into oah_schema_migrations (id) values ($1) on conflict (id) do nothing" &&
+          Array.isArray(values) &&
+          values[0] === "2026-05-06_normalize_persisted_message_payloads"
+      )
+    ).toBe(true);
+    expect(
+      query.mock.calls.some(([statement]) => String(statement).trim() === "select id, entity_type, payload from history_events")
+    ).toBe(false);
+  });
+
+  it("skips legacy payload normalization after the schema migration has run", async () => {
+    const query = vi.fn(async (statement: unknown) => {
+      const sql = String(statement);
+
+      if (sql.startsWith("select id from oah_schema_migrations")) {
+        return { rows: [{ id: "2026-05-06_normalize_persisted_message_payloads" }] };
+      }
+
+      return { rows: [] };
+    });
+
+    await ensurePostgresSchema({
+      query
+    } as unknown as import("pg").Pool);
+
+    expect(query.mock.calls.some(([statement]) => String(statement).includes("from messages"))).toBe(false);
+    expect(query.mock.calls.some(([statement]) => String(statement).includes("from run_steps"))).toBe(false);
+    expect(query.mock.calls.some(([statement]) => String(statement).includes("from history_events"))).toBe(false);
   });
 });
