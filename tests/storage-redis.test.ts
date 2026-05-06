@@ -181,6 +181,7 @@ function createQueueStub(overrides: Record<string, unknown> = {}) {
 function createInMemoryQueueRedisClients() {
   const lists = new Map<string, string[]>();
   const strings = new Map<string, string>();
+  const sets = new Map<string, Set<string>>();
 
   const commands = {
     isOpen: true,
@@ -214,8 +215,15 @@ function createInMemoryQueueRedisClients() {
     async eval(_script: string, input: { keys: string[]; arguments?: string[] }) {
       const args = input.arguments ?? [];
 
-      if (input.keys.length === 5 && args.length === 5) {
-        const [sessionQueueKey, readyQueueKey, readyAtKey, readyPriorityKey, preferredWorkerKey] = input.keys;
+      if (input.keys.length === 2 && args.length === 0) {
+        const [readyQueueKey, readyQueueSetKey] = input.keys;
+        sets.set(readyQueueSetKey, new Set(lists.get(readyQueueKey) ?? []));
+        return lists.get(readyQueueKey)?.length ?? 0;
+      }
+
+      if (input.keys.length === 6 && args.length === 5) {
+        const [sessionQueueKey, readyQueueKey, readyAtKey, readyPriorityKey, preferredWorkerKey, readyQueueSetKey] =
+          input.keys;
         const [runId, sessionId, readyAtMs, priority, preferredWorkerId] = args;
         const sessionQueue = lists.get(sessionQueueKey) ?? [];
         sessionQueue.push(runId);
@@ -232,8 +240,11 @@ function createInMemoryQueueRedisClients() {
             strings.set(readyAtKey, readyAtMs);
           }
           strings.set(readyPriorityKey, priority);
-          const readyQueue = lists.get(readyQueueKey) ?? [];
-          if (!readyQueue.includes(sessionId)) {
+          const readyQueueSet = sets.get(readyQueueSetKey) ?? new Set<string>();
+          if (!readyQueueSet.has(sessionId)) {
+            readyQueueSet.add(sessionId);
+            sets.set(readyQueueSetKey, readyQueueSet);
+            const readyQueue = lists.get(readyQueueKey) ?? [];
             if (priority === "subagent") {
               readyQueue.unshift(sessionId);
             } else {
@@ -246,12 +257,13 @@ function createInMemoryQueueRedisClients() {
         return sessionQueue.length;
       }
 
-      if (input.keys.length === 1 && args.length === 4) {
-        const [readyQueueKey] = input.keys;
-        const [sessionPrefix, preferredSuffix, workerId, runtimeInstanceId] = args;
+      if (input.keys.length === 2 && args.length === 5) {
+        const [readyQueueKey, readyQueueSetKey] = input.keys;
+        const [sessionPrefix, preferredSuffix, workerId, runtimeInstanceId, scanLimitRaw] = args;
         const readyQueue = lists.get(readyQueueKey) ?? [];
+        const scanLimit = Math.max(1, Number.parseInt(scanLimitRaw, 10) || 100);
 
-        for (const sessionId of readyQueue) {
+        for (const sessionId of readyQueue.slice(0, scanLimit)) {
           const preferredWorkerId = strings.get(`${sessionPrefix}${sessionId}${preferredSuffix}`);
           if (
             !workerId ||
@@ -262,6 +274,7 @@ function createInMemoryQueueRedisClients() {
             const index = readyQueue.indexOf(sessionId);
             readyQueue.splice(index, 1);
             lists.set(readyQueueKey, readyQueue);
+            sets.get(readyQueueSetKey)?.delete(sessionId);
             return sessionId;
           }
         }
@@ -269,8 +282,9 @@ function createInMemoryQueueRedisClients() {
         return null;
       }
 
-      if (input.keys.length === 4 && args.length === 0) {
-        const [sessionQueueKey, readyAtKey, readyPriorityKey, preferredWorkerKey] = input.keys;
+      if (input.keys.length === 5 && args.length === 1) {
+        const [sessionQueueKey, readyAtKey, readyPriorityKey, preferredWorkerKey, readyQueueSetKey] = input.keys;
+        const [sessionId] = args;
         const sessionQueue = lists.get(sessionQueueKey) ?? [];
         const runId = sessionQueue.shift();
         lists.set(sessionQueueKey, sessionQueue);
@@ -282,13 +296,14 @@ function createInMemoryQueueRedisClients() {
           strings.delete(readyAtKey);
           strings.delete(readyPriorityKey);
           strings.delete(preferredWorkerKey);
+          sets.get(readyQueueSetKey)?.delete(sessionId);
         }
 
         return runId;
       }
 
-      if (input.keys.length === 3 && args.length === 2) {
-        const [sessionQueueKey, readyQueueKey, preferredWorkerKey] = input.keys;
+      if (input.keys.length === 4 && args.length === 2) {
+        const [sessionQueueKey, readyQueueKey, preferredWorkerKey, readyQueueSetKey] = input.keys;
         const [sessionId, preferredWorkerId] = args;
         const sessionQueue = lists.get(sessionQueueKey) ?? [];
         if (sessionQueue.length === 0) {
@@ -299,8 +314,11 @@ function createInMemoryQueueRedisClients() {
           strings.set(preferredWorkerKey, preferredWorkerId);
         }
 
-        const readyQueue = lists.get(readyQueueKey) ?? [];
-        if (!readyQueue.includes(sessionId)) {
+        const readyQueueSet = sets.get(readyQueueSetKey) ?? new Set<string>();
+        if (!readyQueueSet.has(sessionId)) {
+          readyQueueSet.add(sessionId);
+          sets.set(readyQueueSetKey, readyQueueSet);
+          const readyQueue = lists.get(readyQueueKey) ?? [];
           readyQueue.push(sessionId);
           lists.set(readyQueueKey, readyQueue);
           return 1;

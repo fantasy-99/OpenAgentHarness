@@ -56,4 +56,63 @@ describe("PostgresMetadataRetentionService", () => {
     expect(query).toHaveBeenCalledTimes(1);
     expect(String(query.mock.calls[0]?.[0])).toContain("from session_events");
   });
+
+  it("uses a Postgres advisory lock to keep retention single-owner", async () => {
+    const release = vi.fn();
+    const clientQuery = vi
+      .fn()
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ acquired: true }] })
+      .mockResolvedValueOnce({ rowCount: 3, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] });
+    const connect = vi.fn(async () => ({
+      query: clientQuery,
+      release
+    }));
+    const service = new PostgresMetadataRetentionService({
+      pool: {
+        connect
+      } as unknown as import("pg").Pool,
+      now: () => new Date("2026-04-30T00:00:00.000Z"),
+      historyEventRetentionDays: 7
+    });
+
+    await expect(service.runOnce()).resolves.toEqual({
+      historyEvents: 3,
+      sessionEvents: 0,
+      runs: 0
+    });
+
+    expect(clientQuery).toHaveBeenCalledTimes(3);
+    expect(String(clientQuery.mock.calls[0]?.[0])).toContain("pg_try_advisory_lock");
+    expect(String(clientQuery.mock.calls[1]?.[0])).toContain("from history_events");
+    expect(String(clientQuery.mock.calls[2]?.[0])).toContain("pg_advisory_unlock");
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips retention when another owner holds the advisory lock", async () => {
+    const release = vi.fn();
+    const clientQuery = vi.fn().mockResolvedValueOnce({ rowCount: 1, rows: [{ acquired: false }] });
+    const service = new PostgresMetadataRetentionService({
+      pool: {
+        connect: vi.fn(async () => ({
+          query: clientQuery,
+          release
+        }))
+      } as unknown as import("pg").Pool,
+      now: () => new Date("2026-04-30T00:00:00.000Z"),
+      historyEventRetentionDays: 7,
+      sessionEventRetentionDays: 14,
+      runRetentionDays: 30
+    });
+
+    await expect(service.runOnce()).resolves.toEqual({
+      historyEvents: 0,
+      sessionEvents: 0,
+      runs: 0
+    });
+
+    expect(clientQuery).toHaveBeenCalledTimes(1);
+    expect(String(clientQuery.mock.calls[0]?.[0])).toContain("pg_try_advisory_lock");
+    expect(release).toHaveBeenCalledTimes(1);
+  });
 });

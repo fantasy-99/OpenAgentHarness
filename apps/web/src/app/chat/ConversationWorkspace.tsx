@@ -11,17 +11,18 @@ import {
   CircleDot,
   Clock3,
   CornerDownRight,
+  Cpu,
   Folder,
-  GitBranch,
-  GitCompare,
   ImagePlus,
   ListTodo,
   Loader2,
+  MessageSquare,
   Radio,
   RefreshCw,
   Send,
   Sparkles,
   Square,
+  UserRound,
   Wrench,
   X
 } from "lucide-react";
@@ -1672,6 +1673,15 @@ function ConversationDetailRow({
   );
 }
 
+function ConversationControlLabel({ icon, label }: { icon: ReactNode; label: ReactNode }) {
+  return (
+    <div className="flex items-center gap-2.5 text-[13px] font-medium text-foreground/74">
+      <span className="inline-flex h-5 w-5 flex-shrink-0 items-center justify-center text-foreground/58">{icon}</span>
+      <span>{label}</span>
+    </div>
+  );
+}
+
 const ConversationStatusBar = memo(function ConversationStatusBar(props: ConversationStatusBarProps) {
   const run = useStreamStore((state) => state.run);
   const pendingSessionAgentName = useSessionAgentStore((state) => state.pendingSessionAgentName);
@@ -1788,70 +1798,75 @@ const ConversationStatusBar = memo(function ConversationStatusBar(props: Convers
           <section className="space-y-2.5">
             <div className="text-[13px] font-medium text-muted-foreground/76">会话详情</div>
             <ConversationDetailRow
-              icon={<GitCompare className="h-4 w-4" />}
+              icon={<MessageSquare className="h-4 w-4" />}
               label="消息"
               value={props.messagesCount.toLocaleString()}
               valueClassName="text-foreground/70"
             />
-            <ConversationDetailRow
-              icon={<GitBranch className="h-4 w-4" />}
-              label="Agent"
-              value={selectedAgentName || "no agent"}
-            />
 
-            <div className="space-y-2 pt-1">
-              <Select
-                value={selectedSessionModelValue}
-                disabled={!props.session || props.isSwitchingSessionModel || sessionModelLocked}
-                onValueChange={(value) => {
-                  if (!props.session) {
-                    return;
-                  }
-
-                  const nextModelRef = value === AUTO_SESSION_MODEL_VALUE ? null : value;
-                  const currentModelRef = props.session.modelRef ?? null;
-                  if (nextModelRef !== currentModelRef) {
-                    props.updateSessionModel(props.session.id, nextModelRef);
-                  }
-                }}
-              >
-                <SelectTrigger className="h-8 w-full rounded-xl border-foreground/10 bg-background/52 text-xs shadow-none" size="sm" aria-label="Session model">
-                  <SelectValue placeholder="Select model">模型 · {selectedSessionModelLabel}</SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={AUTO_SESSION_MODEL_VALUE}>Auto · workspace / agent default</SelectItem>
-                  {sessionModelOptions.map((model) => (
-                    <SelectItem key={model.ref} value={model.ref}>
-                      {model.name} · {model.source} · {model.provider}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-
-              {agentSelectorSession ? (
+            <div className="space-y-2.5 pt-0.5">
+              <div className="space-y-1.5">
+                <ConversationControlLabel icon={<Cpu className="h-4 w-4" />} label="模型" />
                 <Select
-                  value={selectedAgentSelectValue ?? ""}
-                  disabled={props.isSwitchingSessionAgent}
+                  value={selectedSessionModelValue}
+                  disabled={!props.session || props.isSwitchingSessionModel || sessionModelLocked}
                   onValueChange={(value) => {
-                    if (value !== agentSelectorSession.activeAgentName) {
-                      props.switchSessionAgent(agentSelectorSession.id, value);
+                    if (!props.session) {
+                      return;
+                    }
+
+                    const nextModelRef = value === AUTO_SESSION_MODEL_VALUE ? null : value;
+                    const currentModelRef = props.session.modelRef ?? null;
+                    if (nextModelRef !== currentModelRef) {
+                      props.updateSessionModel(props.session.id, nextModelRef);
                     }
                   }}
                 >
-                  <SelectTrigger className="h-8 w-full rounded-xl border-foreground/10 bg-background/52 text-xs shadow-none" size="sm" aria-label="Session agent">
-                    <SelectValue placeholder="Select agent">
-                      Agent · {selectedAgent ? sessionAgentLabel(selectedAgent) : (selectedAgentName || "no agent")}
-                    </SelectValue>
+                  <SelectTrigger className="h-8 w-full rounded-xl border-foreground/10 bg-background/52 text-xs shadow-none" size="sm" aria-label="Session model">
+                    <SelectValue placeholder="Select model">{selectedSessionModelLabel}</SelectValue>
                   </SelectTrigger>
                   <SelectContent>
-                    {visibleSessionAgents.map((agent) => (
-                      <SelectItem key={agent.name} value={agent.name}>
-                        {sessionAgentLabel(agent)}
+                    <SelectItem value={AUTO_SESSION_MODEL_VALUE}>Auto · workspace / agent default</SelectItem>
+                    {sessionModelOptions.map((model) => (
+                      <SelectItem key={model.ref} value={model.ref}>
+                        {model.name} · {model.source} · {model.provider}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-              ) : null}
+              </div>
+
+              <div className="space-y-1.5">
+                <ConversationControlLabel icon={<UserRound className="h-4 w-4" />} label="Agent" />
+                {agentSelectorSession ? (
+                  <Select
+                    value={selectedAgentSelectValue ?? ""}
+                    disabled={props.isSwitchingSessionAgent}
+                    onValueChange={(value) => {
+                      if (value !== agentSelectorSession.activeAgentName) {
+                        props.switchSessionAgent(agentSelectorSession.id, value);
+                      }
+                    }}
+                  >
+                    <SelectTrigger className="h-8 w-full rounded-xl border-foreground/10 bg-background/52 text-xs shadow-none" size="sm" aria-label="Session agent">
+                      <SelectValue placeholder="Select agent">
+                        {selectedAgent?.name ?? (selectedAgentName || "no agent")}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {visibleSessionAgents.map((agent) => (
+                        <SelectItem key={agent.name} value={agent.name}>
+                          {sessionAgentLabel(agent)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <div className="rounded-xl border border-foreground/10 bg-background/38 px-3 py-2 text-xs font-medium text-muted-foreground/72">
+                    {selectedAgentName || "no agent"}
+                  </div>
+                )}
+              </div>
             </div>
             {statusDetail ? <p className="text-xs leading-5 text-muted-foreground/62">{statusDetail}</p> : null}
           </section>

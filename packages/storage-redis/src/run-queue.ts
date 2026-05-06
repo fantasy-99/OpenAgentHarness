@@ -22,15 +22,7 @@ end
 if queueLength == 1 then
   redis.call("set", KEYS[3], ARGV[3], "NX")
   redis.call("set", KEYS[4], ARGV[4])
-  local alreadyReady = false
-  local readyEntries = redis.call("lrange", KEYS[2], 0, -1)
-  for _, readySessionId in ipairs(readyEntries) do
-    if readySessionId == ARGV[2] then
-      alreadyReady = true
-      break
-    end
-  end
-  if not alreadyReady then
+  if redis.call("sadd", KEYS[6], ARGV[2]) == 1 then
     if ARGV[4] == "subagent" then
       redis.call("lpush", KEYS[2], ARGV[2])
     else
@@ -44,12 +36,17 @@ return queueLength
 const claimCompatibleSessionScript = `
 local workerId = ARGV[3]
 local runtimeInstanceId = ARGV[4]
-local readyEntries = redis.call("lrange", KEYS[1], 0, -1)
+local scanLimit = tonumber(ARGV[5])
+if scanLimit == nil or scanLimit < 1 then
+  scanLimit = 100
+end
+local readyEntries = redis.call("lrange", KEYS[1], 0, scanLimit - 1)
 
 for _, sessionId in ipairs(readyEntries) do
   local preferredWorkerId = redis.call("get", ARGV[1] .. sessionId .. ARGV[2])
   if workerId == "" or preferredWorkerId == false or preferredWorkerId == "" or preferredWorkerId == workerId or (runtimeInstanceId ~= "" and preferredWorkerId == runtimeInstanceId) then
     redis.call("lrem", KEYS[1], 1, sessionId)
+    redis.call("srem", KEYS[2], sessionId)
     return sessionId
   end
 end
@@ -69,14 +66,10 @@ if redis.call("llen", KEYS[1]) > 0 then
   if ARGV[2] ~= "" then
     redis.call("set", KEYS[3], ARGV[2])
   end
-  local readyEntries = redis.call("lrange", KEYS[2], 0, -1)
-  for _, readySessionId in ipairs(readyEntries) do
-    if readySessionId == ARGV[1] then
-      return 0
-    end
+  if redis.call("sadd", KEYS[4], ARGV[1]) == 1 then
+    redis.call("rpush", KEYS[2], ARGV[1])
+    return 1
   end
-  redis.call("rpush", KEYS[2], ARGV[1])
-  return 1
 end
 return 0
 `;
@@ -141,8 +134,17 @@ if not runId then
 end
 if redis.call("llen", KEYS[1]) == 0 then
   redis.call("del", KEYS[2], KEYS[3], KEYS[4])
+  redis.call("srem", KEYS[5], ARGV[1])
 end
 return runId
+`;
+
+const repairReadySetFromListScript = `
+local readyEntries = redis.call("lrange", KEYS[1], 0, -1)
+if #readyEntries > 0 then
+  redis.call("sadd", KEYS[2], unpack(readyEntries))
+end
+return #readyEntries
 `;
 
 export class RedisSessionRunQueue implements SessionRunQueue {
@@ -151,6 +153,7 @@ export class RedisSessionRunQueue implements SessionRunQueue {
   readonly #ownsCommands: boolean;
   readonly #ownsBlocking: boolean;
   readonly #keyPrefix: string;
+  readonly #claimScanLimit: number;
 
   constructor(options: CreateRedisSessionRunQueueOptions) {
     this.#commands = options.commands ?? createClient({ url: options.url });
@@ -158,6 +161,7 @@ export class RedisSessionRunQueue implements SessionRunQueue {
     this.#ownsCommands = !options.commands;
     this.#ownsBlocking = !options.blocking;
     this.#keyPrefix = options.keyPrefix ?? "oah";
+    this.#claimScanLimit = Math.max(1, Number.parseInt(process.env.OAH_REDIS_READY_QUEUE_CLAIM_SCAN_LIMIT ?? "100", 10) || 100);
   }
 
   async connect(): Promise<void> {
@@ -168,6 +172,8 @@ export class RedisSessionRunQueue implements SessionRunQueue {
     if (!this.#blocking.isOpen) {
       await this.#blocking.connect();
     }
+
+    await this.#repairReadySetFromList();
   }
 
   async enqueue(
@@ -184,7 +190,8 @@ export class RedisSessionRunQueue implements SessionRunQueue {
           this.#readyQueueKey(),
           this.#readyAtKey(sessionId),
           this.#readyPriorityKey(sessionId),
-          this.#preferredWorkerKey(sessionId)
+          this.#preferredWorkerKey(sessionId),
+          this.#readyQueueSetKey()
         ],
         arguments: [runId, sessionId, String(Date.now()), priority, preferredWorkerId]
       })
@@ -204,8 +211,14 @@ export class RedisSessionRunQueue implements SessionRunQueue {
 
     while (Date.now() < deadline) {
       const claimed = await this.#commands.eval(claimCompatibleSessionScript, {
-        keys: [this.#readyQueueKey()],
-        arguments: [`${this.#keyPrefix}:session:`, ":preferred-worker", workerId, runtimeInstanceId]
+        keys: [this.#readyQueueKey(), this.#readyQueueSetKey()],
+        arguments: [
+          `${this.#keyPrefix}:session:`,
+          ":preferred-worker",
+          workerId,
+          runtimeInstanceId,
+          String(this.#claimScanLimit)
+        ]
       });
       if (typeof claimed === "string" && claimed.length > 0) {
         return claimed;
@@ -313,8 +326,10 @@ export class RedisSessionRunQueue implements SessionRunQueue {
         this.#sessionQueueKey(sessionId),
         this.#readyAtKey(sessionId),
         this.#readyPriorityKey(sessionId),
-        this.#preferredWorkerKey(sessionId)
-      ]
+        this.#preferredWorkerKey(sessionId),
+        this.#readyQueueSetKey()
+      ],
+      arguments: [sessionId]
     });
 
     return typeof runId === "string" ? runId : undefined;
@@ -326,7 +341,12 @@ export class RedisSessionRunQueue implements SessionRunQueue {
   ): Promise<boolean> {
     const preferredWorkerId = options?.preferredWorkerId?.trim() ?? "";
     const result = await this.#commands.eval(requeuePendingSessionScript, {
-      keys: [this.#sessionQueueKey(sessionId), this.#readyQueueKey(), this.#preferredWorkerKey(sessionId)],
+      keys: [
+        this.#sessionQueueKey(sessionId),
+        this.#readyQueueKey(),
+        this.#preferredWorkerKey(sessionId),
+        this.#readyQueueSetKey()
+      ],
       arguments: [sessionId, preferredWorkerId]
     });
 
@@ -388,6 +408,10 @@ export class RedisSessionRunQueue implements SessionRunQueue {
     return `${this.#keyPrefix}:runs:ready`;
   }
 
+  #readyQueueSetKey(): string {
+    return `${this.#keyPrefix}:runs:ready:set`;
+  }
+
   #sessionQueueKey(sessionId: string): string {
     return `${this.#keyPrefix}:session:${sessionId}:queue`;
   }
@@ -406,6 +430,12 @@ export class RedisSessionRunQueue implements SessionRunQueue {
 
   #preferredWorkerKey(sessionId: string): string {
     return `${this.#keyPrefix}:session:${sessionId}:preferred-worker`;
+  }
+
+  async #repairReadySetFromList(): Promise<void> {
+    await this.#commands.eval(repairReadySetFromListScript, {
+      keys: [this.#readyQueueKey(), this.#readyQueueSetKey()]
+    });
   }
 }
 
