@@ -65,6 +65,7 @@ export interface CreateEngineRuntimeKernelDependencies {
   modelGateway: EngineServiceOptions["modelGateway"];
   logger: EngineServiceOptions["logger"];
   runHeartbeatIntervalMs: number;
+  staleRunTimeoutMs: number;
   staleRunRecoveryStrategy: "fail" | "requeue_running" | "requeue_all";
   staleRunRecoveryMaxAttempts: number;
   platformModels: Record<string, ModelDefinition>;
@@ -358,7 +359,7 @@ export function createEngineRuntimeKernel(
     enqueueRun: (sessionId, runId) => engineLifecycle.enqueueRun(sessionId, runId),
     runAbortControllers: dependencies.runAbortControllers,
     drainTimeoutRecoveredRuns: dependencies.drainTimeoutRecoveredRuns,
-    runHeartbeatIntervalMs: dependencies.runHeartbeatIntervalMs,
+    staleRunTimeoutMs: dependencies.staleRunTimeoutMs,
     staleRunRecoveryStrategy: dependencies.staleRunRecoveryStrategy,
     staleRunRecoveryMaxAttempts: dependencies.staleRunRecoveryMaxAttempts
   });

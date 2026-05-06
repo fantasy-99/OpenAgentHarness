@@ -50,6 +50,7 @@ export interface EngineServiceOptions {
   workspaceActivityTracker?: WorkspaceActivityTracker | undefined;
   executionServicesMode?: "eager" | "lazy" | undefined;
   runHeartbeatIntervalMs?: number | undefined;
+  staleRunTimeoutMs?: number | undefined;
   staleRunRecovery?:
     | {
         strategy?: "fail" | "requeue_running" | "requeue_all" | undefined;

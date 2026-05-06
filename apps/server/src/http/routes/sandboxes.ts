@@ -52,6 +52,10 @@ function readRegisteredRouteUrl(request: FastifyRequest): string {
   return typeof request.routeOptions.url === "string" ? request.routeOptions.url : request.url.split("?")[0] ?? request.url;
 }
 
+async function touchWorkspaceActivity(dependencies: AppDependencies, workspaceId: string): Promise<void> {
+  await dependencies.touchWorkspaceActivity?.(workspaceId);
+}
+
 type WorkspaceOwnership = Awaited<ReturnType<NonNullable<AppDependencies["resolveWorkspaceOwnership"]>>>;
 
 async function reserveOwnerScopedWorkspacePlacement(
@@ -297,6 +301,7 @@ function workspacePathToSandboxPath(targetPath: string | undefined): string {
 
 async function buildSandboxResponse(dependencies: AppDependencies, workspaceId: string) {
   const workspace = await dependencies.runtimeService.getWorkspace(workspaceId);
+  await touchWorkspaceActivity(dependencies, workspaceId);
   const ownership = await dependencies.resolveWorkspaceOwnership?.(workspaceId);
   const resolvedOwnerBaseUrl = normalizeSandboxOwnerBaseUrl(
     ownership?.ownerBaseUrl ??
@@ -369,6 +374,7 @@ async function handleListSandboxEntries(
     ...query,
     path: sandboxPathToWorkspacePath(query.path)
   });
+  await touchWorkspaceActivity(dependencies, sandboxId);
   return reply.send(workspaceEntryPageSchema.parse(toSandboxEntryPage(page)));
 }
 
@@ -387,6 +393,7 @@ async function handleGetSandboxFileStat(
     sandboxId,
     sandboxPathToWorkspacePath(query.path) ?? "."
   );
+  await touchWorkspaceActivity(dependencies, sandboxId);
   return reply.send(
     sandboxFileStatSchema.parse({
       ...result,
@@ -406,6 +413,7 @@ async function handleGetSandboxFileContent(
     ...query,
     path: sandboxPathToWorkspacePath(query.path) ?? "."
   });
+  await touchWorkspaceActivity(dependencies, sandboxId);
   return reply.send(workspaceFileContentSchema.parse(toSandboxFileContent(file)));
 }
 
@@ -420,6 +428,7 @@ async function handlePutSandboxFileContent(
     ...input,
     path: sandboxPathToWorkspacePath(input.path) ?? "."
   });
+  await touchWorkspaceActivity(dependencies, sandboxId);
   return reply.send(workspaceEntrySchema.parse(toSandboxEntry(entry)));
 }
 
@@ -442,6 +451,7 @@ async function handleUploadSandboxFile(
     ...(query.ifMatch !== undefined ? { ifMatch: query.ifMatch } : {}),
     ...(query.mtimeMs !== undefined ? { mtimeMs: query.mtimeMs } : {})
   });
+  await touchWorkspaceActivity(dependencies, sandboxId);
   return reply.send(workspaceEntrySchema.parse(toSandboxEntry(entry)));
 }
 
@@ -461,6 +471,7 @@ async function handleDownloadSandboxFile(
           return undefined;
         }
       };
+  await touchWorkspaceActivity(dependencies, sandboxId);
   const file = downloadHandle.file;
   let released = false;
   const releaseHandle = async () => {
@@ -503,6 +514,7 @@ async function handleCreateSandboxDirectory(
     ...input,
     path: sandboxPathToWorkspacePath(input.path) ?? "."
   });
+  await touchWorkspaceActivity(dependencies, sandboxId);
   return reply.status(201).send(workspaceEntrySchema.parse(toSandboxEntry(entry)));
 }
 
@@ -517,6 +529,7 @@ async function handleDeleteSandboxEntry(
     ...query,
     path: sandboxPathToWorkspacePath(query.path) ?? "."
   });
+  await touchWorkspaceActivity(dependencies, sandboxId);
   return reply.send(workspaceDeleteResultSchema.parse(toSandboxDeleteResult(result)));
 }
 
@@ -532,6 +545,7 @@ async function handleMoveSandboxEntry(
     sourcePath: sandboxPathToWorkspacePath(input.sourcePath) ?? ".",
     targetPath: sandboxPathToWorkspacePath(input.targetPath) ?? "."
   });
+  await touchWorkspaceActivity(dependencies, sandboxId);
   return reply.send(workspaceEntrySchema.parse(toSandboxEntry(entry)));
 }
 
@@ -550,6 +564,7 @@ async function handleRunSandboxForegroundCommand(
     ...input,
     cwd: sandboxPathToWorkspacePath(input.cwd)
   });
+  await touchWorkspaceActivity(dependencies, sandboxId);
   return reply.send(sandboxCommandResultSchema.parse(result));
 }
 
@@ -568,6 +583,7 @@ async function handleRunSandboxProcessCommand(
     ...input,
     cwd: sandboxPathToWorkspacePath(input.cwd)
   });
+  await touchWorkspaceActivity(dependencies, sandboxId);
   return reply.send(sandboxCommandResultSchema.parse(result));
 }
 
@@ -591,6 +607,7 @@ async function handleRunSandboxBackgroundCommand(
     sessionId: input.sessionId ?? `${DEFAULT_BACKGROUND_SESSION_PREFIX}:${sandboxId}`,
     cwd: sandboxPathToWorkspacePath(input.cwd)
   });
+  await touchWorkspaceActivity(dependencies, sandboxId);
   return reply.send(sandboxBackgroundCommandResultSchema.parse(result));
 }
 

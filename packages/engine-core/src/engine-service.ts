@@ -70,6 +70,7 @@ export class EngineService {
   readonly #logger: EngineServiceOptions["logger"];
   readonly #executionServicesMode: NonNullable<EngineServiceOptions["executionServicesMode"]>;
   readonly #runHeartbeatIntervalMs: number;
+  readonly #staleRunTimeoutMs: number;
   readonly #staleRunRecoveryStrategy: "fail" | "requeue_running" | "requeue_all";
   readonly #staleRunRecoveryMaxAttempts: number;
   readonly #platformModels: Record<string, ModelDefinition>;
@@ -115,6 +116,7 @@ export class EngineService {
     this.#logger = options.logger;
     this.#executionServicesMode = options.executionServicesMode ?? "eager";
     this.#runHeartbeatIntervalMs = Math.max(50, options.runHeartbeatIntervalMs ?? 5_000);
+    this.#staleRunTimeoutMs = Math.max(this.#runHeartbeatIntervalMs, options.staleRunTimeoutMs ?? this.#runHeartbeatIntervalMs * 3);
     this.#staleRunRecoveryStrategy = options.staleRunRecovery?.strategy ?? "fail";
     this.#staleRunRecoveryMaxAttempts = Math.max(1, Math.floor(options.staleRunRecovery?.maxAttempts ?? 1));
     this.#platformModels = options.platformModels ?? {};
@@ -198,6 +200,7 @@ export class EngineService {
       modelGateway: this.#modelGateway,
       logger: this.#logger,
       runHeartbeatIntervalMs: this.#runHeartbeatIntervalMs,
+      staleRunTimeoutMs: this.#staleRunTimeoutMs,
       staleRunRecoveryStrategy: this.#staleRunRecoveryStrategy,
       staleRunRecoveryMaxAttempts: this.#staleRunRecoveryMaxAttempts,
       platformModels: this.#platformModels,

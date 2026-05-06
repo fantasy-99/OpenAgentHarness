@@ -24,7 +24,7 @@ export interface RunRecoveryServiceDependencies {
   enqueueRun: (sessionId: string, runId: string) => Promise<void>;
   runAbortControllers: Map<string, AbortController>;
   drainTimeoutRecoveredRuns: Set<string>;
-  runHeartbeatIntervalMs: number;
+  staleRunTimeoutMs: number;
   staleRunRecoveryStrategy: AutomaticRecoveryStrategy;
   staleRunRecoveryMaxAttempts: number;
 }
@@ -40,7 +40,7 @@ export class RunRecoveryService {
   readonly #enqueueRun: RunRecoveryServiceDependencies["enqueueRun"];
   readonly #runAbortControllers: Map<string, AbortController>;
   readonly #drainTimeoutRecoveredRuns: Set<string>;
-  readonly #runHeartbeatIntervalMs: number;
+  readonly #staleRunTimeoutMs: number;
   readonly #staleRunRecoveryStrategy: AutomaticRecoveryStrategy;
   readonly #staleRunRecoveryMaxAttempts: number;
 
@@ -55,7 +55,7 @@ export class RunRecoveryService {
     this.#enqueueRun = dependencies.enqueueRun;
     this.#runAbortControllers = dependencies.runAbortControllers;
     this.#drainTimeoutRecoveredRuns = dependencies.drainTimeoutRecoveredRuns;
-    this.#runHeartbeatIntervalMs = dependencies.runHeartbeatIntervalMs;
+    this.#staleRunTimeoutMs = dependencies.staleRunTimeoutMs;
     this.#staleRunRecoveryStrategy = dependencies.staleRunRecoveryStrategy;
     this.#staleRunRecoveryMaxAttempts = dependencies.staleRunRecoveryMaxAttempts;
   }
@@ -216,7 +216,7 @@ export class RunRecoveryService {
     staleBefore?: string | undefined;
     limit?: number | undefined;
   }): Promise<{ recoveredRunIds: string[]; requeuedRunIds: string[] }> {
-    const staleBefore = options?.staleBefore ?? new Date(Date.now() - this.#runHeartbeatIntervalMs * 3).toISOString();
+    const staleBefore = options?.staleBefore ?? new Date(Date.now() - this.#staleRunTimeoutMs).toISOString();
     const recoverableRuns = await this.#runRepository.listRecoverableActiveRuns(staleBefore, options?.limit ?? 100);
     const recoveredRunIds: string[] = [];
     const requeuedRunIds: string[] = [];

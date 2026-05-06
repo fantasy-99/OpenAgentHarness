@@ -268,6 +268,7 @@ async function createStartedAppWithEngineService(
       state?: "unassigned" | "draining" | "evicted" | undefined;
     }) => Promise<void>;
     clearWorkspaceCoordination?: (workspaceId: string) => Promise<void>;
+    touchWorkspaceActivity?: (workspaceId: string) => Promise<void>;
     sandboxHostProviderKind?: "embedded" | "self_hosted" | "e2b";
     sandboxOwnerFallbackBaseUrl?: string;
     localOwnerBaseUrl?: string;
@@ -299,6 +300,7 @@ async function createStartedAppWithEngineService(
       : {}),
     ...(options?.releaseWorkspacePlacement ? { releaseWorkspacePlacement: options.releaseWorkspacePlacement } : {}),
     ...(options?.clearWorkspaceCoordination ? { clearWorkspaceCoordination: options.clearWorkspaceCoordination } : {}),
+    ...(options?.touchWorkspaceActivity ? { touchWorkspaceActivity: options.touchWorkspaceActivity } : {}),
     ...(options?.sandboxHostProviderKind ? { sandboxHostProviderKind: options.sandboxHostProviderKind } : {}),
     ...(options?.sandboxOwnerFallbackBaseUrl ? { sandboxOwnerFallbackBaseUrl: options.sandboxOwnerFallbackBaseUrl } : {}),
     ...(options?.localOwnerBaseUrl ? { localOwnerBaseUrl: options.localOwnerBaseUrl } : {}),
@@ -2522,6 +2524,62 @@ describe("http api", () => {
       type: "file",
       deleted: true
     });
+  });
+
+  it("keeps sandbox file operations active on the public HTTP API", async () => {
+    const gateway = new FakeModelGateway(20);
+    const persistence = createMemoryRuntimePersistence();
+    const workspace = await createWorkspaceRecord();
+    await persistence.workspaceRepository.upsert(workspace);
+    const touchWorkspaceActivity = vi.fn(async (_workspaceId: string) => undefined);
+    activeApp = await createStartedAppWithEngineService(
+      new EngineService({
+        defaultModel: "openai-default",
+        modelGateway: gateway,
+        ...persistence
+      }),
+      gateway,
+      { touchWorkspaceActivity }
+    );
+
+    const writeResponse = await fetch(`${activeApp.baseUrl}/api/v1/sandboxes/${workspace.id}/files/content`, {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        path: "/workspace/refresh-check.txt",
+        content: "still here",
+        encoding: "utf8"
+      })
+    });
+    expect(writeResponse.status).toBe(200);
+
+    const listResponse = await fetch(
+      `${activeApp.baseUrl}/api/v1/sandboxes/${workspace.id}/files/entries?path=${encodeURIComponent("/workspace")}`
+    );
+    expect(listResponse.status).toBe(200);
+    await expect(listResponse.json()).resolves.toMatchObject({
+      items: expect.arrayContaining([
+        expect.objectContaining({
+          path: "/workspace/refresh-check.txt",
+          type: "file"
+        })
+      ])
+    });
+
+    const readResponse = await fetch(
+      `${activeApp.baseUrl}/api/v1/sandboxes/${workspace.id}/files/content?path=${encodeURIComponent("/workspace/refresh-check.txt")}`
+    );
+    expect(readResponse.status).toBe(200);
+    await expect(readResponse.json()).resolves.toMatchObject({
+      content: "still here"
+    });
+
+    expect(touchWorkspaceActivity).toHaveBeenCalledTimes(3);
+    expect(touchWorkspaceActivity).toHaveBeenNthCalledWith(1, workspace.id);
+    expect(touchWorkspaceActivity).toHaveBeenNthCalledWith(2, workspace.id);
+    expect(touchWorkspaceActivity).toHaveBeenNthCalledWith(3, workspace.id);
   });
 
   it("uploads and downloads sandbox files over HTTP", async () => {

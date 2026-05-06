@@ -1464,6 +1464,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       : {}),
     executionServicesMode: assemblyProfile.executionServicesMode,
     runHeartbeatIntervalMs: parsePositiveIntEnvWithMin("OAH_RUN_HEARTBEAT_INTERVAL_MS", 5_000, 50),
+    staleRunTimeoutMs: parsePositiveIntEnvWithMin("OAH_STALE_RUN_TIMEOUT_MS", 120_000, 50),
     staleRunRecovery: {
       strategy: parseStaleRunRecoveryStrategyEnv(
         "OAH_STALE_RUN_RECOVERY_STRATEGY",

@@ -311,7 +311,8 @@ In addition to YAML config, the server also reads a set of runtime environment v
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `OAH_RUN_HEARTBEAT_INTERVAL_MS` | `5000` | Interval for run heartbeat writes while a run is active. Stale-run recovery starts after roughly `3 * interval`; LAN or remote-worker deployments should consider a larger value such as `15000`. |
+| `OAH_RUN_HEARTBEAT_INTERVAL_MS` | `5000` | Interval for run heartbeat writes while a run is active. |
+| `OAH_STALE_RUN_TIMEOUT_MS` | `120000` | Duration without a run heartbeat before stale-run recovery starts. LAN or remote-worker deployments can increase this further, for example `300000`. |
 | `OAH_STALE_RUN_RECOVERY_STRATEGY` | `requeue_running` with Redis, otherwise `fail` | Stale-run recovery strategy. Supports `fail`, `requeue_running`, and `requeue_all`. |
 | `OAH_STALE_RUN_RECOVERY_MAX_ATTEMPTS` | `1` | Maximum number of automatic requeue attempts per run. |
 
