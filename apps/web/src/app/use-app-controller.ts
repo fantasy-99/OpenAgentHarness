@@ -17,6 +17,8 @@ import {
   type RunStep,
   type SessionQueue,
   type SessionQueuedRun,
+  type SessionTerminalInputAccepted,
+  type SessionTerminalSnapshot,
   type SessionEventContract
 } from "@oah/api-contracts";
 
@@ -1458,6 +1460,48 @@ export function useAppController() {
     }
   }
 
+  async function refreshSessionTerminal(
+    targetSessionId: string,
+    terminalId: string
+  ): Promise<SessionTerminalSnapshot | null> {
+    const normalizedSessionId = targetSessionId.trim();
+    const normalizedTerminalId = terminalId.trim();
+    if (!normalizedSessionId || !normalizedTerminalId) {
+      return null;
+    }
+
+    return request<SessionTerminalSnapshot>(
+      `/api/v1/sessions/${normalizedSessionId}/terminals/${encodeURIComponent(normalizedTerminalId)}?maxBytes=262144`
+    );
+  }
+
+  async function sendSessionTerminalInput(input: {
+    sessionId: string;
+    terminalId: string;
+    input: string;
+    appendNewline?: boolean | undefined;
+  }): Promise<SessionTerminalInputAccepted | null> {
+    const normalizedSessionId = input.sessionId.trim();
+    const normalizedTerminalId = input.terminalId.trim();
+    if (!normalizedSessionId || !normalizedTerminalId) {
+      return null;
+    }
+
+    return request<SessionTerminalInputAccepted>(
+      `/api/v1/sessions/${normalizedSessionId}/terminals/${encodeURIComponent(normalizedTerminalId)}/input`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          input: input.input,
+          appendNewline: input.appendNewline ?? true
+        })
+      }
+    );
+  }
+
   async function triggerWorkspaceAction(input: {
     workspaceId: string;
     actionName: string;
@@ -2506,6 +2550,8 @@ export function useAppController() {
       refreshRun: handleRefreshRun,
       refreshRunSteps: handleRefreshRunSteps,
       cancelCurrentRun: handleCancelCurrentRun,
+      refreshSessionTerminal,
+      sendSessionTerminalInput,
       modelCallTraces,
       latestModelCallTrace,
       firstModelCallTrace,
@@ -2562,6 +2608,8 @@ export function useAppController() {
       handleRefreshSessionRuns,
       handleRefreshWorkspace,
       handleSendMessage,
+      refreshSessionTerminal,
+      sendSessionTerminalInput,
       handleSwitchSessionAgent,
       handleUpdateSessionModel,
       hasActiveSession,

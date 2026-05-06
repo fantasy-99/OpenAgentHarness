@@ -18,6 +18,8 @@ type ControlPlaneRuntimeKernel = Pick<
   | "runWorkspaceCommandForeground"
   | "runWorkspaceCommandProcess"
   | "runWorkspaceCommandBackground"
+  | "getSessionTerminalSnapshot"
+  | "writeSessionTerminalInput"
   | "createWorkspaceDirectory"
   | "deleteWorkspaceEntry"
   | "moveWorkspaceEntry"
@@ -73,6 +75,8 @@ export class ControlPlaneEngineService implements ControlPlaneRuntimeOperations 
   readonly runWorkspaceCommandForeground: EngineService["runWorkspaceCommandForeground"];
   readonly runWorkspaceCommandProcess: EngineService["runWorkspaceCommandProcess"];
   readonly runWorkspaceCommandBackground: EngineService["runWorkspaceCommandBackground"];
+  readonly getSessionTerminalSnapshot: EngineService["getSessionTerminalSnapshot"];
+  readonly writeSessionTerminalInput: EngineService["writeSessionTerminalInput"];
   readonly createWorkspaceDirectory: EngineService["createWorkspaceDirectory"];
   readonly deleteWorkspaceEntry: EngineService["deleteWorkspaceEntry"];
   readonly moveWorkspaceEntry: EngineService["moveWorkspaceEntry"];
@@ -178,6 +182,16 @@ export class ControlPlaneEngineService implements ControlPlaneRuntimeOperations 
     this.runWorkspaceCommandBackground = async (workspaceId, input) => {
       const result = await kernel.runWorkspaceCommandBackground(workspaceId, input);
       await this.#touchWorkspace(workspaceId);
+      return result;
+    };
+    this.getSessionTerminalSnapshot = async (sessionId, terminalId, input) => {
+      const snapshot = await kernel.getSessionTerminalSnapshot(sessionId, terminalId, input);
+      await this.#touchSessionWorkspace(sessionId);
+      return snapshot;
+    };
+    this.writeSessionTerminalInput = async (sessionId, terminalId, input) => {
+      const result = await kernel.writeSessionTerminalInput(sessionId, terminalId, input);
+      await this.#touchSessionWorkspace(sessionId);
       return result;
     };
     this.createWorkspaceDirectory = async (workspaceId, input) => {

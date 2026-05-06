@@ -40,15 +40,20 @@ local scanLimit = tonumber(ARGV[5])
 if scanLimit == nil or scanLimit < 1 then
   scanLimit = 100
 end
-local readyEntries = redis.call("lrange", KEYS[1], 0, scanLimit - 1)
+local readyQueueDepth = redis.call("llen", KEYS[1])
+local iterations = math.min(scanLimit, readyQueueDepth)
 
-for _, sessionId in ipairs(readyEntries) do
+for _ = 1, iterations do
+  local sessionId = redis.call("lpop", KEYS[1])
+  if not sessionId then
+    return false
+  end
   local preferredWorkerId = redis.call("get", ARGV[1] .. sessionId .. ARGV[2])
   if workerId == "" or preferredWorkerId == false or preferredWorkerId == "" or preferredWorkerId == workerId or (runtimeInstanceId ~= "" and preferredWorkerId == runtimeInstanceId) then
-    redis.call("lrem", KEYS[1], 1, sessionId)
     redis.call("srem", KEYS[2], sessionId)
     return sessionId
   end
+  redis.call("rpush", KEYS[1], sessionId)
 end
 
 return false
@@ -75,8 +80,13 @@ return 0
 `;
 
 const inspectSchedulingPressureScript = `
-local readyEntries = redis.call("lrange", KEYS[1], 0, -1)
-local readyQueueDepth = #readyEntries
+local scanLimit = tonumber(ARGV[7])
+if scanLimit == nil or scanLimit < 1 then
+  scanLimit = 100
+end
+local readyQueueDepth = redis.call("llen", KEYS[1])
+local readyEntries = redis.call("lrange", KEYS[1], 0, math.min(scanLimit, readyQueueDepth) - 1)
+local sampledDepth = #readyEntries
 local uniqueReady = 0
 local schedulable = 0
 local subagentReadyQueueDepth = 0
@@ -124,7 +134,12 @@ for _, sessionId in ipairs(readyEntries) do
   end
 end
 
-return { schedulable, readyQueueDepth, uniqueReady, subagentSchedulable, subagentReadyQueueDepth, lockedReady, staleReady, oldestSchedulableReadyAgeMs }
+local readySessionCount = schedulable
+if readyQueueDepth > sampledDepth then
+  readySessionCount = readyQueueDepth
+end
+
+return { readySessionCount, readyQueueDepth, uniqueReady, subagentSchedulable, subagentReadyQueueDepth, lockedReady, staleReady, oldestSchedulableReadyAgeMs }
 `;
 
 const dequeueSessionRunScript = `
@@ -139,14 +154,6 @@ end
 return runId
 `;
 
-const repairReadySetFromListScript = `
-local readyEntries = redis.call("lrange", KEYS[1], 0, -1)
-if #readyEntries > 0 then
-  redis.call("sadd", KEYS[2], unpack(readyEntries))
-end
-return #readyEntries
-`;
-
 export class RedisSessionRunQueue implements SessionRunQueue {
   readonly #commands: RedisClientType;
   readonly #blocking: RedisClientType;
@@ -154,6 +161,8 @@ export class RedisSessionRunQueue implements SessionRunQueue {
   readonly #ownsBlocking: boolean;
   readonly #keyPrefix: string;
   readonly #claimScanLimit: number;
+  readonly #pressureScanLimit: number;
+  readonly #inspectLimit: number;
 
   constructor(options: CreateRedisSessionRunQueueOptions) {
     this.#commands = options.commands ?? createClient({ url: options.url });
@@ -162,6 +171,8 @@ export class RedisSessionRunQueue implements SessionRunQueue {
     this.#ownsBlocking = !options.blocking;
     this.#keyPrefix = options.keyPrefix ?? "oah";
     this.#claimScanLimit = Math.max(1, Number.parseInt(process.env.OAH_REDIS_READY_QUEUE_CLAIM_SCAN_LIMIT ?? "100", 10) || 100);
+    this.#pressureScanLimit = Math.max(1, Number.parseInt(process.env.OAH_REDIS_READY_QUEUE_PRESSURE_SCAN_LIMIT ?? "100", 10) || 100);
+    this.#inspectLimit = Math.max(1, Number.parseInt(process.env.OAH_REDIS_READY_QUEUE_INSPECT_LIMIT ?? "100", 10) || 100);
   }
 
   async connect(): Promise<void> {
@@ -172,8 +183,6 @@ export class RedisSessionRunQueue implements SessionRunQueue {
     if (!this.#blocking.isOpen) {
       await this.#blocking.connect();
     }
-
-    await this.#repairReadySetFromList();
   }
 
   async enqueue(
@@ -245,10 +254,11 @@ export class RedisSessionRunQueue implements SessionRunQueue {
     oldestReadyAgeMs: number;
     averageReadyAgeMs: number;
   }> {
-    const sessionIds = await this.#commands.lRange(this.#readyQueueKey(), 0, -1);
-    if (sessionIds.length === 0) {
+    const length = await this.#commands.lLen(this.#readyQueueKey());
+    const sessionIds = length > 0 ? await this.#commands.lRange(this.#readyQueueKey(), 0, Math.min(this.#inspectLimit, length) - 1) : [];
+    if (length === 0 || sessionIds.length === 0) {
       return {
-        length: 0,
+        length,
         subagentLength: 0,
         oldestReadyAgeMs: 0,
         averageReadyAgeMs: 0
@@ -272,7 +282,7 @@ export class RedisSessionRunQueue implements SessionRunQueue {
 
     if (ages.length === 0) {
       return {
-        length: sessionIds.length,
+        length,
         subagentLength: readyPriorityValues.filter((value) => value === "subagent").length,
         oldestReadyAgeMs: 0,
         averageReadyAgeMs: 0
@@ -281,7 +291,7 @@ export class RedisSessionRunQueue implements SessionRunQueue {
 
     const totalAgeMs = ages.reduce((sum, ageMs) => sum + ageMs, 0);
     return {
-      length: sessionIds.length,
+      length,
       subagentLength: readyPriorityValues.filter((value) => value === "subagent").length,
       oldestReadyAgeMs: Math.max(...ages),
       averageReadyAgeMs: Math.round(totalAgeMs / ages.length)
@@ -366,7 +376,15 @@ export class RedisSessionRunQueue implements SessionRunQueue {
     ] = (
       await this.#commands.eval(inspectSchedulingPressureScript, {
         keys: [this.#readyQueueKey()],
-        arguments: [`${this.#keyPrefix}:session:`, ":queue", ":lock", ":ready_at", ":ready-priority", String(Date.now())]
+        arguments: [
+          `${this.#keyPrefix}:session:`,
+          ":queue",
+          ":lock",
+          ":ready_at",
+          ":ready-priority",
+          String(Date.now()),
+          String(this.#pressureScanLimit)
+        ]
       })
     ) as number[];
 
@@ -430,12 +448,6 @@ export class RedisSessionRunQueue implements SessionRunQueue {
 
   #preferredWorkerKey(sessionId: string): string {
     return `${this.#keyPrefix}:session:${sessionId}:preferred-worker`;
-  }
-
-  async #repairReadySetFromList(): Promise<void> {
-    await this.#commands.eval(repairReadySetFromListScript, {
-      keys: [this.#readyQueueKey(), this.#readyQueueSetKey()]
-    });
   }
 }
 

@@ -28,7 +28,7 @@ import {
   type WorkspaceFileDownloadResult,
   type WorkspaceFileService
 } from "../workspace/workspace-files.js";
-import { normalizeWorkspaceRecord, toPublicWorkspace } from "../types.js";
+import { normalizeWorkspaceRecord, type WorkspaceBackgroundTaskState, toPublicWorkspace } from "../types.js";
 
 export interface WorkspaceEngineServiceDependencies {
   workspaceRepository: EngineServiceOptions["workspaceRepository"];
@@ -367,6 +367,56 @@ export class WorkspaceEngineService {
         ...(input.env ? { env: input.env } : {})
       })
     );
+  }
+
+  async getWorkspaceBackgroundTask(
+    workspaceId: string,
+    input: {
+      sessionId: string;
+      taskId: string;
+    }
+  ): Promise<WorkspaceBackgroundTaskState | null> {
+    if (!this.#workspaceCommandExecutor.getBackgroundTask) {
+      throw new AppError(
+        501,
+        "workspace_background_task_lookup_unsupported",
+        "Background task lookup is not supported by this workspace command executor."
+      );
+    }
+
+    const workspace = await this.getWorkspaceRecord(workspaceId);
+    return this.#workspaceCommandExecutor.getBackgroundTask({
+      workspace,
+      sessionId: input.sessionId,
+      taskId: input.taskId
+    });
+  }
+
+  async writeWorkspaceBackgroundTaskInput(
+    workspaceId: string,
+    input: {
+      sessionId: string;
+      taskId: string;
+      inputText: string;
+      appendNewline?: boolean | undefined;
+    }
+  ): Promise<WorkspaceBackgroundTaskState | null> {
+    if (!this.#workspaceCommandExecutor.writeBackgroundTaskInput) {
+      throw new AppError(
+        501,
+        "workspace_background_task_input_unsupported",
+        "Background task input is not supported by this workspace command executor."
+      );
+    }
+
+    const workspace = await this.getWorkspaceRecord(workspaceId);
+    return this.#workspaceCommandExecutor.writeBackgroundTaskInput({
+      workspace,
+      sessionId: input.sessionId,
+      taskId: input.taskId,
+      inputText: input.inputText,
+      ...(input.appendNewline !== undefined ? { appendNewline: input.appendNewline } : {})
+    });
   }
 
   async getWorkspaceFileStat(workspaceId: string, targetPath: string) {

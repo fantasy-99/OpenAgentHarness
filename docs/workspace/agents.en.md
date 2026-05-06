@@ -57,6 +57,9 @@ system_reminder: |
 tools:
   native:
     - Bash
+    - TerminalOutput
+    - TerminalInput
+    - TerminalStop
     - Read
     - Write
     - Edit
@@ -111,7 +114,7 @@ Fields not placed in frontmatter: `name` (redundant with filename), `context` (r
 - The Markdown body is the main system prompt; the runtime preserves it as-is
 - An empty body is treated as an incomplete definition
 - Supports Chinese and other Unicode characters
-- Native tools use Title Case: `Bash`, `Read`, `TodoWrite`
+- Native tools use Title Case: `Bash`, `TerminalOutput`, `Read`, `TodoWrite`
 
 ## Control Fields
 
@@ -135,6 +138,9 @@ The runtime resolves `model` to a concrete `model_ref` during load. Model parame
 tools:
   native:
     - Bash
+    - TerminalOutput
+    - TerminalInput
+    - TerminalStop
     - Read
   actions:
     - code.review
@@ -199,7 +205,7 @@ policy:
 | `run_timeout_seconds` | Total run timeout |
 | `tool_timeout_seconds` | Per-tool execution timeout |
 | `parallel_tool_calls` | Whether to allow parallel tool calls |
-| `max_concurrent_subagents` | Maximum concurrent subagents |
+| `max_concurrent_subagents` | Maximum concurrent subagents; unlimited when omitted |
 
 Do not add complex routing, retry logic, or conditional expressions to `policy`.
 
@@ -262,6 +268,9 @@ model: default
 tools:
   native:
     - Bash
+    - TerminalOutput
+    - TerminalInput
+    - TerminalStop
     - Read
     - Write
     - Edit

@@ -7,6 +7,7 @@ import {
   type HealthReport,
   type ReadinessReport
 } from "@oah/api-contracts";
+import type { SessionRunQueuePressure } from "../../../packages/engine-core/src/coordination.js";
 import type { ServerConfig } from "@oah/config";
 import type {
   EngineLogger,
@@ -300,7 +301,7 @@ interface PlacementAwareSessionRunQueueLike {
   peekRun(sessionId: string): Promise<string | undefined>;
   dequeueRun(sessionId: string): Promise<string | undefined>;
   requeueSessionIfPending?(sessionId: string, input?: { preferredWorkerId?: string | undefined }): Promise<boolean>;
-  getSchedulingPressure?(): Promise<unknown>;
+  getSchedulingPressure?(): Promise<SessionRunQueuePressure>;
   getReadySessionCount?(): Promise<number>;
   ping(): Promise<boolean>;
   close(): Promise<void>;

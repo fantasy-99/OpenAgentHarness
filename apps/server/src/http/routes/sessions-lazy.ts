@@ -48,6 +48,12 @@ export function registerSessionRoutes(app: FastifyInstance, dependencies: AppDep
   app.get("/api/v1/sessions/:sessionId/queue", async (request, reply) =>
     dispatchSessionRoute(request, reply, dependencies)
   );
+  app.get("/api/v1/sessions/:sessionId/terminals/:terminalId", async (request, reply) =>
+    dispatchSessionRoute(request, reply, dependencies)
+  );
+  app.post("/api/v1/sessions/:sessionId/terminals/:terminalId/input", async (request, reply) =>
+    dispatchSessionRoute(request, reply, dependencies)
+  );
   app.post("/api/v1/sessions/:sessionId/compact", async (request, reply) =>
     dispatchSessionRoute(request, reply, dependencies)
   );

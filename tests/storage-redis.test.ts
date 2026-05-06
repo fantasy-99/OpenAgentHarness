@@ -215,12 +215,6 @@ function createInMemoryQueueRedisClients() {
     async eval(_script: string, input: { keys: string[]; arguments?: string[] }) {
       const args = input.arguments ?? [];
 
-      if (input.keys.length === 2 && args.length === 0) {
-        const [readyQueueKey, readyQueueSetKey] = input.keys;
-        sets.set(readyQueueSetKey, new Set(lists.get(readyQueueKey) ?? []));
-        return lists.get(readyQueueKey)?.length ?? 0;
-      }
-
       if (input.keys.length === 6 && args.length === 5) {
         const [sessionQueueKey, readyQueueKey, readyAtKey, readyPriorityKey, preferredWorkerKey, readyQueueSetKey] =
           input.keys;
@@ -262,8 +256,13 @@ function createInMemoryQueueRedisClients() {
         const [sessionPrefix, preferredSuffix, workerId, runtimeInstanceId, scanLimitRaw] = args;
         const readyQueue = lists.get(readyQueueKey) ?? [];
         const scanLimit = Math.max(1, Number.parseInt(scanLimitRaw, 10) || 100);
+        const iterations = Math.min(scanLimit, readyQueue.length);
 
-        for (const sessionId of readyQueue.slice(0, scanLimit)) {
+        for (let index = 0; index < iterations; index += 1) {
+          const sessionId = readyQueue.shift();
+          if (!sessionId) {
+            return null;
+          }
           const preferredWorkerId = strings.get(`${sessionPrefix}${sessionId}${preferredSuffix}`);
           if (
             !workerId ||
@@ -271,15 +270,74 @@ function createInMemoryQueueRedisClients() {
             preferredWorkerId === workerId ||
             (runtimeInstanceId && preferredWorkerId === runtimeInstanceId)
           ) {
-            const index = readyQueue.indexOf(sessionId);
-            readyQueue.splice(index, 1);
             lists.set(readyQueueKey, readyQueue);
             sets.get(readyQueueSetKey)?.delete(sessionId);
             return sessionId;
           }
+          readyQueue.push(sessionId);
         }
 
+        lists.set(readyQueueKey, readyQueue);
         return null;
+      }
+
+      if (input.keys.length === 1 && args.length === 7) {
+        const [readyQueueKey] = input.keys;
+        const [sessionPrefix, queueSuffix, lockSuffix, readyAtSuffix, readyPrioritySuffix, nowRaw, scanLimitRaw] = args;
+        const readyQueue = lists.get(readyQueueKey) ?? [];
+        const scanLimit = Math.max(1, Number.parseInt(scanLimitRaw, 10) || 100);
+        const readyEntries = readyQueue.slice(0, scanLimit);
+        const readyQueueDepth = readyQueue.length;
+        const sampledDepth = readyEntries.length;
+        const seen = new Set<string>();
+        let uniqueReady = 0;
+        let schedulable = 0;
+        let subagentReadyQueueDepth = 0;
+        let subagentSchedulable = 0;
+        let lockedReady = 0;
+        let staleReady = 0;
+        let oldestSchedulableReadyAgeMs = 0;
+
+        for (const sessionId of readyEntries) {
+          const isSubagent = strings.get(`${sessionPrefix}${sessionId}${readyPrioritySuffix}`) === "subagent";
+          if (isSubagent) {
+            subagentReadyQueueDepth += 1;
+          }
+
+          if (!seen.has(sessionId)) {
+            seen.add(sessionId);
+            uniqueReady += 1;
+            const pendingRunCount = lists.get(`${sessionPrefix}${sessionId}${queueSuffix}`)?.length ?? 0;
+            if (pendingRunCount <= 0) {
+              staleReady += 1;
+            } else if (strings.has(`${sessionPrefix}${sessionId}${lockSuffix}`)) {
+              lockedReady += 1;
+            } else {
+              schedulable += 1;
+              if (isSubagent) {
+                subagentSchedulable += 1;
+              }
+              const readyAtMs = Number.parseInt(strings.get(`${sessionPrefix}${sessionId}${readyAtSuffix}`) ?? "", 10);
+              if (Number.isFinite(readyAtMs)) {
+                oldestSchedulableReadyAgeMs = Math.max(
+                  oldestSchedulableReadyAgeMs,
+                  Math.max(0, Number.parseInt(nowRaw, 10) - readyAtMs)
+                );
+              }
+            }
+          }
+        }
+
+        return [
+          readyQueueDepth > sampledDepth ? readyQueueDepth : schedulable,
+          readyQueueDepth,
+          uniqueReady,
+          subagentSchedulable,
+          subagentReadyQueueDepth,
+          lockedReady,
+          staleReady,
+          oldestSchedulableReadyAgeMs
+        ];
       }
 
       if (input.keys.length === 5 && args.length === 1) {
@@ -1070,6 +1128,37 @@ describe("storage redis", () => {
       })
     ).resolves.toBe("ses_runtime_targeted");
     await expect(queue.dequeueRun("ses_runtime_targeted")).resolves.toBe("run_targeted");
+  });
+
+  it("rotates incompatible ready sessions during bounded claim scans", async () => {
+    const previousLimit = process.env.OAH_REDIS_READY_QUEUE_CLAIM_SCAN_LIMIT;
+    process.env.OAH_REDIS_READY_QUEUE_CLAIM_SCAN_LIMIT = "1";
+    try {
+      const clients = createInMemoryQueueRedisClients();
+      const queue = await createRedisSessionRunQueue({
+        url: "redis://memory/0",
+        commands: clients.commands,
+        blocking: clients.blocking
+      });
+
+      await queue.enqueue("ses_worker_1", "run_worker_1", {
+        preferredWorkerId: "worker_1"
+      });
+      await queue.enqueue("ses_worker_2", "run_worker_2", {
+        preferredWorkerId: "worker_2"
+      });
+
+      await expect(queue.claimNextSession(600, { workerId: "worker_2" })).resolves.toBe("ses_worker_2");
+      await expect(queue.dequeueRun("ses_worker_2")).resolves.toBe("run_worker_2");
+      await expect(queue.claimNextSession(600, { workerId: "worker_1" })).resolves.toBe("ses_worker_1");
+      await expect(queue.dequeueRun("ses_worker_1")).resolves.toBe("run_worker_1");
+    } finally {
+      if (previousLimit === undefined) {
+        delete process.env.OAH_REDIS_READY_QUEUE_CLAIM_SCAN_LIMIT;
+      } else {
+        process.env.OAH_REDIS_READY_QUEUE_CLAIM_SCAN_LIMIT = previousLimit;
+      }
+    }
   });
 
   it("restores a claimed session with a refreshed worker hint before dequeueing mismatched runs", async () => {

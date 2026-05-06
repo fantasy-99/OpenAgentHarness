@@ -64,6 +64,12 @@ spec:
               value: "3"
             - name: OAH_REDIS_READY_QUEUE_READINESS_LIMIT
               value: {{ .Values.prometheusRule.thresholds.redisReadyQueueDepth | quote }}
+            - name: OAH_REDIS_READY_QUEUE_CLAIM_SCAN_LIMIT
+              value: {{ .Values.redisReadyQueue.claimScanLimit | quote }}
+            - name: OAH_REDIS_READY_QUEUE_PRESSURE_SCAN_LIMIT
+              value: {{ .Values.redisReadyQueue.pressureScanLimit | quote }}
+            - name: OAH_REDIS_READY_QUEUE_INSPECT_LIMIT
+              value: {{ .Values.redisReadyQueue.inspectLimit | quote }}
             - name: OAH_WORKER_DISK_METRICS_PATH
               value: {{ .Values.worker.workspaceVolume.mountPath | quote }}
             - name: OAH_WORKER_DISK_READINESS_THRESHOLD

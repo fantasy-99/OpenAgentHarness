@@ -6759,7 +6759,7 @@ describe("runtime service", () => {
     });
   });
 
-  it("can launch multiple background subagents in parallel", async () => {
+  it("can launch multiple background subagents in parallel when maxConcurrentSubagents is not configured", async () => {
     const gateway = new FakeModelGateway(20);
     gateway.streamScenarioFactory = (input) => {
       const systemMessages = input.messages?.filter((message) => message.role === "system").map((message) => message.content) ?? [];
@@ -6947,6 +6947,189 @@ describe("runtime service", () => {
     expect(toolMessages.some((message) => messageText(message).includes("Research background result is ready."))).toBe(true);
     expect(toolMessages.some((message) => messageText(message).includes("Review background result is ready."))).toBe(true);
     expect(gateway.maxConcurrentStreams).toBeGreaterThanOrEqual(3);
+  });
+
+  it("respects configured maxConcurrentSubagents for background subagents", async () => {
+    const gateway = new FakeModelGateway(20);
+    gateway.streamScenarioFactory = (input) => {
+      const systemMessages = input.messages?.filter((message) => message.role === "system").map((message) => message.content) ?? [];
+
+      if (systemMessages.some((message) => message.includes("You are the researcher subagent."))) {
+        return {
+          text: "Research background result is ready."
+        };
+      }
+
+      if (systemMessages.some((message) => message.includes("You are the reviewer subagent."))) {
+        return {
+          text: "Review background result is ready."
+        };
+      }
+
+      return {
+        text: "Parent tried two background delegations.",
+        toolBatches: [
+          [
+            {
+              toolName: "SubAgent",
+              input: {
+                description: "Research in background",
+                prompt: "Collect repository facts in the background.",
+                subagent_name: "researcher",
+                run_in_background: true
+              },
+              toolCallId: "call_limited_background_researcher",
+              continueOnError: true
+            },
+            {
+              toolName: "SubAgent",
+              input: {
+                description: "Review in background",
+                prompt: "Review the repository in the background.",
+                subagent_name: "reviewer",
+                run_in_background: true
+              },
+              toolCallId: "call_limited_background_reviewer",
+              continueOnError: true
+            }
+          ]
+        ]
+      };
+    };
+
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_limited_background_agents",
+      name: "limited-background-agents",
+      rootPath: "/tmp/limited-background-agents",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "plan",
+      settings: {
+        defaultAgent: "plan",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        plan: {
+          name: "plan",
+          mode: "primary",
+          prompt: "You are the planner agent.",
+          policy: {
+            maxConcurrentSubagents: 1
+          },
+          tools: {
+            native: [],
+            external: []
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: ["researcher", "reviewer"]
+        },
+        researcher: {
+          name: "researcher",
+          mode: "subagent",
+          prompt: "You are the researcher subagent.",
+          tools: {
+            native: [],
+            external: []
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: []
+        },
+        reviewer: {
+          name: "reviewer",
+          mode: "subagent",
+          prompt: "You are the reviewer subagent.",
+          tools: {
+            native: [],
+            external: []
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_limited_background_agents",
+        agents: [
+          { name: "plan", mode: "primary", source: "workspace" },
+          { name: "researcher", mode: "subagent", source: "workspace" },
+          { name: "reviewer", mode: "subagent", source: "workspace" }
+        ],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: "project_limited_background_agents",
+      caller,
+      input: {
+        agentName: "plan"
+      }
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Start two background subagents." }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const parentRun = await runtimeService.getRun(accepted.runId);
+    const delegatedRuns =
+      (parentRun.metadata?.delegatedRuns as Array<{ childRunId: string; childSessionId: string }> | undefined) ?? [];
+
+    expect(delegatedRuns).toHaveLength(1);
+
+    await waitFor(async () => {
+      const childRun = await runtimeService.getRun(delegatedRuns[0]?.childRunId ?? "");
+      return childRun.status === "completed";
+    });
+
+    const toolMessages = (await runtimeService.listSessionMessages(session.id, 100)).items.filter(
+      (message) => message.role === "tool" && messageToolName(message) === "SubAgent"
+    );
+
+    expect(toolMessages).toHaveLength(3);
+    expect(toolMessages.some((message) => messageText(message).includes("started: true"))).toBe(true);
+    expect(toolMessages.some((message) => messageText(message).includes("Research background result is ready."))).toBe(true);
+    expect(toolMessages.some((message) => messageText(message).includes("reached max_concurrent_subagents=1"))).toBe(true);
   });
 
   it("forwards agent sampling settings including topP to the model runtime", async () => {

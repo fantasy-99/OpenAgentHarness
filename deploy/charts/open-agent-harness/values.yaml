@@ -261,6 +261,11 @@ objectStorage:
     enabled: true
     keyPrefix: workspaces
 
+redisReadyQueue:
+  claimScanLimit: 100
+  pressureScanLimit: 100
+  inspectLimit: 100
+
 controller:
   enabled: true
   replicaCount: 2

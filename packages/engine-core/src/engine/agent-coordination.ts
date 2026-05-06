@@ -76,6 +76,7 @@ export class AgentCoordinationService {
   readonly #persistence: AgentCoordinationPersistence;
   readonly #lifecycle: AgentCoordinationLifecycle;
   readonly #helpers: AgentCoordinationHelpers;
+  readonly #delegationQueues = new Map<string, Promise<void>>();
 
   constructor(dependencies: AgentCoordinationServiceDependencies) {
     this.#persistence = dependencies.persistence;
@@ -245,142 +246,145 @@ export class AgentCoordinationService {
       );
     }
 
-    const latestParentRun = await this.#lifecycle.getRun(input.parentRun.id);
-    await this.#enforceSubagentConcurrencyLimit(input.workspace, latestParentRun, input.currentAgentName);
-    const delegateStep = await this.#lifecycle.startRunStep({
-      runId: input.parentRun.id,
-      stepType: "agent_delegate",
-      name: resolvedTargetAgentName,
-      agentName: input.currentAgentName,
-      input: {
-        targetAgent: resolvedTargetAgentName,
-        task: input.task,
-        ...(input.handoffSummary ? { handoffSummary: input.handoffSummary } : {}),
-        ...(input.taskId ? { taskId: input.taskId } : {})
-      }
-    });
+    return this.#serializeDelegation(input.parentRun.id, async () => {
+      const latestParentRun = await this.#lifecycle.getRun(input.parentRun.id);
+      await this.#enforceSubagentConcurrencyLimit(input.workspace, latestParentRun, input.currentAgentName);
 
-    const now = this.#helpers.nowIso();
-    const childSessionId = resumedSession?.id ?? this.#helpers.createId("ses");
-    const childRunId = this.#helpers.createId("run");
-    const parentModelRef = this.#helpers.resolveModelForRun(
-      input.workspace,
-      input.parentSession.modelRef ?? input.workspace.agents[input.currentAgentName]?.modelRef
-    ).canonicalModelRef;
-    const childSession: Session = resumedSession ?? {
-      id: childSessionId,
-      workspaceId: input.workspace.id,
-      parentSessionId: input.parentSession.id,
-      subjectRef: input.parentSession.subjectRef,
-      ...(input.parentSession.modelRef ? { modelRef: input.parentSession.modelRef } : {}),
-      agentName: resolvedTargetAgentName,
-      activeAgentName: resolvedTargetAgentName,
-      title: `Agent ${resolvedTargetAgentName}`,
-      status: "active",
-      createdAt: now,
-      updatedAt: now
-    };
-    const childMessage: Message = {
-      id: this.#helpers.createId("msg"),
-      sessionId: childSessionId,
-      role: "user",
-      content: textContent(
-        buildDelegatedTaskMessage(
-          input.currentAgentName,
-          resolvedTargetAgentName,
-          input.task,
-          input.handoffSummary
-        )
-      ),
-      metadata: {
-        parentRunId: input.parentRun.id,
-        parentSessionId: input.parentSession.id,
-        delegatedByAgent: input.currentAgentName,
-        ...(input.taskId ? { delegatedTaskId: input.taskId } : {})
-      },
-      createdAt: now
-    };
-    const childRun: Run = {
-      id: childRunId,
-      workspaceId: input.workspace.id,
-      sessionId: childSessionId,
-      parentRunId: input.parentRun.id,
-      initiatorRef: input.parentRun.initiatorRef ?? input.parentSession.subjectRef,
-      triggerType: "system",
-      triggerRef: "agent.delegate",
-      agentName: childSession.activeAgentName,
-      effectiveAgentName: childSession.activeAgentName,
-      switchCount: 0,
-      status: "queued",
-      createdAt: now,
-      metadata: {
-        parentRunId: input.parentRun.id,
-        parentSessionId: input.parentSession.id,
-        parentAgentName: input.currentAgentName,
-        delegatedTask: input.task,
-        ...(input.handoffSummary ? { handoffSummary: input.handoffSummary } : {}),
-        ...(input.taskId ? { taskId: input.taskId } : {}),
-        ...(targetAgent.modelRef ? {} : { inheritedModelRef: parentModelRef })
-      }
-    };
-
-    if (resumedSession) {
-      await this.#persistence.sessions.update({
-        ...childSession,
-        status: "active",
-        updatedAt: now
-      });
-    } else {
-      await this.#persistence.sessions.create(childSession);
-    }
-    await this.#persistence.messages.create(childMessage);
-    await this.#persistence.runs.create(childRun);
-
-    await this.#appendDelegatedRunRecord(input.parentRun.id, {
-      childRunId,
-      childSessionId,
-      targetAgentName: resolvedTargetAgentName,
-      parentAgentName: input.currentAgentName
-    });
-
-    await this.#lifecycle.appendEvent({
-      sessionId: input.parentSession.id,
-      runId: input.parentRun.id,
-      event: "agent.delegate.started",
-      data: {
+      const delegateStep = await this.#lifecycle.startRunStep({
         runId: input.parentRun.id,
-        sessionId: input.parentSession.id,
+        stepType: "agent_delegate",
+        name: resolvedTargetAgentName,
         agentName: input.currentAgentName,
+        input: {
+          targetAgent: resolvedTargetAgentName,
+          task: input.task,
+          ...(input.handoffSummary ? { handoffSummary: input.handoffSummary } : {}),
+          ...(input.taskId ? { taskId: input.taskId } : {})
+        }
+      });
+
+      const now = this.#helpers.nowIso();
+      const childSessionId = resumedSession?.id ?? this.#helpers.createId("ses");
+      const childRunId = this.#helpers.createId("run");
+      const parentModelRef = this.#helpers.resolveModelForRun(
+        input.workspace,
+        input.parentSession.modelRef ?? input.workspace.agents[input.currentAgentName]?.modelRef
+      ).canonicalModelRef;
+      const childSession: Session = resumedSession ?? {
+        id: childSessionId,
+        workspaceId: input.workspace.id,
+        parentSessionId: input.parentSession.id,
+        subjectRef: input.parentSession.subjectRef,
+        ...(input.parentSession.modelRef ? { modelRef: input.parentSession.modelRef } : {}),
+        agentName: resolvedTargetAgentName,
+        activeAgentName: resolvedTargetAgentName,
+        title: `Agent ${resolvedTargetAgentName}`,
+        status: "active",
+        createdAt: now,
+        updatedAt: now
+      };
+      const childMessage: Message = {
+        id: this.#helpers.createId("msg"),
+        sessionId: childSessionId,
+        role: "user",
+        content: textContent(
+          buildDelegatedTaskMessage(
+            input.currentAgentName,
+            resolvedTargetAgentName,
+            input.task,
+            input.handoffSummary
+          )
+        ),
+        metadata: {
+          parentRunId: input.parentRun.id,
+          parentSessionId: input.parentSession.id,
+          delegatedByAgent: input.currentAgentName,
+          ...(input.taskId ? { delegatedTaskId: input.taskId } : {})
+        },
+        createdAt: now
+      };
+      const childRun: Run = {
+        id: childRunId,
+        workspaceId: input.workspace.id,
+        sessionId: childSessionId,
+        parentRunId: input.parentRun.id,
+        initiatorRef: input.parentRun.initiatorRef ?? input.parentSession.subjectRef,
+        triggerType: "system",
+        triggerRef: "agent.delegate",
+        agentName: childSession.activeAgentName,
+        effectiveAgentName: childSession.activeAgentName,
+        switchCount: 0,
+        status: "queued",
+        createdAt: now,
+        metadata: {
+          parentRunId: input.parentRun.id,
+          parentSessionId: input.parentSession.id,
+          parentAgentName: input.currentAgentName,
+          delegatedTask: input.task,
+          ...(input.handoffSummary ? { handoffSummary: input.handoffSummary } : {}),
+          ...(input.taskId ? { taskId: input.taskId } : {}),
+          ...(targetAgent.modelRef ? {} : { inheritedModelRef: parentModelRef })
+        }
+      };
+
+      if (resumedSession) {
+        await this.#persistence.sessions.update({
+          ...childSession,
+          status: "active",
+          updatedAt: now
+        });
+      } else {
+        await this.#persistence.sessions.create(childSession);
+      }
+      await this.#persistence.messages.create(childMessage);
+      await this.#persistence.runs.create(childRun);
+
+      await this.#appendDelegatedRunRecord(input.parentRun.id, {
+        childRunId,
+        childSessionId,
+        targetAgentName: resolvedTargetAgentName,
+        parentAgentName: input.currentAgentName
+      });
+
+      await this.#lifecycle.appendEvent({
+        sessionId: input.parentSession.id,
+        runId: input.parentRun.id,
+        event: "agent.delegate.started",
+        data: {
+          runId: input.parentRun.id,
+          sessionId: input.parentSession.id,
+          agentName: input.currentAgentName,
+          targetAgent: resolvedTargetAgentName,
+          childSessionId,
+          childRunId,
+          ...(input.taskId ? { taskId: input.taskId, resumed: true } : {})
+        }
+      });
+      await this.#lifecycle.completeRunStep(delegateStep, "completed", {
         targetAgent: resolvedTargetAgentName,
         childSessionId,
         childRunId,
         ...(input.taskId ? { taskId: input.taskId, resumed: true } : {})
-      }
-    });
-    await this.#lifecycle.completeRunStep(delegateStep, "completed", {
-      targetAgent: resolvedTargetAgentName,
-      childSessionId,
-      childRunId,
-      ...(input.taskId ? { taskId: input.taskId, resumed: true } : {})
-    });
+      });
 
-    await this.#lifecycle.enqueueRun(childSessionId, childRunId, {
-      priority: "subagent"
-    });
-    void this.#monitorDelegatedRun({
-      parentSessionId: input.parentSession.id,
-      parentRunId: input.parentRun.id,
-      parentAgentName: input.currentAgentName,
-      targetAgentName: resolvedTargetAgentName,
-      childRunId,
-      notifyParentOnCompletion: input.notifyParentOnCompletion ?? false
-    });
+      await this.#lifecycle.enqueueRun(childSessionId, childRunId, {
+        priority: "subagent"
+      });
+      void this.#monitorDelegatedRun({
+        parentSessionId: input.parentSession.id,
+        parentRunId: input.parentRun.id,
+        parentAgentName: input.currentAgentName,
+        targetAgentName: resolvedTargetAgentName,
+        childRunId,
+        notifyParentOnCompletion: input.notifyParentOnCompletion ?? false
+      });
 
-    return {
-      childSessionId,
-      childRunId,
-      targetAgentName: resolvedTargetAgentName
-    };
+      return {
+        childSessionId,
+        childRunId,
+        targetAgentName: resolvedTargetAgentName
+      };
+    });
   }
 
   async awaitDelegatedRuns(runIds: string[], mode: "all" | "any"): Promise<string> {
@@ -421,6 +425,27 @@ export class AgentCoordinationService {
         "subagent_concurrency_limit_exceeded",
         `Agent ${currentAgentName} reached max_concurrent_subagents=${maxConcurrentSubagents}.`
       );
+    }
+  }
+
+  async #serializeDelegation<T>(parentRunId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.#delegationQueues.get(parentRunId) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.catch(() => undefined).then(() => gate);
+    this.#delegationQueues.set(parentRunId, queued);
+
+    await previous.catch(() => undefined);
+
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.#delegationQueues.get(parentRunId) === queued) {
+        this.#delegationQueues.delete(parentRunId);
+      }
     }
   }
 

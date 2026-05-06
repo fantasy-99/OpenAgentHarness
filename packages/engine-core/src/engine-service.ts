@@ -51,6 +51,8 @@ import {
   type RunStepListResult,
   type SessionListResult,
   type SessionCompactResult,
+  type SessionTerminalInputResult,
+  type SessionTerminalSnapshotResult,
   type WorkspaceListResult,
   type RunListResult,
   type WorkspaceRecord
@@ -440,6 +442,100 @@ export class EngineService {
     }
   ) {
     return this.#workspaceRuntime.runWorkspaceCommandBackground(workspaceId, input);
+  }
+
+  async getSessionTerminalSnapshot(
+    sessionId: string,
+    terminalId: string,
+    input?: {
+      maxBytes?: number | undefined;
+    }
+  ): Promise<SessionTerminalSnapshotResult> {
+    const session = await this.getSession(sessionId);
+    const task = await this.#workspaceRuntime.getWorkspaceBackgroundTask(session.workspaceId, {
+      sessionId,
+      taskId: terminalId
+    });
+    if (!task) {
+      throw new AppError(404, "session_terminal_not_found", `Terminal ${terminalId} was not found for session ${sessionId}.`);
+    }
+
+    const file = await this.#workspaceRuntime
+      .getWorkspaceFileContent(session.workspaceId, {
+        path: task.outputPath,
+        encoding: "utf8",
+        ...(input?.maxBytes !== undefined ? { maxBytes: input.maxBytes } : {})
+      })
+      .catch((error: unknown) => {
+        if (error instanceof AppError && error.code === "workspace_file_not_found") {
+          return null;
+        }
+        throw error;
+      });
+
+    return {
+      sessionId,
+      terminalId: task.taskId,
+      status: task.status,
+      outputPath: task.outputPath,
+      output: file?.content ?? "",
+      encoding: "utf8",
+      truncated: file?.truncated ?? false,
+      ...(typeof task.inputWritable === "boolean" ? { inputWritable: task.inputWritable } : {}),
+      ...(task.terminalKind ? { terminalKind: task.terminalKind } : {}),
+      ...(typeof task.pid === "number" ? { pid: task.pid } : {}),
+      ...(task.description ? { description: task.description } : {}),
+      ...(task.command ? { command: task.command } : {}),
+      ...(typeof task.exitCode === "number" ? { exitCode: task.exitCode } : {}),
+      ...(task.signal ? { signal: task.signal } : {}),
+      ...(task.createdAt ? { createdAt: task.createdAt } : {}),
+      ...(task.updatedAt ? { updatedAt: task.updatedAt } : {}),
+      ...(task.endedAt ? { endedAt: task.endedAt } : {})
+    };
+  }
+
+  async writeSessionTerminalInput(
+    sessionId: string,
+    terminalId: string,
+    input: {
+      input: string;
+      appendNewline?: boolean | undefined;
+    }
+  ): Promise<SessionTerminalInputResult> {
+    const session = await this.getSession(sessionId);
+    const task = await this.#workspaceRuntime.writeWorkspaceBackgroundTaskInput(session.workspaceId, {
+      sessionId,
+      taskId: terminalId,
+      inputText: input.input,
+      ...(input.appendNewline !== undefined ? { appendNewline: input.appendNewline } : {})
+    });
+    if (!task) {
+      throw new AppError(404, "session_terminal_not_found", `Terminal ${terminalId} was not found for session ${sessionId}.`);
+    }
+    if (task.status !== "running") {
+      throw new AppError(
+        409,
+        "session_terminal_not_running",
+        `Terminal ${terminalId} is not running; current status is ${task.status}.`
+      );
+    }
+    if (task.inputWritable === false) {
+      throw new AppError(
+        409,
+        "session_terminal_input_unavailable",
+        `Terminal ${terminalId} is running, but stdin is not available.`
+      );
+    }
+
+    return {
+      sessionId,
+      terminalId: task.taskId,
+      status: task.status,
+      inputWritten: true,
+      appendNewline: input.appendNewline ?? true,
+      ...(typeof task.inputWritable === "boolean" ? { inputWritable: task.inputWritable } : {}),
+      ...(task.updatedAt ? { updatedAt: task.updatedAt } : {})
+    };
   }
 
   async getWorkspaceFileStat(workspaceId: string, targetPath: string) {

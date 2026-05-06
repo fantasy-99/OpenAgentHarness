@@ -57,6 +57,9 @@ system_reminder: |
 tools:
   native:
     - Bash
+    - TerminalOutput
+    - TerminalInput
+    - TerminalStop
     - Read
     - Write
     - Edit
@@ -117,7 +120,7 @@ Prefer making concrete progress in the current workspace.
 - Markdown 正文是主 system prompt，运行时原样保留
 - 正文为空视为定义不完整
 - 支持中文和其他 Unicode 字符
-- Native tool 使用 Title Case：`Bash`、`Read`、`TodoWrite`
+- Native tool 使用 Title Case：`Bash`、`TerminalOutput`、`Read`、`TodoWrite`
 
 ## 控制字段详解
 
@@ -141,6 +144,9 @@ model: default
 tools:
   native:
     - Bash
+    - TerminalOutput
+    - TerminalInput
+    - TerminalStop
     - Read
   actions:
     - code.review
@@ -205,7 +211,7 @@ policy:
 | `run_timeout_seconds` | Run 总超时 |
 | `tool_timeout_seconds` | 单次 tool 执行超时 |
 | `parallel_tool_calls` | 是否允许并行 tool call |
-| `max_concurrent_subagents` | 最大并发 subagent 数 |
+| `max_concurrent_subagents` | 最大并发 subagent 数；未配置时不限制 |
 
 不在 `policy` 中加入复杂路由、重试或条件表达式。
 
@@ -270,6 +276,9 @@ system_reminder: |
 tools:
   native:
     - Bash
+    - TerminalOutput
+    - TerminalInput
+    - TerminalStop
     - Read
     - Write
     - Edit

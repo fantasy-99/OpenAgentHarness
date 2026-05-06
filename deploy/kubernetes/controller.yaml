@@ -45,6 +45,12 @@ spec:
               value: "2"
             - name: OAH_METADATA_RETENTION_ROLE
               value: auto
+            - name: OAH_REDIS_READY_QUEUE_CLAIM_SCAN_LIMIT
+              value: "100"
+            - name: OAH_REDIS_READY_QUEUE_PRESSURE_SCAN_LIMIT
+              value: "100"
+            - name: OAH_REDIS_READY_QUEUE_INSPECT_LIMIT
+              value: "100"
             - name: OAH_CONTROLLER_LEADER_ELECTION_TYPE
               value: kubernetes
             - name: OAH_CONTROLLER_LEASE_NAMESPACE

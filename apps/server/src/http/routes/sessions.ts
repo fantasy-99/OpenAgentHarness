@@ -16,6 +16,9 @@ import {
   pageQuerySchema,
   requeueRunAcceptedSchema,
   sessionQueueSchema,
+  sessionTerminalInputAcceptedSchema,
+  sessionTerminalInputRequestSchema,
+  sessionTerminalSnapshotSchema,
   runEventsQuerySchema,
   runPageSchema,
   runStepPageSchema,
@@ -105,6 +108,30 @@ export async function dispatchRegisteredSessionRoute(
       const params = createParamsSchema("sessionId").parse(request.params);
       const queue = await dependencies.runtimeService.listSessionQueuedRuns(params.sessionId);
       return reply.send(sessionQueueSchema.parse(queue));
+    }
+    case "GET /api/v1/sessions/:sessionId/terminals/:terminalId": {
+      const params = createParamsSchema("sessionId", "terminalId").parse(request.params);
+      const rawQuery =
+        request.query && typeof request.query === "object" ? (request.query as Record<string, unknown>) : {};
+      const maxBytes = Number.parseInt(String(rawQuery.maxBytes ?? ""), 10);
+      const snapshot = await dependencies.runtimeService.getSessionTerminalSnapshot(
+        params.sessionId,
+        params.terminalId,
+        {
+          maxBytes: Number.isFinite(maxBytes) ? Math.min(Math.max(maxBytes, 1024), 1024 * 1024) : 256 * 1024
+        }
+      );
+      return reply.send(sessionTerminalSnapshotSchema.parse(snapshot));
+    }
+    case "POST /api/v1/sessions/:sessionId/terminals/:terminalId/input": {
+      const params = createParamsSchema("sessionId", "terminalId").parse(request.params);
+      const input = sessionTerminalInputRequestSchema.parse(request.body);
+      const accepted = await dependencies.runtimeService.writeSessionTerminalInput(
+        params.sessionId,
+        params.terminalId,
+        input
+      );
+      return reply.status(202).send(sessionTerminalInputAcceptedSchema.parse(accepted));
     }
     case "POST /api/v1/sessions/:sessionId/compact": {
       const params = createParamsSchema("sessionId").parse(request.params);
@@ -315,6 +342,12 @@ export function registerSessionRoutes(app: FastifyInstance, dependencies: AppDep
     dispatchRegisteredSessionRoute(request, reply, dependencies)
   );
   app.get("/api/v1/sessions/:sessionId/queue", async (request, reply) =>
+    dispatchRegisteredSessionRoute(request, reply, dependencies)
+  );
+  app.get("/api/v1/sessions/:sessionId/terminals/:terminalId", async (request, reply) =>
+    dispatchRegisteredSessionRoute(request, reply, dependencies)
+  );
+  app.post("/api/v1/sessions/:sessionId/terminals/:terminalId/input", async (request, reply) =>
     dispatchRegisteredSessionRoute(request, reply, dependencies)
   );
   app.post("/api/v1/sessions/:sessionId/compact", async (request, reply) =>

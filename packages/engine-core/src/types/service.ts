@@ -1,4 +1,6 @@
 import type {
+  SessionTerminalInputAccepted,
+  SessionTerminalSnapshot,
   CompactSessionRequest,
   CreateMessageRequest,
   CreateSessionRequest,
@@ -137,6 +139,9 @@ export interface ActionRunAcceptedResult {
   actionName: string;
   sessionId?: string | undefined;
 }
+
+export type SessionTerminalSnapshotResult = SessionTerminalSnapshot;
+export type SessionTerminalInputResult = SessionTerminalInputAccepted;
 
 export interface MessageAcceptedResult {
   messageId: string;

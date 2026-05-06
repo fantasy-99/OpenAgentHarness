@@ -48,6 +48,12 @@ spec:
               value: "5"
             - name: OAH_REDIS_READY_QUEUE_READINESS_LIMIT
               value: "100"
+            - name: OAH_REDIS_READY_QUEUE_CLAIM_SCAN_LIMIT
+              value: "100"
+            - name: OAH_REDIS_READY_QUEUE_PRESSURE_SCAN_LIMIT
+              value: "100"
+            - name: OAH_REDIS_READY_QUEUE_INSPECT_LIMIT
+              value: "100"
           readinessProbe:
             httpGet:
               path: /readyz
