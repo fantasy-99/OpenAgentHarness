@@ -597,6 +597,7 @@ export interface BootstrappedRuntime {
     runtimeName: string;
     zipBuffer: Buffer;
     overwrite?: boolean | undefined;
+    requireExisting?: boolean | undefined;
   }) => Promise<{ name: string }>;
   deleteWorkspaceRuntime?: (input: { runtimeName: string }) => Promise<void>;
   listPlatformModels?: () => Promise<
@@ -2004,13 +2005,15 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
             runtimeName: string;
             zipBuffer: Buffer;
             overwrite?: boolean | undefined;
+            requireExisting?: boolean | undefined;
           }) => {
             const { uploadWorkspaceRuntime } = await loadConfigRuntimesModule();
             return uploadWorkspaceRuntime({
               runtimeDir: config.paths.runtime_dir,
               runtimeName: input.runtimeName,
               zipBuffer: input.zipBuffer,
-              ...(input.overwrite !== undefined ? { overwrite: input.overwrite } : {})
+              ...(input.overwrite !== undefined ? { overwrite: input.overwrite } : {}),
+              ...(input.requireExisting !== undefined ? { requireExisting: input.requireExisting } : {})
             });
           },
           deleteWorkspaceRuntime: async (input: { runtimeName: string }) => {

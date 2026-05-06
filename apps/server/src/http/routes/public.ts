@@ -8,6 +8,7 @@ import {
   platformModelSnapshotSchema,
   readinessReportSchema,
   systemProfileSchema,
+  updateWorkspaceRuntimeResponseSchema,
   uploadWorkspaceRuntimeRequestSchema,
   uploadWorkspaceRuntimeResponseSchema,
   workspaceRuntimeListSchema
@@ -67,6 +68,36 @@ export function registerPublicRoutes(app: FastifyInstance, dependencies: AppDepe
     } catch (error) {
       if (error instanceof Error && (error as Error & { code?: string }).code === "runtime_already_exists") {
         throw new AppError(409, "runtime_already_exists", error.message);
+      }
+      if (error instanceof Error && (error as Error & { code?: string }).code === "empty_runtime_zip") {
+        throw new AppError(400, "empty_runtime_zip", error.message);
+      }
+      throw error;
+    }
+  };
+
+  const updateRuntime = async (request: FastifyRequest, reply: FastifyReply) => {
+    if (options.workspaceMode === "single" || !dependencies.uploadWorkspaceRuntime) {
+      throw new AppError(501, "runtime_update_unavailable", "Runtime update is not available on this server.");
+    }
+
+    const params = createParamsSchema("runtimeName").parse(request.params);
+    const zipBuffer = await readRequestBodyBuffer(request.body);
+    if (!zipBuffer) {
+      throw new AppError(415, "invalid_content_type", "Runtime update requires Content-Type: application/octet-stream.");
+    }
+
+    try {
+      const runtime = await dependencies.uploadWorkspaceRuntime({
+        runtimeName: params.runtimeName,
+        zipBuffer,
+        overwrite: true,
+        requireExisting: true
+      });
+      return reply.send(updateWorkspaceRuntimeResponseSchema.parse({ name: runtime.name }));
+    } catch (error) {
+      if (error instanceof Error && (error as Error & { code?: string }).code === "runtime_not_found") {
+        throw new AppError(404, "runtime_not_found", error.message);
       }
       if (error instanceof Error && (error as Error & { code?: string }).code === "empty_runtime_zip") {
         throw new AppError(400, "empty_runtime_zip", error.message);
@@ -202,10 +233,12 @@ export function registerPublicRoutes(app: FastifyInstance, dependencies: AppDepe
 
   app.get("/api/v1/runtimes", listRuntimes);
   app.post("/api/v1/runtimes/upload", uploadRuntime);
+  app.put("/api/v1/runtimes/:runtimeName", updateRuntime);
   app.delete("/api/v1/runtimes/:runtimeName", deleteRuntime);
   // Keep legacy /blueprints aliases during the runtime API rename so staggered web/api deploys do not 404.
   app.get("/api/v1/blueprints", listRuntimes);
   app.post("/api/v1/blueprints/upload", uploadRuntime);
+  app.put("/api/v1/blueprints/:runtimeName", updateRuntime);
   app.delete("/api/v1/blueprints/:runtimeName", deleteRuntime);
 
   app.get("/api/v1/model-providers", async (_request, reply) =>

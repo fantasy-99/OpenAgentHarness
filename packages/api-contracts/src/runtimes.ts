@@ -21,7 +21,12 @@ export const uploadWorkspaceRuntimeResponseSchema = z.object({
   name: z.string()
 });
 
+export const updateWorkspaceRuntimeResponseSchema = z.object({
+  name: z.string()
+});
+
 export type WorkspaceRuntime = z.infer<typeof workspaceRuntimeSchema>;
 export type WorkspaceRuntimeList = z.infer<typeof workspaceRuntimeListSchema>;
 export type UploadWorkspaceRuntimeRequest = z.infer<typeof uploadWorkspaceRuntimeRequestSchema>;
 export type UploadWorkspaceRuntimeResponse = z.infer<typeof uploadWorkspaceRuntimeResponseSchema>;
+export type UpdateWorkspaceRuntimeResponse = z.infer<typeof updateWorkspaceRuntimeResponseSchema>;

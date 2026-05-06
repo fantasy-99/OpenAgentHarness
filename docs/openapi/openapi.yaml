@@ -136,6 +136,33 @@ paths:
         default:
           $ref: '#/components/responses/ErrorResponse'
   /runtimes/{runtimeName}:
+    put:
+      tags: [Workspaces]
+      summary: Update workspace runtime
+      operationId: updateWorkspaceRuntime
+      parameters:
+        - in: path
+          name: runtimeName
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: Workspace runtime updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceRuntimeUploadResponse'
+        default:
+          $ref: '#/components/responses/ErrorResponse'
     delete:
       tags: [Workspaces]
       summary: Delete workspace runtime

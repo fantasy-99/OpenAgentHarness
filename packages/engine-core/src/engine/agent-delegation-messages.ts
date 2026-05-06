@@ -20,6 +20,11 @@ export function buildDelegatedTaskMessage(
     task,
     "</task>",
     ...(handoffSummary ? ["<handoff_summary>", handoffSummary, "</handoff_summary>"] : []),
+    "<output_contract>",
+    "When the task is complete, your final assistant response must be the output returned to the parent agent.",
+    "Write a concise, self-contained result. Include any important findings, decisions, files changed, errors, or blockers.",
+    "Do not finish the run without a final assistant response. If there is nothing to report, say that explicitly.",
+    "</output_contract>",
     "</delegated_task>"
   ].join("\n");
 }

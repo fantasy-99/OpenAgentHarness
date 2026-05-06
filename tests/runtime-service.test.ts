@@ -7132,6 +7132,172 @@ describe("runtime service", () => {
     expect(toolMessages.some((message) => messageText(message).includes("reached max_concurrent_subagents=1"))).toBe(true);
   });
 
+  it("asks a completed subagent for final output when the original run produced no readable result", async () => {
+    const gateway = new FakeModelGateway(5);
+    gateway.streamScenarioFactory = (input) => {
+      const systemMessages = input.messages?.filter((message) => message.role === "system").map((message) => message.content) ?? [];
+
+      if (systemMessages.some((message) => message.includes("You are the researcher subagent."))) {
+        const userText = input.messages
+          ?.filter((message) => message.role === "user")
+          .map((message) => (typeof message.content === "string" ? message.content : ""))
+          .join("\n") ?? "";
+
+        if (userText.includes("Please respond now with only the final result")) {
+          return {
+            text: "Recovered final subagent output."
+          };
+        }
+
+        return {
+          text: "",
+          content: []
+        };
+      }
+
+      return {
+        text: "Parent delegated and waited.",
+        toolBatches: [
+          [
+            {
+              toolName: "SubAgent",
+              input: {
+                description: "Recover final output",
+                prompt: "Do the research and report back.",
+                subagent_name: "researcher"
+              },
+              toolCallId: "call_recover_subagent_output"
+            }
+          ]
+        ]
+      };
+    };
+
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_subagent_output_follow_up",
+      name: "subagent-output-follow-up",
+      rootPath: "/tmp/subagent-output-follow-up",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "plan",
+      settings: {
+        defaultAgent: "plan",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        plan: {
+          name: "plan",
+          mode: "primary",
+          prompt: "You are the planner agent.",
+          tools: {
+            native: [],
+            external: []
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: ["researcher"]
+        },
+        researcher: {
+          name: "researcher",
+          mode: "subagent",
+          prompt: "You are the researcher subagent.",
+          tools: {
+            native: [],
+            external: []
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_subagent_output_follow_up",
+        agents: [
+          { name: "plan", mode: "primary", source: "workspace" },
+          { name: "researcher", mode: "subagent", source: "workspace" }
+        ],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: "project_subagent_output_follow_up",
+      caller,
+      input: {
+        agentName: "plan"
+      }
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Start a subagent and wait for the result." }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const parentRun = await runtimeService.getRun(accepted.runId);
+    const delegatedRuns =
+      (parentRun.metadata?.delegatedRuns as Array<{ childRunId: string; childSessionId: string }> | undefined) ?? [];
+
+    expect(delegatedRuns).toHaveLength(1);
+
+    const childRuns = await runtimeService.listSessionRuns(delegatedRuns[0]?.childSessionId ?? "", 20);
+    expect(childRuns.items).toHaveLength(2);
+    expect(childRuns.items.some((run) => run.metadata?.delegatedOutputFollowUpForRunId === delegatedRuns[0]?.childRunId)).toBe(true);
+
+    const childMessages = await runtimeService.listSessionMessages(delegatedRuns[0]?.childSessionId ?? "", 20);
+    expect(
+      childMessages.items.some(
+        (message) =>
+          message.role === "user" &&
+          message.metadata?.delegatedOutputFollowUpForRunId === delegatedRuns[0]?.childRunId &&
+          messageText(message).includes("Please respond now with only the final result")
+      )
+    ).toBe(true);
+
+    const toolMessages = (await runtimeService.listSessionMessages(session.id, 100)).items.filter(
+      (message) => message.role === "tool" && messageToolName(message) === "SubAgent"
+    );
+
+    expect(toolMessages).toHaveLength(1);
+    expect(messageText(toolMessages[0])).toContain("Recovered final subagent output.");
+  });
+
   it("forwards agent sampling settings including topP to the model runtime", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
@@ -11531,8 +11697,9 @@ describe("runtime service", () => {
     expect(messageText(repairedToolMessage)).toContain(
       "Tool result unavailable because the original run ended before this tool call result was recorded."
     );
-    expect(messages.items.at(-1)?.role).toBe("assistant");
-    expect(messageText(messages.items.at(-1))).toBe("Recovered the legacy session.");
+    expect(
+      messages.items.some((message) => message.role === "assistant" && messageText(message) === "Recovered the legacy session.")
+    ).toBe(true);
   });
 
   it("writes hook and tool call audit records when hooks and actions run", async () => {

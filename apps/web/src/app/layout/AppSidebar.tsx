@@ -7,6 +7,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   Database,
+  FileUp,
   FolderPlus,
   Lock,
   Layers3,
@@ -48,6 +49,7 @@ import {
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -242,6 +244,21 @@ function SidebarActionItem(props: {
   );
 }
 
+type RuntimeUploadMode = "create" | "update";
+
+interface RuntimeUploadDraft {
+  mode: RuntimeUploadMode;
+  file: File | null;
+  name: string;
+  overwrite: boolean;
+  selectAfterUpload: boolean;
+}
+
+function deriveRuntimeNameFromFile(file: File): string {
+  const normalized = file.name.replace(/\.zip$/i, "").replace(/[^a-zA-Z0-9_-]/g, "_");
+  return normalized || "runtime";
+}
+
 function RuntimeSidebar(props: SidebarProps) {
   const [runtimeWorkspaceDeleteBusy, setRuntimeWorkspaceDeleteBusy] = useState(false);
   const { mainViewMode, setMainViewMode } = useUiStore(
@@ -374,7 +391,9 @@ function RuntimeSidebar(props: SidebarProps) {
             entry={sessionEntry}
             depth={depth}
             active={sessionEntry.id === props.sessionId}
-            runStatus={sessionRunStatusById.get(sessionEntry.id)}
+            {...(sessionRunStatusById.has(sessionEntry.id)
+              ? { runStatus: sessionRunStatusById.get(sessionEntry.id) as Run["status"] }
+              : {})}
             expanded={shouldExpand}
             hasChildren={childSessions.length > 0}
             onSelect={() => {
@@ -1022,10 +1041,18 @@ function AppSidebarImpl(props: SidebarProps) {
     }))
   );
   const uploadTemplateInputRef = useRef<HTMLInputElement>(null);
-  const [uploadTemplateName, setUploadTemplateName] = useState("");
-  const [uploadTemplateOverwrite, setUploadTemplateOverwrite] = useState(false);
-  const [uploadTemplateFile, setUploadTemplateFile] = useState<File | null>(null);
-  const [showUploadTemplateDialog, setShowUploadTemplateDialog] = useState(false);
+  const updateTemplateInputRef = useRef<HTMLInputElement>(null);
+  const [runtimeUploadDraft, setRuntimeUploadDraft] = useState<RuntimeUploadDraft>({
+    mode: "create",
+    file: null,
+    name: "",
+    overwrite: false,
+    selectAfterUpload: false
+  });
+  const [showRuntimeUploadDialog, setShowRuntimeUploadDialog] = useState(false);
+  const [showRuntimeManagerDialog, setShowRuntimeManagerDialog] = useState(false);
+  const [runtimeMutationBusy, setRuntimeMutationBusy] = useState(false);
+  const [runtimePendingDelete, setRuntimePendingDelete] = useState("");
 
   const icon = surfaceIcon(surfaceMode);
   const title = surfaceTitle(surfaceMode);
@@ -1039,6 +1066,13 @@ function AppSidebarImpl(props: SidebarProps) {
   const serviceScopeOptions = props.serviceScopeOptions ?? [];
   const serverLabel = props.systemProfile ? formatSystemProfileDisplayName(props.systemProfile) : "unknown";
   const serverTone: StatusSemanticTone = props.systemProfile?.deploymentKind === "oap" ? "emerald" : props.systemProfile ? "sky" : "amber";
+  const selectedRuntimeName = props.workspaceDraft.runtime?.trim() ?? "";
+  const runtimeUploadTitle = runtimeUploadDraft.mode === "update" ? "Update Runtime" : "Upload Runtime";
+  const runtimeUploadDescription =
+    runtimeUploadDraft.mode === "update"
+      ? `Replace runtime "${runtimeUploadDraft.name}" with the selected .zip package.`
+      : "Upload a .zip file containing the runtime folder structure.";
+  const runtimeUploadSubmitLabel = runtimeUploadDraft.mode === "update" ? "Update" : "Upload";
   const collapseButton = (
     <Button
       type="button"
@@ -1052,6 +1086,84 @@ function AppSidebarImpl(props: SidebarProps) {
       {sidebarCollapsed ? <ChevronsRight className="h-4 w-4" /> : <ChevronsLeft className="h-4 w-4" />}
     </Button>
   );
+
+  function openRuntimeUploadDialog(file: File, options?: { mode?: RuntimeUploadMode; name?: string; selectAfterUpload?: boolean }) {
+    setRuntimeUploadDraft({
+      mode: options?.mode ?? "create",
+      file,
+      name: options?.name ?? deriveRuntimeNameFromFile(file),
+      overwrite: options?.mode === "update",
+      selectAfterUpload: options?.selectAfterUpload ?? false
+    });
+    setShowRuntimeUploadDialog(true);
+  }
+
+  function openRuntimeUpdatePicker(runtimeName: string) {
+    setRuntimeUploadDraft((current) => ({
+      ...current,
+      mode: "update",
+      name: runtimeName,
+      file: null,
+      overwrite: true,
+      selectAfterUpload: false
+    }));
+    window.setTimeout(() => updateTemplateInputRef.current?.click(), 0);
+  }
+
+  async function submitRuntimeUpload() {
+    if (!runtimeUploadDraft.file || !runtimeUploadDraft.name.trim()) {
+      return;
+    }
+
+    setRuntimeMutationBusy(true);
+    try {
+      const runtimeName = runtimeUploadDraft.name.trim();
+      const ok =
+        runtimeUploadDraft.mode === "update"
+          ? await props.updateWorkspaceRuntime(runtimeName, runtimeUploadDraft.file)
+          : await props.uploadWorkspaceRuntime(runtimeUploadDraft.file, runtimeName, runtimeUploadDraft.overwrite);
+      if (ok) {
+        setShowRuntimeUploadDialog(false);
+        setRuntimeUploadDraft({
+          mode: "create",
+          file: null,
+          name: "",
+          overwrite: false,
+          selectAfterUpload: false
+        });
+        if (runtimeUploadDraft.selectAfterUpload) {
+          props.setWorkspaceDraft((current) => ({
+            ...current,
+            runtime: runtimeName
+          }));
+        }
+      }
+    } finally {
+      setRuntimeMutationBusy(false);
+    }
+  }
+
+  async function deleteRuntime(runtimeName: string) {
+    if (!runtimeName.trim()) {
+      return;
+    }
+
+    setRuntimeMutationBusy(true);
+    try {
+      const ok = await props.deleteWorkspaceRuntime(runtimeName);
+      if (ok) {
+        if (selectedRuntimeName === runtimeName) {
+          props.setWorkspaceDraft((current) => ({
+            ...current,
+            runtime: ""
+          }));
+        }
+        setRuntimePendingDelete("");
+      }
+    } finally {
+      setRuntimeMutationBusy(false);
+    }
+  }
 
   return (
     <>
@@ -1243,6 +1355,34 @@ function AppSidebarImpl(props: SidebarProps) {
         </aside>
       </div>
 
+      <input
+        ref={uploadTemplateInputRef}
+        type="file"
+        accept=".zip"
+        className="hidden"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (!file) return;
+          openRuntimeUploadDialog(file, { selectAfterUpload: props.showWorkspaceCreator });
+          event.target.value = "";
+        }}
+      />
+      <input
+        ref={updateTemplateInputRef}
+        type="file"
+        accept=".zip"
+        className="hidden"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (!file) return;
+          openRuntimeUploadDialog(file, {
+            mode: "update",
+            name: runtimeUploadDraft.name || selectedRuntimeName
+          });
+          event.target.value = "";
+        }}
+      />
+
       <Dialog open={props.showWorkspaceCreator} onOpenChange={props.setShowWorkspaceCreator}>
         <DialogContent>
           <DialogHeader>
@@ -1280,22 +1420,6 @@ function AppSidebarImpl(props: SidebarProps) {
                     )}
                   </SelectContent>
                 </Select>
-                <input
-                  ref={uploadTemplateInputRef}
-                  type="file"
-                  accept=".zip"
-                  className="hidden"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    if (!file) return;
-                    const derivedName = file.name.replace(/\.zip$/i, "").replace(/[^a-zA-Z0-9_-]/g, "_");
-                    setUploadTemplateName(derivedName);
-                    setUploadTemplateFile(file);
-                    setUploadTemplateOverwrite(false);
-                    setShowUploadTemplateDialog(true);
-                    event.target.value = "";
-                  }}
-                />
                 <Button
                   variant="outline"
                   size="icon"
@@ -1346,6 +1470,16 @@ function AppSidebarImpl(props: SidebarProps) {
             </p>
           </div>
           <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowRuntimeManagerDialog(true);
+                void props.refreshWorkspaceRuntimes(true);
+              }}
+            >
+              <Settings2 className="h-4 w-4" />
+              Manage
+            </Button>
             <Button variant="outline" onClick={() => props.refreshWorkspaceRuntimes()}>
               <RefreshCw className="h-4 w-4" />
               Runtimes
@@ -1363,64 +1497,155 @@ function AppSidebarImpl(props: SidebarProps) {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={showUploadTemplateDialog} onOpenChange={setShowUploadTemplateDialog}>
+      <Dialog open={showRuntimeManagerDialog} onOpenChange={setShowRuntimeManagerDialog}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Runtime Manager</DialogTitle>
+            <DialogDescription>Upload, replace, and remove workspace runtime packages.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="default"
+                onClick={() => uploadTemplateInputRef.current?.click()}
+                disabled={!props.workspaceManagementEnabled || runtimeMutationBusy}
+              >
+                <Upload className="h-4 w-4" />
+                Upload
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => props.refreshWorkspaceRuntimes()}
+                disabled={!props.workspaceManagementEnabled || runtimeMutationBusy}
+              >
+                <RefreshCw className="h-4 w-4" />
+                Refresh
+              </Button>
+              <Badge variant="outline">{props.workspaceRuntimes.length} runtimes</Badge>
+            </div>
+            {props.workspaceManagementEnabled ? (
+              props.workspaceRuntimes.length > 0 ? (
+                <ScrollArea className="max-h-[360px] rounded-2xl border border-black/8">
+                  <div className="divide-y divide-black/8">
+                    {props.workspaceRuntimes.map((runtime) => {
+                      const isDeleting = runtimePendingDelete === runtime;
+                      return (
+                        <div key={runtime} className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium text-foreground">{runtime}</p>
+                            <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                              {selectedRuntimeName === runtime ? "Selected for the next workspace." : "Available for new workspaces."}
+                            </p>
+                          </div>
+                          <div className="flex shrink-0 flex-wrap items-center gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-8 rounded-xl"
+                              onClick={() => openRuntimeUpdatePicker(runtime)}
+                              disabled={runtimeMutationBusy}
+                            >
+                              <FileUp className="h-3.5 w-3.5" />
+                              Update
+                            </Button>
+                            <Button
+                              variant={isDeleting ? "destructive" : "outline"}
+                              size="sm"
+                              className="h-8 rounded-xl"
+                              onClick={() => {
+                                if (isDeleting) {
+                                  void deleteRuntime(runtime);
+                                  return;
+                                }
+                                setRuntimePendingDelete(runtime);
+                              }}
+                              disabled={runtimeMutationBusy}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              {isDeleting ? "Confirm" : "Delete"}
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </ScrollArea>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-black/12 px-4 py-8 text-center">
+                  <p className="text-sm font-medium text-foreground">No runtimes yet</p>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">Upload a .zip package to make it available for new workspaces.</p>
+                </div>
+              )
+            ) : (
+              <div className="rounded-2xl border border-dashed border-black/12 px-4 py-8 text-center">
+                <p className="text-sm font-medium text-foreground">Runtime management is unavailable</p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">This server is running without multi-workspace runtime management.</p>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowRuntimeManagerDialog(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showRuntimeUploadDialog} onOpenChange={setShowRuntimeUploadDialog}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Upload Runtime</DialogTitle>
-            <DialogDescription>
-              Upload a .zip file containing the runtime folder structure. It will be extracted as a new workspace runtime.
-            </DialogDescription>
+            <DialogTitle>{runtimeUploadTitle}</DialogTitle>
+            <DialogDescription>{runtimeUploadDescription}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <Input
-              value={uploadTemplateName}
-              onChange={(event) => setUploadTemplateName(event.target.value.replace(/[^a-zA-Z0-9_-]/g, "_"))}
+              value={runtimeUploadDraft.name}
+              onChange={(event) =>
+                setRuntimeUploadDraft((current) => ({
+                  ...current,
+                  name: event.target.value.replace(/[^a-zA-Z0-9_-]/g, "_")
+                }))
+              }
               placeholder="Runtime name"
+              disabled={runtimeUploadDraft.mode === "update"}
             />
             <p className="px-1 text-xs leading-5 text-muted-foreground">
               Only alphanumeric characters, hyphens, and underscores are allowed.
             </p>
-            <div className="flex items-center gap-2">
-              <Switch
-                checked={uploadTemplateOverwrite}
-                onCheckedChange={setUploadTemplateOverwrite}
-                id="overwrite-runtime"
-              />
-              <label htmlFor="overwrite-runtime" className="text-sm text-muted-foreground">
-                Overwrite if exists
-              </label>
-            </div>
+            {runtimeUploadDraft.mode === "create" ? (
+              <div className="flex items-center gap-2">
+                <Switch
+                  checked={runtimeUploadDraft.overwrite}
+                  onCheckedChange={(checked) =>
+                    setRuntimeUploadDraft((current) => ({
+                      ...current,
+                      overwrite: checked
+                    }))
+                  }
+                  id="overwrite-runtime"
+                />
+                <label htmlFor="overwrite-runtime" className="text-sm text-muted-foreground">
+                  Overwrite if exists
+                </label>
+              </div>
+            ) : null}
           </div>
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => setShowUploadTemplateDialog(false)}
+              onClick={() => setShowRuntimeUploadDialog(false)}
+              disabled={runtimeMutationBusy}
             >
               Cancel
             </Button>
             <Button
-              disabled={!uploadTemplateName.trim() || !uploadTemplateFile}
-              onClick={async () => {
-                if (!uploadTemplateFile) return;
-                const ok = await props.uploadWorkspaceRuntime(
-                  uploadTemplateFile,
-                  uploadTemplateName.trim(),
-                  uploadTemplateOverwrite
-                );
-                if (ok) {
-                  setShowUploadTemplateDialog(false);
-                  setUploadTemplateFile(null);
-                  setUploadTemplateName("");
-                  setUploadTemplateOverwrite(false);
-                  props.setWorkspaceDraft((current) => ({
-                    ...current,
-                    runtime: uploadTemplateName.trim()
-                  }));
-                }
+              disabled={!runtimeUploadDraft.name.trim() || !runtimeUploadDraft.file || runtimeMutationBusy}
+              onClick={() => {
+                void submitRuntimeUpload();
               }}
             >
-              <Upload className="h-4 w-4" />
-              Upload
+              {runtimeUploadDraft.mode === "update" ? <FileUp className="h-4 w-4" /> : <Upload className="h-4 w-4" />}
+              {runtimeUploadSubmitLabel}
             </Button>
           </DialogFooter>
         </DialogContent>

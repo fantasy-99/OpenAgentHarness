@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { isNativeWorkspaceSyncEnabled, materializeNativeLocalTree } from "@oah/native-bridge";
 import yauzl from "yauzl";
@@ -398,7 +398,7 @@ async function copyRuntimeTreeIntoExistingRoot(sourceRoot: string, targetRoot: s
 export async function listWorkspaceRuntimes(runtimeDir: string): Promise<WorkspaceRuntimeDescriptor[]> {
   const directoryEntries = await readDirectoryEntriesIfExists(runtimeDir);
   return directoryEntries
-    .filter((entry) => entry.isDirectory())
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
     .map((entry) => ({
       name: entry.name
     }))
@@ -437,9 +437,22 @@ export async function uploadWorkspaceRuntime(input: {
   runtimeName: string;
   zipBuffer: Buffer;
   overwrite?: boolean;
+  requireExisting?: boolean;
 }): Promise<WorkspaceRuntimeDescriptor> {
   const targetDir = resolvePathInsideRoot(input.runtimeDir, input.runtimeName, "runtime name");
+  const stagingDir = resolvePathInsideRoot(
+    input.runtimeDir,
+    `.oah-runtime-upload-${input.runtimeName}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    "runtime staging name"
+  );
   const runtimeExists = await pathExists(targetDir);
+
+  if (!runtimeExists && input.requireExisting) {
+    const err = new Error(`Runtime "${input.runtimeName}" does not exist`);
+    (err as Error & { statusCode?: number }).statusCode = 404;
+    (err as Error & { code?: string }).code = "runtime_not_found";
+    throw err;
+  }
 
   if (runtimeExists && !input.overwrite) {
     const err = new Error(`Runtime "${input.runtimeName}" already exists`);
@@ -448,20 +461,33 @@ export async function uploadWorkspaceRuntime(input: {
     throw err;
   }
 
-  if (runtimeExists) {
-    await rm(targetDir, { recursive: true });
-  }
-
-  await mkdir(targetDir, { recursive: true });
+  await rm(stagingDir, { recursive: true, force: true });
+  await mkdir(stagingDir, { recursive: true });
 
   const zipfile = await openZip(input.zipBuffer);
 
   return new Promise<WorkspaceRuntimeDescriptor>((resolve, reject) => {
     let entryCount = 0;
+    let settled = false;
 
-    zipfile.on("error", reject);
+    async function rejectUpload(error: unknown) {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+      reject(error);
+    }
+
+    zipfile.on("error", (error) => {
+      void rejectUpload(error);
+    });
 
     zipfile.on("entry", (entry: yauzl.Entry) => {
+      if (settled) {
+        return;
+      }
+
       const fileName = entry.fileName;
 
       if (fileName.endsWith("/")) {
@@ -474,10 +500,10 @@ export async function uploadWorkspaceRuntime(input: {
         return;
       }
 
-      const resolvedEntryPath = path.resolve(targetDir, fileName);
-      const relative = path.relative(targetDir, resolvedEntryPath);
+      const resolvedEntryPath = path.resolve(stagingDir, fileName);
+      const relative = path.relative(stagingDir, resolvedEntryPath);
       if (relative.startsWith("..") || path.isAbsolute(relative)) {
-        reject(new Error(`Zip entry "${fileName}" escapes the runtime directory`));
+        void rejectUpload(new Error(`Zip entry "${fileName}" escapes the runtime directory`));
         return;
       }
 
@@ -485,7 +511,7 @@ export async function uploadWorkspaceRuntime(input: {
 
       zipfile.openReadStream(entry, async (err, readable) => {
         if (err) {
-          reject(err);
+          await rejectUpload(err);
           return;
         }
 
@@ -504,22 +530,35 @@ export async function uploadWorkspaceRuntime(input: {
 
           zipfile.readEntry();
         } catch (writeErr) {
-          reject(writeErr);
+          await rejectUpload(writeErr);
         }
       });
     });
 
     zipfile.on("end", async () => {
-      if (entryCount === 0) {
-        await rm(targetDir, { recursive: true }).catch(() => {});
-        const err = new Error("Zip archive contains no files");
-        (err as Error & { statusCode?: number }).statusCode = 400;
-        (err as Error & { code?: string }).code = "empty_runtime_zip";
-        reject(err);
+      if (settled) {
         return;
       }
 
-      resolve({ name: input.runtimeName });
+      if (entryCount === 0) {
+        const err = new Error("Zip archive contains no files");
+        (err as Error & { statusCode?: number }).statusCode = 400;
+        (err as Error & { code?: string }).code = "empty_runtime_zip";
+        await rejectUpload(err);
+        return;
+      }
+
+      try {
+        if (runtimeExists) {
+          await rm(targetDir, { recursive: true, force: true });
+        }
+        await mkdir(path.dirname(targetDir), { recursive: true });
+        await rename(stagingDir, targetDir);
+        settled = true;
+        resolve({ name: input.runtimeName });
+      } catch (error) {
+        await rejectUpload(error);
+      }
     });
 
     zipfile.readEntry();

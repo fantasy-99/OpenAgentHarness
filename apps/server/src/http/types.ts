@@ -47,6 +47,7 @@ export interface AppDependencies {
     runtimeName: string;
     zipBuffer: Buffer;
     overwrite: boolean;
+    requireExisting?: boolean | undefined;
   }) => Promise<import("@oah/config").WorkspaceRuntimeDescriptor>) | undefined;
   deleteWorkspaceRuntime?: ((input: {
     runtimeName: string;

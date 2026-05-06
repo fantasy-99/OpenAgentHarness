@@ -1,12 +1,14 @@
 import { mkdtemp, mkdir, readFile, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { deflateRawSync } from "node:zlib";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   applyWorkspaceRuntimeToExistingRoot,
   buildWorkspaceId,
+  deleteWorkspaceRuntime,
   discoverWorkspace,
   discoverWorkspaces,
   initializeWorkspaceFromRuntime,
@@ -14,11 +16,61 @@ import {
   loadPlatformModels,
   resolveWorkspaceCreationRoot,
   loadWorkspaceSettings,
-  loadServerConfig
+  loadServerConfig,
+  uploadWorkspaceRuntime
 } from "@oah/config";
 import { visibleLlmSkills, visibleNativeToolNames, visibleToolServers } from "@oah/engine-core";
 
 const tempDirs: string[] = [];
+
+function createStoredZip(entries: Record<string, string>): Buffer {
+  const localParts: Buffer[] = [];
+  const centralParts: Buffer[] = [];
+  let offset = 0;
+
+  for (const [name, content] of Object.entries(entries)) {
+    const nameBuffer = Buffer.from(name);
+    const contentBuffer = Buffer.from(content);
+    const compressedBuffer = deflateRawSync(contentBuffer, { level: 0 });
+    const localHeader = Buffer.alloc(30);
+    localHeader.writeUInt32LE(0x04034b50, 0);
+    localHeader.writeUInt16LE(20, 4);
+    localHeader.writeUInt16LE(0, 6);
+    localHeader.writeUInt16LE(8, 8);
+    localHeader.writeUInt32LE(0, 10);
+    localHeader.writeUInt32LE(0, 14);
+    localHeader.writeUInt32LE(compressedBuffer.length, 18);
+    localHeader.writeUInt32LE(contentBuffer.length, 22);
+    localHeader.writeUInt16LE(nameBuffer.length, 26);
+    localParts.push(localHeader, nameBuffer, compressedBuffer);
+
+    const centralHeader = Buffer.alloc(46);
+    centralHeader.writeUInt32LE(0x02014b50, 0);
+    centralHeader.writeUInt16LE(20, 4);
+    centralHeader.writeUInt16LE(20, 6);
+    centralHeader.writeUInt16LE(0, 8);
+    centralHeader.writeUInt16LE(8, 10);
+    centralHeader.writeUInt32LE(0, 12);
+    centralHeader.writeUInt32LE(0, 16);
+    centralHeader.writeUInt32LE(compressedBuffer.length, 20);
+    centralHeader.writeUInt32LE(contentBuffer.length, 24);
+    centralHeader.writeUInt16LE(nameBuffer.length, 28);
+    centralHeader.writeUInt32LE(offset, 42);
+    centralParts.push(centralHeader, nameBuffer);
+
+    offset += localHeader.length + nameBuffer.length + compressedBuffer.length;
+  }
+
+  const centralDirectory = Buffer.concat(centralParts);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(Object.keys(entries).length, 8);
+  end.writeUInt16LE(Object.keys(entries).length, 10);
+  end.writeUInt32LE(centralDirectory.length, 12);
+  end.writeUInt32LE(offset, 16);
+
+  return Buffer.concat([...localParts, centralDirectory, end]);
+}
 
 afterEach(async () => {
   await Promise.all(
@@ -1027,6 +1079,51 @@ compat-main:
 
     const runtimes = await listWorkspaceRuntimes(tempDir);
     expect(runtimes).toEqual([{ name: "starter-kit" }, { name: "workspace" }]);
+  });
+
+  it("uploads, updates, and deletes workspace runtime packages", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-runtimes-manage-"));
+    tempDirs.push(tempDir);
+    const runtimeDir = path.join(tempDir, "runtimes");
+    await mkdir(runtimeDir, { recursive: true });
+
+    const firstZip = createStoredZip({ "AGENTS.md": "# First\n" });
+    const secondZip = createStoredZip({ "AGENTS.md": "# Second\n" });
+
+    await uploadWorkspaceRuntime({
+      runtimeDir,
+      runtimeName: "managed",
+      zipBuffer: firstZip
+    });
+    await expect(readFile(path.join(runtimeDir, "managed", "AGENTS.md"), "utf8")).resolves.toBe("# First\n");
+
+    await expect(
+      uploadWorkspaceRuntime({
+        runtimeDir,
+        runtimeName: "managed",
+        zipBuffer: firstZip
+      })
+    ).rejects.toMatchObject({ code: "runtime_already_exists" });
+    await expect(
+      uploadWorkspaceRuntime({
+        runtimeDir,
+        runtimeName: "missing",
+        zipBuffer: secondZip,
+        overwrite: true,
+        requireExisting: true
+      })
+    ).rejects.toMatchObject({ code: "runtime_not_found" });
+
+    await uploadWorkspaceRuntime({
+      runtimeDir,
+      runtimeName: "managed",
+      zipBuffer: secondZip,
+      overwrite: true
+    });
+    await expect(readFile(path.join(runtimeDir, "managed", "AGENTS.md"), "utf8")).resolves.toBe("# Second\n");
+
+    await deleteWorkspaceRuntime({ runtimeDir, runtimeName: "managed" });
+    await expect(stat(path.join(runtimeDir, "managed"))).rejects.toThrow();
   });
 
   it("applies a runtime template into a local workspace root only when .openharness is absent", async () => {

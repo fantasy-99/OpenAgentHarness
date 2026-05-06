@@ -72,6 +72,12 @@ export interface AgentCoordinationServiceDependencies {
   helpers: AgentCoordinationHelpers;
 }
 
+const delegatedOutputFollowUpPrompt = [
+  "Your previous delegated run completed, but it did not produce a readable final output for the parent agent.",
+  "Please respond now with only the final result of the delegated task.",
+  "If there is nothing to report, say that explicitly."
+].join("\n");
+
 export class AgentCoordinationService {
   readonly #persistence: AgentCoordinationPersistence;
   readonly #lifecycle: AgentCoordinationLifecycle;
@@ -538,31 +544,130 @@ export class AgentCoordinationService {
     return status === "completed" || status === "failed" || status === "cancelled" || status === "timed_out";
   }
 
-  async #collectAwaitedRunSummary(runId: string): Promise<AwaitedRunSummary> {
+  async #collectAwaitedRunSummary(
+    runId: string,
+    options: { allowOutputFollowUp?: boolean | undefined } = { allowOutputFollowUp: true }
+  ): Promise<AwaitedRunSummary> {
     const run = await this.#lifecycle.getRun(runId);
     if (!run.sessionId) {
       return { run };
     }
 
     const messages = await this.#persistence.messages.listBySessionId(run.sessionId);
-    const runMessages = messages.filter((message) => message.runId === run.id);
+    const outputContent = this.#extractRunOutputContent(messages, run.id);
+    if (this.#helpers.hasMeaningfulText(outputContent)) {
+      return { run, outputContent };
+    }
+
+    if (run.status === "completed" && options.allowOutputFollowUp !== false) {
+      const followUpRun = await this.#ensureDelegatedOutputFollowUpRun(run, messages);
+      const completedFollowUpRun = await this.#waitForRunTerminalState(followUpRun.id);
+      const followUpSummary = await this.#collectAwaitedRunSummary(completedFollowUpRun.id, {
+        allowOutputFollowUp: false
+      });
+      if (this.#helpers.hasMeaningfulText(followUpSummary.outputContent)) {
+        return {
+          run,
+          outputContent: followUpSummary.outputContent
+        };
+      }
+    }
+
+    return { run };
+  }
+
+  #extractRunOutputContent(messages: Message[], runId: string): string | undefined {
+    const runMessages = messages.filter((message) => message.runId === runId);
     const assistantMessage = [...runMessages].reverse().find((message) => message.role === "assistant");
     const assistantContent = assistantMessage ? this.#helpers.extractMessageDisplayText(assistantMessage) : undefined;
 
     if (this.#helpers.hasMeaningfulText(assistantContent)) {
-      return {
-        run,
-        outputContent: assistantContent
-      };
+      return assistantContent;
     }
 
     const toolMessage = [...runMessages].reverse().find((message) => message.role === "tool");
     const toolContent = toolMessage ? this.#helpers.extractMessageDisplayText(toolMessage) : undefined;
+    return this.#helpers.hasMeaningfulText(toolContent) ? toolContent : undefined;
+  }
 
-    return {
-      run,
-      ...(this.#helpers.hasMeaningfulText(toolContent) ? { outputContent: toolContent } : {})
+  async #ensureDelegatedOutputFollowUpRun(completedRun: Run, messages: Message[]): Promise<Run> {
+    const existingFollowUpMessage = [...messages].reverse().find((message) => {
+      const metadata = message.metadata as { delegatedOutputFollowUpForRunId?: unknown } | undefined;
+      return (
+        message.role === "user" &&
+        typeof message.runId === "string" &&
+        metadata?.delegatedOutputFollowUpForRunId === completedRun.id
+      );
+    });
+
+    if (existingFollowUpMessage?.runId) {
+      const existingRun = await this.#persistence.runs.getById(existingFollowUpMessage.runId);
+      if (existingRun) {
+        return existingRun;
+      }
+    }
+
+    const completedRunSessionId = completedRun.sessionId;
+    if (!completedRunSessionId) {
+      return completedRun;
+    }
+
+    const session = await this.#persistence.sessions.getById(completedRunSessionId);
+    if (!session) {
+      throw new AppError(404, "session_not_found", `Session ${completedRun.sessionId} was not found.`);
+    }
+
+    const now = this.#helpers.nowIso();
+    const messageId = this.#helpers.createId("msg");
+    const runId = this.#helpers.createId("run");
+    const followUpRun: Run = {
+      id: runId,
+      workspaceId: completedRun.workspaceId,
+      sessionId: session.id,
+      parentRunId: completedRun.parentRunId,
+      initiatorRef: completedRun.initiatorRef ?? session.subjectRef,
+      triggerType: "message",
+      triggerRef: messageId,
+      agentName: session.activeAgentName,
+      effectiveAgentName: session.activeAgentName,
+      switchCount: 0,
+      status: "queued",
+      createdAt: now,
+      metadata: {
+        delegatedOutputFollowUpForRunId: completedRun.id
+      }
     };
+    const followUpMessage: Message = {
+      id: messageId,
+      sessionId: session.id,
+      runId,
+      role: "user",
+      content: textContent(delegatedOutputFollowUpPrompt),
+      metadata: {
+        synthetic: true,
+        delegatedOutputFollowUpForRunId: completedRun.id
+      },
+      createdAt: now
+    };
+
+    await this.#persistence.runs.create(followUpRun);
+    await this.#persistence.messages.create(followUpMessage);
+    await this.#lifecycle.appendEvent({
+      sessionId: session.id,
+      runId,
+      event: "run.queued",
+      data: {
+        runId,
+        sessionId: session.id,
+        status: "queued",
+        delegatedOutputFollowUpForRunId: completedRun.id
+      }
+    });
+    await this.#lifecycle.enqueueRun(session.id, runId, {
+      priority: "subagent"
+    });
+
+    return followUpRun;
   }
 
   async #appendDelegatedRunRecord(parentRunId: string, record: DelegatedRunRecord): Promise<void> {

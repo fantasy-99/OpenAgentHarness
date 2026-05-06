@@ -609,6 +609,37 @@ export function useNavigationActions(params: {
     }
   }
 
+  async function updateWorkspaceRuntime(runtimeName: string, file: File): Promise<boolean> {
+    try {
+      const normalizedRuntimeName = runtimeName.trim();
+      if (!normalizedRuntimeName) {
+        params.setErrorMessage("请先选择一个 runtime。");
+        return false;
+      }
+
+      const encodedRuntimeName = encodeURIComponent(normalizedRuntimeName);
+      const response = await fetchWorkspaceRuntimeEndpoint(
+        `/api/v1/runtimes/${encodedRuntimeName}`,
+        `/api/v1/blueprints/${encodedRuntimeName}`,
+        {
+          method: "PUT",
+          headers: buildAuthHeaders(params.connection, { "content-type": "application/octet-stream" }),
+          body: file
+        }
+      );
+      if (!response.ok) {
+        throw await createHttpRequestError(response);
+      }
+      await refreshWorkspaceRuntimes(true);
+      params.setActivity(`运行时 "${normalizedRuntimeName}" 已更新`);
+      params.setErrorMessage("");
+      return true;
+    } catch (error) {
+      params.setErrorMessage(toErrorMessage(error));
+      return false;
+    }
+  }
+
   async function refreshWorkspaceIndex(quiet = false) {
     try {
       const response = await params.request<{ items: Workspace[]; nextCursor?: string }>("/api/v1/workspaces?pageSize=200");
@@ -999,6 +1030,7 @@ export function useNavigationActions(params: {
     openWorkspace,
     refreshWorkspaceRuntimes,
     uploadWorkspaceRuntime,
+    updateWorkspaceRuntime,
     deleteWorkspaceRuntime,
     refreshWorkspaceIndex,
     refreshWorkspace,
