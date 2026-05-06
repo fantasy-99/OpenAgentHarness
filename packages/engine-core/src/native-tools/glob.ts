@@ -33,42 +33,44 @@ export function createGlobTool(context: NativeToolFactoryContext): EngineToolSet
         context.assertVisible("Glob");
         const input = GlobInputSchema.parse(rawInput);
         const startedAt = Date.now();
-        const resolved = await resolveWorkspacePath(context.fileSystem, context.workspaceRoot, input.path ?? ".");
-        const entry = await context.fileSystem.stat(resolved.absolutePath).catch(() => null);
-        if (entry?.kind !== "directory") {
-          throw new AppError(404, "native_tool_directory_not_found", `Directory ${input.path ?? "."} was not found.`);
-        }
+        return context.withFileSystem("read", input.path ?? ".", async ({ workspaceRoot, fileSystem }) => {
+          const resolved = await resolveWorkspacePath(fileSystem, workspaceRoot, input.path ?? ".");
+          const entry = await fileSystem.stat(resolved.absolutePath).catch(() => null);
+          if (entry?.kind !== "directory") {
+            throw new AppError(404, "native_tool_directory_not_found", `Directory ${input.path ?? "."} was not found.`);
+          }
 
-        const matcher = globToRegExp(input.pattern);
-        const files = await collectWorkspaceFiles(context.fileSystem, resolved.absolutePath);
-        const matches = files
-          .map((file) => ({
-            relativePath: normalizePathForMatch(path.relative(resolved.absolutePath, file.absolutePath)),
-            mtimeMs: file.mtimeMs
-          }))
-          .filter((file) => matcher.test(file.relativePath))
-          .sort((left, right) => right.mtimeMs - left.mtimeMs || left.relativePath.localeCompare(right.relativePath));
-        const truncated = matches.length > DEFAULT_GLOB_LIMIT;
-        const filenames = matches
-          .slice(0, DEFAULT_GLOB_LIMIT)
-          .map((file) => (input.path ? normalizePathForMatch(path.join(input.path, file.relativePath)) : file.relativePath));
+          const matcher = globToRegExp(input.pattern);
+          const files = await collectWorkspaceFiles(fileSystem, resolved.absolutePath);
+          const matches = files
+            .map((file) => ({
+              relativePath: normalizePathForMatch(path.relative(resolved.absolutePath, file.absolutePath)),
+              mtimeMs: file.mtimeMs
+            }))
+            .filter((file) => matcher.test(file.relativePath))
+            .sort((left, right) => right.mtimeMs - left.mtimeMs || left.relativePath.localeCompare(right.relativePath));
+          const truncated = matches.length > DEFAULT_GLOB_LIMIT;
+          const filenames = matches
+            .slice(0, DEFAULT_GLOB_LIMIT)
+            .map((file) => (input.path ? normalizePathForMatch(path.join(input.path, file.relativePath)) : file.relativePath));
 
-        return formatToolOutput(
-          [
-            ["pattern", input.pattern],
-            ["root", resolved.relativePath],
-            ["duration_ms", Date.now() - startedAt],
-            ["matches", filenames.length],
-            ["truncated", truncated]
-          ],
-          [
-            {
-              title: "files",
-              lines: filenames,
-              emptyText: "(no matches)"
-            }
-          ]
-        );
+          return formatToolOutput(
+            [
+              ["pattern", input.pattern],
+              ["root", resolved.relativePath],
+              ["duration_ms", Date.now() - startedAt],
+              ["matches", filenames.length],
+              ["truncated", truncated]
+            ],
+            [
+              {
+                title: "files",
+                lines: filenames,
+                emptyText: "(no matches)"
+              }
+            ]
+          );
+        });
       }
     }
   };

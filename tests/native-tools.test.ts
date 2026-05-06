@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createNativeToolSet } from "../packages/engine-core/src/native-tools.ts";
 import { createLocalWorkspaceFileSystem } from "../packages/engine-core/src/workspace/workspace-file-system.ts";
-import type { WorkspaceCommandExecutor, WorkspaceFileSystem } from "../packages/engine-core/src/types.ts";
+import type { WorkspaceCommandExecutor, WorkspaceFileAccessProvider, WorkspaceFileSystem, WorkspaceRecord } from "../packages/engine-core/src/types.ts";
 
 const tempDirs: string[] = [];
 
@@ -20,6 +20,68 @@ afterEach(async () => {
 });
 
 describe("native tools", () => {
+  it("uses workspace file access leases for file tools", async () => {
+    const staleRoot = await mkdtemp(path.join(os.tmpdir(), "oah-native-tools-stale-root-"));
+    const liveRoot = await mkdtemp(path.join(os.tmpdir(), "oah-native-tools-live-root-"));
+    tempDirs.push(staleRoot, liveRoot);
+
+    await writeFile(path.join(liveRoot, "spec.json"), "{\"ok\":true}\n", "utf8");
+
+    const workspace = {
+      id: "ws_file_lease",
+      kind: "project",
+      name: "file lease workspace",
+      rootPath: staleRoot,
+      readOnly: false,
+      historyMirrorEnabled: false,
+      settings: {},
+      workspaceModels: {},
+      agents: {},
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "ws_file_lease",
+        agents: [],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      },
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString()
+    } satisfies WorkspaceRecord;
+    const acquire = vi.fn(async () => ({
+      workspace: {
+        ...workspace,
+        rootPath: liveRoot
+      },
+      release: vi.fn()
+    }));
+    const workspaceFileAccessProvider = { acquire } satisfies WorkspaceFileAccessProvider;
+
+    const tools = createNativeToolSet(staleRoot, () => ["Read", "Write"], {
+      sessionId: "session-file-lease",
+      workspace,
+      workspaceFileAccessProvider
+    });
+
+    const readResult = String(await tools.Read.execute({ file_path: "spec.json" }, {}));
+    expect(readResult).toContain("file_path: spec.json");
+    expect(readResult).toContain("1: {\"ok\":true}");
+
+    await tools.Write.execute({ file_path: "generated.txt", content: "from live lease\n" }, {});
+    await expect(readFile(path.join(staleRoot, "generated.txt"), "utf8")).rejects.toThrow();
+    expect(await readFile(path.join(liveRoot, "generated.txt"), "utf8")).toBe("from live lease\n");
+    expect(acquire).toHaveBeenCalledWith({ workspace, access: "read", path: "spec.json" });
+    expect(acquire).toHaveBeenCalledWith({ workspace, access: "write", path: "generated.txt" });
+  });
+
   it("executes Title Case workspace tools", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-native-tools-title-case-"));
     tempDirs.push(workspaceRoot);

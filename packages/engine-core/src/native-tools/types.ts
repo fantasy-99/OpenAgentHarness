@@ -1,4 +1,11 @@
-import type { ActionRetryPolicy, ModelGateway, WorkspaceCommandExecutor, WorkspaceFileSystem } from "../types.js";
+import type {
+  ActionRetryPolicy,
+  ModelGateway,
+  WorkspaceCommandExecutor,
+  WorkspaceFileAccessProvider,
+  WorkspaceFileSystem,
+  WorkspaceRecord
+} from "../types.js";
 import { AppError } from "../errors.js";
 
 export const NATIVE_TOOL_NAMES = [
@@ -37,6 +44,14 @@ export interface NativeToolSetOptions {
   webFetchModel?: string | undefined;
   commandExecutor?: WorkspaceCommandExecutor | undefined;
   fileSystem?: WorkspaceFileSystem | undefined;
+  workspace?: WorkspaceRecord | undefined;
+  workspaceFileAccessProvider?: WorkspaceFileAccessProvider | undefined;
+}
+
+export interface NativeToolFileAccess {
+  workspaceRoot: string;
+  fileSystem: WorkspaceFileSystem;
+  workspace?: WorkspaceRecord | undefined;
 }
 
 export interface NativeToolFactoryContext {
@@ -47,10 +62,20 @@ export interface NativeToolFactoryContext {
   options?: NativeToolSetOptions | undefined;
   commandExecutor: WorkspaceCommandExecutor;
   fileSystem: WorkspaceFileSystem;
+  withFileSystem: <T>(
+    access: "read" | "write",
+    targetPath: string | undefined,
+    operation: (input: NativeToolFileAccess) => Promise<T>
+  ) => Promise<T>;
   assertVisible: (toolName: NativeToolName) => void;
   omitLegacyKeys: <T extends Record<string, unknown>>(value: T, keys: string[]) => Record<string, unknown>;
-  rememberRead: (relativePath: string) => Promise<void>;
-  assertReadBeforeMutating: (relativePath: string, toolName: "Write" | "Edit") => Promise<void>;
+  rememberRead: (relativePath: string, workspaceRoot?: string, fileSystem?: WorkspaceFileSystem) => Promise<void>;
+  assertReadBeforeMutating: (
+    relativePath: string,
+    toolName: "Write" | "Edit",
+    workspaceRoot?: string,
+    fileSystem?: WorkspaceFileSystem
+  ) => Promise<void>;
 }
 
 function normalizeNativeToolName(toolName: string): NativeToolName | undefined {

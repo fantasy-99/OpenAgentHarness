@@ -39,6 +39,8 @@ export function createNativeToolSet(
   const todoPath = path.join(workspaceRoot, ...TODO_STATE_DIRECTORY, `${sessionId}.json`);
   const commandExecutor = options?.commandExecutor ?? createLocalWorkspaceCommandExecutor();
   const fileSystem = options?.fileSystem ?? createLocalWorkspaceFileSystem();
+  const workspaceFileAccessProvider = options?.workspaceFileAccessProvider;
+  const workspace = options?.workspace;
 
   const context: NativeToolFactoryContext = {
     workspaceRoot,
@@ -48,6 +50,29 @@ export function createNativeToolSet(
     options,
     commandExecutor,
     fileSystem,
+    async withFileSystem(access, targetPath, operation) {
+      if (!workspaceFileAccessProvider || !workspace) {
+        return operation({ workspaceRoot, fileSystem, workspace });
+      }
+
+      const lease = await workspaceFileAccessProvider.acquire({
+        workspace,
+        access,
+        ...(targetPath ? { path: targetPath } : {})
+      });
+
+      try {
+        return await operation({
+          workspaceRoot: lease.workspace.rootPath,
+          fileSystem,
+          workspace: lease.workspace
+        });
+      } finally {
+        await lease.release({
+          dirty: access === "write" && !lease.workspace.readOnly && lease.workspace.kind === "project"
+        });
+      }
+    },
     assertVisible(toolName) {
       if (!getVisibleToolNames().includes(toolName)) {
         throw new AppError(403, "native_tool_not_allowed", `Native tool ${toolName} is not allowed for the active agent.`);
@@ -60,20 +85,22 @@ export function createNativeToolSet(
       }
       return clone;
     },
-    async rememberRead(relativePath) {
-      const existing = await readJsonFile<string[]>(fileSystem, readHistoryPath, []);
+    async rememberRead(relativePath, activeWorkspaceRoot = workspaceRoot, activeFileSystem = fileSystem) {
+      const activeReadHistoryPath = path.join(activeWorkspaceRoot, ...READ_STATE_DIRECTORY, `${sessionId}.json`);
+      const existing = await readJsonFile<string[]>(activeFileSystem, activeReadHistoryPath, []);
       if (!existing.includes(relativePath)) {
-        await ensureParentDirectory(fileSystem, readHistoryPath);
-        await fileSystem.writeFile(readHistoryPath, Buffer.from(JSON.stringify([...existing, relativePath].sort(), null, 2), "utf8"));
+        await ensureParentDirectory(activeFileSystem, activeReadHistoryPath);
+        await activeFileSystem.writeFile(activeReadHistoryPath, Buffer.from(JSON.stringify([...existing, relativePath].sort(), null, 2), "utf8"));
       }
     },
-    async assertReadBeforeMutating(relativePath, toolName) {
-      const entry = await fileSystem.stat(path.join(workspaceRoot, relativePath)).catch(() => null);
+    async assertReadBeforeMutating(relativePath, toolName, activeWorkspaceRoot = workspaceRoot, activeFileSystem = fileSystem) {
+      const activeReadHistoryPath = path.join(activeWorkspaceRoot, ...READ_STATE_DIRECTORY, `${sessionId}.json`);
+      const entry = await activeFileSystem.stat(path.join(activeWorkspaceRoot, relativePath)).catch(() => null);
       if (entry?.kind !== "file") {
         return;
       }
 
-      const readHistory = await readJsonFile<string[]>(fileSystem, readHistoryPath, []);
+      const readHistory = await readJsonFile<string[]>(activeFileSystem, activeReadHistoryPath, []);
       if (!readHistory.includes(relativePath)) {
         throw new AppError(
           400,

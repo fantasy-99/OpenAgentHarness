@@ -44,37 +44,39 @@ export function createReadTool(context: NativeToolFactoryContext): EngineToolSet
               }
             : rawInput;
         const input = ReadInputSchema.parse(normalizedInput);
-        const resolved = await resolveWorkspacePath(context.fileSystem, context.workspaceRoot, input.file_path);
-        const entry = await context.fileSystem.stat(resolved.absolutePath).catch(() => null);
-        if (entry?.kind !== "file") {
-          throw new AppError(404, "native_tool_file_not_found", `File ${input.file_path} was not found.`);
-        }
+        return context.withFileSystem("read", input.file_path, async ({ workspaceRoot, fileSystem }) => {
+          const resolved = await resolveWorkspacePath(fileSystem, workspaceRoot, input.file_path);
+          const entry = await fileSystem.stat(resolved.absolutePath).catch(() => null);
+          if (entry?.kind !== "file") {
+            throw new AppError(404, "native_tool_file_not_found", `File ${input.file_path} was not found.`);
+          }
 
-        if (input.pages) {
-          throw new AppError(501, "native_tool_pdf_pages_unsupported", "Read pages is not implemented for PDF files in this runtime.");
-        }
+          if (input.pages) {
+            throw new AppError(501, "native_tool_pdf_pages_unsupported", "Read pages is not implemented for PDF files in this runtime.");
+          }
 
-        const content = (await context.fileSystem.readFile(resolved.absolutePath)).toString("utf8");
-        const offset = input.offset ?? 0;
-        const limit = input.limit ?? DEFAULT_READ_LIMIT;
-        const { rendered, truncated, totalLines } = formatReadLines(content, offset, limit);
-        await context.rememberRead(resolved.relativePath);
-        return formatToolOutput(
-          [
-            ["file_path", resolved.relativePath],
-            ["offset", Math.max(1, offset || 1)],
-            ["returned_lines", rendered.length],
-            ["total_lines", totalLines],
-            ["truncated", truncated]
-          ],
-          [
-            {
-              title: "content",
-              lines: rendered,
-              emptyText: "(empty file)"
-            }
-          ]
-        );
+          const content = (await fileSystem.readFile(resolved.absolutePath)).toString("utf8");
+          const offset = input.offset ?? 0;
+          const limit = input.limit ?? DEFAULT_READ_LIMIT;
+          const { rendered, truncated, totalLines } = formatReadLines(content, offset, limit);
+          await context.rememberRead(resolved.relativePath, workspaceRoot, fileSystem);
+          return formatToolOutput(
+            [
+              ["file_path", resolved.relativePath],
+              ["offset", Math.max(1, offset || 1)],
+              ["returned_lines", rendered.length],
+              ["total_lines", totalLines],
+              ["truncated", truncated]
+            ],
+            [
+              {
+                title: "content",
+                lines: rendered,
+                emptyText: "(empty file)"
+              }
+            ]
+          );
+        });
       }
     }
   };

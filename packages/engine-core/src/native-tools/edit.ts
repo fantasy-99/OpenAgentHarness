@@ -54,34 +54,36 @@ export function createEditTool(context: NativeToolFactoryContext): EngineToolSet
           throw new AppError(400, "native_tool_edit_invalid", "old_string and new_string must differ.");
         }
 
-        const resolved = await resolveWorkspacePath(context.fileSystem, context.workspaceRoot, input.file_path);
-        await context.assertReadBeforeMutating(resolved.relativePath, "Edit");
-        const entry = await context.fileSystem.stat(resolved.absolutePath).catch(() => null);
-        if (entry?.kind !== "file") {
-          throw new AppError(404, "native_tool_file_not_found", `File ${input.file_path} was not found.`);
-        }
+        return context.withFileSystem("write", input.file_path, async ({ workspaceRoot, fileSystem }) => {
+          const resolved = await resolveWorkspacePath(fileSystem, workspaceRoot, input.file_path);
+          await context.assertReadBeforeMutating(resolved.relativePath, "Edit", workspaceRoot, fileSystem);
+          const entry = await fileSystem.stat(resolved.absolutePath).catch(() => null);
+          if (entry?.kind !== "file") {
+            throw new AppError(404, "native_tool_file_not_found", `File ${input.file_path} was not found.`);
+          }
 
-        const content = (await context.fileSystem.readFile(resolved.absolutePath)).toString("utf8");
-        const matches = content.split(input.old_string).length - 1;
-        if (matches === 0) {
-          throw new AppError(400, "native_tool_edit_not_found", "old_string was not found in the target file.");
-        }
-        if (!input.replace_all && matches > 1) {
-          throw new AppError(
-            400,
-            "native_tool_edit_ambiguous",
-            "old_string matched multiple locations. Provide a more specific old_string or set replace_all=true."
-          );
-        }
+          const content = (await fileSystem.readFile(resolved.absolutePath)).toString("utf8");
+          const matches = content.split(input.old_string).length - 1;
+          if (matches === 0) {
+            throw new AppError(400, "native_tool_edit_not_found", "old_string was not found in the target file.");
+          }
+          if (!input.replace_all && matches > 1) {
+            throw new AppError(
+              400,
+              "native_tool_edit_ambiguous",
+              "old_string matched multiple locations. Provide a more specific old_string or set replace_all=true."
+            );
+          }
 
-        const nextContent = input.replace_all
-          ? content.split(input.old_string).join(input.new_string)
-          : content.replace(input.old_string, input.new_string);
-        await context.fileSystem.writeFile(resolved.absolutePath, Buffer.from(nextContent, "utf8"));
-        return formatToolOutput([
-          ["file_path", resolved.relativePath],
-          ["occurrences", input.replace_all ? matches : 1]
-        ]);
+          const nextContent = input.replace_all
+            ? content.split(input.old_string).join(input.new_string)
+            : content.replace(input.old_string, input.new_string);
+          await fileSystem.writeFile(resolved.absolutePath, Buffer.from(nextContent, "utf8"));
+          return formatToolOutput([
+            ["file_path", resolved.relativePath],
+            ["occurrences", input.replace_all ? matches : 1]
+          ]);
+        });
       }
     }
   };

@@ -394,6 +394,7 @@ openai-default:
 
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
+| `OAH_RUN_HEARTBEAT_INTERVAL_MS` | `5000` | run 运行中写入 heartbeat 的间隔；stale run 默认在约 `3 * interval` 后进入恢复。局域网/远端 worker 建议调大，例如 `15000` |
 | `OAH_STALE_RUN_RECOVERY_STRATEGY` | Redis 模式下为 `requeue_running`，否则为 `fail` | stale run 恢复策略，可选 `fail`、`requeue_running`、`requeue_all` |
 | `OAH_STALE_RUN_RECOVERY_MAX_ATTEMPTS` | `1` | 单个 run 最多允许自动重新排队的次数 |
 

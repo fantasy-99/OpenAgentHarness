@@ -40,14 +40,16 @@ export function createWriteTool(context: NativeToolFactoryContext): EngineToolSe
               }
             : rawInput;
         const input = WriteInputSchema.parse(normalizedInput);
-        const resolved = await resolveWorkspacePath(context.fileSystem, context.workspaceRoot, input.file_path);
-        await context.assertReadBeforeMutating(resolved.relativePath, "Write");
-        await context.fileSystem.mkdir(path.dirname(resolved.absolutePath), { recursive: true });
-        await context.fileSystem.writeFile(resolved.absolutePath, Buffer.from(input.content, "utf8"));
-        return formatToolOutput([
-          ["file_path", resolved.relativePath],
-          ["bytes_written", Buffer.byteLength(input.content, "utf8")]
-        ]);
+        return context.withFileSystem("write", input.file_path, async ({ workspaceRoot, fileSystem }) => {
+          const resolved = await resolveWorkspacePath(fileSystem, workspaceRoot, input.file_path);
+          await context.assertReadBeforeMutating(resolved.relativePath, "Write", workspaceRoot, fileSystem);
+          await fileSystem.mkdir(path.dirname(resolved.absolutePath), { recursive: true });
+          await fileSystem.writeFile(resolved.absolutePath, Buffer.from(input.content, "utf8"));
+          return formatToolOutput([
+            ["file_path", resolved.relativePath],
+            ["bytes_written", Buffer.byteLength(input.content, "utf8")]
+          ]);
+        });
       }
     }
   };

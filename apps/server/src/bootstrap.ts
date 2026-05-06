@@ -441,6 +441,10 @@ function parsePositiveIntEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function parsePositiveIntEnvWithMin(name: string, fallback: number, minimum: number): number {
+  return Math.max(minimum, parsePositiveIntEnv(name, fallback));
+}
+
 function parseNonNegativeIntEnv(name: string, fallback: number): number {
   const raw = process.env[name];
   if (!raw || raw.trim().length === 0) {
@@ -519,6 +523,13 @@ function parseStaleRunRecoveryStrategyEnv(
   }
 
   return raw === "fail" || raw === "requeue_running" || raw === "requeue_all" ? raw : fallback;
+}
+
+function workerRegistryMatchesPlacementOwner(
+  worker: { workerId: string; runtimeInstanceId?: string | undefined },
+  ownerWorkerId: string
+): boolean {
+  return worker.workerId === ownerWorkerId || worker.runtimeInstanceId === ownerWorkerId;
 }
 
 function withManagedWorkspaceExternalRef(
@@ -1452,6 +1463,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
         }
       : {}),
     executionServicesMode: assemblyProfile.executionServicesMode,
+    runHeartbeatIntervalMs: parsePositiveIntEnvWithMin("OAH_RUN_HEARTBEAT_INTERVAL_MS", 5_000, 50),
     staleRunRecovery: {
       strategy: parseStaleRunRecoveryStrategyEnv(
         "OAH_STALE_RUN_RECOVERY_STRATEGY",
@@ -2109,6 +2121,16 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
               placement.state === "unassigned"
             ) {
               return undefined;
+            }
+
+            if (redisWorkerRegistry && typeof redisWorkerRegistry.listActive === "function") {
+              const activeWorkers = await redisWorkerRegistry.listActive();
+              const ownerWorker = activeWorkers.find((worker) =>
+                workerRegistryMatchesPlacementOwner(worker, ownerWorkerId)
+              );
+              if (!ownerWorker) {
+                return undefined;
+              }
             }
 
             return {

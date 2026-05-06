@@ -394,6 +394,7 @@ export function buildRuntimeEngineTools(input: {
   defaultModel: string;
   commandExecutor: WorkspaceCommandExecutor;
   fileSystem: WorkspaceFileSystem;
+  workspaceFileAccessProvider?: EngineServiceOptions["workspaceFileAccessProvider"] | undefined;
   executeAction: (
     action: WorkspaceRecord["actions"][string],
     value: unknown,
@@ -421,6 +422,7 @@ export function buildRuntimeEngineTools(input: {
     defaultModel: input.defaultModel,
     commandExecutor: input.commandExecutor,
     fileSystem: input.fileSystem,
+    ...(input.workspaceFileAccessProvider ? { workspaceFileAccessProvider: input.workspaceFileAccessProvider } : {}),
     executeAction: async (action, value, context) => input.executeAction(action, value, context),
     delegateAgent: (options, currentAgentName) => input.delegateAgent(options, currentAgentName),
     awaitDelegatedRuns: (options) => input.awaitDelegatedRuns(options),

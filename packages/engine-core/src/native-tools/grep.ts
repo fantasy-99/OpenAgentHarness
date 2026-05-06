@@ -54,58 +54,59 @@ export function createGrepTool(context: NativeToolFactoryContext): EngineToolSet
             : rawInput;
         const input = GrepInputSchema.parse(normalizedInput);
         const outputMode = input.output_mode ?? "files_with_matches";
-        const root = await resolveWorkspacePath(context.fileSystem, context.workspaceRoot, input.path ?? ".");
-        const entry = await context.fileSystem.stat(root.absolutePath).catch(() => null);
-        if (!entry) {
-          throw new AppError(404, "native_tool_path_not_found", `Path ${input.path ?? "."} was not found.`);
-        }
-
-        const rgArgs = ["--color", "never"];
-        if (input["-i"]) {
-          rgArgs.push("-i");
-        }
-        if (input.type) {
-          rgArgs.push("--type", input.type);
-        }
-        if (input.glob) {
-          rgArgs.push("--glob", input.glob);
-        }
-        if (input.multiline) {
-          rgArgs.push("-U", "--multiline-dotall");
-        }
-
-        if (outputMode === "content") {
-          rgArgs.push("--no-heading");
-          if (input["-n"] !== false) {
-            rgArgs.push("-n");
+        return context.withFileSystem("read", input.path ?? ".", async ({ workspaceRoot, fileSystem }) => {
+          const root = await resolveWorkspacePath(fileSystem, workspaceRoot, input.path ?? ".");
+          const entry = await fileSystem.stat(root.absolutePath).catch(() => null);
+          if (!entry) {
+            throw new AppError(404, "native_tool_path_not_found", `Path ${input.path ?? "."} was not found.`);
           }
-          const contextLines = input.context ?? input["-C"];
-          if (typeof contextLines === "number") {
-            rgArgs.push("-C", String(contextLines));
+
+          const rgArgs = ["--color", "never"];
+          if (input["-i"]) {
+            rgArgs.push("-i");
+          }
+          if (input.type) {
+            rgArgs.push("--type", input.type);
+          }
+          if (input.glob) {
+            rgArgs.push("--glob", input.glob);
+          }
+          if (input.multiline) {
+            rgArgs.push("-U", "--multiline-dotall");
+          }
+
+          if (outputMode === "content") {
+            rgArgs.push("--no-heading");
+            if (input["-n"] !== false) {
+              rgArgs.push("-n");
+            }
+            const contextLines = input.context ?? input["-C"];
+            if (typeof contextLines === "number") {
+              rgArgs.push("-C", String(contextLines));
+            } else {
+              if (typeof input["-B"] === "number") {
+                rgArgs.push("-B", String(input["-B"]));
+              }
+              if (typeof input["-A"] === "number") {
+                rgArgs.push("-A", String(input["-A"]));
+              }
+            }
+          } else if (outputMode === "files_with_matches") {
+            rgArgs.push("--files-with-matches");
           } else {
-            if (typeof input["-B"] === "number") {
-              rgArgs.push("-B", String(input["-B"]));
-            }
-            if (typeof input["-A"] === "number") {
-              rgArgs.push("-A", String(input["-A"]));
-            }
+            rgArgs.push("--count");
           }
-        } else if (outputMode === "files_with_matches") {
-          rgArgs.push("--files-with-matches");
-        } else {
-          rgArgs.push("--count");
-        }
 
-        const rgSearchPath = root.relativePath === "." ? "." : root.relativePath;
-        rgArgs.push(input.pattern, rgSearchPath);
+          const rgSearchPath = root.relativePath === "." ? "." : root.relativePath;
+          rgArgs.push(input.pattern, rgSearchPath);
 
-        try {
-          const rgResult = await context.commandExecutor.runProcess({
-            workspace: {
+          try {
+            const rgResult = await context.commandExecutor.runProcess({
+              workspace: {
               id: "native-tool-workspace",
               kind: "project",
               name: "native-tool-workspace",
-              rootPath: context.workspaceRoot,
+              rootPath: workspaceRoot,
               readOnly: false,
               historyMirrorEnabled: false,
               settings: {},
@@ -132,7 +133,7 @@ export function createGrepTool(context: NativeToolFactoryContext): EngineToolSet
             },
             executable: "rg",
             args: rgArgs,
-            cwd: context.workspaceRoot,
+            cwd: workspaceRoot,
             ...(executionContext.abortSignal ? { signal: executionContext.abortSignal } : {})
           });
           if (rgResult.exitCode !== 0 && rgResult.exitCode !== 1) {
@@ -159,8 +160,8 @@ export function createGrepTool(context: NativeToolFactoryContext): EngineToolSet
               return normalizePathForMatch(line.slice(2));
             }
 
-            if (line.startsWith(context.workspaceRoot + path.sep)) {
-              return normalizePathForMatch(path.relative(context.workspaceRoot, line));
+            if (line.startsWith(workspaceRoot + path.sep)) {
+              return normalizePathForMatch(path.relative(workspaceRoot, line));
             }
 
             return line;
@@ -176,8 +177,8 @@ export function createGrepTool(context: NativeToolFactoryContext): EngineToolSet
             const firstIndex = line.indexOf(":");
             if (firstIndex > 0) {
               const candidate = line.slice(0, firstIndex);
-              const absoluteCandidate = path.isAbsolute(candidate) ? candidate : path.resolve(context.workspaceRoot, candidate);
-              filenames.add(normalizePathForMatch(path.relative(context.workspaceRoot, absoluteCandidate)));
+              const absoluteCandidate = path.isAbsolute(candidate) ? candidate : path.resolve(workspaceRoot, candidate);
+              filenames.add(normalizePathForMatch(path.relative(workspaceRoot, absoluteCandidate)));
             }
           }
 
@@ -207,7 +208,7 @@ export function createGrepTool(context: NativeToolFactoryContext): EngineToolSet
 
           const includeMatcher = input.glob ? globToRegExp(input.glob) : undefined;
           const searchFiles = entry.kind === "directory"
-            ? await collectWorkspaceFiles(context.fileSystem, root.absolutePath)
+            ? await collectWorkspaceFiles(fileSystem, root.absolutePath)
             : [{ absolutePath: root.absolutePath, mtimeMs: 0 }];
           const rows: string[] = [];
 
@@ -217,12 +218,12 @@ export function createGrepTool(context: NativeToolFactoryContext): EngineToolSet
               continue;
             }
 
-            const content = await context.fileSystem.readFile(file.absolutePath).then((buffer) => buffer.toString("utf8")).catch(() => null);
+            const content = await fileSystem.readFile(file.absolutePath).then((buffer) => buffer.toString("utf8")).catch(() => null);
             if (content === null) {
               continue;
             }
 
-            const normalizedPath = normalizePathForMatch(path.relative(context.workspaceRoot, file.absolutePath));
+            const normalizedPath = normalizePathForMatch(path.relative(workspaceRoot, file.absolutePath));
             const lines = content.replaceAll("\r\n", "\n").split("\n");
             let count = 0;
             let matched = false;
@@ -262,6 +263,7 @@ export function createGrepTool(context: NativeToolFactoryContext): EngineToolSet
             items
           });
         }
+        });
       }
     }
   };
