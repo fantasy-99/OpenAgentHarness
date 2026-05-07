@@ -5,9 +5,13 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { createPostgresRuntimePersistence, ensurePostgresSchema } from "@oah/storage-postgres";
+import type { AgentTaskNotificationRecord } from "@oah/engine-core";
 import type { WorkspaceRecord } from "@oah/engine-core";
-import { PostgresWorkspaceArchiveRepository } from "../packages/storage-postgres/src/repositories.ts";
-import { toWorkspaceRecord } from "../packages/storage-postgres/src/row-mappers.ts";
+import {
+  PostgresAgentTaskNotificationRepository,
+  PostgresWorkspaceArchiveRepository
+} from "../packages/storage-postgres/src/repositories.ts";
+import { buildAgentTaskNotificationRow, toWorkspaceRecord } from "../packages/storage-postgres/src/row-mappers.ts";
 
 function sqlText(statement: unknown): string {
   if (typeof statement === "string") {
@@ -193,6 +197,10 @@ describe("storage postgres", () => {
     expect(statements.some((statement) => statement.includes("create table if not exists tool_calls"))).toBe(true);
     expect(statements.some((statement) => statement.includes("create table if not exists hook_runs"))).toBe(true);
     expect(statements.some((statement) => statement.includes("create table if not exists artifacts"))).toBe(true);
+    expect(statements.some((statement) => statement.includes("create table if not exists agent_tasks"))).toBe(true);
+    expect(statements.some((statement) => statement.includes("create table if not exists agent_task_notifications"))).toBe(
+      true
+    );
     expect(statements.some((statement) => statement.includes("create table if not exists history_events"))).toBe(true);
     expect(statements.some((statement) => statement.includes("create table if not exists session_events"))).toBe(true);
   });
@@ -220,10 +228,67 @@ describe("storage postgres", () => {
     expect(typeof persistence.toolCallAuditRepository.create).toBe("function");
     expect(typeof persistence.hookRunAuditRepository.create).toBe("function");
     expect(typeof persistence.artifactRepository.create).toBe("function");
+    expect(typeof persistence.agentTaskRepository.upsert).toBe("function");
+    expect(typeof persistence.agentTaskNotificationRepository.listPendingBySessionId).toBe("function");
     expect(typeof persistence.historyEventRepository.listByWorkspaceId).toBe("function");
 
     await persistence.close();
     expect(end).not.toHaveBeenCalled();
+  });
+
+  it("queues and consumes agent task notifications through the postgres repository", async () => {
+    const notification: AgentTaskNotificationRecord = {
+      id: "atn_pg_1",
+      workspaceId: "ws_pg",
+      parentSessionId: "ses_parent",
+      parentRunId: "run_parent",
+      taskId: "task_1",
+      toolUseId: "toolu_1",
+      childRunId: "run_child",
+      childSessionId: "ses_child",
+      updateType: "completed",
+      content: "<task-notification>done</task-notification>",
+      metadata: { delegatedToolUseId: "toolu_1" },
+      status: "pending",
+      createdAt: "2026-04-10T00:00:01.000Z"
+    };
+    const row = buildAgentTaskNotificationRow(notification);
+
+    const returning = vi.fn(async () => [row]);
+    const onConflictDoUpdate = vi.fn(() => ({ returning }));
+    const values = vi.fn(() => ({ onConflictDoUpdate }));
+    const insert = vi.fn(() => ({ values }));
+
+    const orderBy = vi.fn(async () => [row]);
+    const whereSelect = vi.fn(() => ({ orderBy }));
+    const from = vi.fn(() => ({ where: whereSelect }));
+    const select = vi.fn(() => ({ from }));
+
+    const whereUpdate = vi.fn(async () => undefined);
+    const set = vi.fn(() => ({ where: whereUpdate }));
+    const update = vi.fn(() => ({ set }));
+
+    const repository = new PostgresAgentTaskNotificationRepository({
+      insert,
+      select,
+      update
+    } as never);
+
+    await expect(repository.create(notification)).resolves.toEqual(notification);
+    await expect(repository.listPendingBySessionId("ses_parent")).resolves.toEqual([notification]);
+    await repository.markConsumed({
+      ids: [notification.id],
+      consumedAt: "2026-04-10T00:00:02.000Z"
+    });
+
+    expect(values).toHaveBeenCalledWith(row);
+    expect(onConflictDoUpdate).toHaveBeenCalledTimes(1);
+    expect(whereSelect).toHaveBeenCalledTimes(1);
+    expect(set).toHaveBeenCalledWith({
+      status: "consumed",
+      consumedAt: "2026-04-10T00:00:02.000Z"
+    });
+    expect(whereUpdate).toHaveBeenCalledTimes(1);
   });
 
   it("serializes session event appends per session with a row lock", async () => {

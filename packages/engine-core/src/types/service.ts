@@ -21,6 +21,8 @@ import type {
 } from "./engine.js";
 import type {
   ArtifactRepository,
+  AgentTaskNotificationRepository,
+  AgentTaskRepository,
   HistoryEventRepository,
   HookRunAuditRepository,
   MessageRepository,
@@ -72,6 +74,8 @@ export interface EngineServiceOptions {
   toolCallAuditRepository?: ToolCallAuditRepository | undefined;
   hookRunAuditRepository?: HookRunAuditRepository | undefined;
   artifactRepository?: ArtifactRepository | undefined;
+  agentTaskRepository?: AgentTaskRepository | undefined;
+  agentTaskNotificationRepository?: AgentTaskNotificationRepository | undefined;
   historyEventRepository?: HistoryEventRepository | undefined;
   workspaceArchiveRepository?: WorkspaceArchiveRepository | undefined;
   workspaceDeletionHandler?: WorkspaceDeletionHandler | undefined;

@@ -26,6 +26,7 @@ type ControlPlaneRuntimeKernel = Pick<
   | "deleteWorkspace"
   | "createSession"
   | "listWorkspaceSessions"
+  | "listChildSessions"
   | "triggerActionRun"
   | "getSession"
   | "updateSession"
@@ -83,6 +84,7 @@ export class ControlPlaneEngineService implements ControlPlaneRuntimeOperations 
   readonly deleteWorkspace: EngineService["deleteWorkspace"];
   readonly createSession: EngineService["createSession"];
   readonly listWorkspaceSessions: EngineService["listWorkspaceSessions"];
+  readonly listChildSessions: EngineService["listChildSessions"];
   readonly triggerActionRun: EngineService["triggerActionRun"];
   readonly getSession: EngineService["getSession"];
   readonly updateSession: EngineService["updateSession"];
@@ -223,6 +225,11 @@ export class ControlPlaneEngineService implements ControlPlaneRuntimeOperations 
     this.listWorkspaceSessions = async (workspaceId, pageSize, cursor) => {
       const sessions = await kernel.listWorkspaceSessions(workspaceId, pageSize, cursor);
       await this.#touchWorkspace(workspaceId);
+      return sessions;
+    };
+    this.listChildSessions = async (parentSessionId, pageSize, cursor) => {
+      const sessions = await kernel.listChildSessions(parentSessionId, pageSize, cursor);
+      await this.#touchSessionWorkspace(parentSessionId);
       return sessions;
     };
     this.triggerActionRun = async (input) => {

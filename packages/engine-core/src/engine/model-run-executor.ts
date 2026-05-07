@@ -3,7 +3,7 @@ import type { ChatMessage, Message, ModelGenerateResponse, Run, RunStep, Session
 import { AppError } from "../errors.js";
 import { textContent } from "../execution-message-content.js";
 import {
-  activeToolNamesForAgent as resolveActiveToolNamesForAgent,
+  modelActiveToolNamesForAgent as resolveActiveToolNamesForAgent,
   visibleEnabledToolServers as listVisibleEnabledToolServers,
   toolSourceType as resolveToolSourceType
 } from "../capabilities/engine-capabilities.js";
@@ -27,7 +27,7 @@ import type { ToolExecutionService } from "./tool-execution.js";
 function isDelegatedTerminalUpdateMessage(message: Message): boolean {
   const metadata = message.metadata as { delegatedUpdate?: unknown } | undefined;
   return (
-    message.role === "tool" &&
+    (message.role === "tool" || message.role === "user") &&
     (metadata?.delegatedUpdate === "completed" || metadata?.delegatedUpdate === "failed")
   );
 }
@@ -35,7 +35,7 @@ function isDelegatedTerminalUpdateMessage(message: Message): boolean {
 interface ModelRunExecutorExecutionServices {
   agentCoordination: Pick<
     AgentCoordinationService,
-    "delegatedRunRecords" | "persistUnreportedTerminalDelegatedRuns"
+    "delegatedRunRecords" | "persistUnreportedTerminalDelegatedRuns" | "drainPendingTaskNotifications"
   >;
   toolExecution: Pick<ToolExecutionService, "runStepRetryPolicy" | "wrapEngineToolsForEvents">;
 }
@@ -146,7 +146,7 @@ export interface ModelRunExecutorDependencies {
   appendEvent: (input: {
     sessionId: string;
     runId: string;
-    event: "message.delta" | "tool.completed";
+    event: "message.delta" | "tool.started" | "tool.completed" | "tool.failed";
     data: Record<string, unknown>;
   }) => Promise<unknown>;
   serializeModelCallStepInput: (
@@ -292,6 +292,25 @@ export class ModelRunExecutor {
       );
       return this.#applyBeforeModelHooks(workspace, session, latestRun, modelInput);
     };
+    const drainPendingTaskNotificationsIntoHistory = async (targetRunId: string) => {
+      const drainedNotifications = await execution.agentCoordination.drainPendingTaskNotifications({
+        parentSessionId: session.id,
+        runId: targetRunId,
+        parentAgentName: executionContext.currentAgentName
+      });
+      if (drainedNotifications.messageIds.length === 0) {
+        return drainedNotifications;
+      }
+
+      const latestMessages = await this.#repairSessionHistoryIfNeeded(
+        session.id,
+        await this.#messageRepository.listBySessionId(session.id)
+      );
+      allMessages.length = 0;
+      allMessages.push(...latestMessages);
+      return drainedNotifications;
+    };
+    await drainPendingTaskNotificationsIntoHistory(run.id);
     let hookedModelInput = await buildInitialHookedModelInput();
     const engineTools = this.#buildEngineTools(workspace, run, session, executionContext);
     const activeToolServers = listVisibleEnabledToolServers(workspace, executionContext.currentAgentName);
@@ -468,12 +487,14 @@ export class ModelRunExecutor {
       }
 
       const latestRun = await this.#getRun(run.id);
-      const persistedDelegations = await execution.agentCoordination.persistUnreportedTerminalDelegatedRuns({
+      await execution.agentCoordination.persistUnreportedTerminalDelegatedRuns({
+        workspace,
         parentSessionId: session.id,
         parentRun: latestRun,
         parentAgentName: executionContext.currentAgentName
       });
       const knownMessageIds = new Set(allMessages.map((message) => message.id));
+      const drainedNotifications = await drainPendingTaskNotificationsIntoHistory(latestRun.id);
       const latestMessages = await this.#repairSessionHistoryIfNeeded(
         session.id,
         await this.#messageRepository.listBySessionId(session.id)
@@ -481,7 +502,7 @@ export class ModelRunExecutor {
       const hasUnseenDelegatedUpdate = latestMessages.some(
         (message) => isDelegatedTerminalUpdateMessage(message) && !knownMessageIds.has(message.id)
       );
-      if (persistedDelegations.childRunIds.length > 0 || hasUnseenDelegatedUpdate) {
+      if (hasUnseenDelegatedUpdate || drainedNotifications.messageIds.length > 0) {
         continuationCount += 1;
         if (continuationCount > (workspace.agents[executionContext.currentAgentName]?.policy?.maxSteps ?? 8)) {
           throw new AppError(

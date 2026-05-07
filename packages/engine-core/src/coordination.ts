@@ -24,6 +24,10 @@ export interface SessionRunQueuePressure {
   uniqueReadySessionCount?: number | undefined;
   subagentReadySessionCount?: number | undefined;
   subagentReadyQueueDepth?: number | undefined;
+  preferredReadySessionCount?: number | undefined;
+  preferredReadyQueueDepth?: number | undefined;
+  preferredSubagentReadySessionCount?: number | undefined;
+  preferredSubagentReadyQueueDepth?: number | undefined;
   lockedReadySessionCount?: number | undefined;
   staleReadySessionCount?: number | undefined;
   oldestSchedulableReadyAgeMs?: number | undefined;

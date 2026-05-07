@@ -1,7 +1,11 @@
 import type { Message, Run, RunStep, Session } from "@oah/api-contracts";
 
 import { createId, nowIso } from "../utils.js";
-import { toolRetryPolicy as resolveToolRetryPolicy, toolSourceType as resolveToolSourceType } from "../capabilities/engine-capabilities.js";
+import {
+  isToolVisibleToAgent,
+  toolRetryPolicy as resolveToolRetryPolicy,
+  toolSourceType as resolveToolSourceType
+} from "../capabilities/engine-capabilities.js";
 import type {
   RunQueuePriority,
   EngineServiceOptions,
@@ -53,6 +57,9 @@ export interface CreateEngineExecutionServicesDependencies {
   workspaceFileAccessProvider?: WorkspaceFileAccessProvider | undefined;
   hookRunAuditRepository: EngineServiceOptions["hookRunAuditRepository"];
   toolCallAuditRepository: EngineServiceOptions["toolCallAuditRepository"];
+  agentTaskRepository: EngineServiceOptions["agentTaskRepository"];
+  agentTaskNotificationRepository: EngineServiceOptions["agentTaskNotificationRepository"];
+  runStepRepository: EngineServiceOptions["runStepRepository"];
   sessionRepository: EngineServiceOptions["sessionRepository"];
   messageRepository: EngineServiceOptions["messageRepository"];
   runRepository: EngineServiceOptions["runRepository"];
@@ -157,6 +164,7 @@ export function createEngineExecutionServices(
         output
       ),
     resolveToolRetryPolicy,
+    isToolVisibleToAgent,
     resolveToolSourceType,
     timeoutMsFromSeconds,
     createAbortError,
@@ -192,7 +200,10 @@ export function createEngineExecutionServices(
     persistence: {
       sessions: dependencies.sessionRepository,
       messages: dependencies.messageRepository,
-      runs: dependencies.runRepository
+      runs: dependencies.runRepository,
+      runSteps: dependencies.runStepRepository,
+      agentTasks: dependencies.agentTaskRepository,
+      agentTaskNotifications: dependencies.agentTaskNotificationRepository
     },
     lifecycle: {
       getRun: (runId) => dependencies.getRun(runId),

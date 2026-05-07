@@ -113,6 +113,14 @@ export function isMessageRole(value: unknown): value is Message["role"] {
   return value === "system" || value === "user" || value === "assistant" || value === "tool";
 }
 
+export function isMessageOrigin(value: unknown): value is NonNullable<Message["origin"]> {
+  return value === "user" || value === "engine" || value === "hook" || value === "tool" || value === "system";
+}
+
+export function isMessageMode(value: unknown): value is NonNullable<Message["mode"]> {
+  return value === "prompt" || value === "task-notification";
+}
+
 export function isMessagePartList(value: unknown): value is MessagePart[] {
   if (!Array.isArray(value)) {
     return false;

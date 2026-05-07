@@ -1,7 +1,12 @@
 import type { Run, Session } from "@oah/api-contracts";
 
 import { createRunActionTool } from "./action-dispatch.js";
-import { createAgentSwitchTool, createSubAgentTool } from "./agent-control.js";
+import {
+  createAgentSwitchTool,
+  createSubAgentTool,
+  createTaskOutputTool,
+  renderTaskOutputResult
+} from "./agent-control.js";
 import { AppError } from "../errors.js";
 import {
   createNativeToolSet,
@@ -188,6 +193,18 @@ export function activeToolNamesForAgent(
     return undefined;
   }
 
+  const engineToolNames = visibleEngineToolNamesForAgent(workspace, activeAgentName);
+  return engineToolNames.length > 0 ? engineToolNames : undefined;
+}
+
+export function modelActiveToolNamesForAgent(
+  workspace: WorkspaceRecord,
+  activeAgentName: string
+): string[] | undefined {
+  return activeToolNamesForAgent(workspace, activeAgentName);
+}
+
+export function visibleEngineToolNamesForAgent(workspace: WorkspaceRecord, activeAgentName: string): string[] {
   const names: string[] = [];
   names.push(...visibleNativeToolNames(workspace, activeAgentName));
   if (visibleLlmActions(workspace, activeAgentName).length > 0) {
@@ -201,8 +218,13 @@ export function activeToolNamesForAgent(
   }
   if (canDelegateFromAgent(workspace, activeAgentName)) {
     names.push("SubAgent");
+    names.push("TaskOutput");
   }
-  return names.length > 0 ? names : undefined;
+  return names;
+}
+
+export function isToolVisibleToAgent(workspace: WorkspaceRecord, activeAgentName: string, toolName: string): boolean {
+  return visibleEngineToolNamesForAgent(workspace, activeAgentName).includes(toolName);
 }
 
 export function engineToolNamesForCatalog(workspace: WorkspaceRecord): string[] {
@@ -227,6 +249,7 @@ export function engineToolNamesForCatalog(workspace: WorkspaceRecord): string[] 
     }
     if (canDelegateFromAgent(workspace, agentName)) {
       names.add("SubAgent");
+      names.add("TaskOutput");
     }
   }
 
@@ -264,7 +287,7 @@ export function toolSourceType(toolName: string): EngineToolSourceType {
     return "skill";
   }
 
-  if (toolName === "SubAgent" || toolName === "AgentSwitch" || toolName.startsWith("agent.")) {
+  if (toolName === "SubAgent" || toolName === "TaskOutput" || toolName === "AgentSwitch" || toolName.startsWith("agent.")) {
     return "agent";
   }
 
@@ -320,14 +343,64 @@ export interface BuildEngineToolsInput {
       handoffSummary?: string | undefined;
       taskId?: string | undefined;
       notifyParentOnCompletion?: boolean | undefined;
+      toolUseId?: string | undefined;
     },
     currentAgentName: string
-  ) => Promise<{ childSessionId: string; childRunId: string; targetAgentName: string }>;
+  ) => Promise<{
+    childSessionId: string;
+    childRunId: string;
+    targetAgentName: string;
+    outputFile?: string | undefined;
+    outputRef?: string | undefined;
+    canReadOutputFile?: boolean | undefined;
+  }>;
+  readAgentTaskOutput: (input: {
+    taskId: string;
+    block?: boolean | undefined;
+    timeoutMs?: number | undefined;
+    abortSignal?: AbortSignal | undefined;
+  }) => Promise<{
+    retrievalStatus: "success" | "timeout" | "not_ready";
+    task: {
+      taskId: string;
+      taskType: "local_agent";
+      status: "pending" | "running" | "completed" | "failed" | "killed";
+      description: string;
+      output: string;
+      outputRef: string;
+      outputFile?: string | undefined;
+      result?: string | undefined;
+      error?: string | undefined;
+    } | null;
+  }>;
   awaitDelegatedRuns: (input: { runIds: string[]; mode: "all" | "any" }) => Promise<string>;
   switchAgent: (targetAgentName: string, currentAgentName: string) => Promise<void>;
   commandExecutor?: import("../types.js").WorkspaceCommandExecutor | undefined;
   fileSystem?: WorkspaceFileSystem | undefined;
   workspaceFileAccessProvider?: WorkspaceFileAccessProvider | undefined;
+}
+
+function taskIdFromAgentTaskOutputTarget(targetPath: string, sessionId: string): string | null {
+  const trimmed = targetPath.trim();
+  const uriMatch = /^agent-task:\/\/([^/]+)\/output$/.exec(trimmed);
+  if (uriMatch?.[1]) {
+    return decodeURIComponent(uriMatch[1]);
+  }
+
+  const normalized = trimmed.replaceAll("\\", "/");
+  const taskOutputPathMatch = new RegExp(`/${sessionId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/tasks/([^/]+)\\.output$`).exec(
+    normalized
+  );
+  if (taskOutputPathMatch?.[1]) {
+    return decodeURIComponent(taskOutputPathMatch[1]);
+  }
+
+  const stateOutputPathMatch = /(?:^|\/)\.openharness\/state\/tasks\/([^/]+)\.output$/.exec(normalized);
+  if (stateOutputPathMatch?.[1]) {
+    return decodeURIComponent(stateOutputPathMatch[1]);
+  }
+
+  return null;
 }
 
 function configuredNativeToolNameSet(workspace: WorkspaceRecord): Set<string> {
@@ -358,6 +431,22 @@ export function buildEngineTools(input: BuildEngineToolsInput): EngineToolSet {
           modelGateway,
           webFetchModel: defaultModel,
           workspace,
+          readVirtualFile: async ({ filePath, abortSignal }) => {
+            const taskId = taskIdFromAgentTaskOutputTarget(filePath, session.id);
+            if (!taskId) {
+              return null;
+            }
+
+            const result = await input.readAgentTaskOutput({
+              taskId,
+              block: false,
+              abortSignal
+            });
+            return {
+              filePath,
+              content: renderTaskOutputResult(result)
+            };
+          },
           ...(input.commandExecutor ? { commandExecutor: input.commandExecutor } : {}),
           ...(input.fileSystem ? { fileSystem: input.fileSystem } : {}),
           ...(input.workspaceFileAccessProvider ? { workspaceFileAccessProvider: input.workspaceFileAccessProvider } : {})
@@ -376,6 +465,7 @@ export function buildEngineTools(input: BuildEngineToolsInput): EngineToolSet {
       async (agentInput, currentAgentName) => input.delegateAgent(agentInput, currentAgentName),
       async (awaitInput) => input.awaitDelegatedRuns(awaitInput)
     ),
+    ...createTaskOutputTool((taskOutputInput) => input.readAgentTaskOutput(taskOutputInput)),
     ...createAgentSwitchTool(
       getCurrentAgentName,
       () => workspace.agents[getCurrentAgentName()],

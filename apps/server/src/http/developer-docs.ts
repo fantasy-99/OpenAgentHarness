@@ -104,6 +104,7 @@ export function buildApiIndex(request: FastifyRequest) {
         "POST /api/v1/workspaces/{workspaceId}/sessions",
         "GET /api/v1/workspaces/{workspaceId}/sessions",
         "GET /api/v1/sessions/{sessionId}",
+        "GET /api/v1/sessions/{sessionId}/children",
         "PATCH /api/v1/sessions/{sessionId}",
         "DELETE /api/v1/sessions/{sessionId}"
       ]
@@ -912,6 +913,7 @@ export function buildDeveloperDocsHtml(request: FastifyRequest): string {
               <li><code>POST /api/v1/workspaces/{workspaceId}/sessions</code> Create a session</li>
               <li><code>POST /api/v1/sessions/{sessionId}/messages</code> Queue a new user message by default; pass <code>runningRunBehavior: "interrupt"</code> to cancel the active run first</li>
               <li><code>GET /api/v1/sessions/{sessionId}/queue</code> List the ordered service-side follow-up queue</li>
+              <li><code>GET /api/v1/sessions/{sessionId}/children</code> List direct child/subagent sessions</li>
               <li><code>GET /api/v1/sessions/{sessionId}/runs</code> Inspect runs</li>
               <li><code>GET /api/v1/runs/{runId}/steps</code> Inspect run steps</li>
               <li><code>POST /api/v1/runs/{runId}/guide</code> Promote a queued message and request interruption of the active run</li>

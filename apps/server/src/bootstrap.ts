@@ -2110,15 +2110,20 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
           listWorkspaceRuntimes: async () => {
             const { listWorkspaceRuntimes } = await loadConfigRuntimesModule();
             const runtimesByName = new Map<string, { name: string }>();
-            for (const runtime of await listWorkspaceRuntimes(config.paths.runtime_dir)) {
-              runtimesByName.set(runtime.name, runtime);
-            }
 
             if (useRuntimeObjectStorageManagement) {
+              for (const runtimeName of await objectStorageModule!.listRuntimeNamesFromObjectStore(config.object_storage!)) {
+                runtimesByName.set(runtimeName, { name: runtimeName });
+              }
+
               for (const runtimeCacheDir of resolveRuntimeUploadCacheDirs(config.paths)) {
                 for (const runtime of await listWorkspaceRuntimes(runtimeCacheDir)) {
                   runtimesByName.set(runtime.name, runtime);
                 }
+              }
+            } else {
+              for (const runtime of await listWorkspaceRuntimes(config.paths.runtime_dir)) {
+                runtimesByName.set(runtime.name, runtime);
               }
             }
 
@@ -2134,9 +2139,11 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
             if (useRuntimeObjectStorageManagement) {
               const runtimeCacheDir = await prepareRuntimeUploadCacheDir(config.paths);
               const runtimeCacheTarget = path.join(runtimeCacheDir, input.runtimeName);
-              const visibleRuntimeExists = await pathExistsForBootstrap(path.join(config.paths.runtime_dir, input.runtimeName));
+              const objectStorageRuntimeExists = (
+                await objectStorageModule!.listRuntimeNamesFromObjectStore(config.object_storage!)
+              ).includes(input.runtimeName);
               const cachedRuntimeExists = await runtimeExistsInUploadCache(config.paths, input.runtimeName);
-              const runtimeExists = visibleRuntimeExists || cachedRuntimeExists;
+              const runtimeExists = objectStorageRuntimeExists || cachedRuntimeExists;
 
               if (!runtimeExists && input.requireExisting) {
                 throw new AppError(404, "runtime_not_found", `Runtime "${input.runtimeName}" does not exist`);
@@ -2175,10 +2182,12 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
           deleteWorkspaceRuntime: async (input: { runtimeName: string }) => {
             const { deleteWorkspaceRuntime } = await loadConfigRuntimesModule();
             if (useRuntimeObjectStorageManagement) {
-              const visibleRuntimeExists = await pathExistsForBootstrap(path.join(config.paths.runtime_dir, input.runtimeName));
+              const objectStorageRuntimeExists = (
+                await objectStorageModule!.listRuntimeNamesFromObjectStore(config.object_storage!)
+              ).includes(input.runtimeName);
               const cachedRuntimeExists = await runtimeExistsInUploadCache(config.paths, input.runtimeName);
 
-              if (!visibleRuntimeExists && !cachedRuntimeExists) {
+              if (!objectStorageRuntimeExists && !cachedRuntimeExists) {
                 throw new AppError(404, "runtime_not_found", `Runtime "${input.runtimeName}" does not exist`);
               }
 

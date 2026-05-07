@@ -91,6 +91,8 @@ export class FakeModelGateway implements ModelGateway {
               toolCallId?: string | undefined;
               delayMs?: number | undefined;
               continueOnError?: boolean | undefined;
+              output?: unknown;
+              error?: unknown;
             }> | undefined;
             toolBatches?:
               | Array<
@@ -100,6 +102,8 @@ export class FakeModelGateway implements ModelGateway {
                     toolCallId?: string | undefined;
                     delayMs?: number | undefined;
                     continueOnError?: boolean | undefined;
+                    output?: unknown;
+                    error?: unknown;
                   }>
                 >
               | undefined;
@@ -222,6 +226,8 @@ export class FakeModelGateway implements ModelGateway {
               toolCallId?: string | undefined;
               delayMs?: number | undefined;
               continueOnError?: boolean | undefined;
+              output?: unknown;
+              error?: unknown;
             },
             toolIndex: number
           ) => {
@@ -246,12 +252,19 @@ export class FakeModelGateway implements ModelGateway {
               const toolDefinition = options?.tools?.[toolStep.toolName];
 
               try {
-                const toolResult = toolDefinition
-                  ? await toolDefinition.execute(toolStep.input, {
-                      abortSignal: options?.signal,
-                      toolCallId
-                    })
-                  : `Error: Tool "${toolStep.toolName}" was not registered.`;
+                if (toolStep.error !== undefined) {
+                  throw toolStep.error;
+                }
+
+                const toolResult =
+                  toolStep.output !== undefined
+                    ? toolStep.output
+                    : toolDefinition
+                      ? await toolDefinition.execute(toolStep.input, {
+                          abortSignal: options?.signal,
+                          toolCallId
+                        })
+                      : `Error: Tool "${toolStep.toolName}" was not registered.`;
 
                 await options?.onToolCallFinish?.({
                   toolCallId,
@@ -310,6 +323,11 @@ export class FakeModelGateway implements ModelGateway {
           await options?.onStepFinish?.({
             finishReason: "tool-calls",
             ...(preToolEmitted.length > 0 ? { text: preToolEmitted } : {}),
+            usage: {
+              inputTokens: 10,
+              outputTokens: Math.max(0, preToolEmitted.length),
+              totalTokens: 10 + Math.max(0, preToolEmitted.length)
+            },
             ...(index === 0 && Array.isArray(scenario?.preToolContent) ? { content: scenario.preToolContent } : {}),
             ...(index === 0 && Array.isArray(scenario?.preToolReasoning) ? { reasoning: scenario.preToolReasoning } : {}),
             toolCalls: executedBatch.map((entry) => entry.toolCall),
@@ -362,6 +380,11 @@ export class FakeModelGateway implements ModelGateway {
 
         await options?.onStepFinish?.({
           text: emitted,
+          usage: {
+            inputTokens: 10,
+            outputTokens: emitted.length,
+            totalTokens: emitted.length + 10
+          },
           ...(Array.isArray(scenario?.content) ? { content: scenario.content } : {}),
           ...(Array.isArray(scenario?.reasoning) ? { reasoning: scenario.reasoning } : {}),
           ...(scenario?.stepRequest ? { request: scenario.stepRequest } : {}),

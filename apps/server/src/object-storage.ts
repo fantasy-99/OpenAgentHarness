@@ -3231,6 +3231,37 @@ export async function syncRuntimeDirectoryFromObjectStore(
   }
 }
 
+export async function listRuntimeNamesFromObjectStore(
+  config: ObjectStorageConfig,
+  options?: { store?: DirectoryObjectStore | undefined }
+): Promise<string[]> {
+  const store = options?.store ?? new S3DirectoryStore(config);
+  const normalizedConfig = normalizeObjectStorageConfig(config);
+  const runtimePrefix = normalizePrefix(normalizedConfig.mirrors?.key_prefixes?.runtime ?? "runtime");
+
+  try {
+    const entries = await collectObjectStorageEntries(store, runtimePrefix);
+    const names = new Set<string>();
+    const prefixWithSlash = runtimePrefix ? `${runtimePrefix}/` : "";
+
+    for (const entry of entries) {
+      const relativeKey = prefixWithSlash && entry.key.startsWith(prefixWithSlash)
+        ? entry.key.slice(prefixWithSlash.length)
+        : entry.key;
+      const runtimeName = relativeKey.split("/")[0]?.trim() ?? "";
+      if (runtimeName && !runtimeName.startsWith(".")) {
+        names.add(runtimeName);
+      }
+    }
+
+    return [...names].sort((left, right) => left.localeCompare(right));
+  } finally {
+    if (!options?.store) {
+      await (store as S3DirectoryStore).close();
+    }
+  }
+}
+
 export async function deleteRuntimeFromObjectStore(
   config: ObjectStorageConfig,
   runtimeName: string,

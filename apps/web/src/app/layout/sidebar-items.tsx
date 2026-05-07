@@ -1,6 +1,6 @@
 import { memo } from "react";
 
-import { AlertCircle, ChevronDown, ChevronRight, Folder, LoaderCircle, PencilLine, Trash2 } from "lucide-react";
+import { AlertCircle, Bot, ChevronDown, ChevronRight, Folder, LoaderCircle, PencilLine, Trash2 } from "lucide-react";
 import type { Run } from "@oah/api-contracts";
 
 import { Button } from "@/components/ui/button";
@@ -209,9 +209,12 @@ function SessionNavItemImpl(props: SessionNavItemProps) {
         <TooltipTrigger asChild>
           <div className="flex min-w-0 flex-1 items-center gap-2 text-left">
             <div className="min-w-0 flex-1 select-text leading-tight">
-              <p className={`truncate ${titleToneClass}`}>
-                {props.entry.title || "Untitled session"}
-              </p>
+              <div className="flex min-w-0 items-center gap-1.5">
+                {isChild ? <Bot className="h-3 w-3 shrink-0 text-muted-foreground/58" /> : null}
+                <p className={`truncate ${titleToneClass}`}>
+                  {props.entry.title || "Untitled session"}
+                </p>
+              </div>
             </div>
             {hasActiveRunStatus ? (
               <LoaderCircle
@@ -239,6 +242,7 @@ function SessionNavItemImpl(props: SessionNavItemProps) {
             </div>
             <DetailLine label="id" value={props.entry.id} mono />
             {props.entry.parentSessionId ? <DetailLine label="parent" value={props.entry.parentSessionId} mono /> : null}
+            {props.entry.parentSessionId ? <DetailLine label="type" value="subagent session" /> : null}
             {props.hasChildren ? <DetailLine label="children" value={props.expanded ? "expanded" : "collapsed"} /> : null}
             {props.runStatus ? <DetailLine label="status" value={props.runStatus} /> : null}
             <DetailLine label="created" value={formatTimestamp(props.entry.createdAt)} />

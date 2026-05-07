@@ -20,4 +20,11 @@ export type {
   EngineMessageMetadata,
   EngineMessageRole
 } from "./engine/engine-messages.js";
-export type { EngineMessageRepository } from "./types.js";
+export type {
+  AgentTaskNotificationRecord,
+  AgentTaskNotificationRepository,
+  AgentTaskRecord,
+  AgentTaskRepository,
+  AgentTaskStatus,
+  EngineMessageRepository
+} from "./types.js";

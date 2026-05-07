@@ -37,37 +37,31 @@ export function createWebFetchTool(context: NativeToolFactoryContext): EngineToo
         const startedAt = Date.now();
         const normalizedUrl = normalizeUrl(input.url);
         const response = await fetchWithTimeout(normalizedUrl, DEFAULT_BASH_TIMEOUT_MS, executionContext.abortSignal);
-        const contentType = response.headers.get("content-type") ?? "text/plain";
-        const finalUrl = response.url || normalizedUrl;
 
-        if (response.redirected) {
-          const requestedHost = new URL(normalizedUrl).host;
-          const finalHost = new URL(finalUrl).host;
-          if (requestedHost !== finalHost) {
-            return formatToolOutput(
-              [
-                ["url", normalizedUrl],
-                ["status_code", response.status],
-                ["status_text", response.statusText],
-                ["redirect_url", finalUrl],
-                ["duration_ms", Date.now() - startedAt]
-              ],
-              [
-                {
-                  title: "message",
-                  lines: ["The URL redirected to a different host. Make a new WebFetch request with the redirect URL."]
-                }
-              ]
-            );
-          }
+        if (response.type === "redirect") {
+          return formatToolOutput(
+            [
+              ["url", normalizedUrl],
+              ["status_code", response.status],
+              ["status_text", response.statusText],
+              ["redirect_url", response.redirectUrl],
+              ["duration_ms", Date.now() - startedAt]
+            ],
+            [
+              {
+                title: "message",
+                lines: ["The URL redirected to a different host. Make a new WebFetch request with the redirect URL."]
+              }
+            ]
+          );
         }
 
-        const body = await response.text();
+        const contentType = response.headers.get("content-type") ?? "text/plain";
         const renderedContent = isLikelyBinaryContent(contentType)
           ? "[binary content omitted]"
           : contentType.includes("html")
-            ? htmlToText(body)
-            : body;
+            ? htmlToText(response.body)
+            : response.body;
         const result = await answerWebFetchPrompt(
           context.options,
           renderedContent,
@@ -77,10 +71,10 @@ export function createWebFetchTool(context: NativeToolFactoryContext): EngineToo
 
         return formatToolOutput(
           [
-            ["url", finalUrl],
+            ["url", response.url],
             ["status_code", response.status],
             ["status_text", response.statusText],
-            ["bytes", Buffer.byteLength(body, "utf8")],
+            ["bytes", response.bytes],
             ["duration_ms", Date.now() - startedAt]
           ],
           [

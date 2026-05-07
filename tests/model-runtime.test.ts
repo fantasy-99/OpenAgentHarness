@@ -263,6 +263,41 @@ describe("model runtime mcp tools", () => {
     });
   }, 15_000);
 
+  it("checks MCP include/exclude allowlists again at execution time", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "oah-mcp-"));
+    const serverPath = path.join(tempDir, "fake-mcp.cjs");
+    await writeFile(serverPath, `${MCP_SERVER_SOURCE}\n`, "utf8");
+    const server = {
+      name: "docs-server",
+      enabled: true,
+      transportType: "stdio" as const,
+      command: `node ${JSON.stringify(serverPath)}`,
+      toolPrefix: "mcp.docs",
+      include: ["search"]
+    };
+
+    const prepared = await prepareToolServers([server]);
+    preparedClosers.push(() => prepared.close());
+
+    server.include = ["fetch"];
+
+    await expect(
+      (prepared.tools["mcp.docs.search"].execute as (...args: unknown[]) => Promise<unknown>)(
+        { query: "blocked" },
+        {}
+      )
+    ).rejects.toMatchObject({
+      code: "mcp_tool_not_available_for_agent",
+      statusCode: 403
+    });
+    await expect(
+      (prepared.tools.search.execute as (...args: unknown[]) => Promise<unknown>)({ query: "blocked-alias" }, {})
+    ).rejects.toMatchObject({
+      code: "mcp_tool_not_available_for_agent",
+      statusCode: 403
+    });
+  }, 15_000);
+
   it("skips unreachable remote MCP servers instead of exposing them to the model", async () => {
     const tempDir = await mkdtemp(path.join(tmpdir(), "oah-mcp-"));
     const serverPath = path.join(tempDir, "fake-mcp.cjs");

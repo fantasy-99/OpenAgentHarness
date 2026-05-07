@@ -1,5 +1,7 @@
 import type {
   ArtifactRecord,
+  AgentTaskNotificationRecord,
+  AgentTaskRecord,
   HookRunAuditRecord,
   HistoryEventRecord,
   Message,
@@ -189,6 +191,50 @@ export const artifacts = pgTable("artifacts", {
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull()
 });
 
+export const agentTasks = pgTable("agent_tasks", {
+  taskId: text("task_id").primaryKey(),
+  workspaceId: text("workspace_id")
+    .notNull()
+    .references(() => workspaces.id, { onDelete: "cascade" }),
+  parentSessionId: text("parent_session_id").notNull(),
+  parentRunId: text("parent_run_id").notNull(),
+  childSessionId: text("child_session_id").notNull(),
+  childRunId: text("child_run_id").notNull(),
+  toolUseId: text("tool_use_id"),
+  targetAgentName: text("target_agent_name").notNull(),
+  parentAgentName: text("parent_agent_name").notNull(),
+  status: text("status").notNull(),
+  description: text("description"),
+  handoffSummary: text("handoff_summary"),
+  outputRef: text("output_ref").notNull(),
+  outputFile: text("output_file"),
+  finalText: text("final_text"),
+  errorMessage: text("error_message"),
+  usage: jsonb("usage").$type<AgentTaskRecord["usage"]>(),
+  notifiedAt: timestamp("notified_at", { withTimezone: true, mode: "string" }),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull()
+});
+
+export const agentTaskNotifications = pgTable("agent_task_notifications", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id")
+    .notNull()
+    .references(() => workspaces.id, { onDelete: "cascade" }),
+  parentSessionId: text("parent_session_id").notNull(),
+  parentRunId: text("parent_run_id").notNull(),
+  taskId: text("task_id").notNull(),
+  toolUseId: text("tool_use_id"),
+  childRunId: text("child_run_id").notNull(),
+  childSessionId: text("child_session_id").notNull(),
+  updateType: text("update_type").notNull(),
+  content: text("content").notNull(),
+  metadata: jsonb("metadata").$type<AgentTaskNotificationRecord["metadata"]>().notNull(),
+  status: text("status").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true, mode: "string" })
+});
+
 export const historyEvents = pgTable("history_events", {
   id: serial("id").primaryKey(),
   workspaceId: text("workspace_id")
@@ -238,6 +284,8 @@ export const oahPostgresSchema = {
   toolCalls,
   hookRuns,
   artifacts,
+  agentTasks,
+  agentTaskNotifications,
   historyEvents,
   archives
 };

@@ -921,6 +921,107 @@ describe("storage sqlite", () => {
     expect(await exists(path.join(shadowRoot, workspace.id, "history.db"))).toBe(true);
   });
 
+  it("stores pending agent task notifications in the workspace database", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-sqlite-task-notifications-"));
+    tempDirs.push(tempDir);
+
+    const workspaceRoot = path.join(tempDir, "workspace");
+    const shadowRoot = path.join(tempDir, "shadow");
+    const workspace = createWorkspace({
+      id: "ws_sqlite_task_notifications",
+      rootPath: workspaceRoot
+    });
+    const persistence = await createSQLiteRuntimePersistence({ shadowRoot });
+    await persistence.workspaceRepository.upsert(workspace);
+    await persistence.sessionRepository.create({
+      id: "ses_parent",
+      workspaceId: workspace.id,
+      subjectRef: "dev:test",
+      activeAgentName: "assistant",
+      status: "active",
+      createdAt: "2026-04-10T00:00:00.000Z",
+      updatedAt: "2026-04-10T00:00:00.000Z"
+    });
+
+    const notification = {
+      id: "atn_sqlite_1",
+      workspaceId: workspace.id,
+      parentSessionId: "ses_parent",
+      parentRunId: "run_parent",
+      taskId: "task_1",
+      toolUseId: "toolu_1",
+      childRunId: "run_child",
+      childSessionId: "ses_child",
+      updateType: "completed" as const,
+      content: "<task-notification>done</task-notification>",
+      metadata: { delegatedToolUseId: "toolu_1" },
+      status: "pending" as const,
+      createdAt: "2026-04-10T00:00:01.000Z"
+    };
+
+    await persistence.agentTaskNotificationRepository.create(notification);
+
+    await expect(persistence.agentTaskNotificationRepository.listPendingBySessionId("ses_parent")).resolves.toEqual([
+      notification
+    ]);
+
+    await persistence.agentTaskNotificationRepository.markConsumed({
+      ids: [notification.id],
+      consumedAt: "2026-04-10T00:00:02.000Z"
+    });
+
+    await expect(persistence.agentTaskNotificationRepository.listPendingBySessionId("ses_parent")).resolves.toEqual([]);
+    await persistence.close();
+  });
+
+  it("lists direct child sessions from persisted payloads", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-sqlite-child-sessions-"));
+    tempDirs.push(tempDir);
+
+    const workspaceRoot = path.join(tempDir, "workspace");
+    const shadowRoot = path.join(tempDir, "shadow");
+    const workspace = createWorkspace({
+      id: "ws_sqlite_child_sessions",
+      rootPath: workspaceRoot
+    });
+    const persistence = await createSQLiteRuntimePersistence({ shadowRoot });
+    await persistence.workspaceRepository.upsert(workspace);
+
+    const parent = {
+      id: "ses_parent",
+      workspaceId: workspace.id,
+      subjectRef: "dev:test",
+      activeAgentName: "plan",
+      status: "active" as const,
+      createdAt: "2026-04-10T00:00:00.000Z",
+      updatedAt: "2026-04-10T00:00:00.000Z"
+    };
+    const child = {
+      id: "ses_child",
+      workspaceId: workspace.id,
+      parentSessionId: parent.id,
+      subjectRef: "dev:test",
+      activeAgentName: "researcher",
+      status: "active" as const,
+      createdAt: "2026-04-10T00:00:01.000Z",
+      updatedAt: "2026-04-10T00:00:01.000Z"
+    };
+    const grandchild = {
+      ...child,
+      id: "ses_grandchild",
+      parentSessionId: child.id,
+      createdAt: "2026-04-10T00:00:02.000Z",
+      updatedAt: "2026-04-10T00:00:02.000Z"
+    };
+
+    await persistence.sessionRepository.create(parent);
+    await persistence.sessionRepository.create(child);
+    await persistence.sessionRepository.create(grandchild);
+
+    await expect(persistence.sessionRepository.listChildrenByParentSessionId(parent.id, 10)).resolves.toEqual([child]);
+    await persistence.close();
+  });
+
   it("migrates legacy mirror databases copied into workspace_dir", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-sqlite-legacy-"));
     tempDirs.push(tempDir);

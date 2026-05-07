@@ -34,6 +34,34 @@ import { createId, encodeMessagePageCursor, nowIso, parseCursor } from "../utils
 import { buildArchiveMetadata } from "./internal-helpers.js";
 import type { EngineMessage } from "./engine-messages.js";
 
+const RESERVED_MESSAGE_METADATA_KEYS = new Set([
+  "runtimeKind",
+  "origin",
+  "mode",
+  "source",
+  "synthetic",
+  "taskNotification",
+  "pendingTaskNotificationId",
+  "delegatedUpdate",
+  "delegatedChildRunId",
+  "delegatedChildSessionId",
+  "delegatedTaskId",
+  "delegatedToolUseId",
+  "outputRef",
+  "outputFile"
+]);
+
+function sanitizeUserMessageMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!metadata) {
+    return undefined;
+  }
+
+  const sanitized = Object.fromEntries(
+    Object.entries(metadata).filter(([key]) => !RESERVED_MESSAGE_METADATA_KEYS.has(key))
+  );
+  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
+}
+
 export interface SessionEngineServiceDependencies {
   sessionRepository: EngineServiceOptions["sessionRepository"];
   messageRepository: EngineServiceOptions["messageRepository"];
@@ -245,6 +273,15 @@ export class SessionEngineService {
     return nextCursor === undefined ? { items } : { items, nextCursor };
   }
 
+  async listChildSessions(parentSessionId: string, pageSize: number, cursor?: string): Promise<SessionListResult> {
+    await this.getSession(parentSessionId);
+    const startIndex = parseCursor(cursor);
+    const items = await this.#sessionRepository.listChildrenByParentSessionId(parentSessionId, pageSize, cursor);
+    const nextCursor = items.length === pageSize ? String(startIndex + pageSize) : undefined;
+
+    return nextCursor === undefined ? { items } : { items, nextCursor };
+  }
+
   async listSessionMessages(
     sessionId: string,
     pageSize = 100,
@@ -374,14 +411,17 @@ export class SessionEngineService {
     const now = nowIso();
     const messageId = createId("msg");
     const runId = createId("run");
+    const userMetadata = sanitizeUserMessageMetadata(input.metadata);
 
     const message: Message = {
       id: messageId,
       sessionId,
       runId,
       role: "user",
+      origin: "user",
+      mode: "prompt",
       content: input.content,
-      metadata: input.metadata,
+      ...(userMetadata ? { metadata: userMetadata } : {}),
       createdAt: now
     };
 

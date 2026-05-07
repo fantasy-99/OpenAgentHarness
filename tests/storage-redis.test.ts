@@ -1448,6 +1448,37 @@ describe("storage redis", () => {
     });
   });
 
+  it("does not let remote idle workers satisfy preferred subagent backlog for a local owner", () => {
+    expect(
+      calculateRedisWorkerPoolSuggestion({
+        minWorkers: 1,
+        maxWorkers: 4,
+        readySessionsPerCapacityUnit: 1,
+        reservedSubagentCapacity: 1,
+        localActiveWorkers: 2,
+        localBusyWorkers: 2,
+        scaleUpBusyRatioThreshold: 0.75,
+        scaleUpMaxReadyAgeMs: 2_000,
+        schedulingPressure: {
+          readySessionCount: 2,
+          subagentReadySessionCount: 2,
+          preferredReadySessionCount: 2,
+          preferredSubagentReadySessionCount: 2
+        },
+        globalWorkerLoad: {
+          globalSuggestedWorkers: 0,
+          globalActiveWorkers: 4,
+          globalBusyWorkers: 2,
+          remoteActiveWorkers: 2,
+          remoteBusyWorkers: 0
+        }
+      })
+    ).toMatchObject({
+      globalSuggestedWorkers: 4,
+      localSuggestedWorkers: 4
+    });
+  });
+
   it("deduplicates recent pool decisions with extracted observability helpers", () => {
     const repeated = buildRedisRunWorkerPoolDecision({
       timestamp: "2026-04-14T10:00:00.000Z",

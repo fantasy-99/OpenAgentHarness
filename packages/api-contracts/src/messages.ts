@@ -136,6 +136,9 @@ export const toolApprovalResponseMessagePartSchema = z.object({
   providerExecuted: z.boolean().optional()
 });
 
+export const messageOriginSchema = z.enum(["user", "engine", "hook", "tool", "system"]);
+export const messageModeSchema = z.enum(["prompt", "task-notification"]);
+
 export const messagePartSchema = z.union([
   textMessagePartSchema,
   imageMessagePartSchema,
@@ -198,6 +201,8 @@ export const messageSchema = z.intersection(
     id: z.string(),
     sessionId: z.string(),
     runId: z.string().optional(),
+    origin: messageOriginSchema.optional(),
+    mode: messageModeSchema.optional(),
     metadata: jsonObjectSchema.optional(),
     createdAt: timestampSchema
   }),
@@ -275,6 +280,8 @@ export type MessageContextQuery = z.infer<typeof messageContextQuerySchema>;
 export type MessageContext = z.infer<typeof messageContextSchema>;
 export type MessagePart = z.infer<typeof messagePartSchema>;
 export type MessageContent = z.infer<typeof messageContentSchema>;
+export type MessageOrigin = z.infer<typeof messageOriginSchema>;
+export type MessageMode = z.infer<typeof messageModeSchema>;
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 export type CreateMessageRequest = z.infer<typeof createMessageRequestSchema>;
 export type MessageAccepted = z.infer<typeof messageAcceptedSchema>;

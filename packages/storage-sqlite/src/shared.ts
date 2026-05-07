@@ -3,6 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import type {
   ArtifactRecord,
+  AgentTaskRecord,
   HistoryEventRecord,
   HookRunAuditRecord,
   Message,
@@ -14,6 +15,8 @@ import type {
 } from "@oah/engine-core";
 import {
   isMessageContentForRole,
+  isMessageMode,
+  isMessageOrigin,
   isMessageRole,
   normalizePersistedMessageRecord,
   normalizePersistedMessages,
@@ -186,6 +189,27 @@ export const schemaStatements = [
     payload text not null
   )`,
   `create index if not exists artifacts_run_created_idx on artifacts (run_id, created_at asc, id asc)`,
+  `create table if not exists agent_tasks (
+    task_id text primary key,
+    workspace_id text not null,
+    parent_session_id text not null,
+    child_run_id text not null,
+    status text not null,
+    updated_at text not null,
+    payload text not null
+  )`,
+  `create index if not exists agent_tasks_parent_session_idx on agent_tasks (parent_session_id, updated_at desc, task_id asc)`,
+  `create index if not exists agent_tasks_child_run_idx on agent_tasks (child_run_id)`,
+  `create table if not exists agent_task_notifications (
+    id text primary key,
+    workspace_id text not null,
+    parent_session_id text not null,
+    tool_use_id text,
+    status text not null,
+    created_at text not null,
+    payload text not null
+  )`,
+  `create index if not exists agent_task_notifications_pending_session_idx on agent_task_notifications (parent_session_id, status, created_at asc, id asc)`,
   `create table if not exists history_events (
     id integer primary key autoincrement,
     workspace_id text not null,
@@ -313,12 +337,25 @@ export function parseLegacyMessage(row: Record<string, unknown>): Message {
   const role: Message["role"] = isMessageRole(roleValue) ? roleValue : "assistant";
   const content = parseJsonish(row.content);
   const metadata = parseJsonish(row.metadata);
+  const metadataRecord = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? (metadata as Record<string, unknown>) : undefined;
+  const origin = isMessageOrigin(metadataRecord?.origin)
+    ? metadataRecord.origin
+    : metadataRecord?.taskNotification === true
+      ? "engine"
+      : undefined;
+  const mode = isMessageMode(metadataRecord?.mode)
+    ? metadataRecord.mode
+    : metadataRecord?.taskNotification === true
+      ? "task-notification"
+      : undefined;
   const base = {
     id: stringValue(row.id) ?? "",
     sessionId: stringValue(row.session_id) ?? "",
     createdAt: stringValue(row.created_at) ?? nowIso(),
     ...(stringValue(row.run_id) ? { runId: stringValue(row.run_id) } : {}),
-    ...(metadata !== undefined ? { metadata: metadata as Record<string, unknown> } : {})
+    ...(origin ? { origin } : {}),
+    ...(mode ? { mode } : {}),
+    ...(metadataRecord ? { metadata: metadataRecord } : {})
   };
 
   switch (role) {
@@ -651,6 +688,21 @@ export function reconcilePersistedWorkspaceScope(db: DatabaseSync, workspace: Pi
       }
 
       updateRun.run(workspace.id, serializeJson({ ...payload, workspaceId: workspace.id }), row.id);
+    }
+
+    if (tableExists(db, "agent_tasks")) {
+      const agentTaskRows = coerceRows<WorkspaceScopedPayloadRow>(
+        db.prepare("select task_id as id, workspace_id, payload from agent_tasks").all()
+      );
+      const updateAgentTask = db.prepare("update agent_tasks set workspace_id = ?, payload = ? where task_id = ?");
+      for (const row of agentTaskRows) {
+        const payload = parseJson<AgentTaskRecord>(row.payload);
+        if (row.workspace_id === workspace.id && payload.workspaceId === workspace.id) {
+          continue;
+        }
+
+        updateAgentTask.run(workspace.id, serializeJson({ ...payload, workspaceId: workspace.id }), row.id);
+      }
     }
 
     const historyRows = coerceRows<HistoryEventRow>(

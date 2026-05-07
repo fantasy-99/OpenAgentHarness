@@ -48,6 +48,10 @@ export interface NativeToolSetOptions {
   fileSystem?: WorkspaceFileSystem | undefined;
   workspace?: WorkspaceRecord | undefined;
   workspaceFileAccessProvider?: WorkspaceFileAccessProvider | undefined;
+  readVirtualFile?: ((input: { filePath: string; abortSignal?: AbortSignal | undefined }) => Promise<{
+    filePath: string;
+    content: string;
+  } | null>) | undefined;
 }
 
 export interface NativeToolFileAccess {
@@ -69,6 +73,10 @@ export interface NativeToolFactoryContext {
     targetPath: string | undefined,
     operation: (input: NativeToolFileAccess) => Promise<T>
   ) => Promise<T>;
+  readVirtualFile: (input: { filePath: string; abortSignal?: AbortSignal | undefined }) => Promise<{
+    filePath: string;
+    content: string;
+  } | null>;
   assertVisible: (toolName: NativeToolName) => void;
   omitLegacyKeys: <T extends Record<string, unknown>>(value: T, keys: string[]) => Record<string, unknown>;
   rememberRead: (relativePath: string, workspaceRoot?: string, fileSystem?: WorkspaceFileSystem) => Promise<void>;

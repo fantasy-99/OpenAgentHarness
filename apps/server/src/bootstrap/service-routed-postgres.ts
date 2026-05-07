@@ -4,6 +4,10 @@ import type { Pool } from "pg";
 
 import { AppError } from "@oah/engine-core";
 import type {
+  AgentTaskNotificationRecord,
+  AgentTaskNotificationRepository,
+  AgentTaskRecord,
+  AgentTaskRepository,
   ArtifactRecord,
   ArtifactRepository,
   HistoryEventRecord,
@@ -60,6 +64,8 @@ export interface ServiceRoutedPostgresRuntimePersistence {
   toolCallAuditRepository: ToolCallAuditRepository;
   hookRunAuditRepository: HookRunAuditRepository;
   artifactRepository: ArtifactRepository;
+  agentTaskRepository: AgentTaskRepository;
+  agentTaskNotificationRepository: AgentTaskNotificationRepository;
   historyEventRepository: HistoryEventRepository;
   listWorkspaceSnapshots(candidates: WorkspaceRecord[]): Promise<WorkspaceRecord[]>;
   close(): Promise<void>;
@@ -147,6 +153,7 @@ function toSessionRegistryEntry(row: RecordRow): Session {
   return {
     id: rowString(row, "id"),
     workspaceId: rowString(row, "workspace_id"),
+    ...(optionalRowString(row, "parent_session_id") ? { parentSessionId: rowString(row, "parent_session_id") } : {}),
     subjectRef: rowString(row, "subject_ref"),
     ...(optionalRowString(row, "model_ref") ? { modelRef: rowString(row, "model_ref") } : {}),
     ...(optionalRowString(row, "agent_name") ? { agentName: rowString(row, "agent_name") } : {}),
@@ -211,6 +218,7 @@ async function ensureServiceRoutingRegistrySchema(pool: Pool): Promise<void> {
     `create table if not exists session_registry (
       id text primary key,
       workspace_id text not null,
+      parent_session_id text,
       service_name text,
       subject_ref text not null,
       model_ref text,
@@ -222,7 +230,9 @@ async function ensureServiceRoutingRegistrySchema(pool: Pool): Promise<void> {
       created_at timestamptz not null,
       updated_at timestamptz not null
     )`,
+    `alter table session_registry add column if not exists parent_session_id text`,
     `create index if not exists session_registry_workspace_idx on session_registry (workspace_id, updated_at desc, created_at desc, id asc)`,
+    `create index if not exists session_registry_parent_session_idx on session_registry (parent_session_id, updated_at desc, created_at desc, id asc)`,
     `create index if not exists session_registry_service_name_idx on session_registry (service_name)`,
     `create table if not exists run_registry (
       id text primary key,
@@ -291,6 +301,7 @@ async function migrateServiceRoutingRegistry(pool: Pool): Promise<void> {
   const sessionConflictClause = upsertExistingRows
     ? `do update set
        workspace_id = excluded.workspace_id,
+       parent_session_id = excluded.parent_session_id,
        service_name = excluded.service_name,
        subject_ref = excluded.subject_ref,
        model_ref = excluded.model_ref,
@@ -330,6 +341,7 @@ async function migrateServiceRoutingRegistry(pool: Pool): Promise<void> {
       `insert into session_registry (
        id,
        workspace_id,
+       parent_session_id,
        service_name,
        subject_ref,
        model_ref,
@@ -344,6 +356,7 @@ async function migrateServiceRoutingRegistry(pool: Pool): Promise<void> {
      select
        s.id,
        s.workspace_id,
+       s.parent_session_id,
        nullif(lower(btrim(w.service_name)), ''),
        s.subject_ref,
        s.model_ref,
@@ -360,6 +373,14 @@ async function migrateServiceRoutingRegistry(pool: Pool): Promise<void> {
      on conflict (id) ${sessionConflictClause}`
     );
   }
+
+  await pool.query(
+    `update session_registry sr
+     set parent_session_id = s.parent_session_id
+     from sessions s
+     where sr.id = s.id
+       and sr.parent_session_id is distinct from s.parent_session_id`
+  );
 
   if (shouldBackfillRuns) {
     await pool.query(
@@ -482,6 +503,7 @@ class PostgresServiceRoutingRegistry {
       `select
          id,
          workspace_id,
+         parent_session_id,
          service_name,
          subject_ref,
          model_ref,
@@ -517,6 +539,7 @@ class PostgresServiceRoutingRegistry {
       `select
          id,
          workspace_id,
+         parent_session_id,
          subject_ref,
          model_ref,
          agent_name,
@@ -536,11 +559,38 @@ class PostgresServiceRoutingRegistry {
     return result.rows.map((row) => toSessionRegistryEntry(row as RecordRow));
   }
 
+  async listChildSessions(parentSessionId: string, pageSize: number, cursor?: string): Promise<Session[]> {
+    const offset = cursor ? Number.parseInt(cursor, 10) : 0;
+    const result = await this.pool.query(
+      `select
+         id,
+         workspace_id,
+         parent_session_id,
+         subject_ref,
+         model_ref,
+         agent_name,
+         active_agent_name,
+         title,
+         status,
+         last_run_at::text,
+         created_at::text,
+         updated_at::text
+       from session_registry
+       where parent_session_id = $1
+       order by updated_at desc, created_at desc, id asc
+       limit $2 offset $3`,
+      [parentSessionId, pageSize, Number.isFinite(offset) && offset > 0 ? offset : 0]
+    );
+
+    return result.rows.map((row) => toSessionRegistryEntry(row as RecordRow));
+  }
+
   async upsertSession(input: Session, serviceName: string | undefined): Promise<void> {
     await this.pool.query(
       `insert into session_registry (
          id,
          workspace_id,
+         parent_session_id,
          service_name,
          subject_ref,
          model_ref,
@@ -552,9 +602,10 @@ class PostgresServiceRoutingRegistry {
          created_at,
          updated_at
        )
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        on conflict (id) do update set
          workspace_id = excluded.workspace_id,
+         parent_session_id = excluded.parent_session_id,
          service_name = excluded.service_name,
          subject_ref = excluded.subject_ref,
          model_ref = excluded.model_ref,
@@ -568,6 +619,7 @@ class PostgresServiceRoutingRegistry {
       [
         input.id,
         input.workspaceId,
+        input.parentSessionId ?? null,
         normalizeServiceName(serviceName) ?? null,
         input.subjectRef,
         input.modelRef ?? null,
@@ -1016,6 +1068,10 @@ class RoutedSessionRepository implements SessionRepository {
     return this.router.registry().listSessionsByWorkspaceId(workspaceId, pageSize, cursor);
   }
 
+  listChildrenByParentSessionId(parentSessionId: string, pageSize: number, cursor?: string): Promise<Session[]> {
+    return this.router.registry().listChildSessions(parentSessionId, pageSize, cursor);
+  }
+
   async delete(id: string): Promise<void> {
     const existing = await this.router.getSessionRegistry(id);
     if (existing) {
@@ -1214,6 +1270,66 @@ class RoutedArtifactRepository implements ArtifactRepository {
   }
 }
 
+class RoutedAgentTaskRepository implements AgentTaskRepository {
+  constructor(private readonly router: ServiceBackendRouter) {}
+
+  async upsert(input: AgentTaskRecord): Promise<AgentTaskRecord> {
+    return (await this.router.getBackendForWorkspaceId(input.workspaceId)).agentTaskRepository.upsert(input);
+  }
+
+  async getByTaskId(taskId: string): Promise<AgentTaskRecord | null> {
+    const sessionBackend = await this.router.getBackendForSessionId(taskId);
+    const bySession = await sessionBackend.agentTaskRepository.getByTaskId(taskId);
+    if (bySession) {
+      return bySession;
+    }
+
+    return this.router.findAcrossKnownBackends((backend) => backend.agentTaskRepository.getByTaskId(taskId));
+  }
+
+  async update(input: {
+    taskId: string;
+    status: AgentTaskRecord["status"];
+    updatedAt: string;
+    toolUseId?: string | undefined;
+    outputRef?: string | undefined;
+    outputFile?: string | undefined;
+    finalText?: string | undefined;
+    errorMessage?: string | undefined;
+    usage?: Record<string, unknown> | undefined;
+    notifiedAt?: string | undefined;
+  }): Promise<AgentTaskRecord> {
+    const existing = await this.getByTaskId(input.taskId);
+    if (existing) {
+      return (await this.router.getBackendForWorkspaceId(existing.workspaceId)).agentTaskRepository.update(input);
+    }
+
+    return (await this.router.getBackendForSessionId(input.taskId)).agentTaskRepository.update(input);
+  }
+}
+
+class RoutedAgentTaskNotificationRepository implements AgentTaskNotificationRepository {
+  constructor(private readonly router: ServiceBackendRouter) {}
+
+  async create(input: AgentTaskNotificationRecord): Promise<AgentTaskNotificationRecord> {
+    return (await this.router.getBackendForSessionId(input.parentSessionId)).agentTaskNotificationRepository.create(input);
+  }
+
+  async listPendingBySessionId(parentSessionId: string): Promise<AgentTaskNotificationRecord[]> {
+    return (await this.router.getBackendForSessionId(parentSessionId)).agentTaskNotificationRepository.listPendingBySessionId(
+      parentSessionId
+    );
+  }
+
+  async markConsumed(input: { ids: string[]; consumedAt: string }): Promise<void> {
+    if (input.ids.length === 0) {
+      return;
+    }
+
+    await this.router.fanOutKnownBackends((backend) => backend.agentTaskNotificationRepository.markConsumed(input));
+  }
+}
+
 class RoutedHistoryEventRepository implements HistoryEventRepository {
   constructor(private readonly router: ServiceBackendRouter) {}
 
@@ -1377,6 +1493,8 @@ export async function createServiceRoutedPostgresRuntimePersistence(
     toolCallAuditRepository: new RoutedToolCallAuditRepository(router),
     hookRunAuditRepository: new RoutedHookRunAuditRepository(router),
     artifactRepository: new RoutedArtifactRepository(router),
+    agentTaskRepository: new RoutedAgentTaskRepository(router),
+    agentTaskNotificationRepository: new RoutedAgentTaskNotificationRepository(router),
     historyEventRepository: new RoutedHistoryEventRepository(router),
     async listWorkspaceSnapshots(candidates) {
       const snapshots = new Map<string, WorkspaceRecord>();

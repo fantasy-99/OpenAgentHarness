@@ -19,6 +19,8 @@ export interface RedisRunWorkerPoolSizingInput {
     | {
         readySessionCount?: number | undefined;
         subagentReadySessionCount?: number | undefined;
+        preferredReadySessionCount?: number | undefined;
+        preferredSubagentReadySessionCount?: number | undefined;
         oldestSchedulableReadyAgeMs?: number | undefined;
       }
     | undefined;
@@ -67,6 +69,8 @@ export function calculateRedisWorkerPoolSuggestion(
 ): RedisRunWorkerPoolSizingResult {
   const readySessionCount = input.schedulingPressure?.readySessionCount;
   const subagentReadySessionCount = input.schedulingPressure?.subagentReadySessionCount;
+  const preferredReadySessionCount = input.schedulingPressure?.preferredReadySessionCount;
+  const preferredSubagentReadySessionCount = input.schedulingPressure?.preferredSubagentReadySessionCount;
   const busyWorkers = input.globalWorkerLoad?.globalBusyWorkers ?? input.localBusyWorkers;
   const activeWorkers = input.globalWorkerLoad?.globalActiveWorkers ?? input.localActiveWorkers;
   const readySessionsPerCapacityUnit = Math.max(1, input.readySessionsPerCapacityUnit);
@@ -80,6 +84,18 @@ export function calculateRedisWorkerPoolSuggestion(
     typeof subagentReadySessionCount === "number" && subagentReadySessionCount > 0
       ? busyWorkers + input.reservedSubagentCapacity
       : 0;
+  const preferredPressureWorkers =
+    typeof preferredReadySessionCount === "number"
+      ? Math.ceil(preferredReadySessionCount / readySessionsPerCapacityUnit)
+      : 0;
+  const preferredSaturatedWorkers =
+    typeof preferredReadySessionCount === "number"
+      ? Math.ceil((preferredReadySessionCount + input.localBusyWorkers) / readySessionsPerCapacityUnit)
+      : 0;
+  const preferredReservedWorkers =
+    typeof preferredSubagentReadySessionCount === "number" && preferredSubagentReadySessionCount > 0
+      ? input.localBusyWorkers + input.reservedSubagentCapacity
+      : 0;
   const ageBoostWorkers =
     typeof readySessionCount === "number" &&
     readySessionCount > 0 &&
@@ -89,7 +105,13 @@ export function calculateRedisWorkerPoolSuggestion(
       : 0;
   const globalSuggestedWorkers = Math.max(pressureWorkers, saturatedWorkers, reservedWorkers, ageBoostWorkers);
   const localSuggestedWorkers = input.globalWorkerLoad
-    ? Math.max(input.minWorkers, globalSuggestedWorkers - input.globalWorkerLoad.remoteActiveWorkers)
+    ? Math.max(
+        input.minWorkers,
+        globalSuggestedWorkers - input.globalWorkerLoad.remoteActiveWorkers,
+        preferredPressureWorkers,
+        preferredSaturatedWorkers,
+        preferredReservedWorkers
+      )
     : globalSuggestedWorkers;
 
   return {

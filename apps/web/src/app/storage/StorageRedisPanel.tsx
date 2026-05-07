@@ -104,6 +104,10 @@ function renderWorkerLeaseSummary(healthReport: HealthReportResponse | null) {
                 value: `schedulable ${pool.subagentReadySessionCount ?? 0} · depth ${pool.subagentReadyQueueDepth ?? 0} · target ${pool.subagentReserveTarget} · deficit ${pool.subagentReserveDeficit}`
               },
               {
+                label: "Preferred Ready",
+                value: `sessions ${pool.preferredReadySessionCount ?? 0} · subagent ${pool.preferredSubagentReadySessionCount ?? 0}`
+              },
+              {
                 label: "Ready Density",
                 value: `per worker ${pool.readySessionsPerActiveWorker?.toFixed(2) ?? "n/a"}`
               },
@@ -143,7 +147,7 @@ function renderWorkerLeaseSummary(healthReport: HealthReportResponse | null) {
                       {typeof decision.busyWorkers === "number" ? <Badge variant="outline">{`busy ${decision.busyWorkers}`}</Badge> : null}
                       <span className="text-muted-foreground">{decision.timestamp}</span>
                     </div>
-                    <div className="mt-2 text-muted-foreground">{`schedulable ${decision.readySessionCount ?? 0} · depth ${decision.readyQueueDepth ?? 0} · unique ${decision.uniqueReadySessionCount ?? 0} · subagent ${decision.subagentReadySessionCount ?? 0}/${decision.subagentReadyQueueDepth ?? 0} · reserve ${decision.reservedWorkers ?? 0}/${decision.reservedSubagentCapacity ?? 0} · headroom ${decision.availableIdleCapacity ?? 0} · deficit ${decision.subagentReserveDeficit ?? 0} · ready/worker ${typeof decision.readySessionsPerActiveWorker === "number" ? decision.readySessionsPerActiveWorker.toFixed(2) : "n/a"} · locked ${decision.lockedReadySessionCount ?? 0} · stale ${decision.staleReadySessionCount ?? 0} · oldest ${formatWorkerLeaseAge(decision.oldestSchedulableReadyAgeMs ?? 0)} · global ${decision.globalActiveWorkers ?? decision.activeWorkers}/${decision.globalBusyWorkers ?? decision.busyWorkers ?? 0} · remote ${decision.remoteActiveWorkers ?? 0}/${decision.remoteBusyWorkers ?? 0}`}</div>
+                    <div className="mt-2 text-muted-foreground">{`schedulable ${decision.readySessionCount ?? 0} · depth ${decision.readyQueueDepth ?? 0} · unique ${decision.uniqueReadySessionCount ?? 0} · subagent ${decision.subagentReadySessionCount ?? 0}/${decision.subagentReadyQueueDepth ?? 0} · preferred ${decision.preferredReadySessionCount ?? 0}/${decision.preferredReadyQueueDepth ?? 0} · preferred subagent ${decision.preferredSubagentReadySessionCount ?? 0}/${decision.preferredSubagentReadyQueueDepth ?? 0} · reserve ${decision.reservedWorkers ?? 0}/${decision.reservedSubagentCapacity ?? 0} · headroom ${decision.availableIdleCapacity ?? 0} · deficit ${decision.subagentReserveDeficit ?? 0} · ready/worker ${typeof decision.readySessionsPerActiveWorker === "number" ? decision.readySessionsPerActiveWorker.toFixed(2) : "n/a"} · locked ${decision.lockedReadySessionCount ?? 0} · stale ${decision.staleReadySessionCount ?? 0} · oldest ${formatWorkerLeaseAge(decision.oldestSchedulableReadyAgeMs ?? 0)} · global ${decision.globalActiveWorkers ?? decision.activeWorkers}/${decision.globalBusyWorkers ?? decision.busyWorkers ?? 0} · remote ${decision.remoteActiveWorkers ?? 0}/${decision.remoteBusyWorkers ?? 0}`}</div>
                   </div>
                 ))}
               </div>

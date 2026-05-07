@@ -91,6 +91,10 @@ local uniqueReady = 0
 local schedulable = 0
 local subagentReadyQueueDepth = 0
 local subagentSchedulable = 0
+local preferredReadyQueueDepth = 0
+local preferredSchedulable = 0
+local preferredSubagentReadyQueueDepth = 0
+local preferredSubagentSchedulable = 0
 local lockedReady = 0
 local staleReady = 0
 local oldestSchedulableReadyAgeMs = 0
@@ -99,8 +103,16 @@ local seen = {}
 for _, sessionId in ipairs(readyEntries) do
   local readyPriorityKey = ARGV[1] .. sessionId .. ARGV[5]
   local isSubagent = redis.call("get", readyPriorityKey) == "subagent"
+  local preferredWorkerId = redis.call("get", ARGV[1] .. sessionId .. ARGV[8])
+  local hasPreferredWorker = preferredWorkerId ~= false and preferredWorkerId ~= ""
   if isSubagent then
     subagentReadyQueueDepth = subagentReadyQueueDepth + 1
+  end
+  if hasPreferredWorker then
+    preferredReadyQueueDepth = preferredReadyQueueDepth + 1
+    if isSubagent then
+      preferredSubagentReadyQueueDepth = preferredSubagentReadyQueueDepth + 1
+    end
   end
 
   if not seen[sessionId] then
@@ -121,6 +133,12 @@ for _, sessionId in ipairs(readyEntries) do
         if isSubagent then
           subagentSchedulable = subagentSchedulable + 1
         end
+        if hasPreferredWorker then
+          preferredSchedulable = preferredSchedulable + 1
+          if isSubagent then
+            preferredSubagentSchedulable = preferredSubagentSchedulable + 1
+          end
+        end
         local readyAtKey = ARGV[1] .. sessionId .. ARGV[4]
         local readyAtMs = tonumber(redis.call("get", readyAtKey))
         if readyAtMs ~= nil then
@@ -139,7 +157,7 @@ if readyQueueDepth > sampledDepth then
   readySessionCount = readyQueueDepth
 end
 
-return { readySessionCount, readyQueueDepth, uniqueReady, subagentSchedulable, subagentReadyQueueDepth, lockedReady, staleReady, oldestSchedulableReadyAgeMs }
+return { readySessionCount, readyQueueDepth, uniqueReady, subagentSchedulable, subagentReadyQueueDepth, preferredSchedulable, preferredReadyQueueDepth, preferredSubagentSchedulable, preferredSubagentReadyQueueDepth, lockedReady, staleReady, oldestSchedulableReadyAgeMs }
 `;
 
 const dequeueSessionRunScript = `
@@ -370,6 +388,10 @@ export class RedisSessionRunQueue implements SessionRunQueue {
       uniqueReadySessionCount,
       subagentReadySessionCount,
       subagentReadyQueueDepth,
+      preferredReadySessionCount,
+      preferredReadyQueueDepth,
+      preferredSubagentReadySessionCount,
+      preferredSubagentReadyQueueDepth,
       lockedReadySessionCount,
       staleReadySessionCount,
       oldestSchedulableReadyAgeMs
@@ -383,7 +405,8 @@ export class RedisSessionRunQueue implements SessionRunQueue {
           ":ready_at",
           ":ready-priority",
           String(Date.now()),
-          String(this.#pressureScanLimit)
+          String(this.#pressureScanLimit),
+          ":preferred-worker"
         ]
       })
     ) as number[];
@@ -394,6 +417,10 @@ export class RedisSessionRunQueue implements SessionRunQueue {
       uniqueReadySessionCount: Number(uniqueReadySessionCount),
       subagentReadySessionCount: Number(subagentReadySessionCount),
       subagentReadyQueueDepth: Number(subagentReadyQueueDepth),
+      preferredReadySessionCount: Number(preferredReadySessionCount),
+      preferredReadyQueueDepth: Number(preferredReadyQueueDepth),
+      preferredSubagentReadySessionCount: Number(preferredSubagentReadySessionCount),
+      preferredSubagentReadyQueueDepth: Number(preferredSubagentReadyQueueDepth),
       lockedReadySessionCount: Number(lockedReadySessionCount),
       staleReadySessionCount: Number(staleReadySessionCount),
       oldestSchedulableReadyAgeMs: Number(oldestSchedulableReadyAgeMs)

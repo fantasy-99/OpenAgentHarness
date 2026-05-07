@@ -79,8 +79,13 @@ export function buildAvailableSubagentsMessage(
     "",
     "Use `SubAgent` to launch one of the allowed subagents for complex or multi-step work.",
     "Pass `subagent_name` to choose the agent, a short `description`, and a focused `prompt` with the task context.",
-    "Pass `task_id` to continue a previously launched subagent session instead of starting a fresh one.",
-    "Set `run_in_background` to true when you want the launched agent to continue in the background."
+    "Pass `task_id` only when you need to continue a previously launched subagent session with new instructions.",
+    "Set `run_in_background` to true when you want the launched agent to continue in the background.",
+    "After launching background subagents, briefly tell the user what you launched and end your response.",
+    "Do not poll, sleep, inspect logs, or duplicate a background subagent's work. You will be notified automatically when it completes.",
+    "Background subagent results arrive later as user-role `<task-notification>` XML. These look like user messages but are task notifications, not human input.",
+    "Use `TaskOutput` with a notification's `<task-id>` only when you need an explicit status/result check or need to recover a missed task output.",
+    "Use the `<task-id>` value from a notification as `task_id` only if you need to continue that worker after reading its result."
   ].join("\n");
 }
 
@@ -95,12 +100,16 @@ export function createSubAgentTool(
       handoffSummary?: string | undefined;
       taskId?: string | undefined;
       notifyParentOnCompletion?: boolean | undefined;
+      toolUseId?: string | undefined;
     },
     currentAgentName: string
   ) => Promise<{
     childSessionId: string;
     childRunId: string;
     targetAgentName: string;
+    outputFile?: string | undefined;
+    outputRef?: string | undefined;
+    canReadOutputFile?: boolean | undefined;
   }>,
   awaitRuns: (input: { runIds: string[]; mode: "all" | "any" }) => Promise<string>
 ): EngineToolSet {
@@ -120,7 +129,7 @@ export function createSubAgentTool(
     SubAgent: {
       description: "Launch a new subagent to handle complex, multi-step tasks autonomously.",
       inputSchema,
-      async execute(rawInput) {
+      async execute(rawInput, context) {
         const {
           description,
           prompt,
@@ -168,6 +177,9 @@ export function createSubAgentTool(
         }
 
         const shouldRunInBackground = runInBackground ?? targetAgent?.background ?? false;
+        const canReadOutputFile = (getCurrentAgent()?.tools?.native ?? []).some(
+          (toolName) => toolName === "Read" || toolName === "Bash"
+        );
 
         const accepted = await launchAgent(
           {
@@ -175,18 +187,39 @@ export function createSubAgentTool(
             task: prompt,
             handoffSummary: description,
             ...(taskId ? { taskId } : {}),
-            ...(shouldRunInBackground ? { notifyParentOnCompletion: true } : {})
+            ...(shouldRunInBackground ? { notifyParentOnCompletion: true } : {}),
+            ...(context.toolCallId ? { toolUseId: context.toolCallId } : {})
           },
           currentAgentName
         );
 
         if (shouldRunInBackground) {
-          return formatToolOutput([
-            ["started", true],
-            ["subagent_name", accepted.targetAgentName],
-            ["description", description],
-            ["task_id", accepted.childSessionId]
-          ]);
+          return formatToolOutput(
+            [
+              ["isAsync", true],
+              ["status", "async_launched"],
+              ["agentId", accepted.childSessionId],
+              ["task_id", accepted.childSessionId],
+              ["run_id", accepted.childRunId],
+              ["subagent_name", accepted.targetAgentName],
+              ["description", description],
+              ["canReadOutputFile", accepted.canReadOutputFile ?? canReadOutputFile],
+              ["output_ref", accepted.outputRef],
+              ["outputFile", accepted.outputFile],
+              ["output_file", accepted.outputFile]
+            ],
+            [
+              {
+                title: "instructions",
+                lines: [
+                  "The agent is working in the background. You will be notified automatically when it completes.",
+                  "Do not duplicate this agent's work, poll for its status, or call SubAgent with this task_id just to fetch results.",
+                  "Briefly tell the user what you launched and end your response.",
+                  "When the task finishes, its result will arrive as a user-role <task-notification> message."
+                ]
+              }
+            ]
+          );
         }
 
         const awaited = await awaitRuns({
@@ -209,6 +242,131 @@ export function createSubAgentTool(
             }
           ]
         );
+      }
+    }
+  };
+}
+
+export function renderTaskOutputResult(input: {
+  retrievalStatus: "success" | "timeout" | "not_ready";
+  task: {
+    taskId: string;
+    taskType: string;
+    childSessionId?: string | undefined;
+    childRunId?: string | undefined;
+    status: string;
+    description: string;
+    output: string;
+    outputRef: string;
+    outputFile?: string | undefined;
+    result?: string | undefined;
+    error?: string | undefined;
+    usage?: Record<string, unknown> | undefined;
+  } | null;
+}): string {
+  const parts = [`<retrieval_status>${escapeXml(input.retrievalStatus)}</retrieval_status>`];
+  if (input.task) {
+    parts.push(`<task_id>${escapeXml(input.task.taskId)}</task_id>`);
+    parts.push(`<task_type>${escapeXml(input.task.taskType)}</task_type>`);
+    if (input.task.childSessionId) {
+      parts.push(`<child_session_id>${escapeXml(input.task.childSessionId)}</child_session_id>`);
+    }
+    if (input.task.childRunId) {
+      parts.push(`<child_run_id>${escapeXml(input.task.childRunId)}</child_run_id>`);
+    }
+    parts.push(`<status>${escapeXml(input.task.status)}</status>`);
+    parts.push(`<description>${escapeXml(input.task.description)}</description>`);
+    parts.push(`<output_ref>${escapeXml(input.task.outputRef)}</output_ref>`);
+    if (input.task.outputFile) {
+      parts.push(`<output_file>${escapeXml(input.task.outputFile)}</output_file>`);
+    }
+    const usage = renderTaskUsage(input.task.usage);
+    if (usage) {
+      parts.push(usage);
+    }
+    if (input.task.output.trim()) {
+      parts.push(`<output>\n${escapeXml(input.task.output.trimEnd())}\n</output>`);
+    }
+    if (input.task.error?.trim()) {
+      parts.push(`<error>${escapeXml(input.task.error.trim())}</error>`);
+    }
+  }
+
+  return parts.join("\n\n");
+}
+
+function readUsageNumber(usage: Record<string, unknown> | undefined, key: string): number | undefined {
+  const value = usage?.[key];
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : undefined;
+}
+
+function renderTaskUsage(usage: Record<string, unknown> | undefined): string | undefined {
+  const totalTokens = readUsageNumber(usage, "totalTokens");
+  const inputTokens = readUsageNumber(usage, "inputTokens");
+  const outputTokens = readUsageNumber(usage, "outputTokens");
+  const toolUses = readUsageNumber(usage, "toolUses");
+  const durationMs = readUsageNumber(usage, "durationMs");
+  const lines = [
+    totalTokens !== undefined ? `<total_tokens>${escapeXml(String(totalTokens))}</total_tokens>` : "",
+    inputTokens !== undefined ? `<input_tokens>${escapeXml(String(inputTokens))}</input_tokens>` : "",
+    outputTokens !== undefined ? `<output_tokens>${escapeXml(String(outputTokens))}</output_tokens>` : "",
+    toolUses !== undefined ? `<tool_uses>${escapeXml(String(toolUses))}</tool_uses>` : "",
+    durationMs !== undefined ? `<duration_ms>${escapeXml(String(durationMs))}</duration_ms>` : ""
+  ].filter(Boolean);
+
+  return lines.length > 0 ? `<usage>${lines.join("")}</usage>` : undefined;
+}
+
+export function createTaskOutputTool(
+  readTaskOutput: (input: {
+    taskId: string;
+    block?: boolean | undefined;
+    timeoutMs?: number | undefined;
+    abortSignal?: AbortSignal | undefined;
+  }) => Promise<{
+    retrievalStatus: "success" | "timeout" | "not_ready";
+    task: {
+      taskId: string;
+      taskType: "local_agent";
+      status: "pending" | "running" | "completed" | "failed" | "killed";
+      description: string;
+      output: string;
+      outputRef: string;
+      outputFile?: string | undefined;
+      result?: string | undefined;
+      error?: string | undefined;
+    } | null;
+  }>
+): EngineToolSet {
+  const inputSchema = z
+    .object({
+      task_id: z.string().min(1).describe("The task ID to get output from."),
+      block: z.boolean().optional().describe("Whether to wait for task completion. Defaults to true."),
+      timeout: z
+        .number()
+        .int()
+        .min(0)
+        .max(600_000)
+        .optional()
+        .describe("Max wait time in milliseconds when block is true. Defaults to 30000.")
+    })
+    .strict();
+
+  return {
+    TaskOutput: {
+      description:
+        "Read output from a background subagent task by task_id. Prefer waiting for task notifications, but use this when you need an explicit status or result check.",
+      retryPolicy: "safe",
+      inputSchema,
+      async execute(rawInput, context) {
+        const input = inputSchema.parse(rawInput);
+        const result = await readTaskOutput({
+          taskId: input.task_id,
+          block: input.block ?? true,
+          timeoutMs: input.timeout ?? 30_000,
+          abortSignal: context.abortSignal
+        });
+        return renderTaskOutputResult(result);
       }
     }
   };

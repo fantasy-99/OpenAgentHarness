@@ -8,6 +8,7 @@ export type ProjectionView = "transcript" | "model" | "compact" | "debug" | "exp
 export interface ProjectedMessageBase {
   view: ProjectionView;
   role: Message["role"];
+  mode?: Message["mode"] | undefined;
   semanticType: string;
   sourceMessageIds: string[];
   content: Message["content"];
@@ -186,6 +187,7 @@ function projectGenericMessage<TView extends ProjectionView>(
   return {
     view,
     role: engineMessage.role,
+    ...(engineMessage.mode ? { mode: engineMessage.mode } : {}),
     semanticType: engineMessage.kind,
     sourceMessageIds: [engineMessage.id],
     content: engineMessage.content
@@ -264,6 +266,7 @@ function buildModelMessage(
       semanticType: engineMessage.kind,
       sourceMessageIds: [engineMessage.id],
       content,
+      ...(engineMessage.mode ? { mode: engineMessage.mode } : {}),
       ...(metadata ? { metadata } : {})
     },
     truncated

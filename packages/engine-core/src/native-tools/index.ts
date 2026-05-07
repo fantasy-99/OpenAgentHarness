@@ -74,6 +74,9 @@ export function createNativeToolSet(
         });
       }
     },
+    async readVirtualFile(input) {
+      return options?.readVirtualFile?.(input) ?? null;
+    },
     assertVisible(toolName) {
       if (!getVisibleToolNames().includes(toolName)) {
         throw new AppError(403, "native_tool_not_allowed", `Native tool ${toolName} is not allowed for the active agent.`);

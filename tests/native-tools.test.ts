@@ -762,4 +762,93 @@ describe("native tools", () => {
     expect(String(fetchResult)).toContain("Demo Page");
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("reports cross-host redirects instead of following them", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-native-tools-web-redirect-"));
+    tempDirs.push(workspaceRoot);
+
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(null, {
+        status: 302,
+        statusText: "Found",
+        headers: { location: "https://other.example/new-page" }
+      })
+    );
+
+    const tools = createNativeToolSet(workspaceRoot, () => ["WebFetch"]);
+    const result = String(
+      await tools.WebFetch.execute(
+        {
+          url: "https://redirect.example.com/page",
+          prompt: "Summarize the page"
+        },
+        {}
+      )
+    );
+
+    expect(result).toContain("status_code: 302");
+    expect(result).toContain("redirect_url: https://other.example/new-page");
+    expect(result).toContain("The URL redirected to a different host");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("follows same-domain redirects including www host changes", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-native-tools-web-same-domain-"));
+    tempDirs.push(workspaceRoot);
+
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 301,
+          statusText: "Moved Permanently",
+          headers: { location: "https://www.example.com/page" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response("<html><body><h1>Moved Page</h1></body></html>", {
+          status: 200,
+          headers: { "content-type": "text/html" }
+        })
+      );
+
+    const tools = createNativeToolSet(workspaceRoot, () => ["WebFetch"]);
+    const result = String(
+      await tools.WebFetch.execute(
+        {
+          url: "https://example.com/start",
+          prompt: "Summarize the page"
+        },
+        {}
+      )
+    );
+
+    expect(result).toContain("status_code: 200");
+    expect(result).toContain("Moved Page");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1]![0])).toBe("https://www.example.com/page");
+  });
+
+  it("rejects overly large web fetch responses", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-native-tools-web-large-"));
+    tempDirs.push(workspaceRoot);
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response("x".repeat(10 * 1024 * 1024 + 1), {
+        status: 200,
+        headers: { "content-type": "text/plain" }
+      })
+    );
+
+    const tools = createNativeToolSet(workspaceRoot, () => ["WebFetch"]);
+    await expect(
+      tools.WebFetch.execute(
+        {
+          url: "https://example.com/huge",
+          prompt: "Summarize the page"
+        },
+        {}
+      )
+    ).rejects.toMatchObject({ code: "native_tool_web_fetch_too_large" });
+  });
 });

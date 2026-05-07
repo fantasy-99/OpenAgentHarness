@@ -306,10 +306,9 @@ function RuntimeSidebar(props: SidebarProps & { onOpenRuntimeManager?: () => voi
     () =>
       props.filteredSavedWorkspaces.map((entry) => {
         const workspaceSessions = props.sessionsByWorkspaceId.get(entry.id) ?? [];
-        const sessionIds = new Set(workspaceSessions.map((sessionEntry) => sessionEntry.id));
         const childSessionsByParentId = new Map<string, SavedSessionRecord[]>();
         for (const sessionEntry of workspaceSessions) {
-          if (!sessionEntry.parentSessionId || !sessionIds.has(sessionEntry.parentSessionId)) {
+          if (!sessionEntry.parentSessionId) {
             continue;
           }
           const children = childSessionsByParentId.get(sessionEntry.parentSessionId) ?? [];
@@ -317,9 +316,7 @@ function RuntimeSidebar(props: SidebarProps & { onOpenRuntimeManager?: () => voi
           childSessionsByParentId.set(sessionEntry.parentSessionId, children);
         }
 
-        const topLevelSessions = workspaceSessions.filter(
-          (sessionEntry) => !sessionEntry.parentSessionId || !sessionIds.has(sessionEntry.parentSessionId)
-        );
+        const topLevelSessions = workspaceSessions.filter((sessionEntry) => !sessionEntry.parentSessionId);
         const lastEditedAt = workspaceSessions.reduce<string | undefined>((latest, sessionEntry) => {
           if (!sessionEntry.lastRunAt) {
             return latest;

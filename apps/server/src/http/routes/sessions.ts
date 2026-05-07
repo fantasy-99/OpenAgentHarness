@@ -16,6 +16,7 @@ import {
   pageQuerySchema,
   requeueRunAcceptedSchema,
   sessionQueueSchema,
+  sessionPageSchema,
   sessionTerminalInputAcceptedSchema,
   sessionTerminalInputRequestSchema,
   sessionTerminalSnapshotSchema,
@@ -81,6 +82,12 @@ export async function dispatchRegisteredSessionRoute(
         query.direction
       );
       return reply.send(messagePageSchema.parse(page));
+    }
+    case "GET /api/v1/sessions/:sessionId/children": {
+      const params = createParamsSchema("sessionId").parse(request.params);
+      const query = pageQuerySchema.parse(request.query);
+      const page = await dependencies.runtimeService.listChildSessions(params.sessionId, query.pageSize, query.cursor);
+      return reply.send(sessionPageSchema.parse(page));
     }
     case "GET /api/v1/sessions/:sessionId/messages/:messageId": {
       const params = createParamsSchema("sessionId", "messageId").parse(request.params);
@@ -330,6 +337,9 @@ export function registerSessionRoutes(app: FastifyInstance, dependencies: AppDep
     dispatchRegisteredSessionRoute(request, reply, dependencies)
   );
   app.get("/api/v1/sessions/:sessionId/messages", async (request, reply) =>
+    dispatchRegisteredSessionRoute(request, reply, dependencies)
+  );
+  app.get("/api/v1/sessions/:sessionId/children", async (request, reply) =>
     dispatchRegisteredSessionRoute(request, reply, dependencies)
   );
   app.get("/api/v1/sessions/:sessionId/messages/:messageId", async (request, reply) =>

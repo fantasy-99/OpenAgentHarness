@@ -88,6 +88,7 @@ export interface ToolExecutionServiceDependencies {
     input: unknown,
     definition: EngineToolSet[string]
   ) => ActionRetryPolicy | undefined;
+  isToolVisibleToAgent: (workspace: WorkspaceRecord, agentName: string, toolName: string) => boolean;
   resolveToolSourceType: (toolName: string) => "action" | "skill" | "agent" | "tool" | "native";
   timeoutMsFromSeconds: (value: unknown) => number | undefined;
   createAbortError: () => Error;
@@ -105,6 +106,7 @@ export class ToolExecutionService {
   readonly #applyBeforeToolDispatchHooks: ToolExecutionServiceDependencies["applyBeforeToolDispatchHooks"];
   readonly #applyAfterToolDispatchHooks: ToolExecutionServiceDependencies["applyAfterToolDispatchHooks"];
   readonly #resolveToolRetryPolicy: ToolExecutionServiceDependencies["resolveToolRetryPolicy"];
+  readonly #isToolVisibleToAgent: ToolExecutionServiceDependencies["isToolVisibleToAgent"];
   readonly #resolveToolSourceType: ToolExecutionServiceDependencies["resolveToolSourceType"];
   readonly #timeoutMsFromSeconds: ToolExecutionServiceDependencies["timeoutMsFromSeconds"];
   readonly #createAbortError: ToolExecutionServiceDependencies["createAbortError"];
@@ -121,6 +123,7 @@ export class ToolExecutionService {
     this.#applyBeforeToolDispatchHooks = dependencies.applyBeforeToolDispatchHooks;
     this.#applyAfterToolDispatchHooks = dependencies.applyAfterToolDispatchHooks;
     this.#resolveToolRetryPolicy = dependencies.resolveToolRetryPolicy;
+    this.#isToolVisibleToAgent = dependencies.isToolVisibleToAgent;
     this.#resolveToolSourceType = dependencies.resolveToolSourceType;
     this.#timeoutMsFromSeconds = dependencies.timeoutMsFromSeconds;
     this.#createAbortError = dependencies.createAbortError;
@@ -152,6 +155,14 @@ export class ToolExecutionService {
             let retryPolicy = this.#resolveToolRetryPolicy(input.workspace, toolName, rawInput, definition);
 
             try {
+              if (!this.#isToolVisibleToAgent(input.workspace, currentAgentName, toolName)) {
+                throw new AppError(
+                  403,
+                  "tool_not_available_for_agent",
+                  `Tool ${toolName} is not available for agent ${currentAgentName}.`
+                );
+              }
+
               executedInput = await this.#applyBeforeToolDispatchHooks(
                 input.workspace,
                 input.session,

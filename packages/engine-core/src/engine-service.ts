@@ -60,6 +60,7 @@ import {
 import { createId, nowIso } from "./utils.js";
 import { createLocalWorkspaceCommandExecutor } from "./workspace/workspace-command-executor.js";
 import { createLocalWorkspaceFileSystem } from "./workspace/workspace-file-system.js";
+import { visibleNativeToolNames } from "./capabilities/engine-capabilities.js";
 import {
   type AutomaticRecoveryStrategy,
   type RunExecutionContext
@@ -86,6 +87,8 @@ export class EngineService {
   readonly #runQueue: EngineServiceOptions["runQueue"];
   readonly #engineMessageRepository: EngineServiceOptions["engineMessageRepository"];
   readonly #toolCallAuditRepository: EngineServiceOptions["toolCallAuditRepository"];
+  readonly #agentTaskRepository: EngineServiceOptions["agentTaskRepository"];
+  readonly #agentTaskNotificationRepository: EngineServiceOptions["agentTaskNotificationRepository"];
   readonly #workspaceArchiveRepository: EngineServiceOptions["workspaceArchiveRepository"];
   readonly #workspaceDeletionHandler: EngineServiceOptions["workspaceDeletionHandler"];
   readonly #workspaceInitializer: EngineServiceOptions["workspaceInitializer"];
@@ -132,6 +135,8 @@ export class EngineService {
     this.#runQueue = options.runQueue;
     this.#engineMessageRepository = options.engineMessageRepository;
     this.#toolCallAuditRepository = options.toolCallAuditRepository;
+    this.#agentTaskRepository = options.agentTaskRepository;
+    this.#agentTaskNotificationRepository = options.agentTaskNotificationRepository;
     this.#workspaceArchiveRepository = options.workspaceArchiveRepository;
     this.#workspaceDeletionHandler = options.workspaceDeletionHandler;
     this.#workspaceInitializer = options.workspaceInitializer;
@@ -214,6 +219,8 @@ export class EngineService {
       sessionPendingRunQueueRepository: this.#sessionPendingRunQueueRepository,
       runQueue: this.#runQueue,
       engineMessageRepository: this.#engineMessageRepository,
+      agentTaskRepository: this.#agentTaskRepository,
+      agentTaskNotificationRepository: this.#agentTaskNotificationRepository,
       workspaceExecutionProvider: this.#workspaceExecutionProvider,
       workspaceFileAccessProvider: this.#workspaceFileAccessProvider,
       workspaceActivityTracker: this.#workspaceActivityTracker,
@@ -262,9 +269,12 @@ export class EngineService {
       workspaceFileAccessProvider: this.#workspaceFileAccessProvider,
       hookRunAuditRepository: this.#hookRunAuditRepository,
       toolCallAuditRepository: this.#toolCallAuditRepository,
+      agentTaskRepository: this.#agentTaskRepository,
+      agentTaskNotificationRepository: this.#agentTaskNotificationRepository,
       sessionRepository: this.#sessionRepository,
       messageRepository: this.#messageRepository,
       runRepository: this.#runRepository,
+      runStepRepository: this.#runStepRepository,
       startRunStep: (input) => this.#runSteps.startRunStep(input),
       completeRunStep: (step, status, output) => this.#runSteps.completeRunStep(step, status, output),
       recordSystemStep: (run, name, output) => this.#runSteps.recordSystemStep(run, name, output),
@@ -564,6 +574,10 @@ export class EngineService {
 
   async listWorkspaceSessions(workspaceId: string, pageSize: number, cursor?: string): Promise<SessionListResult> {
     return (await this.#ensureRuntimeKernel()).sessionRuntime.listWorkspaceSessions(workspaceId, pageSize, cursor);
+  }
+
+  async listChildSessions(parentSessionId: string, pageSize = 100, cursor?: string): Promise<SessionListResult> {
+    return (await this.#ensureRuntimeKernel()).sessionRuntime.listChildSessions(parentSessionId, pageSize, cursor);
   }
 
   async listSessionMessages(
@@ -869,7 +883,7 @@ export class EngineService {
       fileSystem: this.#workspaceFileSystem,
       ...(this.#workspaceFileAccessProvider ? { workspaceFileAccessProvider: this.#workspaceFileAccessProvider } : {}),
       executeAction: async (action, input, context) => this.#executeAction(workspace, action, run, context.abortSignal, input),
-      delegateAgent: async ({ targetAgentName, task, handoffSummary, taskId, notifyParentOnCompletion }, currentAgentName) => {
+      delegateAgent: async ({ targetAgentName, task, handoffSummary, taskId, notifyParentOnCompletion, toolUseId }, currentAgentName) => {
         const accepted = await this.#ensureExecutionServices().agentCoordination.delegateAgentRun({
           workspace,
           parentSession: session,
@@ -879,11 +893,22 @@ export class EngineService {
           task,
           handoffSummary,
           taskId,
-          notifyParentOnCompletion
+          notifyParentOnCompletion,
+          toolUseId,
+          canReadOutputFile: visibleNativeToolNames(workspace, currentAgentName).some(
+            (toolName) => toolName === "Read" || toolName === "Bash"
+          )
         });
         executionContext.delegatedRunIds.push(accepted.childRunId);
         return accepted;
       },
+      readAgentTaskOutput: async ({ taskId, block, timeoutMs, abortSignal }) =>
+        this.#ensureExecutionServices().agentCoordination.readAgentTaskOutput({
+          taskId,
+          block,
+          timeoutMs,
+          abortSignal
+        }),
       awaitDelegatedRuns: async ({ runIds, mode }) =>
         this.#ensureExecutionServices().agentCoordination.awaitDelegatedRuns(runIds, mode),
       switchAgent: async (targetAgentName, currentAgentName) => {

@@ -9,6 +9,8 @@ import { oahPostgresSchema, type OahDatabase, workspaces } from "./schema.js";
 import { toWorkspaceRecord } from "./row-mappers.js";
 import {
   PostgresArtifactRepository,
+  PostgresAgentTaskNotificationRepository,
+  PostgresAgentTaskRepository,
   PostgresHistoryEventRepository,
   PostgresHookRunAuditRepository,
   PostgresMessageRepository,
@@ -38,6 +40,8 @@ export interface PostgresRuntimePersistence {
   toolCallAuditRepository: PostgresToolCallAuditRepository;
   hookRunAuditRepository: PostgresHookRunAuditRepository;
   artifactRepository: PostgresArtifactRepository;
+  agentTaskRepository: PostgresAgentTaskRepository;
+  agentTaskNotificationRepository: PostgresAgentTaskNotificationRepository;
   historyEventRepository: PostgresHistoryEventRepository;
   listWorkspaceSnapshots(candidates: WorkspaceRecord[]): Promise<WorkspaceRecord[]>;
   close(): Promise<void>;
@@ -87,6 +91,8 @@ export async function createPostgresRuntimePersistence(
     toolCallAuditRepository: new PostgresToolCallAuditRepository(db),
     hookRunAuditRepository: new PostgresHookRunAuditRepository(db),
     artifactRepository: new PostgresArtifactRepository(db),
+    agentTaskRepository: new PostgresAgentTaskRepository(db),
+    agentTaskNotificationRepository: new PostgresAgentTaskNotificationRepository(db),
     historyEventRepository: new PostgresHistoryEventRepository(db),
     async listWorkspaceSnapshots(candidates) {
       const snapshots = new Map<string, WorkspaceRecord>();
@@ -122,6 +128,7 @@ export { ensurePostgresSchema } from "./schema-management.js";
 export type { OahDatabase, OahExecutor, OahTransaction } from "./schema.js";
 export {
   PostgresArtifactRepository,
+  PostgresAgentTaskRepository,
   PostgresHistoryEventRepository,
   PostgresHookRunAuditRepository,
   PostgresMessageRepository,

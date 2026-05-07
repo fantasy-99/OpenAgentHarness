@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type {
+  AgentTaskNotificationRecord,
+  AgentTaskRecord,
   ArtifactRecord,
   HookRunAuditRecord,
   Message,
@@ -37,6 +39,8 @@ function createInMemoryPostgresPersistence(label: string, options?: { supportRou
   const runSteps = new Map<string, RunStep>();
   const sessionEvents = new Map<string, SessionEvent[]>();
   const artifacts = new Map<string, ArtifactRecord>();
+  const agentTasks = new Map<string, AgentTaskRecord>();
+  const agentTaskNotifications = new Map<string, AgentTaskNotificationRecord>();
   const archives = new Map<string, WorkspaceArchiveRecord>();
   const workspaceRegistry = new Map<string, { serviceName?: string; createdAt: string; updatedAt: string }>();
   const sessionRegistry = new Map<string, Session & { serviceName?: string }>();
@@ -49,7 +53,11 @@ function createInMemoryPostgresPersistence(label: string, options?: { supportRou
       return { rows: [] };
     }
 
-    if (sql.startsWith("create table if not exists") || sql.startsWith("create index if not exists")) {
+    if (
+      sql.startsWith("create table if not exists") ||
+      sql.startsWith("create index if not exists") ||
+      sql.startsWith("alter table session_registry add column if not exists")
+    ) {
       return { rows: [] };
     }
 
@@ -187,6 +195,7 @@ function createInMemoryPostgresPersistence(label: string, options?: { supportRou
               {
                 id: entry.id,
                 workspace_id: entry.workspaceId,
+                parent_session_id: entry.parentSessionId ?? null,
                 service_name: entry.serviceName ?? null,
                 subject_ref: entry.subjectRef,
                 model_ref: entry.modelRef ?? null,
@@ -222,6 +231,40 @@ function createInMemoryPostgresPersistence(label: string, options?: { supportRou
         .map((entry) => ({
           id: entry.id,
           workspace_id: entry.workspaceId,
+          parent_session_id: entry.parentSessionId ?? null,
+          subject_ref: entry.subjectRef,
+          model_ref: entry.modelRef ?? null,
+          agent_name: entry.agentName ?? null,
+          active_agent_name: entry.activeAgentName,
+          title: entry.title ?? null,
+          status: entry.status,
+          last_run_at: entry.lastRunAt ?? null,
+          created_at: entry.createdAt,
+          updated_at: entry.updatedAt
+        }));
+      return { rows };
+    }
+
+    if (sql.includes("from session_registry") && sql.includes("where parent_session_id = $1")) {
+      const parentSessionId = String(values?.[0] ?? "");
+      const limit = Number(values?.[1] ?? 50);
+      const offset = Number(values?.[2] ?? 0);
+      const rows = [...sessionRegistry.values()]
+        .filter((entry) => entry.parentSessionId === parentSessionId)
+        .sort((left, right) => {
+          if (left.updatedAt !== right.updatedAt) {
+            return right.updatedAt.localeCompare(left.updatedAt);
+          }
+          if (left.createdAt !== right.createdAt) {
+            return right.createdAt.localeCompare(left.createdAt);
+          }
+          return left.id.localeCompare(right.id);
+        })
+        .slice(offset, offset + limit)
+        .map((entry) => ({
+          id: entry.id,
+          workspace_id: entry.workspaceId,
+          parent_session_id: entry.parentSessionId ?? null,
           subject_ref: entry.subjectRef,
           model_ref: entry.modelRef ?? null,
           agent_name: entry.agentName ?? null,
@@ -239,17 +282,33 @@ function createInMemoryPostgresPersistence(label: string, options?: { supportRou
       sessionRegistry.set(String(values?.[0] ?? ""), {
         id: String(values?.[0] ?? ""),
         workspaceId: String(values?.[1] ?? ""),
-        ...(typeof values?.[2] === "string" ? { serviceName: String(values[2]) } : {}),
-        subjectRef: String(values?.[3] ?? ""),
-        ...(typeof values?.[4] === "string" ? { modelRef: String(values[4]) } : {}),
-        ...(typeof values?.[5] === "string" ? { agentName: String(values[5]) } : {}),
-        activeAgentName: String(values?.[6] ?? ""),
-        ...(typeof values?.[7] === "string" ? { title: String(values[7]) } : {}),
-        status: String(values?.[8] ?? "") as Session["status"],
-        ...(typeof values?.[9] === "string" ? { lastRunAt: String(values[9]) } : {}),
-        createdAt: String(values?.[10] ?? ""),
-        updatedAt: String(values?.[11] ?? "")
+        ...(typeof values?.[2] === "string" ? { parentSessionId: String(values[2]) } : {}),
+        ...(typeof values?.[3] === "string" ? { serviceName: String(values[3]) } : {}),
+        subjectRef: String(values?.[4] ?? ""),
+        ...(typeof values?.[5] === "string" ? { modelRef: String(values[5]) } : {}),
+        ...(typeof values?.[6] === "string" ? { agentName: String(values[6]) } : {}),
+        activeAgentName: String(values?.[7] ?? ""),
+        ...(typeof values?.[8] === "string" ? { title: String(values[8]) } : {}),
+        status: String(values?.[9] ?? "") as Session["status"],
+        ...(typeof values?.[10] === "string" ? { lastRunAt: String(values[10]) } : {}),
+        createdAt: String(values?.[11] ?? ""),
+        updatedAt: String(values?.[12] ?? "")
       });
+      return { rows: [] };
+    }
+
+    if (sql.startsWith("update session_registry sr")) {
+      for (const [sessionId, entry] of sessionRegistry.entries()) {
+        const source = sessions.get(sessionId);
+        if (!source || entry.parentSessionId === source.parentSessionId) {
+          continue;
+        }
+
+        sessionRegistry.set(sessionId, {
+          ...entry,
+          ...(source.parentSessionId ? { parentSessionId: source.parentSessionId } : {})
+        });
+      }
       return { rows: [] };
     }
 
@@ -437,6 +496,19 @@ function createInMemoryPostgresPersistence(label: string, options?: { supportRou
       },
       async listBySessionId(sessionId: string) {
         return sortIsoAscending([...messages.values()].filter((message) => message.sessionId === sessionId));
+      },
+      async listPageBySessionId(input: {
+        sessionId: string;
+        pageSize: number;
+        cursor?: string | undefined;
+        direction?: "forward" | "backward" | undefined;
+      }) {
+        const items = sortIsoAscending([...messages.values()].filter((message) => message.sessionId === input.sessionId));
+        const offset = input.cursor ? Number.parseInt(input.cursor, 10) : 0;
+        return {
+          items: items.slice(offset, offset + input.pageSize),
+          hasMore: offset + input.pageSize < items.length
+        };
       }
     },
     engineMessageRepository: {
@@ -524,6 +596,72 @@ function createInMemoryPostgresPersistence(label: string, options?: { supportRou
       },
       async listByRunId(runId: string) {
         return [...artifacts.values()].filter((artifact) => artifact.runId === runId);
+      }
+    },
+    agentTaskRepository: {
+      async upsert(input: AgentTaskRecord) {
+        agentTasks.set(input.taskId, input);
+        return input;
+      },
+      async getByTaskId(taskId: string) {
+        return agentTasks.get(taskId) ?? null;
+      },
+      async update(input: {
+        taskId: string;
+        status: AgentTaskRecord["status"];
+        updatedAt: string;
+        toolUseId?: string | undefined;
+        outputRef?: string | undefined;
+        outputFile?: string | undefined;
+        finalText?: string | undefined;
+        errorMessage?: string | undefined;
+        usage?: Record<string, unknown> | undefined;
+        notifiedAt?: string | undefined;
+      }) {
+        const existing = agentTasks.get(input.taskId);
+        if (!existing) {
+          throw new Error(`Agent task ${input.taskId} was not found`);
+        }
+
+        const next: AgentTaskRecord = {
+          ...existing,
+          status: input.status,
+          updatedAt: input.updatedAt,
+          ...(input.toolUseId !== undefined ? { toolUseId: input.toolUseId } : {}),
+          ...(input.outputRef !== undefined ? { outputRef: input.outputRef } : {}),
+          ...(input.outputFile !== undefined ? { outputFile: input.outputFile } : {}),
+          ...(input.finalText !== undefined ? { finalText: input.finalText } : {}),
+          ...(input.errorMessage !== undefined ? { errorMessage: input.errorMessage } : {}),
+          ...(input.usage !== undefined ? { usage: input.usage } : {}),
+          ...(input.notifiedAt !== undefined ? { notifiedAt: input.notifiedAt } : {})
+        };
+        agentTasks.set(input.taskId, next);
+        return next;
+      }
+    },
+    agentTaskNotificationRepository: {
+      async create(input: AgentTaskNotificationRecord) {
+        agentTaskNotifications.set(input.id, input);
+        return input;
+      },
+      async listPendingBySessionId(parentSessionId: string) {
+        return [...agentTaskNotifications.values()]
+          .filter((item) => item.parentSessionId === parentSessionId && item.status === "pending")
+          .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
+      },
+      async markConsumed(input: { ids: string[]; consumedAt: string }) {
+        for (const id of input.ids) {
+          const existing = agentTaskNotifications.get(id);
+          if (!existing) {
+            continue;
+          }
+
+          agentTaskNotifications.set(id, {
+            ...existing,
+            status: "consumed",
+            consumedAt: input.consumedAt
+          });
+        }
       }
     },
     historyEventRepository: {
@@ -646,6 +784,8 @@ function createInMemoryPostgresPersistence(label: string, options?: { supportRou
       sessions,
       runs,
       messages,
+      agentTasks,
+      agentTaskNotifications,
       workspaceRegistry,
       sessionRegistry,
       runRegistry
@@ -842,6 +982,163 @@ describe("service routed postgres persistence", () => {
     expect(serviceBackend.state.messages.get(message.id)?.sessionId).toBe(session.id);
     await expect(persistence.messageRepository.listBySessionId(session.id)).resolves.toEqual([message]);
     await expect(persistence.messageRepository.getById(message.id)).resolves.toEqual(message);
+
+    await persistence.close();
+  });
+
+  it("routes agent tasks and pending task notifications into the service database", async () => {
+    const defaultBackend = createInMemoryPostgresPersistence("default", { supportRoutingRegistry: true });
+    const serviceBackend = createInMemoryPostgresPersistence("svc-acme");
+
+    const persistence = await createServiceRoutedPostgresRuntimePersistence({
+      connectionString: "postgres://oah:oah@127.0.0.1:5432/OAH",
+      async persistenceFactory(options) {
+        if (options.connectionString === "postgres://oah:oah@127.0.0.1:5432/OAH") {
+          return defaultBackend as never;
+        }
+
+        if (options.connectionString === "postgres://oah:oah@127.0.0.1:5432/OAH-acme-app") {
+          return serviceBackend as never;
+        }
+
+        throw new Error(`Unexpected connection string: ${options.connectionString}`);
+      }
+    });
+
+    const workspace: WorkspaceRecord = {
+      id: "ws_service_tasks",
+      name: "service tasks",
+      rootPath: "/tmp/ws_service_tasks",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: true,
+      serviceName: "acme-app",
+      settings: {},
+      workspaceModels: {},
+      agents: {},
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "ws_service_tasks",
+        actions: [],
+        agents: [],
+        hooks: [],
+        models: [],
+        skills: [],
+        tools: []
+      }
+    };
+    const parentSession: Session = {
+      id: "ses_service_tasks_parent",
+      workspaceId: workspace.id,
+      subjectRef: "dev:test",
+      activeAgentName: "planner",
+      status: "active",
+      createdAt: "2026-01-01T00:01:00.000Z",
+      updatedAt: "2026-01-01T00:01:00.000Z"
+    };
+    const childSession: Session = {
+      ...parentSession,
+      id: "ses_service_tasks_child",
+      parentSessionId: parentSession.id,
+      activeAgentName: "researcher",
+      createdAt: "2026-01-01T00:02:00.000Z",
+      updatedAt: "2026-01-01T00:02:00.000Z"
+    };
+    const parentRun: Run = {
+      id: "run_service_tasks_parent",
+      workspaceId: workspace.id,
+      sessionId: parentSession.id,
+      triggerType: "message",
+      effectiveAgentName: "planner",
+      status: "running",
+      createdAt: "2026-01-01T00:03:00.000Z"
+    };
+    const childRun: Run = {
+      id: "run_service_tasks_child",
+      workspaceId: workspace.id,
+      sessionId: childSession.id,
+      parentRunId: parentRun.id,
+      triggerType: "subagent",
+      effectiveAgentName: "researcher",
+      status: "completed",
+      createdAt: "2026-01-01T00:04:00.000Z"
+    };
+    const task: AgentTaskRecord = {
+      taskId: childSession.id,
+      workspaceId: workspace.id,
+      parentSessionId: parentSession.id,
+      parentRunId: parentRun.id,
+      childSessionId: childSession.id,
+      childRunId: childRun.id,
+      toolUseId: "call_agent",
+      targetAgentName: "researcher",
+      parentAgentName: "planner",
+      status: "running",
+      outputRef: `agent-task://${childSession.id}/output`,
+      outputFile: `/tmp/open-agent-harness/${parentSession.id}/tasks/${childSession.id}.output`,
+      createdAt: "2026-01-01T00:05:00.000Z",
+      updatedAt: "2026-01-01T00:05:00.000Z"
+    };
+    const notification: AgentTaskNotificationRecord = {
+      id: "note_service_tasks_child",
+      workspaceId: workspace.id,
+      parentSessionId: parentSession.id,
+      parentRunId: parentRun.id,
+      taskId: task.taskId,
+      toolUseId: "call_agent",
+      childRunId: childRun.id,
+      childSessionId: childSession.id,
+      updateType: "completed",
+      content: "<task-notification><status>completed</status></task-notification>",
+      metadata: { delegatedTaskId: task.taskId },
+      status: "pending",
+      createdAt: "2026-01-01T00:06:00.000Z"
+    };
+
+    await persistence.workspaceRepository.create(workspace);
+    await persistence.sessionRepository.create(parentSession);
+    await persistence.sessionRepository.create(childSession);
+    await persistence.runRepository.create(parentRun);
+    await persistence.runRepository.create(childRun);
+
+    await persistence.agentTaskRepository.upsert(task);
+    await persistence.agentTaskRepository.update({
+      taskId: task.taskId,
+      status: "completed",
+      finalText: "research complete",
+      updatedAt: "2026-01-01T00:07:00.000Z"
+    });
+    await persistence.agentTaskNotificationRepository.create(notification);
+
+    expect(defaultBackend.state.agentTasks.has(task.taskId)).toBe(false);
+    expect(serviceBackend.state.agentTasks.get(task.taskId)).toMatchObject({
+      status: "completed",
+      finalText: "research complete"
+    });
+    await expect(persistence.agentTaskRepository.getByTaskId(task.taskId)).resolves.toMatchObject({
+      taskId: task.taskId,
+      childRunId: childRun.id
+    });
+    expect(defaultBackend.state.agentTaskNotifications.has(notification.id)).toBe(false);
+    await expect(persistence.agentTaskNotificationRepository.listPendingBySessionId(parentSession.id)).resolves.toEqual([
+      notification
+    ]);
+
+    await persistence.agentTaskNotificationRepository.markConsumed({
+      ids: [notification.id],
+      consumedAt: "2026-01-01T00:08:00.000Z"
+    });
+    expect(serviceBackend.state.agentTaskNotifications.get(notification.id)).toMatchObject({
+      status: "consumed",
+      consumedAt: "2026-01-01T00:08:00.000Z"
+    });
 
     await persistence.close();
   });

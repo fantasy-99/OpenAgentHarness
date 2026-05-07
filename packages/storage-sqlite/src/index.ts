@@ -1,5 +1,7 @@
 import type {
   ArtifactRepository,
+  AgentTaskNotificationRepository,
+  AgentTaskRepository,
   HistoryEventRepository,
   HookRunAuditRepository,
   MessageRepository,
@@ -16,6 +18,8 @@ import type {
 import { SQLitePersistenceCoordinator, SQLiteWorkspaceRepository } from "./coordinator.js";
 import {
   SQLiteArtifactRepository,
+  SQLiteAgentTaskNotificationRepository,
+  SQLiteAgentTaskRepository,
   SQLiteHistoryEventRepository,
   SQLiteHookRunAuditRepository,
   SQLiteMessageRepository,
@@ -42,6 +46,8 @@ export interface SQLiteRuntimePersistence {
   toolCallAuditRepository: ToolCallAuditRepository;
   hookRunAuditRepository: HookRunAuditRepository;
   artifactRepository: ArtifactRepository;
+  agentTaskRepository: AgentTaskRepository;
+  agentTaskNotificationRepository: AgentTaskNotificationRepository;
   historyEventRepository: HistoryEventRepository;
   listWorkspaceSnapshots(candidates: WorkspaceRecord[]): Promise<WorkspaceRecord[]>;
   listPersistedWorkspaces(): Promise<WorkspaceRecord[]>;
@@ -88,6 +94,8 @@ export async function createSQLiteRuntimePersistence(
   const toolCallAuditRepository = new SQLiteToolCallAuditRepository(coordinator);
   const hookRunAuditRepository = new SQLiteHookRunAuditRepository(coordinator);
   const artifactRepository = new SQLiteArtifactRepository(coordinator);
+  const agentTaskRepository = new SQLiteAgentTaskRepository(coordinator);
+  const agentTaskNotificationRepository = new SQLiteAgentTaskNotificationRepository(coordinator);
   const historyEventRepository = new SQLiteHistoryEventRepository(coordinator);
 
   messageRepository.workspaceRepository = workspaceRepository;
@@ -106,6 +114,8 @@ export async function createSQLiteRuntimePersistence(
     toolCallAuditRepository,
     hookRunAuditRepository,
     artifactRepository,
+    agentTaskRepository,
+    agentTaskNotificationRepository,
     historyEventRepository,
     listWorkspaceSnapshots(candidates) {
       return coordinator.listWorkspaceSnapshots(candidates);

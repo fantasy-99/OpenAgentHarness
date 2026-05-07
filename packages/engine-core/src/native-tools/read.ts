@@ -12,6 +12,7 @@ const READ_DESCRIPTION = `Reads a file from the local filesystem. You can access
 
 Usage:
 - The file_path parameter should point to a file inside the current workspace
+- Subagent task outputs can also be read with agent-task://<task_id>/output or the output_file returned by SubAgent/task notifications
 - By default, it reads up to 2000 lines starting from the beginning of the file
 - You can optionally specify an offset and limit for targeted reads
 - Results are returned with line numbers starting at 1
@@ -32,7 +33,7 @@ export function createReadTool(context: NativeToolFactoryContext): EngineToolSet
       description: READ_DESCRIPTION,
       retryPolicy: getNativeToolRetryPolicy("Read"),
       inputSchema: ReadInputSchema,
-      async execute(rawInput) {
+      async execute(rawInput, executionContext) {
         context.assertVisible("Read");
         const normalizedInput =
           rawInput && typeof rawInput === "object" && rawInput !== null
@@ -44,15 +45,42 @@ export function createReadTool(context: NativeToolFactoryContext): EngineToolSet
               }
             : rawInput;
         const input = ReadInputSchema.parse(normalizedInput);
+        if (input.pages) {
+          throw new AppError(501, "native_tool_pdf_pages_unsupported", "Read pages is not implemented for PDF files in this runtime.");
+        }
+
+        const virtualFile = await context.readVirtualFile({
+          filePath: input.file_path,
+          abortSignal: executionContext.abortSignal
+        });
+        if (virtualFile) {
+          const offset = input.offset ?? 0;
+          const limit = input.limit ?? DEFAULT_READ_LIMIT;
+          const { rendered, truncated, totalLines } = formatReadLines(virtualFile.content, offset, limit);
+          return formatToolOutput(
+            [
+              ["file_path", virtualFile.filePath],
+              ["offset", Math.max(1, offset || 1)],
+              ["returned_lines", rendered.length],
+              ["total_lines", totalLines],
+              ["truncated", truncated],
+              ["virtual", true]
+            ],
+            [
+              {
+                title: "content",
+                lines: rendered,
+                emptyText: "(empty file)"
+              }
+            ]
+          );
+        }
+
         return context.withFileSystem("read", input.file_path, async ({ workspaceRoot, fileSystem }) => {
           const resolved = await resolveWorkspacePath(fileSystem, workspaceRoot, input.file_path);
           const entry = await fileSystem.stat(resolved.absolutePath).catch(() => null);
           if (entry?.kind !== "file") {
             throw new AppError(404, "native_tool_file_not_found", `File ${input.file_path} was not found.`);
-          }
-
-          if (input.pages) {
-            throw new AppError(501, "native_tool_pdf_pages_unsupported", "Read pages is not implemented for PDF files in this runtime.");
           }
 
           const content = (await fileSystem.readFile(resolved.absolutePath)).toString("utf8");

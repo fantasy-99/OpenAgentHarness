@@ -67,6 +67,10 @@ export class RedisRunWorkerPool {
   #lastUniqueReadySessionCount: number | undefined;
   #lastSubagentReadySessionCount: number | undefined;
   #lastSubagentReadyQueueDepth: number | undefined;
+  #lastPreferredReadySessionCount: number | undefined;
+  #lastPreferredReadyQueueDepth: number | undefined;
+  #lastPreferredSubagentReadySessionCount: number | undefined;
+  #lastPreferredSubagentReadyQueueDepth: number | undefined;
   #lastLockedReadySessionCount: number | undefined;
   #lastStaleReadySessionCount: number | undefined;
   #lastOldestSchedulableReadyAgeMs: number | undefined;
@@ -201,6 +205,18 @@ export class RedisRunWorkerPool {
       ...(typeof this.#lastSubagentReadyQueueDepth === "number"
         ? { subagentReadyQueueDepth: this.#lastSubagentReadyQueueDepth }
         : {}),
+      ...(typeof this.#lastPreferredReadySessionCount === "number"
+        ? { preferredReadySessionCount: this.#lastPreferredReadySessionCount }
+        : {}),
+      ...(typeof this.#lastPreferredReadyQueueDepth === "number"
+        ? { preferredReadyQueueDepth: this.#lastPreferredReadyQueueDepth }
+        : {}),
+      ...(typeof this.#lastPreferredSubagentReadySessionCount === "number"
+        ? { preferredSubagentReadySessionCount: this.#lastPreferredSubagentReadySessionCount }
+        : {}),
+      ...(typeof this.#lastPreferredSubagentReadyQueueDepth === "number"
+        ? { preferredSubagentReadyQueueDepth: this.#lastPreferredSubagentReadyQueueDepth }
+        : {}),
       ...(typeof this.#lastLockedReadySessionCount === "number"
         ? { lockedReadySessionCount: this.#lastLockedReadySessionCount }
         : {}),
@@ -249,6 +265,10 @@ export class RedisRunWorkerPool {
     this.#lastUniqueReadySessionCount = schedulingPressure?.uniqueReadySessionCount;
     this.#lastSubagentReadySessionCount = schedulingPressure?.subagentReadySessionCount;
     this.#lastSubagentReadyQueueDepth = schedulingPressure?.subagentReadyQueueDepth;
+    this.#lastPreferredReadySessionCount = schedulingPressure?.preferredReadySessionCount;
+    this.#lastPreferredReadyQueueDepth = schedulingPressure?.preferredReadyQueueDepth;
+    this.#lastPreferredSubagentReadySessionCount = schedulingPressure?.preferredSubagentReadySessionCount;
+    this.#lastPreferredSubagentReadyQueueDepth = schedulingPressure?.preferredSubagentReadyQueueDepth;
     this.#lastLockedReadySessionCount = schedulingPressure?.lockedReadySessionCount;
     this.#lastStaleReadySessionCount = schedulingPressure?.staleReadySessionCount;
     this.#lastOldestSchedulableReadyAgeMs = schedulingPressure?.oldestSchedulableReadyAgeMs;
@@ -499,6 +519,18 @@ export class RedisRunWorkerPool {
       ...(typeof this.#lastSubagentReadyQueueDepth === "number"
         ? { subagentReadyQueueDepth: this.#lastSubagentReadyQueueDepth }
         : {}),
+      ...(typeof this.#lastPreferredReadySessionCount === "number"
+        ? { preferredReadySessionCount: this.#lastPreferredReadySessionCount }
+        : {}),
+      ...(typeof this.#lastPreferredReadyQueueDepth === "number"
+        ? { preferredReadyQueueDepth: this.#lastPreferredReadyQueueDepth }
+        : {}),
+      ...(typeof this.#lastPreferredSubagentReadySessionCount === "number"
+        ? { preferredSubagentReadySessionCount: this.#lastPreferredSubagentReadySessionCount }
+        : {}),
+      ...(typeof this.#lastPreferredSubagentReadyQueueDepth === "number"
+        ? { preferredSubagentReadyQueueDepth: this.#lastPreferredSubagentReadyQueueDepth }
+        : {}),
       ...(typeof this.#lastLockedReadySessionCount === "number"
         ? { lockedReadySessionCount: this.#lastLockedReadySessionCount }
         : {}),
@@ -585,6 +617,10 @@ export class RedisRunWorkerPool {
       this.#lastUniqueReadySessionCount,
       this.#lastSubagentReadySessionCount,
       this.#lastSubagentReadyQueueDepth,
+      this.#lastPreferredReadySessionCount,
+      this.#lastPreferredReadyQueueDepth,
+      this.#lastPreferredSubagentReadySessionCount,
+      this.#lastPreferredSubagentReadyQueueDepth,
       this.#lastLockedReadySessionCount,
       this.#lastStaleReadySessionCount,
       this.#lastOldestSchedulableReadyAgeMs
@@ -605,6 +641,18 @@ export class RedisRunWorkerPool {
         : {}),
       ...(typeof this.#lastSubagentReadyQueueDepth === "number"
         ? { subagentReadyQueueDepth: this.#lastSubagentReadyQueueDepth }
+        : {}),
+      ...(typeof this.#lastPreferredReadySessionCount === "number"
+        ? { preferredReadySessionCount: this.#lastPreferredReadySessionCount }
+        : {}),
+      ...(typeof this.#lastPreferredReadyQueueDepth === "number"
+        ? { preferredReadyQueueDepth: this.#lastPreferredReadyQueueDepth }
+        : {}),
+      ...(typeof this.#lastPreferredSubagentReadySessionCount === "number"
+        ? { preferredSubagentReadySessionCount: this.#lastPreferredSubagentReadySessionCount }
+        : {}),
+      ...(typeof this.#lastPreferredSubagentReadyQueueDepth === "number"
+        ? { preferredSubagentReadyQueueDepth: this.#lastPreferredSubagentReadyQueueDepth }
         : {}),
       ...(typeof this.#lastLockedReadySessionCount === "number"
         ? { lockedReadySessionCount: this.#lastLockedReadySessionCount }

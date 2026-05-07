@@ -78,6 +78,10 @@ export interface RedisRunWorkerPoolDecision {
   uniqueReadySessionCount?: number | undefined;
   subagentReadySessionCount?: number | undefined;
   subagentReadyQueueDepth?: number | undefined;
+  preferredReadySessionCount?: number | undefined;
+  preferredReadyQueueDepth?: number | undefined;
+  preferredSubagentReadySessionCount?: number | undefined;
+  preferredSubagentReadyQueueDepth?: number | undefined;
   lockedReadySessionCount?: number | undefined;
   staleReadySessionCount?: number | undefined;
   oldestSchedulableReadyAgeMs?: number | undefined;
@@ -132,6 +136,10 @@ export interface RedisRunWorkerPoolSnapshot {
   uniqueReadySessionCount?: number | undefined;
   subagentReadySessionCount?: number | undefined;
   subagentReadyQueueDepth?: number | undefined;
+  preferredReadySessionCount?: number | undefined;
+  preferredReadyQueueDepth?: number | undefined;
+  preferredSubagentReadySessionCount?: number | undefined;
+  preferredSubagentReadyQueueDepth?: number | undefined;
   lockedReadySessionCount?: number | undefined;
   staleReadySessionCount?: number | undefined;
   oldestSchedulableReadyAgeMs?: number | undefined;

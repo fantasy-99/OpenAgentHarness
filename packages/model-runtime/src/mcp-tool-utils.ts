@@ -38,6 +38,33 @@ export function shouldIncludeTool(toolName: string, include: string[] | undefine
   return true;
 }
 
+export function assertMcpToolAllowed(server: ToolServerDefinition, rawToolName: string, exposedToolName: string): void {
+  if (!server.enabled) {
+    throw new AppError(
+      403,
+      "mcp_tool_not_available_for_agent",
+      `External tool ${exposedToolName} is not available because tool server ${server.name} is disabled.`
+    );
+  }
+
+  if (!shouldIncludeTool(rawToolName, server.include, server.exclude)) {
+    throw new AppError(
+      403,
+      "mcp_tool_not_available_for_agent",
+      `External tool ${exposedToolName} is not allowed by tool server ${server.name}.`
+    );
+  }
+
+  const prefix = normalizePrefix(server.toolPrefix);
+  if (prefix && exposedToolName !== rawToolName && !exposedToolName.startsWith(`${prefix}.`)) {
+    throw new AppError(
+      403,
+      "mcp_tool_not_available_for_agent",
+      `External tool ${exposedToolName} is outside tool server ${server.name}'s prefix ${prefix}.`
+    );
+  }
+}
+
 export function toJsonValue(value: unknown): JsonValueLike {
   return JSON.parse(JSON.stringify(value)) as JsonValueLike;
 }

@@ -1,5 +1,9 @@
 import type {
   Message,
+  AgentTaskNotificationRecord,
+  AgentTaskNotificationRepository,
+  AgentTaskRecord,
+  AgentTaskRepository,
   EngineMessage,
   EngineMessageRepository,
   Run,
@@ -76,6 +80,14 @@ export class InMemorySessionRepository implements SessionRepository {
     const startIndex = parseCursor(cursor);
     return [...this.#items.values()]
       .filter((session) => session.workspaceId === workspaceId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.createdAt.localeCompare(left.createdAt))
+      .slice(startIndex, startIndex + pageSize);
+  }
+
+  async listChildrenByParentSessionId(parentSessionId: string, pageSize: number, cursor?: string): Promise<Session[]> {
+    const startIndex = parseCursor(cursor);
+    return [...this.#items.values()]
+      .filter((session) => session.parentSessionId === parentSessionId)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || right.createdAt.localeCompare(left.createdAt))
       .slice(startIndex, startIndex + pageSize);
   }
@@ -325,6 +337,114 @@ export class InMemoryRunStepRepository implements RunStepRepository {
   }
 }
 
+export class InMemoryAgentTaskRepository implements AgentTaskRepository {
+  readonly #items = new Map<string, AgentTaskRecord>();
+
+  async upsert(input: AgentTaskRecord): Promise<AgentTaskRecord> {
+    this.#items.set(input.taskId, input);
+    return input;
+  }
+
+  async getByTaskId(taskId: string): Promise<AgentTaskRecord | null> {
+    return this.#items.get(taskId) ?? null;
+  }
+
+  async update(input: {
+    taskId: string;
+    status: AgentTaskRecord["status"];
+    updatedAt: string;
+    toolUseId?: string | undefined;
+    outputRef?: string | undefined;
+    outputFile?: string | undefined;
+    finalText?: string | undefined;
+    errorMessage?: string | undefined;
+    usage?: Record<string, unknown> | undefined;
+    notifiedAt?: string | undefined;
+  }): Promise<AgentTaskRecord> {
+    const existing = this.#items.get(input.taskId);
+    if (!existing) {
+      throw new AppError(404, "agent_task_not_found", `Agent task ${input.taskId} was not found.`);
+    }
+
+    const next: AgentTaskRecord = {
+      ...existing,
+      status: input.status,
+      updatedAt: input.updatedAt,
+      ...(input.toolUseId !== undefined ? { toolUseId: input.toolUseId } : {}),
+      ...(input.outputRef !== undefined ? { outputRef: input.outputRef } : {}),
+      ...(input.outputFile !== undefined ? { outputFile: input.outputFile } : {}),
+      ...(input.finalText !== undefined ? { finalText: input.finalText } : {}),
+      ...(input.errorMessage !== undefined ? { errorMessage: input.errorMessage } : {}),
+      ...(input.usage !== undefined ? { usage: input.usage } : {}),
+      ...(input.notifiedAt !== undefined ? { notifiedAt: input.notifiedAt } : {})
+    };
+    this.#items.set(input.taskId, next);
+    return next;
+  }
+
+  deleteByWorkspaceId(workspaceId: string): void {
+    for (const [taskId, task] of this.#items.entries()) {
+      if (task.workspaceId === workspaceId) {
+        this.#items.delete(taskId);
+      }
+    }
+  }
+
+  deleteBySessionIds(sessionIds: string[]): void {
+    const sessionIdSet = new Set(sessionIds);
+    for (const [taskId, task] of this.#items.entries()) {
+      if (sessionIdSet.has(task.parentSessionId) || sessionIdSet.has(task.childSessionId)) {
+        this.#items.delete(taskId);
+      }
+    }
+  }
+}
+
+export class InMemoryAgentTaskNotificationRepository implements AgentTaskNotificationRepository {
+  readonly #items = new Map<string, AgentTaskNotificationRecord>();
+
+  async create(input: AgentTaskNotificationRecord): Promise<AgentTaskNotificationRecord> {
+    this.#items.set(input.id, input);
+    return input;
+  }
+
+  async listPendingBySessionId(parentSessionId: string): Promise<AgentTaskNotificationRecord[]> {
+    return [...this.#items.values()]
+      .filter((item) => item.parentSessionId === parentSessionId && item.status === "pending")
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
+  }
+
+  async markConsumed(input: { ids: string[]; consumedAt: string }): Promise<void> {
+    for (const id of input.ids) {
+      const existing = this.#items.get(id);
+      if (existing) {
+        this.#items.set(id, {
+          ...existing,
+          status: "consumed",
+          consumedAt: input.consumedAt
+        });
+      }
+    }
+  }
+
+  deleteByWorkspaceId(workspaceId: string): void {
+    for (const [id, item] of this.#items.entries()) {
+      if (item.workspaceId === workspaceId) {
+        this.#items.delete(id);
+      }
+    }
+  }
+
+  deleteBySessionIds(sessionIds: string[]): void {
+    const sessionIdSet = new Set(sessionIds);
+    for (const [id, item] of this.#items.entries()) {
+      if (sessionIdSet.has(item.parentSessionId) || sessionIdSet.has(item.childSessionId)) {
+        this.#items.delete(id);
+      }
+    }
+  }
+}
+
 export class InMemorySessionPendingRunQueueRepository implements SessionPendingRunQueueRepository {
   readonly #itemsBySessionId = new Map<string, SessionPendingRunQueueEntry[]>();
 
@@ -501,6 +621,8 @@ export interface MemoryRuntimePersistence {
   engineMessageRepository: InMemoryEngineMessageRepository;
   runRepository: InMemoryRunRepository;
   runStepRepository: InMemoryRunStepRepository;
+  agentTaskRepository: InMemoryAgentTaskRepository;
+  agentTaskNotificationRepository: InMemoryAgentTaskNotificationRepository;
   sessionEventStore: InMemorySessionEventStore;
   sessionPendingRunQueueRepository: InMemorySessionPendingRunQueueRepository;
 }
@@ -510,6 +632,8 @@ export function createMemoryRuntimePersistence(): MemoryRuntimePersistence {
   const engineMessageRepository = new InMemoryEngineMessageRepository();
   const runRepository = new InMemoryRunRepository();
   const runStepRepository = new InMemoryRunStepRepository();
+  const agentTaskRepository = new InMemoryAgentTaskRepository();
+  const agentTaskNotificationRepository = new InMemoryAgentTaskNotificationRepository();
   const sessionEventStore = new InMemorySessionEventStore();
   const sessionPendingRunQueueRepository = new InMemorySessionPendingRunQueueRepository();
   const deleteSessionArtifacts = async (sessionId: string) => {
@@ -519,12 +643,16 @@ export function createMemoryRuntimePersistence(): MemoryRuntimePersistence {
     messageRepository.deleteBySessionIds([sessionId]);
     engineMessageRepository.deleteBySessionIds([sessionId]);
     runStepRepository.deleteByRunIds(deletedRunIds);
+    agentTaskRepository.deleteBySessionIds([sessionId]);
+    agentTaskNotificationRepository.deleteBySessionIds([sessionId]);
   };
   const sessionRepository = new InMemorySessionRepository(deleteSessionArtifacts);
   const workspaceRepository = new InMemoryWorkspaceRepository(async (workspaceId) => {
     await sessionRepository.deleteByWorkspaceId(workspaceId);
     const deletedRunIds = runRepository.deleteByWorkspaceId(workspaceId);
     runStepRepository.deleteByRunIds(deletedRunIds);
+    agentTaskRepository.deleteByWorkspaceId(workspaceId);
+    agentTaskNotificationRepository.deleteByWorkspaceId(workspaceId);
   });
 
   return {
@@ -534,6 +662,8 @@ export function createMemoryRuntimePersistence(): MemoryRuntimePersistence {
     engineMessageRepository,
     runRepository,
     runStepRepository,
+    agentTaskRepository,
+    agentTaskNotificationRepository,
     sessionEventStore,
     sessionPendingRunQueueRepository
   };

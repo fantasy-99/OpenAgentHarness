@@ -64,6 +64,7 @@ HTTP API 基于 REST 资源接口 + SSE 事件流。接口定义以 [openapi.yam
 | GET | `/workspaces/{id}/sessions` | 列出 session |
 | POST | `/workspaces/{id}/sessions` | 创建 session |
 | GET | `/sessions/{id}` | 获取详情 |
+| GET | `/sessions/{id}/children` | 列出直接子 session / subagent session |
 | GET | `/sessions/{id}/messages` | 列出消息 |
 | POST | `/sessions/{id}/messages` | 发送消息（202） |
 | GET | `/sessions/{id}/queue` | 读取服务端后续消息队列 |

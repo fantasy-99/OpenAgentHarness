@@ -6,6 +6,10 @@ import { once } from "node:events";
 import type {
   ArtifactRecord,
   ArtifactRepository,
+  AgentTaskNotificationRecord,
+  AgentTaskNotificationRepository,
+  AgentTaskRecord,
+  AgentTaskRepository,
   HistoryEventRecord,
   HistoryEventRepository,
   HookRunAuditRecord,
@@ -37,6 +41,8 @@ import { and, asc, desc, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
 import type { OahDatabase, OahTransaction } from "./schema.js";
 import {
   archives,
+  agentTaskNotifications,
+  agentTasks,
   artifacts,
   historyEvents,
   hookRuns,
@@ -53,6 +59,8 @@ import {
 import {
   appendHistoryDeleteEvents,
   appendHistoryEventRecord,
+  buildAgentTaskRow,
+  buildAgentTaskNotificationRow,
   buildArtifactRow,
   buildHookRunRow,
   buildMessageRow,
@@ -68,6 +76,8 @@ import {
   resolveWorkspaceIdForRun,
   resolveWorkspaceIdForSession,
   toArtifactRecord,
+  toAgentTaskRecord,
+  toAgentTaskNotificationRecord,
   toHistoryEventRecord,
   toHookRunAuditRecord,
   toMessage,
@@ -351,6 +361,19 @@ export class PostgresSessionRepository implements SessionRepository {
       .select()
       .from(sessions)
       .where(eq(sessions.workspaceId, workspaceId))
+      .orderBy(sql`${sessions.updatedAt} desc`, sql`${sessions.createdAt} desc`, sql`${sessions.id} asc`)
+      .limit(pageSize)
+      .offset(startIndex);
+
+    return rows.map(toSession);
+  }
+
+  async listChildrenByParentSessionId(parentSessionId: string, pageSize: number, cursor?: string): Promise<Session[]> {
+    const startIndex = parseCursor(cursor);
+    const rows = await this.db
+      .select()
+      .from(sessions)
+      .where(eq(sessions.parentSessionId, parentSessionId))
       .orderBy(sql`${sessions.updatedAt} desc`, sql`${sessions.createdAt} desc`, sql`${sessions.id} asc`)
       .limit(pageSize)
       .offset(startIndex);
@@ -916,6 +939,136 @@ export class PostgresArtifactRepository implements ArtifactRepository {
   async listByRunId(runId: string): Promise<ArtifactRecord[]> {
     const rows = await this.db.select().from(artifacts).where(eq(artifacts.runId, runId)).orderBy(asc(artifacts.createdAt));
     return rows.map(toArtifactRecord);
+  }
+}
+
+export class PostgresAgentTaskRepository implements AgentTaskRepository {
+  constructor(private readonly db: OahDatabase) {}
+
+  async upsert(input: AgentTaskRecord): Promise<AgentTaskRecord> {
+    const values = buildAgentTaskRow(input);
+    const [row] = await this.db
+      .insert(agentTasks)
+      .values(values)
+      .onConflictDoUpdate({
+        target: agentTasks.taskId,
+        set: {
+          workspaceId: values.workspaceId,
+          parentSessionId: values.parentSessionId,
+          parentRunId: values.parentRunId,
+          childSessionId: values.childSessionId,
+          childRunId: values.childRunId,
+          toolUseId: values.toolUseId,
+          targetAgentName: values.targetAgentName,
+          parentAgentName: values.parentAgentName,
+          status: values.status,
+          description: values.description,
+          handoffSummary: values.handoffSummary,
+          outputRef: values.outputRef,
+          outputFile: values.outputFile,
+          finalText: values.finalText,
+          errorMessage: values.errorMessage,
+          usage: values.usage,
+          notifiedAt: values.notifiedAt,
+          createdAt: values.createdAt,
+          updatedAt: values.updatedAt
+        }
+      })
+      .returning();
+    return toAgentTaskRecord(expectRow(row, `agent task ${input.taskId}`));
+  }
+
+  async getByTaskId(taskId: string): Promise<AgentTaskRecord | null> {
+    const [row] = await this.db.select().from(agentTasks).where(eq(agentTasks.taskId, taskId)).limit(1);
+    return row ? toAgentTaskRecord(row) : null;
+  }
+
+  async update(input: {
+    taskId: string;
+    status: AgentTaskRecord["status"];
+    updatedAt: string;
+    toolUseId?: string | undefined;
+    outputRef?: string | undefined;
+    outputFile?: string | undefined;
+    finalText?: string | undefined;
+    errorMessage?: string | undefined;
+    usage?: Record<string, unknown> | undefined;
+    notifiedAt?: string | undefined;
+  }): Promise<AgentTaskRecord> {
+    const [row] = await this.db
+      .update(agentTasks)
+      .set({
+        status: input.status,
+        updatedAt: input.updatedAt,
+        ...(input.toolUseId !== undefined ? { toolUseId: input.toolUseId } : {}),
+        ...(input.outputRef !== undefined ? { outputRef: input.outputRef } : {}),
+        ...(input.outputFile !== undefined ? { outputFile: input.outputFile } : {}),
+        ...(input.finalText !== undefined ? { finalText: input.finalText } : {}),
+        ...(input.errorMessage !== undefined ? { errorMessage: input.errorMessage } : {}),
+        ...(input.usage !== undefined ? { usage: input.usage } : {}),
+        ...(input.notifiedAt !== undefined ? { notifiedAt: input.notifiedAt } : {})
+      })
+      .where(eq(agentTasks.taskId, input.taskId))
+      .returning();
+    if (!row) {
+      throw new AppError(404, "agent_task_not_found", `Agent task ${input.taskId} was not found.`);
+    }
+
+    return toAgentTaskRecord(row);
+  }
+}
+
+export class PostgresAgentTaskNotificationRepository implements AgentTaskNotificationRepository {
+  constructor(private readonly db: OahDatabase) {}
+
+  async create(input: AgentTaskNotificationRecord): Promise<AgentTaskNotificationRecord> {
+    const values = buildAgentTaskNotificationRow(input);
+    const [row] = await this.db
+      .insert(agentTaskNotifications)
+      .values(values)
+      .onConflictDoUpdate({
+        target: agentTaskNotifications.id,
+        set: {
+          workspaceId: values.workspaceId,
+          parentSessionId: values.parentSessionId,
+          parentRunId: values.parentRunId,
+          taskId: values.taskId,
+          toolUseId: values.toolUseId,
+          childRunId: values.childRunId,
+          childSessionId: values.childSessionId,
+          updateType: values.updateType,
+          content: values.content,
+          metadata: values.metadata,
+          status: values.status,
+          createdAt: values.createdAt,
+          consumedAt: values.consumedAt
+        }
+      })
+      .returning();
+    return toAgentTaskNotificationRecord(expectRow(row, `agent task notification ${input.id}`));
+  }
+
+  async listPendingBySessionId(parentSessionId: string): Promise<AgentTaskNotificationRecord[]> {
+    const rows = await this.db
+      .select()
+      .from(agentTaskNotifications)
+      .where(and(eq(agentTaskNotifications.parentSessionId, parentSessionId), eq(agentTaskNotifications.status, "pending")))
+      .orderBy(asc(agentTaskNotifications.createdAt), asc(agentTaskNotifications.id));
+    return rows.map(toAgentTaskNotificationRecord);
+  }
+
+  async markConsumed(input: { ids: string[]; consumedAt: string }): Promise<void> {
+    if (input.ids.length === 0) {
+      return;
+    }
+
+    await this.db
+      .update(agentTaskNotifications)
+      .set({
+        status: "consumed",
+        consumedAt: input.consumedAt
+      })
+      .where(inArray(agentTaskNotifications.id, input.ids));
   }
 }
 

@@ -12,6 +12,7 @@ import type {
   ToolServerClient
 } from "./mcp-types.js";
 import {
+  assertMcpToolAllowed,
   createShellWrappedCommand,
   logToolServerFailure,
   normalizePrefix,
@@ -68,6 +69,41 @@ async function createClient(server: ToolServerDefinition): Promise<ToolServerCli
   });
 }
 
+function guardMcpTool(server: ToolServerDefinition, rawToolName: string, exposedToolName: string, toolDefinition: ToolSet[string]): ToolSet[string] {
+  const executable = toolDefinition as ToolSet[string] & { execute?: (...args: unknown[]) => unknown };
+  if (!executable.execute) {
+    return toolDefinition;
+  }
+
+  return Object.assign({}, toolDefinition, {
+    execute: async (...args: unknown[]) => {
+      assertMcpToolAllowed(server, rawToolName, exposedToolName);
+      return executable.execute?.(...args);
+    }
+  }) as ToolSet[string];
+}
+
+function addMcpToolEntry(input: {
+  toolEntries: Array<[string, ToolSet[string]]>;
+  server: ToolServerDefinition;
+  rawToolName: string;
+  exposedToolName: string;
+  toolDefinition: ToolSet[string];
+}): void {
+  if (input.toolEntries.some(([existingName]) => existingName === input.exposedToolName)) {
+    throw new AppError(
+      409,
+      "duplicate_mcp_tool_name",
+      `Duplicate external tool name detected: ${input.exposedToolName}. Adjust tool_prefix/include/exclude settings.`
+    );
+  }
+
+  input.toolEntries.push([
+    input.exposedToolName,
+    guardMcpTool(input.server, input.rawToolName, input.exposedToolName, input.toolDefinition)
+  ]);
+}
+
 export async function prepareToolServers(
   toolServers: ToolServerDefinition[] | undefined,
   options?: PrepareToolServersOptions
@@ -101,15 +137,7 @@ export async function prepareToolServers(
 
         for (const [toolName, toolDefinition] of Object.entries(serverTools)) {
           const exposedToolName = prefix ? `${prefix}.${toolName}` : toolName;
-          if (toolEntries.some(([existingName]) => existingName === exposedToolName)) {
-            throw new AppError(
-              409,
-              "duplicate_mcp_tool_name",
-              `Duplicate external tool name detected: ${exposedToolName}. Adjust tool_prefix/include/exclude settings.`
-            );
-          }
-
-          toolEntries.push([exposedToolName, toolDefinition]);
+          addMcpToolEntry({ toolEntries, server, rawToolName: toolName, exposedToolName, toolDefinition });
         }
       } catch (error) {
         const compatibleProtocolVersion =
@@ -133,15 +161,7 @@ export async function prepareToolServers(
 
             for (const [toolName, toolDefinition] of Object.entries(serverTools)) {
               const exposedToolName = prefix ? `${prefix}.${toolName}` : toolName;
-              if (toolEntries.some(([existingName]) => existingName === exposedToolName)) {
-                throw new AppError(
-                  409,
-                  "duplicate_mcp_tool_name",
-                  `Duplicate external tool name detected: ${exposedToolName}. Adjust tool_prefix/include/exclude settings.`
-                );
-              }
-
-              toolEntries.push([exposedToolName, toolDefinition]);
+              addMcpToolEntry({ toolEntries, server, rawToolName: toolName, exposedToolName, toolDefinition });
             }
             continue;
           } catch (compatibilityError) {

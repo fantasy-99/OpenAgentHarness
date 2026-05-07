@@ -14,6 +14,15 @@
 
 获取会话元数据。
 
+### `GET /sessions/{sessionId}/children`
+
+分页读取当前 session 的直接子 session，主要用于查看 subagent 会话。参数：`pageSize`、`cursor`。
+
+返回 `SessionPage`，每个子 session 会带 `parentSessionId`。子 session 的消息和 runs 仍然通过现有接口读取：
+
+- `GET /sessions/{childSessionId}/messages`
+- `GET /sessions/{childSessionId}/runs`
+
 ### `GET /sessions/{sessionId}/messages`
 
 分页读取历史消息。参数：`pageSize`、`cursor`、`direction`。

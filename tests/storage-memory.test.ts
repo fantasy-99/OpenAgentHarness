@@ -36,6 +36,81 @@ function createWorkspace(id: string) {
 }
 
 describe("storage memory", () => {
+  it("lists direct child sessions for a parent session", async () => {
+    const persistence = createMemoryRuntimePersistence();
+    const parent = {
+      id: "ses_parent",
+      workspaceId: "ws_memory",
+      subjectRef: "dev:test",
+      activeAgentName: "plan",
+      status: "active" as const,
+      createdAt: "2026-04-10T00:00:00.000Z",
+      updatedAt: "2026-04-10T00:00:00.000Z"
+    };
+    const child = {
+      id: "ses_child",
+      workspaceId: parent.workspaceId,
+      parentSessionId: parent.id,
+      subjectRef: "dev:test",
+      activeAgentName: "researcher",
+      status: "active" as const,
+      createdAt: "2026-04-10T00:00:01.000Z",
+      updatedAt: "2026-04-10T00:00:01.000Z"
+    };
+    const grandchild = {
+      ...child,
+      id: "ses_grandchild",
+      parentSessionId: child.id,
+      createdAt: "2026-04-10T00:00:02.000Z",
+      updatedAt: "2026-04-10T00:00:02.000Z"
+    };
+
+    await persistence.sessionRepository.create(parent);
+    await persistence.sessionRepository.create(child);
+    await persistence.sessionRepository.create(grandchild);
+
+    await expect(persistence.sessionRepository.listChildrenByParentSessionId(parent.id, 10)).resolves.toEqual([child]);
+  });
+
+  it("queues and consumes agent task notifications", async () => {
+    const persistence = createMemoryRuntimePersistence();
+    const baseNotification = {
+      id: "atn_memory_1",
+      workspaceId: "ws_memory",
+      parentSessionId: "ses_parent",
+      parentRunId: "run_parent",
+      taskId: "task_1",
+      toolUseId: "toolu_1",
+      childRunId: "run_child",
+      childSessionId: "ses_child",
+      updateType: "completed" as const,
+      content: "<task-notification>done</task-notification>",
+      metadata: { delegatedToolUseId: "toolu_1" },
+      status: "pending" as const,
+      createdAt: "2026-04-10T00:00:01.000Z"
+    };
+
+    await persistence.agentTaskNotificationRepository.create(baseNotification);
+    await persistence.agentTaskNotificationRepository.create({
+      ...baseNotification,
+      id: "atn_memory_2",
+      parentSessionId: "ses_other",
+      createdAt: "2026-04-10T00:00:00.000Z"
+    });
+
+    await expect(persistence.agentTaskNotificationRepository.listPendingBySessionId("ses_parent")).resolves.toEqual([
+      baseNotification
+    ]);
+
+    await persistence.agentTaskNotificationRepository.markConsumed({
+      ids: ["atn_memory_1"],
+      consumedAt: "2026-04-10T00:00:02.000Z"
+    });
+
+    await expect(persistence.agentTaskNotificationRepository.listPendingBySessionId("ses_parent")).resolves.toEqual([]);
+    await expect(persistence.agentTaskNotificationRepository.listPendingBySessionId("ses_other")).resolves.toHaveLength(1);
+  });
+
   it("cascades session-scoped data when a session is deleted", async () => {
     const persistence = createMemoryRuntimePersistence();
     await persistence.workspaceRepository.upsert(createWorkspace("ws_memory"));

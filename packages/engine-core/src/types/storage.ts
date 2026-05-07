@@ -41,6 +41,48 @@ export interface ArtifactRecord {
   createdAt: string;
 }
 
+export type AgentTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "timed_out";
+
+export interface AgentTaskRecord {
+  taskId: string;
+  workspaceId: string;
+  parentSessionId: string;
+  parentRunId: string;
+  childSessionId: string;
+  childRunId: string;
+  toolUseId?: string | undefined;
+  targetAgentName: string;
+  parentAgentName: string;
+  status: AgentTaskStatus;
+  description?: string | undefined;
+  handoffSummary?: string | undefined;
+  outputRef: string;
+  outputFile?: string | undefined;
+  finalText?: string | undefined;
+  errorMessage?: string | undefined;
+  usage?: Record<string, unknown> | undefined;
+  notifiedAt?: string | undefined;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentTaskNotificationRecord {
+  id: string;
+  workspaceId: string;
+  parentSessionId: string;
+  parentRunId: string;
+  taskId: string;
+  toolUseId?: string | undefined;
+  childRunId: string;
+  childSessionId: string;
+  updateType: "completed" | "failed";
+  content: string;
+  metadata: Record<string, unknown>;
+  status: "pending" | "consumed";
+  createdAt: string;
+  consumedAt?: string | undefined;
+}
+
 export type HistoryEventEntityType =
   | "session"
   | "message"
@@ -73,6 +115,29 @@ export interface HookRunAuditRepository {
 export interface ArtifactRepository {
   create(input: ArtifactRecord): Promise<ArtifactRecord>;
   listByRunId(runId: string): Promise<ArtifactRecord[]>;
+}
+
+export interface AgentTaskRepository {
+  upsert(input: AgentTaskRecord): Promise<AgentTaskRecord>;
+  getByTaskId(taskId: string): Promise<AgentTaskRecord | null>;
+  update(input: {
+    taskId: string;
+    status: AgentTaskStatus;
+    updatedAt: string;
+    toolUseId?: string | undefined;
+    outputRef?: string | undefined;
+    outputFile?: string | undefined;
+    finalText?: string | undefined;
+    errorMessage?: string | undefined;
+    usage?: Record<string, unknown> | undefined;
+    notifiedAt?: string | undefined;
+  }): Promise<AgentTaskRecord>;
+}
+
+export interface AgentTaskNotificationRepository {
+  create(input: AgentTaskNotificationRecord): Promise<AgentTaskNotificationRecord>;
+  listPendingBySessionId(parentSessionId: string): Promise<AgentTaskNotificationRecord[]>;
+  markConsumed(input: { ids: string[]; consumedAt: string }): Promise<void>;
 }
 
 export interface HistoryEventRepository {
@@ -179,6 +244,7 @@ export interface SessionRepository {
   getById(id: string): Promise<Session | null>;
   update(input: Session): Promise<Session>;
   listByWorkspaceId(workspaceId: string, pageSize: number, cursor?: string): Promise<Session[]>;
+  listChildrenByParentSessionId(parentSessionId: string, pageSize: number, cursor?: string): Promise<Session[]>;
   delete(id: string): Promise<void>;
 }
 

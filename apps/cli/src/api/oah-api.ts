@@ -177,6 +177,11 @@ export class OahApiClient {
     return page.items;
   }
 
+  async listChildSessions(parentSessionId: string): Promise<Session[]> {
+    const page = await this.request<SessionPage>(`/api/v1/sessions/${encodeURIComponent(parentSessionId)}/children?pageSize=80`);
+    return page.items;
+  }
+
   async createSession(workspaceId: string, input: { title?: string; agentName?: string; modelRef?: string }): Promise<Session> {
     return this.request<Session>(`/api/v1/workspaces/${encodeURIComponent(workspaceId)}/sessions`, {
       method: "POST",

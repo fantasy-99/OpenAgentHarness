@@ -96,6 +96,40 @@ function extractFieldValue(text: string | undefined, key: string) {
   return match?.[1]?.trim();
 }
 
+function taskNotifications(messages: Message[]) {
+  return messages.filter(
+    (message) =>
+      message.role === "user" &&
+      (message.mode === "task-notification" ||
+        message.metadata?.taskNotification === true ||
+        messageText(message)?.includes("<task-notification>"))
+  );
+}
+
+function delegatedTaskIdFromMessage(message: Message | undefined): string | undefined {
+  const metadataTaskId = message?.metadata?.delegatedTaskId;
+  if (typeof metadataTaskId === "string") {
+    return metadataTaskId;
+  }
+
+  const text = messageText(message);
+  return text?.match(/<task-id>([^<]+)<\/task-id>/)?.[1];
+}
+
+async function waitForTaskNotifications(
+  runtimeService: EngineService,
+  sessionId: string,
+  count: number,
+  timeoutMs = 5_000
+): Promise<Message[]> {
+  await waitFor(async () => {
+    const messages = await runtimeService.listSessionMessages(sessionId, 100);
+    return taskNotifications(messages.items).length >= count;
+  }, timeoutMs);
+
+  return taskNotifications((await runtimeService.listSessionMessages(sessionId, 100)).items);
+}
+
 function hasToolCallPart(message: Pick<Message, "content"> | undefined, toolName: string, toolCallId: string) {
   return messageParts(message ?? { content: "" }).some(
     (part) => part.type === "tool-call" && part.toolName === toolName && part.toolCallId === toolCallId
@@ -192,6 +226,48 @@ async function createRuntime(
 }
 
 describe("runtime service", () => {
+  it("stores human messages as prompt mode and strips reserved runtime metadata", async () => {
+    const { runtimeService, workspace } = await createRuntime();
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+    const session = await runtimeService.createSession({
+      workspaceId: workspace.id,
+      caller,
+      input: {}
+    });
+
+    await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: {
+        content: "hello",
+        metadata: {
+          safeClientTag: "ok",
+          origin: "engine",
+          mode: "task-notification",
+          runtimeKind: "task_notification",
+          synthetic: true,
+          taskNotification: true,
+          delegatedUpdate: "completed"
+        }
+      }
+    });
+
+    const message = (await runtimeService.listSessionMessages(session.id, 10)).items[0];
+    expect(message).toMatchObject({
+      role: "user",
+      origin: "user",
+      mode: "prompt"
+    });
+    expect(message?.metadata).toEqual({
+      safeClientTag: "ok"
+    });
+  });
+
   it("creates workspaces from a runtime initializer result", async () => {
     const gateway = new FakeModelGateway();
     const persistence = createMemoryRuntimePersistence();
@@ -5936,6 +6012,7 @@ describe("runtime service", () => {
     const agentToolMessage = parentMessages.items.find(
       (message) => message.role === "tool" && messageToolName(message) === "SubAgent"
     );
+    const childSessions = await runtimeService.listChildSessions(session.id, 10);
     const events = await runtimeService.listSessionEvents(session.id);
     const childInvocation = gateway.invocations.find((invocation) =>
       invocation.input.messages?.some(
@@ -5946,6 +6023,14 @@ describe("runtime service", () => {
     expect(childRun.triggerType).toBe("system");
     expect(childRun.parentRunId).toBe(accepted.runId);
     expect(childSession.parentSessionId).toBe(session.id);
+    expect(childSessions.items).toEqual([
+      expect.objectContaining({
+        id: childSession.id,
+        parentSessionId: session.id,
+        activeAgentName: "researcher"
+      })
+    ]);
+    expect(childSessions.nextCursor).toBeUndefined();
     expect(childRun.metadata).toMatchObject({
       parentRunId: accepted.runId,
       parentSessionId: session.id,
@@ -6591,6 +6676,11 @@ describe("runtime service", () => {
     const gateway = new FakeModelGateway();
     gateway.streamScenarioFactory = (input) => {
       const systemMessages = input.messages?.filter((message) => message.role === "system").map((message) => message.content) ?? [];
+      const userText =
+        input.messages
+          ?.filter((message) => message.role === "user")
+          .map((message) => (typeof message.content === "string" ? message.content : ""))
+          .join("\n") ?? "";
 
       if (systemMessages.some((message) => message.includes("You are the researcher subagent."))) {
         return {
@@ -6598,24 +6688,69 @@ describe("runtime service", () => {
         };
       }
 
-      const toolResultText =
-        input.messages
-          ?.filter((message) => message.role === "tool")
-          .map((message) => messageText({ content: message.content as Message["content"] }) ?? "")
-          .join("\n") ?? "";
-      if (toolResultText.includes("Background subagent finished its report.")) {
+      if (
+        userText.includes("Read task output for") &&
+        !userText.includes("Read task output file at ") &&
+        !userText.includes("Read task output ref ")
+      ) {
+        const taskId = userText.match(/Read task output for ([A-Za-z0-9_]+)/)?.[1] ?? "";
+        return {
+          text: "Parent read the task output explicitly.",
+          toolSteps: [
+            {
+              toolName: "TaskOutput",
+              input: {
+                task_id: taskId,
+                block: false
+              },
+              toolCallId: "call_task_output"
+            }
+          ]
+        };
+      }
+
+      if (userText.includes("Read task output file at ")) {
+        const filePath = userText.match(/Read task output file at ([^\n]+)/)?.[1] ?? "";
+        return {
+          text: "Parent read the task output file.",
+          toolSteps: [
+            {
+              toolName: "Read",
+              input: {
+                file_path: filePath,
+                limit: 80
+              },
+              toolCallId: "call_read_task_output_file"
+            }
+          ]
+        };
+      }
+
+      if (userText.includes("Read task output ref ")) {
+        const filePath = userText.match(/Read task output ref ([^\n]+)/)?.[1] ?? "";
+        return {
+          text: "Parent read the task output ref.",
+          toolSteps: [
+            {
+              toolName: "Read",
+              input: {
+                file_path: filePath,
+                limit: 80
+              },
+              toolCallId: "call_read_task_output_ref"
+            }
+          ]
+        };
+      }
+
+      if (userText.includes("<task-notification>")) {
         return {
           text: "Parent observed the background result."
         };
       }
-      if (toolResultText.includes("started: true")) {
-        return {
-          text: "Parent is waiting for the background result."
-        };
-      }
 
       return {
-        text: "Parent observed the background result.",
+        text: "Parent launched the background researcher.",
         toolSteps: [
           {
             toolName: "SubAgent",
@@ -6660,7 +6795,7 @@ describe("runtime service", () => {
           mode: "primary",
           prompt: "You are the planner agent.",
           tools: {
-            native: [],
+            native: ["Read"],
             external: []
           },
           actions: [],
@@ -6730,38 +6865,125 @@ describe("runtime service", () => {
 
     await waitFor(async () => {
       const messages = await runtimeService.listSessionMessages(session.id, 50);
-      return messages.items.filter((message) => message.role === "tool" && messageToolName(message) === "SubAgent").length === 2;
+      return taskNotifications(messages.items).length === 1;
     });
 
     const messages = await runtimeService.listSessionMessages(session.id, 50);
     const backgroundMessages = messages.items.filter(
       (message) => message.role === "tool" && messageToolName(message) === "SubAgent"
     );
-    const backgroundMessage = backgroundMessages.find((message) => messageText(message)?.includes("started: true"));
-    const completionMessage = backgroundMessages.find(
-      (message) => (message.metadata as { delegatedUpdate?: unknown } | undefined)?.delegatedUpdate === "completed"
-    );
+    const backgroundMessage = backgroundMessages.find((message) => messageText(message)?.includes("async_launched"));
+    const completionMessage = taskNotifications(messages.items)[0];
 
-    expect(backgroundMessages).toHaveLength(2);
-    expect(messageText(backgroundMessage)).toContain("started: true");
+    expect(backgroundMessages).toHaveLength(1);
+    expect(messageText(backgroundMessage)).toContain("status: async_launched");
     expect(messageText(backgroundMessage)).toContain("subagent_name: researcher");
     expect(messageText(backgroundMessage)).toContain("description: Research in background");
     expect(messageText(backgroundMessage)).toContain("task_id:");
-    expect(backgroundMessage?.metadata).toMatchObject({
-      toolStatus: "started",
-      toolSourceType: "agent"
-    });
-    expect(messageText(completionMessage)).toContain("task_id:");
-    expect(messageText(completionMessage)).toContain("run_id:");
-    expect(messageText(completionMessage)).toContain("status: completed");
-    expect(messageText(completionMessage)).toContain("subagent_name: researcher");
+    expect(messageText(backgroundMessage)).toContain("canReadOutputFile: true");
+    expect(messageText(backgroundMessage)).toContain("outputFile:");
+    expect(messageText(backgroundMessage)).toContain("output_ref:");
+    expect(messageText(backgroundMessage)).toContain("output_file:");
+    expect(messageText(completionMessage)).toContain("<task-notification>");
+    expect(messageText(completionMessage)).toContain("<status>completed</status>");
+    expect(messageText(completionMessage)).toContain("<task-id>");
+    expect(messageText(completionMessage)).toContain("<child_run_id>");
+    expect(messageText(completionMessage)).toContain("<tool_use_id>call_agent_background</tool_use_id>");
+    expect(messageText(completionMessage)).toContain("<output_ref>agent-task://");
+    expect(messageText(completionMessage)).toContain("<output_file>");
+    expect(messageText(completionMessage)).toContain("<usage>");
+    expect(messageText(completionMessage)).toContain("<total_tokens>");
+    expect(messageText(completionMessage)).toContain("<duration_ms>");
     expect(messageText(completionMessage)).toContain("Background subagent finished its report.");
+    expect(completionMessage).toMatchObject({
+      origin: "engine",
+      mode: "task-notification"
+    });
     expect(completionMessage?.metadata).toMatchObject({
+      runtimeKind: "task_notification",
+      origin: "engine",
+      mode: "task-notification",
       synthetic: true,
       delegatedUpdate: "completed",
-      toolStatus: "completed",
-      toolSourceType: "agent"
+      taskNotification: true
     });
+    const taskId = delegatedTaskIdFromMessage(completionMessage);
+    expect(taskId).toBeTruthy();
+    const taskRecord = taskId ? await persistence.agentTaskRepository.getByTaskId(taskId) : null;
+    expect(taskRecord?.childRunId).toBeTruthy();
+    expect(messageText(completionMessage)).toContain(`<child_run_id>${taskRecord?.childRunId}</child_run_id>`);
+    expect(taskRecord).toMatchObject({
+      taskId,
+      status: "completed",
+      parentSessionId: session.id,
+      parentRunId: accepted.runId,
+      toolUseId: "call_agent_background",
+      targetAgentName: "researcher",
+      parentAgentName: "plan",
+      outputRef: `agent-task://${taskId}/output`,
+      finalText: "Background subagent finished its report."
+    });
+    expect(taskRecord?.usage).toMatchObject({
+      inputTokens: expect.any(Number),
+      outputTokens: expect.any(Number),
+      totalTokens: expect.any(Number),
+      durationMs: expect.any(Number)
+    });
+    expect(taskRecord?.outputFile).toBeTruthy();
+
+    const taskOutputAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: `Read task output for ${taskId}.` }
+    });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(taskOutputAccepted.runId);
+      return run.status === "completed";
+    });
+    const taskOutputMessages = (await runtimeService.listSessionMessages(session.id, 100)).items.filter(
+      (message) => message.role === "tool" && messageToolName(message) === "TaskOutput"
+    );
+    expect(taskOutputMessages).toHaveLength(1);
+    expect(messageText(taskOutputMessages[0])).toContain("<retrieval_status>success</retrieval_status>");
+    expect(messageText(taskOutputMessages[0])).toContain(`<task_id>${taskId}</task_id>`);
+    expect(messageText(taskOutputMessages[0])).toContain("<task_type>local_agent</task_type>");
+    expect(messageText(taskOutputMessages[0])).toContain(`<child_session_id>${taskRecord?.childSessionId}</child_session_id>`);
+    expect(messageText(taskOutputMessages[0])).toContain(`<child_run_id>${taskRecord?.childRunId}</child_run_id>`);
+    expect(messageText(taskOutputMessages[0])).toContain("<usage>");
+    expect(messageText(taskOutputMessages[0])).toContain("<total_tokens>");
+    expect(messageText(taskOutputMessages[0])).toContain("Background subagent finished its report.");
+
+    const outputFileReadAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: `Read task output file at ${taskRecord?.outputFile ?? ""}` }
+    });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(outputFileReadAccepted.runId);
+      return run.status === "completed";
+    });
+
+    const outputRefReadAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: `Read task output ref agent-task://${taskId}/output` }
+    });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(outputRefReadAccepted.runId);
+      return run.status === "completed";
+    });
+
+    const readMessages = (await runtimeService.listSessionMessages(session.id, 150)).items.filter(
+      (message) => message.role === "tool" && messageToolName(message) === "Read"
+    );
+    expect(readMessages).toHaveLength(2);
+    expect(readMessages.every((message) => messageText(message)?.includes("virtual: true"))).toBe(true);
+    expect(readMessages.every((message) => messageText(message)?.includes("<retrieval_status>success</retrieval_status>"))).toBe(
+      true
+    );
+    expect(readMessages.every((message) => messageText(message)?.includes("Background subagent finished its report."))).toBe(
+      true
+    );
 
     const events = await runtimeService.listSessionEvents(session.id, undefined, accepted.runId);
     expect(
@@ -6772,15 +6994,20 @@ describe("runtime service", () => {
     ).toMatchObject({
       toolName: "SubAgent",
       metadata: {
-        toolStatus: "started"
+        toolStatus: "completed"
       }
     });
   });
 
-  it("keeps the parent run active until background subagent results are integrated", async () => {
+  it("surfaces a task notification after background subagent completion", async () => {
     const gateway = new FakeModelGateway(80);
     gateway.streamScenarioFactory = (input) => {
       const systemMessages = input.messages?.filter((message) => message.role === "system").map((message) => message.content) ?? [];
+      const userText =
+        input.messages
+          ?.filter((message) => message.role === "user")
+          .map((message) => (typeof message.content === "string" ? message.content : ""))
+          .join("\n") ?? "";
 
       if (systemMessages.some((message) => message.includes("You are the researcher subagent."))) {
         return {
@@ -6788,12 +7015,7 @@ describe("runtime service", () => {
         };
       }
 
-      const toolResultText =
-        input.messages
-          ?.filter((message) => message.role === "tool")
-          .map((message) => messageText({ content: message.content as Message["content"] }) ?? "")
-          .join("\n") ?? "";
-      if (toolResultText.includes("Delayed background research result.")) {
+      if (userText.includes("<task-notification>")) {
         return {
           text: "Parent integrated delayed background research."
         };
@@ -6909,15 +7131,25 @@ describe("runtime service", () => {
     });
 
     await waitFor(async () => {
-      const parentRun = await runtimeService.getRun(accepted.runId);
-      const delegatedRuns =
-        (parentRun.metadata?.delegatedRuns as Array<{ childRunId: string; childSessionId: string }> | undefined) ?? [];
-      return parentRun.status !== "completed" && delegatedRuns.length === 1;
-    });
-
-    await waitFor(async () => {
       const run = await runtimeService.getRun(accepted.runId);
       return run.status === "completed";
+    });
+
+    const parentRun = await runtimeService.getRun(accepted.runId);
+    const delegatedRuns =
+      (parentRun.metadata?.delegatedRuns as Array<{ childRunId: string; childSessionId: string }> | undefined) ?? [];
+    expect(delegatedRuns).toHaveLength(1);
+
+    await waitForTaskNotifications(runtimeService, session.id, 1);
+    await waitFor(async () => {
+      const runs = await runtimeService.listSessionRuns(session.id, 20);
+      const notificationRun = runs.items.find((run) => run.metadata?.taskNotification === true);
+      if (notificationRun) {
+        return notificationRun.status === "completed";
+      }
+
+      const messages = await runtimeService.listSessionMessages(session.id, 100);
+      return messages.items.some((message) => messageText(message)?.includes("Parent integrated delayed background research."));
     });
 
     const messages = await runtimeService.listSessionMessages(session.id, 100);
@@ -6925,26 +7157,250 @@ describe("runtime service", () => {
     const toolMessages = messages.items.filter(
       (message) => message.role === "tool" && messageToolName(message) === "SubAgent"
     );
-    const events = await runtimeService.listSessionEvents(session.id, undefined, accepted.runId);
-    const runCompleted = events.find((event) => event.event === "run.completed");
-    const delegatedCompleted = events.find((event) => event.event === "agent.delegate.completed");
+    const notifications = taskNotifications(messages.items);
+    const runs = await runtimeService.listSessionRuns(session.id, 20);
+    const notificationRun = runs.items.find((run) => run.metadata?.taskNotification === true);
 
-    expect(toolMessages).toHaveLength(2);
-    expect(messageText(toolMessages.at(-1))).toContain("Delayed background research result.");
-    expect(
-      gateway.invocations.filter((invocation) =>
-        invocation.input.messages?.some(
-          (message) => message.role === "system" && message.content.includes("You are the planner agent.")
-        )
+    expect(toolMessages).toHaveLength(1);
+    expect(messageText(toolMessages.at(-1))).toContain("status: async_launched");
+    expect(messageText(notifications[0])).toContain("Delayed background research result.");
+    if (notificationRun) {
+      expect(notificationRun.id).not.toBe(accepted.runId);
+      expect(notificationRun.status).toBe("completed");
+    } else {
+      expect(notifications[0]?.runId).toBe(accepted.runId);
+    }
+    expect(assistantMessages.some((message) => messageText(message)?.includes("Parent integrated delayed background research."))).toBe(true);
+    const plannerInvocations = gateway.invocations.filter((invocation) =>
+      invocation.input.messages?.some(
+        (message) => message.role === "system" && message.content.includes("You are the planner agent.")
       )
-    ).toHaveLength(3);
-    expect(Number(delegatedCompleted?.cursor)).toBeLessThan(Number(runCompleted?.cursor));
+    );
+    expect(plannerInvocations.length).toBeGreaterThanOrEqual(2);
+    expect(plannerInvocations.length).toBeLessThanOrEqual(3);
+  });
+
+  it("recovers missing agent task records when reading historical subagent output", async () => {
+    const persistence = createMemoryRuntimePersistence();
+    const gateway = new FakeModelGateway();
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    const workspaceId = "project_agent_task_recovery";
+    const parentSessionId = "ses_task_recovery_parent";
+    const childSessionId = "ses_task_recovery_child";
+    const parentRunId = "run_task_recovery_parent";
+    const childRunId = "run_task_recovery_child";
+
+    await persistence.workspaceRepository.upsert({
+      id: workspaceId,
+      name: "agent-task-recovery",
+      rootPath: "/tmp/agent-task-recovery",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "plan",
+      settings: {
+        defaultAgent: "plan",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        plan: {
+          name: "plan",
+          mode: "primary",
+          prompt: "You are the planner agent.",
+          tools: {
+            native: [],
+            external: []
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: ["researcher"]
+        },
+        researcher: {
+          name: "researcher",
+          mode: "subagent",
+          prompt: "You are the researcher subagent.",
+          background: true,
+          tools: {
+            native: [],
+            external: []
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId,
+        agents: [
+          { name: "plan", mode: "primary", source: "workspace" },
+          { name: "researcher", mode: "subagent", source: "workspace" }
+        ],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+    await persistence.sessionRepository.create({
+      id: parentSessionId,
+      workspaceId,
+      subjectRef: "dev:test",
+      agentName: "plan",
+      activeAgentName: "plan",
+      status: "active",
+      createdAt: now,
+      updatedAt: now
+    });
+    await persistence.sessionRepository.create({
+      id: childSessionId,
+      workspaceId,
+      parentSessionId,
+      subjectRef: "dev:test",
+      agentName: "researcher",
+      activeAgentName: "researcher",
+      title: "Agent researcher",
+      status: "active",
+      createdAt: "2026-01-01T00:01:00.000Z",
+      updatedAt: "2026-01-01T00:01:00.000Z"
+    });
+    await persistence.runRepository.create({
+      id: parentRunId,
+      workspaceId,
+      sessionId: parentSessionId,
+      triggerType: "message",
+      effectiveAgentName: "plan",
+      status: "completed",
+      metadata: {
+        delegatedRuns: [
+          {
+            childRunId,
+            childSessionId,
+            targetAgentName: "researcher",
+            parentAgentName: "plan",
+            toolUseId: "call_agent_recovery"
+          }
+        ]
+      },
+      createdAt: "2026-01-01T00:02:00.000Z"
+    });
+    await persistence.runRepository.create({
+      id: childRunId,
+      workspaceId,
+      sessionId: childSessionId,
+      parentRunId,
+      triggerType: "system",
+      triggerRef: "agent.delegate",
+      agentName: "researcher",
+      effectiveAgentName: "researcher",
+      switchCount: 0,
+      status: "completed",
+      startedAt: "2026-01-01T00:03:00.000Z",
+      endedAt: "2026-01-01T00:03:01.000Z",
+      metadata: {
+        parentRunId,
+        parentSessionId,
+        parentAgentName: "plan",
+        delegatedTask: "Recover historical task output.",
+        handoffSummary: "Historical output",
+        toolUseId: "call_agent_recovery"
+      },
+      createdAt: "2026-01-01T00:03:00.000Z"
+    });
+    await persistence.messageRepository.create({
+      id: "msg_task_recovery_child_user",
+      sessionId: childSessionId,
+      runId: childRunId,
+      role: "user",
+      content: "Recover historical task output.",
+      createdAt: "2026-01-01T00:03:00.000Z"
+    });
+    await persistence.messageRepository.create({
+      id: "msg_task_recovery_child_assistant",
+      sessionId: childSessionId,
+      runId: childRunId,
+      role: "assistant",
+      content: "Recovered historical subagent result.",
+      createdAt: "2026-01-01T00:03:01.000Z"
+    });
+    await persistence.runStepRepository.create({
+      id: "step_task_recovery_usage",
+      runId: childRunId,
+      seq: 1,
+      stepType: "model_call",
+      name: "model",
+      status: "completed",
+      output: {
+        response: {
+          usage: {
+            inputTokens: 3,
+            outputTokens: 4,
+            totalTokens: 7
+          }
+        }
+      },
+      startedAt: "2026-01-01T00:03:00.000Z",
+      endedAt: "2026-01-01T00:03:01.000Z"
+    });
+
+    expect(await persistence.agentTaskRepository.getByTaskId(childSessionId)).toBeNull();
+
+    const result = await runtimeService.readAgentTaskOutput({
+      taskId: childSessionId,
+      block: false
+    });
+
+    expect(result.retrievalStatus).toBe("success");
+    expect(result.task).toMatchObject({
+      taskId: childSessionId,
+      childRunId,
+      childSessionId,
+      status: "completed",
+      result: "Recovered historical subagent result.",
+      outputRef: `agent-task://${childSessionId}/output`,
+      outputFile: `/tmp/open-agent-harness/${parentSessionId}/tasks/${childSessionId}.output`
+    });
+    expect(result.task?.usage).toMatchObject({
+      inputTokens: 3,
+      outputTokens: 4,
+      totalTokens: 7,
+      durationMs: 1000
+    });
+    await expect(persistence.agentTaskRepository.getByTaskId(childSessionId)).resolves.toMatchObject({
+      taskId: childSessionId,
+      parentRunId,
+      toolUseId: "call_agent_recovery",
+      status: "completed",
+      finalText: "Recovered historical subagent result."
+    });
   });
 
   it("can launch multiple background subagents in parallel when maxConcurrentSubagents is not configured", async () => {
     const gateway = new FakeModelGateway(20);
     gateway.streamScenarioFactory = (input) => {
       const systemMessages = input.messages?.filter((message) => message.role === "system").map((message) => message.content) ?? [];
+      const userText =
+        input.messages
+          ?.filter((message) => message.role === "user")
+          .map((message) => (typeof message.content === "string" ? message.content : ""))
+          .join("\n") ?? "";
 
       if (systemMessages.some((message) => message.includes("You are the researcher subagent."))) {
         return {
@@ -6958,22 +7414,17 @@ describe("runtime service", () => {
         };
       }
 
-      const toolResultText =
-        input.messages
-          ?.filter((message) => message.role === "tool")
-          .map((message) => messageText({ content: message.content as Message["content"] }) ?? "")
-          .join("\n") ?? "";
       if (
-        toolResultText.includes("Research background result is ready.") &&
-        toolResultText.includes("Review background result is ready.")
+        userText.includes("Research background result is ready.") &&
+        userText.includes("Review background result is ready.")
       ) {
         return {
           text: "Parent integrated two background delegations."
         };
       }
-      if (toolResultText.includes("started: true")) {
+      if (userText.includes("<task-notification>")) {
         return {
-          text: "Parent is waiting for two background delegations."
+          text: "Parent observed one background delegation."
         };
       }
 
@@ -7133,20 +7584,16 @@ describe("runtime service", () => {
       })
     );
 
-    await waitFor(async () => {
-      const toolMessages = (await runtimeService.listSessionMessages(session.id, 100)).items.filter(
-        (message) => message.role === "tool" && messageToolName(message) === "SubAgent"
-      );
-      return toolMessages.length === 4;
-    }, 10_000);
+    const notifications = await waitForTaskNotifications(runtimeService, session.id, 2, 10_000);
 
     const toolMessages = (await runtimeService.listSessionMessages(session.id, 100)).items.filter(
       (message) => message.role === "tool" && messageToolName(message) === "SubAgent"
     );
 
-    expect(toolMessages).toHaveLength(4);
-    expect(toolMessages.some((message) => messageText(message).includes("Research background result is ready."))).toBe(true);
-    expect(toolMessages.some((message) => messageText(message).includes("Review background result is ready."))).toBe(true);
+    expect(toolMessages).toHaveLength(2);
+    expect(toolMessages.every((message) => messageText(message)?.includes("status: async_launched"))).toBe(true);
+    expect(notifications.some((message) => messageText(message)?.includes("Research background result is ready."))).toBe(true);
+    expect(notifications.some((message) => messageText(message)?.includes("Review background result is ready."))).toBe(true);
     expect(gateway.maxConcurrentStreams).toBeGreaterThanOrEqual(3);
   }, 15_000);
 
@@ -7154,6 +7601,16 @@ describe("runtime service", () => {
     const gateway = new FakeModelGateway(20);
     gateway.streamScenarioFactory = (input) => {
       const systemMessages = input.messages?.filter((message) => message.role === "system").map((message) => message.content) ?? [];
+      const userText =
+        input.messages
+          ?.filter((message) => message.role === "user")
+          .map((message) => (typeof message.content === "string" ? message.content : ""))
+          .join("\n") ?? "";
+      const toolResultText =
+        input.messages
+          ?.filter((message) => message.role === "tool")
+          .map((message) => messageText({ content: message.content as Message["content"] }) ?? "")
+          .join("\n") ?? "";
 
       if (systemMessages.some((message) => message.includes("You are the researcher subagent."))) {
         return {
@@ -7167,20 +7624,15 @@ describe("runtime service", () => {
         };
       }
 
-      const toolResultText =
-        input.messages
-          ?.filter((message) => message.role === "tool")
-          .map((message) => messageText({ content: message.content as Message["content"] }) ?? "")
-          .join("\n") ?? "";
       if (
-        toolResultText.includes("Research background result is ready.") &&
+        userText.includes("Research background result is ready.") &&
         toolResultText.includes("reached max_concurrent_subagents=1")
       ) {
         return {
           text: "Parent integrated the limited background delegation."
         };
       }
-      if (toolResultText.includes("started: true") || toolResultText.includes("reached max_concurrent_subagents=1")) {
+      if (userText.includes("<task-notification>") || toolResultText.includes("reached max_concurrent_subagents=1")) {
         return {
           text: "Parent is waiting for the limited background delegation."
         };
@@ -7341,14 +7793,15 @@ describe("runtime service", () => {
       const childRun = await runtimeService.getRun(delegatedRuns[0]?.childRunId ?? "");
       return childRun.status === "completed";
     });
+    const notifications = await waitForTaskNotifications(runtimeService, session.id, 1);
 
     const toolMessages = (await runtimeService.listSessionMessages(session.id, 100)).items.filter(
       (message) => message.role === "tool" && messageToolName(message) === "SubAgent"
     );
 
-    expect(toolMessages).toHaveLength(3);
-    expect(toolMessages.some((message) => messageText(message).includes("started: true"))).toBe(true);
-    expect(toolMessages.some((message) => messageText(message).includes("Research background result is ready."))).toBe(true);
+    expect(toolMessages).toHaveLength(2);
+    expect(toolMessages.some((message) => messageText(message)?.includes("status: async_launched"))).toBe(true);
+    expect(notifications.some((message) => messageText(message)?.includes("Research background result is ready."))).toBe(true);
     expect(toolMessages.some((message) => messageText(message).includes("reached max_concurrent_subagents=1"))).toBe(true);
   });
 
@@ -7630,17 +8083,17 @@ describe("runtime service", () => {
         };
       }
 
-      const toolResultText =
+      const userText =
         input.messages
-          ?.filter((message) => message.role === "tool")
-          .map((message) => messageText({ content: message.content as Message["content"] }) ?? "")
+          ?.filter((message) => message.role === "user")
+          .map((message) => (typeof message.content === "string" ? message.content : ""))
           .join("\n") ?? "";
-      if (toolResultText.includes("Initial subagent result: first pass complete.")) {
+      if (userText.includes("Initial subagent result: first pass complete.")) {
         return {
           text: "Parent observed the initial background delegation."
         };
       }
-      if (toolResultText.includes("started: true")) {
+      if (userText.includes("<task-notification>")) {
         return {
           text: "Parent is waiting for the initial background delegation."
         };
@@ -7781,11 +8234,15 @@ describe("runtime service", () => {
       return run.status === "completed";
     });
 
+    await waitForTaskNotifications(runtimeService, session.id, 1);
+
     const firstMessages = await runtimeService.listSessionMessages(session.id, 20);
     const initialToolMessage = firstMessages.items.find(
       (message) => message.role === "tool" && messageToolName(message) === "SubAgent"
     );
-    const taskId = extractFieldValue(messageText(initialToolMessage), "task_id");
+    const taskId =
+      extractFieldValue(messageText(initialToolMessage), "task_id") ??
+      delegatedTaskIdFromMessage(taskNotifications(firstMessages.items)[0]);
 
     expect(taskId).toBeTruthy();
 
@@ -8153,6 +8610,323 @@ describe("runtime service", () => {
     await expect(runtimeService.getRun(resumedAccepted.runId)).resolves.toMatchObject({
       status: "failed",
       errorCode: "task_agent_mismatch"
+    });
+  });
+
+  it("blocks subagents from launching nested SubAgent tool calls at execution time", async () => {
+    const gateway = new FakeModelGateway();
+    gateway.streamScenarioFactory = (input) => {
+      const systemMessages = input.messages?.filter((message) => message.role === "system").map((message) => message.content) ?? [];
+
+      if (systemMessages.some((message) => message.includes("You are the researcher subagent."))) {
+        return {
+          text: "Subagent handled the blocked nested delegation.",
+          toolSteps: [
+            {
+              toolName: "SubAgent",
+              input: {
+                description: "Nested review",
+                prompt: "Review from a nested subagent.",
+                subagent_name: "reviewer"
+              },
+              toolCallId: "call_nested_agent",
+              continueOnError: true
+            }
+          ]
+        };
+      }
+
+      return {
+        text: "Parent delegated to the researcher.",
+        toolSteps: [
+          {
+            toolName: "SubAgent",
+            input: {
+              description: "Research",
+              prompt: "Try to launch a nested subagent.",
+              subagent_name: "researcher"
+            },
+            toolCallId: "call_parent_agent"
+          }
+        ]
+      };
+    };
+
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_subagent_nested_guard",
+      name: "subagent-nested-guard",
+      rootPath: "/tmp/subagent-nested-guard",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "plan",
+      settings: {
+        defaultAgent: "plan",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        plan: {
+          name: "plan",
+          mode: "primary",
+          prompt: "You are the planner agent.",
+          tools: {
+            native: [],
+            actions: [],
+            skills: [],
+            external: []
+          },
+          switch: [],
+          subagents: ["researcher"]
+        },
+        researcher: {
+          name: "researcher",
+          mode: "subagent",
+          prompt: "You are the researcher subagent.",
+          tools: {
+            native: [],
+            actions: [],
+            skills: [],
+            external: []
+          },
+          switch: [],
+          subagents: ["reviewer"]
+        },
+        reviewer: {
+          name: "reviewer",
+          mode: "subagent",
+          prompt: "You are the reviewer subagent.",
+          tools: {
+            native: [],
+            actions: [],
+            skills: [],
+            external: []
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_subagent_nested_guard",
+        agents: [
+          { name: "plan", mode: "primary", source: "workspace" },
+          { name: "researcher", mode: "subagent", source: "workspace" },
+          { name: "reviewer", mode: "subagent", source: "workspace" }
+        ],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: "project_subagent_nested_guard",
+      caller,
+      input: {
+        agentName: "plan"
+      }
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Delegate once. The subagent will try to delegate again." }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const parentRun = await runtimeService.getRun(accepted.runId);
+    const delegatedRuns =
+      (parentRun.metadata?.delegatedRuns as Array<{ childRunId: string; childSessionId: string }> | undefined) ?? [];
+    expect(delegatedRuns).toHaveLength(1);
+
+    const childSessionId = delegatedRuns[0]?.childSessionId;
+    expect(childSessionId).toBeTruthy();
+    const childMessages = await runtimeService.listSessionMessages(childSessionId!, 50);
+    const blockedToolMessage = childMessages.items.find(
+      (message) => message.role === "tool" && messageToolName(message) === "SubAgent"
+    );
+    const nestedChildren = await runtimeService.listChildSessions(childSessionId!, 10);
+    const childEvents = await runtimeService.listSessionEvents(childSessionId!);
+
+    expect(messageText(blockedToolMessage)).toContain("Tool SubAgent is not available for agent researcher.");
+    expect(blockedToolMessage?.metadata).toMatchObject({
+      toolStatus: "failed",
+      toolSourceType: "agent"
+    });
+    expect(nestedChildren.items).toHaveLength(0);
+    expect(childEvents.find((event) => event.event === "tool.failed")?.data).toMatchObject({
+      toolName: "SubAgent",
+      errorCode: "tool_not_available_for_agent"
+    });
+  });
+
+  it("blocks hidden engine tools even when the agent has an enabled external tool server", async () => {
+    const gateway = new FakeModelGateway();
+    gateway.streamScenarioFactory = () => ({
+      text: "Parent handled the blocked tool call.",
+      toolSteps: [
+        {
+          toolName: "SubAgent",
+          input: {
+            description: "Unauthorized delegation",
+            prompt: "This should not run.",
+            subagent_name: "researcher"
+          },
+          toolCallId: "call_hidden_subagent",
+          continueOnError: true
+        }
+      ]
+    });
+
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_external_tool_visibility_guard",
+      name: "external-tool-visibility-guard",
+      rootPath: "/tmp/external-tool-visibility-guard",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "plan",
+      settings: {
+        defaultAgent: "plan",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        plan: {
+          name: "plan",
+          mode: "primary",
+          prompt: "You are the planner agent.",
+          tools: {
+            native: [],
+            actions: [],
+            skills: [],
+            external: ["docs"]
+          },
+          switch: [],
+          subagents: []
+        },
+        researcher: {
+          name: "researcher",
+          mode: "subagent",
+          prompt: "You are the researcher subagent.",
+          tools: {
+            native: [],
+            actions: [],
+            skills: [],
+            external: []
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {
+        docs: {
+          name: "docs",
+          enabled: true,
+          transportType: "http",
+          url: "http://127.0.0.1:9123"
+        }
+      },
+      hooks: {},
+      catalog: {
+        workspaceId: "project_external_tool_visibility_guard",
+        agents: [
+          { name: "plan", mode: "primary", source: "workspace" },
+          { name: "researcher", mode: "subagent", source: "workspace" }
+        ],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [{ name: "docs", transportType: "http" }],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: "project_external_tool_visibility_guard",
+      caller,
+      input: {
+        agentName: "plan"
+      }
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Try an unauthorized subagent tool call." }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const messages = await runtimeService.listSessionMessages(session.id, 50);
+    const blockedToolMessage = messages.items.find(
+      (message) => message.role === "tool" && messageToolName(message) === "SubAgent"
+    );
+    const childSessions = await runtimeService.listChildSessions(session.id, 10);
+    const events = await runtimeService.listSessionEvents(session.id, undefined, accepted.runId);
+
+    expect(messageText(blockedToolMessage)).toContain("Tool SubAgent is not available for agent plan.");
+    expect(blockedToolMessage?.metadata).toMatchObject({
+      toolStatus: "failed",
+      toolSourceType: "agent"
+    });
+    expect(childSessions.items).toHaveLength(0);
+    expect(events.find((event) => event.event === "tool.failed")?.data).toMatchObject({
+      toolName: "SubAgent",
+      errorCode: "tool_not_available_for_agent"
     });
   });
 
@@ -11456,7 +12230,7 @@ describe("runtime service", () => {
       "TerminalInput",
       "TerminalStop"
     ]);
-    expect(catalog.engineTools).toEqual(expect.arrayContaining(["Bash", "Read", "run_action", "Skill", "AgentSwitch", "SubAgent"]));
+    expect(catalog.engineTools).toEqual(expect.arrayContaining(["Bash", "Read", "run_action", "Skill", "AgentSwitch", "SubAgent", "TaskOutput"]));
 
     const caller = {
       subjectRef: "dev:test",
@@ -12124,6 +12898,311 @@ describe("runtime service", () => {
       output: {
         value: expect.stringContaining("audit:audit")
       }
+    });
+  });
+
+  it("records run steps, events, and audits for external tool calls", async () => {
+    const gateway = new FakeModelGateway();
+    gateway.streamScenarioFactory = () => ({
+      text: "External tool calls finished.",
+      toolSteps: [
+        {
+          toolName: "docs.search",
+          input: {
+            query: "subagent orchestration"
+          },
+          toolCallId: "call_external_search",
+          output: {
+            results: ["Claude-style task notifications"]
+          }
+        }
+      ]
+    });
+
+    const persistence = createMemoryRuntimePersistence();
+    const recordedToolCalls: ToolCallAuditRecord[] = [];
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence,
+      toolCallAuditRepository: {
+        async create(input) {
+          recordedToolCalls.push(input);
+          return input;
+        }
+      }
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_external_tool_audit",
+      name: "external-tool-audit",
+      rootPath: "/tmp/external-tool-audit",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "builder",
+      settings: {
+        defaultAgent: "builder",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        builder: {
+          name: "builder",
+          mode: "primary",
+          prompt: "Use external docs when needed.",
+          tools: {
+            native: [],
+            actions: [],
+            skills: [],
+            external: ["docs"]
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {
+        docs: {
+          name: "docs",
+          enabled: true,
+          transportType: "http",
+          url: "http://127.0.0.1:9123"
+        }
+      },
+      hooks: {},
+      catalog: {
+        workspaceId: "project_external_tool_audit",
+        agents: [{ name: "builder", mode: "primary", source: "workspace" }],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [{ name: "docs", transportType: "http" }],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: "project_external_tool_audit",
+      caller,
+      input: {}
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Search docs." }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const messages = await runtimeService.listSessionMessages(session.id, 50);
+    const events = await runtimeService.listSessionEvents(session.id, undefined, accepted.runId);
+    const runSteps = await runtimeService.listRunSteps(accepted.runId);
+    const toolStep = runSteps.items.find((step) => step.stepType === "tool_call" && step.name === "docs.search");
+    const toolMessage = messages.items.find((message) => message.role === "tool" && messageToolName(message) === "docs.search");
+
+    expect(toolStep).toMatchObject({
+      status: "completed",
+      input: {
+        toolCallId: "call_external_search",
+        sourceType: "tool",
+        input: {
+          query: "subagent orchestration"
+        }
+      },
+      output: {
+        sourceType: "tool"
+      }
+    });
+    expect(toolMessage?.metadata).toMatchObject({
+      toolStatus: "completed",
+      toolSourceType: "tool",
+      toolDurationMs: expect.any(Number)
+    });
+    expect(events.find((event) => event.event === "tool.started")?.data).toMatchObject({
+      toolName: "docs.search",
+      sourceType: "tool",
+      toolCallId: "call_external_search"
+    });
+    expect(events.find((event) => event.event === "tool.completed")?.data).toMatchObject({
+      toolName: "docs.search",
+      sourceType: "tool",
+      toolCallId: "call_external_search"
+    });
+    expect(recordedToolCalls).toHaveLength(1);
+    expect(recordedToolCalls[0]).toMatchObject({
+      toolName: "docs.search",
+      sourceType: "tool",
+      status: "completed",
+      request: {
+        toolCallId: "call_external_search",
+        sourceType: "tool"
+      },
+      response: {
+        sourceType: "tool"
+      }
+    });
+  });
+
+  it("records failed external tool calls without dropping the tool result message", async () => {
+    const gateway = new FakeModelGateway();
+    gateway.streamScenarioFactory = () => ({
+      text: "External failure handled.",
+      toolSteps: [
+        {
+          toolName: "docs.search",
+          input: {
+            query: "subagent orchestration"
+          },
+          toolCallId: "call_external_search_failed",
+          error: new Error("MCP docs search failed."),
+          continueOnError: true
+        }
+      ]
+    });
+
+    const persistence = createMemoryRuntimePersistence();
+    const recordedToolCalls: ToolCallAuditRecord[] = [];
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence,
+      toolCallAuditRepository: {
+        async create(input) {
+          recordedToolCalls.push(input);
+          return input;
+        }
+      }
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_external_tool_failure_audit",
+      name: "external-tool-failure-audit",
+      rootPath: "/tmp/external-tool-failure-audit",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "builder",
+      settings: {
+        defaultAgent: "builder",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        builder: {
+          name: "builder",
+          mode: "primary",
+          prompt: "Use external docs when needed.",
+          tools: {
+            native: [],
+            actions: [],
+            skills: [],
+            external: ["docs"]
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {
+        docs: {
+          name: "docs",
+          enabled: true,
+          transportType: "http",
+          url: "http://127.0.0.1:9123"
+        }
+      },
+      hooks: {},
+      catalog: {
+        workspaceId: "project_external_tool_failure_audit",
+        agents: [{ name: "builder", mode: "primary", source: "workspace" }],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [{ name: "docs", transportType: "http" }],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: "project_external_tool_failure_audit",
+      caller,
+      input: {}
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Search docs and handle failure." }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const messages = await runtimeService.listSessionMessages(session.id, 50);
+    const events = await runtimeService.listSessionEvents(session.id, undefined, accepted.runId);
+    const runSteps = await runtimeService.listRunSteps(accepted.runId);
+    const toolStep = runSteps.items.find((step) => step.stepType === "tool_call" && step.name === "docs.search");
+    const toolMessage = messages.items.find((message) => message.role === "tool" && messageToolName(message) === "docs.search");
+
+    expect(toolStep).toMatchObject({
+      status: "failed",
+      output: {
+        sourceType: "tool",
+        errorCode: "tool_execution_failed",
+        errorMessage: "MCP docs search failed."
+      }
+    });
+    expect(messageText(toolMessage)).toContain("MCP docs search failed.");
+    expect(toolMessage?.metadata).toMatchObject({
+      toolStatus: "failed",
+      toolSourceType: "tool",
+      toolDurationMs: expect.any(Number)
+    });
+    expect(events.find((event) => event.event === "tool.failed")?.data).toMatchObject({
+      toolName: "docs.search",
+      sourceType: "tool",
+      toolCallId: "call_external_search_failed",
+      errorCode: "tool_execution_failed",
+      errorMessage: "MCP docs search failed."
+    });
+    expect(recordedToolCalls).toHaveLength(1);
+    expect(recordedToolCalls[0]).toMatchObject({
+      toolName: "docs.search",
+      sourceType: "tool",
+      status: "failed"
     });
   });
 

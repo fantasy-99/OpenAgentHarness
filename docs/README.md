@@ -33,6 +33,7 @@
 - [k8s-operations-runbook.md](./k8s-operations-runbook.md) — K8S 常见异常的排障与恢复手册
 - [workspace/README.md](./workspace/README.md) — `.openharness/` 目录规范与配置详解
 - [engine/README.md](./engine/README.md) — Engine 生命周期、上下文、执行、队列与事件
+- [engine/subagent-orchestration.md](./engine/subagent-orchestration.md) — subagent 编排、Claude Code / opencode 调研结论与改造路线
 - [openapi/README.md](./openapi/README.md) — API 参考与 OpenAPI 3.1 规范
 - [storage-design.md](./storage-design.md) — PostgreSQL、Redis、workspace 本地数据、审计与恢复策略
 - [schemas/README.md](./schemas/README.md) — workspace 配置文件的 JSON Schema

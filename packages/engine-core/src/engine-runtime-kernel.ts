@@ -77,6 +77,8 @@ export interface CreateEngineRuntimeKernelDependencies {
   sessionPendingRunQueueRepository: EngineServiceOptions["sessionPendingRunQueueRepository"];
   runQueue: EngineServiceOptions["runQueue"];
   engineMessageRepository: EngineServiceOptions["engineMessageRepository"];
+  agentTaskRepository: EngineServiceOptions["agentTaskRepository"];
+  agentTaskNotificationRepository: EngineServiceOptions["agentTaskNotificationRepository"];
   workspaceExecutionProvider: EngineServiceOptions["workspaceExecutionProvider"];
   workspaceFileAccessProvider: EngineServiceOptions["workspaceFileAccessProvider"];
   workspaceActivityTracker: EngineServiceOptions["workspaceActivityTracker"];
@@ -408,9 +410,39 @@ export function buildRuntimeEngineTools(input: {
       handoffSummary?: string | undefined;
       taskId?: string | undefined;
       notifyParentOnCompletion?: boolean | undefined;
+      toolUseId?: string | undefined;
     },
     currentAgentName: string
-  ) => Promise<{ childSessionId: string; childRunId: string; targetAgentName: string }>;
+  ) => Promise<{
+    childSessionId: string;
+    childRunId: string;
+    targetAgentName: string;
+    outputFile?: string | undefined;
+    outputRef?: string | undefined;
+    canReadOutputFile?: boolean | undefined;
+  }>;
+  readAgentTaskOutput: (input: {
+    taskId: string;
+    block?: boolean | undefined;
+    timeoutMs?: number | undefined;
+    abortSignal?: AbortSignal | undefined;
+  }) => Promise<{
+    retrievalStatus: "success" | "timeout" | "not_ready";
+    task: {
+      taskId: string;
+      taskType: "local_agent";
+      childSessionId?: string | undefined;
+      childRunId?: string | undefined;
+      status: "pending" | "running" | "completed" | "failed" | "killed";
+      description: string;
+      output: string;
+      outputRef: string;
+      outputFile?: string | undefined;
+      result?: string | undefined;
+      error?: string | undefined;
+      usage?: Record<string, unknown> | undefined;
+    } | null;
+  }>;
   awaitDelegatedRuns: (input: { runIds: string[]; mode: "all" | "any" }) => Promise<string>;
   switchAgent: (targetAgentName: string, currentAgentName: string) => Promise<void>;
 }): EngineToolSet {
@@ -426,6 +458,7 @@ export function buildRuntimeEngineTools(input: {
     ...(input.workspaceFileAccessProvider ? { workspaceFileAccessProvider: input.workspaceFileAccessProvider } : {}),
     executeAction: async (action, value, context) => input.executeAction(action, value, context),
     delegateAgent: (options, currentAgentName) => input.delegateAgent(options, currentAgentName),
+    readAgentTaskOutput: (options) => input.readAgentTaskOutput(options),
     awaitDelegatedRuns: (options) => input.awaitDelegatedRuns(options),
     switchAgent: (targetAgentName, currentAgentName) => input.switchAgent(targetAgentName, currentAgentName)
   });

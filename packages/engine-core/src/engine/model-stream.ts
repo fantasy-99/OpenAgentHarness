@@ -102,6 +102,26 @@ function inferSuccessfulToolMessageStatus(output: unknown): ToolMessageMetadata[
   return /^started:\s*true(?:\s|$)/mu.test(readToolResultText(output) ?? "") ? "started" : "completed";
 }
 
+function errorCodeFromUnknown(error: unknown): string {
+  return isRecord(error) && typeof error.code === "string" ? error.code : "tool_execution_failed";
+}
+
+function errorMessageFromUnknown(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (typeof error === "string") {
+    return error;
+  }
+
+  if (isRecord(error) && typeof error.message === "string") {
+    return error.message;
+  }
+
+  return "Unknown tool execution error.";
+}
+
 export interface ModelStreamPlanningCapabilities<TModelInput extends ModelExecutionInputSnapshot> {
   buildModelInput: (
     workspace: WorkspaceRecord,
@@ -181,7 +201,7 @@ export interface ModelStreamMessageCapabilities {
   appendEvent: (input: {
     sessionId: string;
     runId: string;
-    event: "message.delta" | "tool.completed";
+    event: "message.delta" | "tool.started" | "tool.completed" | "tool.failed";
     data: Record<string, unknown>;
   }) => Promise<unknown>;
   updateMessageContent: (message: AssistantMessage, content: string) => Promise<AssistantMessage>;
@@ -407,6 +427,41 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
       onToolCallStart: async (toolCall) => {
         this.#toolCallStartedAt.set(toolCall.toolCallId, Date.now());
         this.#activeToolCallIds.add(toolCall.toolCallId);
+        const toolSourceType = this.#serialization.resolveToolSourceType(toolCall.toolName);
+        if (!this.#engineTools[toolCall.toolName]) {
+          this.#toolCallSteps.set(
+            toolCall.toolCallId,
+            await this.#steps.startRunStep({
+              runId: this.#run.id,
+              stepType: "tool_call",
+              name: toolCall.toolName,
+              agentName: this.#executionContext.currentAgentName,
+              input: {
+                toolCallId: toolCall.toolCallId,
+                sourceType: toolSourceType,
+                input: this.#serialization.normalizeJsonObject(toolCall.input)
+              }
+            })
+          );
+          this.#toolMessageMetadataByCallId.set(toolCall.toolCallId, {
+            toolStatus: "started",
+            toolSourceType
+          });
+          await this.#messages.appendEvent({
+            sessionId: this.#session.id,
+            runId: this.#run.id,
+            event: "tool.started",
+            data: {
+              runId: this.#run.id,
+              sessionId: this.#session.id,
+              toolCallId: toolCall.toolCallId,
+              toolName: toolCall.toolName,
+              sourceType: toolSourceType,
+              input: toolCall.input,
+              metadata: buildAgentEventMetadata(this.#workspace, this.#executionContext.currentAgentName)
+            }
+          });
+        }
         this.#logger?.debug?.("Runtime tool call started.", {
           workspaceId: this.#workspace.id,
           sessionId: this.#session.id,
@@ -483,13 +538,42 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
           this.#modelCallMessageMetadata.get(this.#completedModelStepCount) ?? this.#latestMessageGenerationMetadata;
         const failedToolResults = this.#serialization.extractFailedToolResults(step);
         for (const toolError of failedToolResults) {
+          const startedAt = this.#toolCallStartedAt.get(toolError.toolCallId);
+          const toolStep = this.#toolCallSteps.get(toolError.toolCallId);
+          const toolSourceType = this.#serialization.resolveToolSourceType(toolError.toolName);
           this.#toolMessageMetadataByCallId.set(toolError.toolCallId, {
             toolStatus: "failed",
-            toolSourceType: this.#serialization.resolveToolSourceType(toolError.toolName)
+            toolSourceType,
+            ...(startedAt !== undefined ? { toolDurationMs: Date.now() - startedAt } : {})
           });
           this.#toolCallStartedAt.delete(toolError.toolCallId);
           this.#toolCallSteps.delete(toolError.toolCallId);
           this.#activeToolCallIds.delete(toolError.toolCallId);
+          if (toolStep) {
+            const failedToolStep = await this.#steps.completeRunStep(toolStep, "failed", {
+              sourceType: toolSourceType,
+              errorCode: errorCodeFromUnknown(toolError.error),
+              errorMessage: errorMessageFromUnknown(toolError.error),
+              ...(startedAt !== undefined ? { durationMs: Date.now() - startedAt } : {})
+            });
+            await this.#steps.recordToolCallAuditFromStep(failedToolStep, toolError.toolName, "failed");
+          }
+          await this.#messages.appendEvent({
+            sessionId: this.#session.id,
+            runId: this.#run.id,
+            event: "tool.failed",
+            data: {
+              runId: this.#run.id,
+              sessionId: this.#session.id,
+              toolCallId: toolError.toolCallId,
+              toolName: toolError.toolName,
+              sourceType: toolSourceType,
+              errorCode: errorCodeFromUnknown(toolError.error),
+              errorMessage: errorMessageFromUnknown(toolError.error),
+              ...(startedAt !== undefined ? { durationMs: Date.now() - startedAt } : {}),
+              metadata: buildAgentEventMetadata(this.#workspace, toolStep?.agentName ?? this.#executionContext.currentAgentName)
+            }
+          });
         }
         await this.#syncRunStatusFromActiveTools();
         const modelCallStep = this.#modelCallSteps.get(this.#completedModelStepCount);

@@ -4,6 +4,10 @@ interface SessionRunQueuePressureLike {
   uniqueReadySessionCount?: number | undefined;
   subagentReadySessionCount?: number | undefined;
   subagentReadyQueueDepth?: number | undefined;
+  preferredReadySessionCount?: number | undefined;
+  preferredReadyQueueDepth?: number | undefined;
+  preferredSubagentReadySessionCount?: number | undefined;
+  preferredSubagentReadyQueueDepth?: number | undefined;
   lockedReadySessionCount?: number | undefined;
   staleReadySessionCount?: number | undefined;
   oldestSchedulableReadyAgeMs?: number | undefined;
@@ -40,6 +44,10 @@ export interface RedisRunWorkerPoolDecisionLike {
   uniqueReadySessionCount?: number | undefined;
   subagentReadySessionCount?: number | undefined;
   subagentReadyQueueDepth?: number | undefined;
+  preferredReadySessionCount?: number | undefined;
+  preferredReadyQueueDepth?: number | undefined;
+  preferredSubagentReadySessionCount?: number | undefined;
+  preferredSubagentReadyQueueDepth?: number | undefined;
   lockedReadySessionCount?: number | undefined;
   staleReadySessionCount?: number | undefined;
   oldestSchedulableReadyAgeMs?: number | undefined;
@@ -94,6 +102,10 @@ export interface RedisRunWorkerPoolSnapshotLike {
   uniqueReadySessionCount?: number | undefined;
   subagentReadySessionCount?: number | undefined;
   subagentReadyQueueDepth?: number | undefined;
+  preferredReadySessionCount?: number | undefined;
+  preferredReadyQueueDepth?: number | undefined;
+  preferredSubagentReadySessionCount?: number | undefined;
+  preferredSubagentReadyQueueDepth?: number | undefined;
   lockedReadySessionCount?: number | undefined;
   staleReadySessionCount?: number | undefined;
   oldestSchedulableReadyAgeMs?: number | undefined;
@@ -134,6 +146,10 @@ export function buildRedisRunWorkerPoolDecision(input: {
   uniqueReadySessionCount?: number | undefined;
   subagentReadySessionCount?: number | undefined;
   subagentReadyQueueDepth?: number | undefined;
+  preferredReadySessionCount?: number | undefined;
+  preferredReadyQueueDepth?: number | undefined;
+  preferredSubagentReadySessionCount?: number | undefined;
+  preferredSubagentReadyQueueDepth?: number | undefined;
   lockedReadySessionCount?: number | undefined;
   staleReadySessionCount?: number | undefined;
   oldestSchedulableReadyAgeMs?: number | undefined;
@@ -163,6 +179,14 @@ export function buildRedisRunWorkerPoolDecision(input: {
     ...(typeof input.uniqueReadySessionCount === "number" ? { uniqueReadySessionCount: input.uniqueReadySessionCount } : {}),
     ...(typeof input.subagentReadySessionCount === "number" ? { subagentReadySessionCount: input.subagentReadySessionCount } : {}),
     ...(typeof input.subagentReadyQueueDepth === "number" ? { subagentReadyQueueDepth: input.subagentReadyQueueDepth } : {}),
+    ...(typeof input.preferredReadySessionCount === "number" ? { preferredReadySessionCount: input.preferredReadySessionCount } : {}),
+    ...(typeof input.preferredReadyQueueDepth === "number" ? { preferredReadyQueueDepth: input.preferredReadyQueueDepth } : {}),
+    ...(typeof input.preferredSubagentReadySessionCount === "number"
+      ? { preferredSubagentReadySessionCount: input.preferredSubagentReadySessionCount }
+      : {}),
+    ...(typeof input.preferredSubagentReadyQueueDepth === "number"
+      ? { preferredSubagentReadyQueueDepth: input.preferredSubagentReadyQueueDepth }
+      : {}),
     ...(typeof input.lockedReadySessionCount === "number" ? { lockedReadySessionCount: input.lockedReadySessionCount } : {}),
     ...(typeof input.staleReadySessionCount === "number" ? { staleReadySessionCount: input.staleReadySessionCount } : {}),
     ...(typeof input.oldestSchedulableReadyAgeMs === "number"
@@ -244,6 +268,12 @@ export function formatRedisRunWorkerPoolRebalanceLog(input: {
     input.schedulingPressure?.uniqueReadySessionCount
   )}, subagentSchedulable=${optionalNumber(input.schedulingPressure?.subagentReadySessionCount)}, subagentDepth=${optionalNumber(
     input.schedulingPressure?.subagentReadyQueueDepth
+  )}, preferredReady=${optionalNumber(input.schedulingPressure?.preferredReadySessionCount)}, preferredDepth=${optionalNumber(
+    input.schedulingPressure?.preferredReadyQueueDepth
+  )}, preferredSubagent=${optionalNumber(
+    input.schedulingPressure?.preferredSubagentReadySessionCount
+  )}/${optionalNumber(
+    input.schedulingPressure?.preferredSubagentReadyQueueDepth
   )}, lockedReady=${optionalNumber(input.schedulingPressure?.lockedReadySessionCount)}, staleReady=${optionalNumber(
     input.schedulingPressure?.staleReadySessionCount
   )}, oldestReadyAgeMs=${optionalNumber(
@@ -285,6 +315,10 @@ export function buildRedisRunWorkerPoolSnapshot(input: {
   uniqueReadySessionCount?: number | undefined;
   subagentReadySessionCount?: number | undefined;
   subagentReadyQueueDepth?: number | undefined;
+  preferredReadySessionCount?: number | undefined;
+  preferredReadyQueueDepth?: number | undefined;
+  preferredSubagentReadySessionCount?: number | undefined;
+  preferredSubagentReadyQueueDepth?: number | undefined;
   lockedReadySessionCount?: number | undefined;
   staleReadySessionCount?: number | undefined;
   oldestSchedulableReadyAgeMs?: number | undefined;
@@ -340,6 +374,14 @@ export function buildRedisRunWorkerPoolSnapshot(input: {
     ...(typeof input.uniqueReadySessionCount === "number" ? { uniqueReadySessionCount: input.uniqueReadySessionCount } : {}),
     ...(typeof input.subagentReadySessionCount === "number" ? { subagentReadySessionCount: input.subagentReadySessionCount } : {}),
     ...(typeof input.subagentReadyQueueDepth === "number" ? { subagentReadyQueueDepth: input.subagentReadyQueueDepth } : {}),
+    ...(typeof input.preferredReadySessionCount === "number" ? { preferredReadySessionCount: input.preferredReadySessionCount } : {}),
+    ...(typeof input.preferredReadyQueueDepth === "number" ? { preferredReadyQueueDepth: input.preferredReadyQueueDepth } : {}),
+    ...(typeof input.preferredSubagentReadySessionCount === "number"
+      ? { preferredSubagentReadySessionCount: input.preferredSubagentReadySessionCount }
+      : {}),
+    ...(typeof input.preferredSubagentReadyQueueDepth === "number"
+      ? { preferredSubagentReadyQueueDepth: input.preferredSubagentReadyQueueDepth }
+      : {}),
     ...(typeof input.lockedReadySessionCount === "number" ? { lockedReadySessionCount: input.lockedReadySessionCount } : {}),
     ...(typeof input.staleReadySessionCount === "number" ? { staleReadySessionCount: input.staleReadySessionCount } : {}),
     ...(typeof input.oldestSchedulableReadyAgeMs === "number"
@@ -376,6 +418,10 @@ function areRedisRunWorkerPoolDecisionsEquivalent(
     left.uniqueReadySessionCount === right.uniqueReadySessionCount &&
     left.subagentReadySessionCount === right.subagentReadySessionCount &&
     left.subagentReadyQueueDepth === right.subagentReadyQueueDepth &&
+    left.preferredReadySessionCount === right.preferredReadySessionCount &&
+    left.preferredReadyQueueDepth === right.preferredReadyQueueDepth &&
+    left.preferredSubagentReadySessionCount === right.preferredSubagentReadySessionCount &&
+    left.preferredSubagentReadyQueueDepth === right.preferredSubagentReadyQueueDepth &&
     left.lockedReadySessionCount === right.lockedReadySessionCount &&
     left.staleReadySessionCount === right.staleReadySessionCount &&
     left.busyWorkers === right.busyWorkers &&

@@ -9,6 +9,7 @@ import type { DirectoryObjectStore } from "../apps/server/src/object-storage.ts"
 import {
   computeLocalDirectoryFingerprint,
   deleteRemotePrefixFromObjectStore,
+  listRuntimeNamesFromObjectStore,
   normalizeAwsS3Module,
   ObjectStorageMirrorController,
   syncLocalDirectoryToRemote,
@@ -1212,6 +1213,32 @@ describe("object storage sync", () => {
     expect(store.deletePrefixCalls).toEqual(["workspace/demo"]);
     expect(store.listEntriesCalls).toBe(0);
     expect([...store.objects.keys()].sort()).toEqual(["workspace/other/README.md"]);
+  });
+
+  it("lists runtime names from object storage runtime prefixes only", async () => {
+    const store = new FakeDirectoryObjectStore();
+    await store.putObject("runtime/alpha/.openharness/settings.yaml", Buffer.from("default_agent: builder\n"));
+    await store.putObject("runtime/beta/README.md", Buffer.from("# beta\n"));
+    await store.putObject("runtime/.hidden/README.md", Buffer.from("# hidden\n"));
+    await store.putObject("workspace/alpha/README.md", Buffer.from("# workspace\n"));
+
+    await expect(
+      listRuntimeNamesFromObjectStore(
+        {
+          provider: "s3",
+          bucket: "test-bucket",
+          region: "us-east-1",
+          endpoint: "http://127.0.0.1:9000",
+          force_path_style: true,
+          mirrors: {
+            key_prefixes: {
+              runtime: "runtime"
+            }
+          }
+        },
+        { store }
+      )
+    ).resolves.toEqual(["alpha", "beta"]);
   });
 
   it("normalizes bundled AWS SDK default exports", () => {

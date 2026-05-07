@@ -10,6 +10,7 @@ export const RUNTIME_MESSAGE_KINDS = [
   "tool_result",
   "tool_approval_request",
   "tool_approval_response",
+  "task_notification",
   "compact_boundary",
   "compact_summary",
   "runtime_reminder",
@@ -40,6 +41,8 @@ export interface EngineMessage {
   sessionId: string;
   runId?: string | undefined;
   role: EngineMessageRole;
+  origin?: Message["origin"] | undefined;
+  mode?: Message["mode"] | undefined;
   kind: EngineMessageKind;
   content: Message["content"];
   createdAt: string;
@@ -121,6 +124,10 @@ function inferToolKind(content: Message["content"]): EngineMessageKind {
 }
 
 function inferEngineMessageKind(message: Message, metadata: EngineMessageMetadata | undefined): EngineMessageKind {
+  if (message.mode === "task-notification" || metadata?.taskNotification === true) {
+    return "task_notification";
+  }
+
   if (metadata?.runtimeKind) {
     return metadata.runtimeKind;
   }
@@ -145,6 +152,8 @@ export function toEngineMessage(message: Message): EngineMessage {
     sessionId: message.sessionId,
     ...(message.runId ? { runId: message.runId } : {}),
     role: message.role,
+    ...(message.origin ? { origin: message.origin } : {}),
+    ...(message.mode ? { mode: message.mode } : {}),
     kind: inferEngineMessageKind(message, metadata),
     content: message.content,
     createdAt: message.createdAt,

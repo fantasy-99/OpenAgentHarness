@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 
 import type {
   ArtifactRecord,
+  AgentTaskNotificationRecord,
+  AgentTaskRecord,
   HistoryEventEntityType,
   HistoryEventOperation,
   HistoryEventRecord,
@@ -16,12 +18,14 @@ import type {
   WorkspaceArchiveRecord,
   WorkspaceRecord
 } from "@oah/engine-core";
-import { isMessageContentForRole, isMessageRole, isEngineMessageKind } from "@oah/engine-core";
+import { isMessageContentForRole, isMessageMode, isMessageOrigin, isMessageRole, isEngineMessageKind } from "@oah/engine-core";
 import { eq } from "drizzle-orm";
 import type { OahExecutor } from "./schema.js";
 import {
   archives,
+  agentTaskNotifications,
   artifacts,
+  agentTasks,
   historyEvents,
   hookRuns,
   messages,
@@ -42,17 +46,36 @@ export function createMessage(input: {
   id: string;
   sessionId: string;
   runId?: string | undefined;
+  origin?: unknown;
+  mode?: unknown;
   role: unknown;
   content: unknown;
   metadata?: unknown;
   createdAt: string;
 }): Message {
   const role: Message["role"] = isMessageRole(input.role) ? input.role : "assistant";
+  const metadata = isRecord(input.metadata) ? input.metadata : undefined;
+  const origin = isMessageOrigin(input.origin)
+    ? input.origin
+    : isMessageOrigin(metadata?.origin)
+      ? metadata.origin
+      : metadata?.taskNotification === true
+        ? "engine"
+        : undefined;
+  const mode = isMessageMode(input.mode)
+    ? input.mode
+    : isMessageMode(metadata?.mode)
+      ? metadata.mode
+      : metadata?.taskNotification === true
+        ? "task-notification"
+        : undefined;
   const base = {
     id: input.id,
     sessionId: input.sessionId,
     ...(input.runId ? { runId: input.runId } : {}),
-    ...(isRecord(input.metadata) ? { metadata: input.metadata } : {}),
+    ...(origin ? { origin } : {}),
+    ...(mode ? { mode } : {}),
+    ...(metadata ? { metadata } : {}),
     createdAt: input.createdAt
   };
 
@@ -204,13 +227,22 @@ export function toSession(row: typeof sessions.$inferSelect): Session {
 }
 
 export function buildMessageRow(input: Message) {
+  const metadata =
+    input.metadata || input.origin || input.mode
+      ? {
+          ...(input.metadata ?? {}),
+          ...(input.origin ? { origin: input.origin } : {}),
+          ...(input.mode ? { mode: input.mode } : {})
+        }
+      : null;
+
   return {
     id: input.id,
     sessionId: input.sessionId,
     runId: input.runId ?? null,
     role: input.role,
     content: input.content,
-    metadata: input.metadata ?? null,
+    metadata,
     createdAt: input.createdAt
   };
 }
@@ -228,6 +260,15 @@ export function toMessage(row: typeof messages.$inferSelect): Message {
 }
 
 export function buildEngineMessageRow(input: EngineMessage) {
+  const metadata =
+    input.metadata || input.origin || input.mode
+      ? {
+          ...(input.metadata ?? {}),
+          ...(input.origin ? { origin: input.origin } : {}),
+          ...(input.mode ? { mode: input.mode } : {})
+        }
+      : null;
+
   return {
     id: input.id,
     sessionId: input.sessionId,
@@ -235,7 +276,7 @@ export function buildEngineMessageRow(input: EngineMessage) {
     role: input.role,
     kind: input.kind,
     content: input.content,
-    metadata: input.metadata ?? null,
+    metadata,
     createdAt: input.createdAt
   };
 }
@@ -246,6 +287,8 @@ export function toEngineMessageRecord(row: typeof engineMessages.$inferSelect): 
     sessionId: row.sessionId,
     ...(row.runId ? { runId: row.runId } : {}),
     role: isMessageRole(row.role) ? row.role : "assistant",
+    ...(isRecord(row.metadata) && isMessageOrigin(row.metadata.origin) ? { origin: row.metadata.origin } : {}),
+    ...(isRecord(row.metadata) && isMessageMode(row.metadata.mode) ? { mode: row.metadata.mode } : {}),
     kind: isEngineMessageKind(row.kind) ? row.kind : "assistant_text",
     content: row.content,
     ...(isRecord(row.metadata) ? { metadata: row.metadata } : {}),
@@ -428,6 +471,96 @@ export function toArtifactRecord(row: typeof artifacts.$inferSelect): ArtifactRe
     ...(row.contentRef ? { contentRef: row.contentRef } : {}),
     ...(row.metadata ? { metadata: row.metadata } : {}),
     createdAt: normalizeTimestamp(row.createdAt) ?? row.createdAt
+  };
+}
+
+export function buildAgentTaskRow(input: AgentTaskRecord) {
+  return {
+    taskId: input.taskId,
+    workspaceId: input.workspaceId,
+    parentSessionId: input.parentSessionId,
+    parentRunId: input.parentRunId,
+    childSessionId: input.childSessionId,
+    childRunId: input.childRunId,
+    toolUseId: input.toolUseId ?? null,
+    targetAgentName: input.targetAgentName,
+    parentAgentName: input.parentAgentName,
+    status: input.status,
+    description: input.description ?? null,
+    handoffSummary: input.handoffSummary ?? null,
+    outputRef: input.outputRef,
+    outputFile: input.outputFile ?? null,
+    finalText: input.finalText ?? null,
+    errorMessage: input.errorMessage ?? null,
+    usage: input.usage ?? null,
+    notifiedAt: input.notifiedAt ?? null,
+    createdAt: input.createdAt,
+    updatedAt: input.updatedAt
+  };
+}
+
+export function toAgentTaskRecord(row: typeof agentTasks.$inferSelect): AgentTaskRecord {
+  return {
+    taskId: row.taskId,
+    workspaceId: row.workspaceId,
+    parentSessionId: row.parentSessionId,
+    parentRunId: row.parentRunId,
+    childSessionId: row.childSessionId,
+    childRunId: row.childRunId,
+    ...(row.toolUseId ? { toolUseId: row.toolUseId } : {}),
+    targetAgentName: row.targetAgentName,
+    parentAgentName: row.parentAgentName,
+    status: row.status as AgentTaskRecord["status"],
+    ...(row.description ? { description: row.description } : {}),
+    ...(row.handoffSummary ? { handoffSummary: row.handoffSummary } : {}),
+    outputRef: row.outputRef,
+    ...(row.outputFile ? { outputFile: row.outputFile } : {}),
+    ...(row.finalText !== null ? { finalText: row.finalText } : {}),
+    ...(row.errorMessage !== null ? { errorMessage: row.errorMessage } : {}),
+    ...(row.usage ? { usage: row.usage } : {}),
+    ...(row.notifiedAt ? { notifiedAt: normalizeTimestamp(row.notifiedAt) ?? row.notifiedAt } : {}),
+    createdAt: normalizeTimestamp(row.createdAt) ?? row.createdAt,
+    updatedAt: normalizeTimestamp(row.updatedAt) ?? row.updatedAt
+  };
+}
+
+export function buildAgentTaskNotificationRow(input: AgentTaskNotificationRecord) {
+  return {
+    id: input.id,
+    workspaceId: input.workspaceId,
+    parentSessionId: input.parentSessionId,
+    parentRunId: input.parentRunId,
+    taskId: input.taskId,
+    toolUseId: input.toolUseId ?? null,
+    childRunId: input.childRunId,
+    childSessionId: input.childSessionId,
+    updateType: input.updateType,
+    content: input.content,
+    metadata: input.metadata,
+    status: input.status,
+    createdAt: input.createdAt,
+    consumedAt: input.consumedAt ?? null
+  };
+}
+
+export function toAgentTaskNotificationRecord(
+  row: typeof agentTaskNotifications.$inferSelect
+): AgentTaskNotificationRecord {
+  return {
+    id: row.id,
+    workspaceId: row.workspaceId,
+    parentSessionId: row.parentSessionId,
+    parentRunId: row.parentRunId,
+    taskId: row.taskId,
+    ...(row.toolUseId ? { toolUseId: row.toolUseId } : {}),
+    childRunId: row.childRunId,
+    childSessionId: row.childSessionId,
+    updateType: row.updateType as AgentTaskNotificationRecord["updateType"],
+    content: row.content,
+    metadata: row.metadata,
+    status: row.status as AgentTaskNotificationRecord["status"],
+    createdAt: normalizeTimestamp(row.createdAt) ?? row.createdAt,
+    ...(row.consumedAt ? { consumedAt: normalizeTimestamp(row.consumedAt) ?? row.consumedAt } : {})
   };
 }
 

@@ -137,6 +137,15 @@ export class ScopedSessionRepository implements SessionRepository {
     return this.inner.listByWorkspaceId(workspaceId, pageSize, cursor);
   }
 
+  async listChildrenByParentSessionId(parentSessionId: string, pageSize: number, cursor?: string): Promise<Session[]> {
+    const parentSession = await this.inner.getById(parentSessionId);
+    if (!parentSession || !this.visibleWorkspaceIds.has(parentSession.workspaceId)) {
+      return [];
+    }
+
+    return this.inner.listChildrenByParentSessionId(parentSessionId, pageSize, cursor);
+  }
+
   async delete(id: string): Promise<void> {
     const session = await this.inner.getById(id);
     if (!session || !this.visibleWorkspaceIds.has(session.workspaceId)) {
