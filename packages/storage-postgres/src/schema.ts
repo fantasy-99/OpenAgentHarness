@@ -211,6 +211,7 @@ export const agentTasks = pgTable("agent_tasks", {
   finalText: text("final_text"),
   errorMessage: text("error_message"),
   usage: jsonb("usage").$type<AgentTaskRecord["usage"]>(),
+  taskState: jsonb("task_state").$type<AgentTaskRecord["taskState"]>(),
   notifiedAt: timestamp("notified_at", { withTimezone: true, mode: "string" }),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull()

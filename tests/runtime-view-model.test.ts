@@ -695,6 +695,84 @@ describe("buildRuntimeViewModel", () => {
     ]);
   });
 
+  it("keeps task notifications in chronological order inside a projected run", () => {
+    const userMessage: Message = {
+      id: "msg_user_run_start",
+      sessionId: "ses_1",
+      runId: "run_1",
+      role: "user",
+      content: "launch background research",
+      createdAt: "2026-04-07T00:00:00.000Z"
+    };
+    const firstAssistantMessage = createAssistantMessage({
+      id: "msg_assistant_first",
+      runId: "run_1",
+      content: "launched",
+      createdAt: "2026-04-07T00:00:01.000Z"
+    });
+    const taskNotification: Message = {
+      id: "msg_task_notification",
+      sessionId: "ses_1",
+      runId: "run_1",
+      role: "user",
+      origin: "engine",
+      mode: "task-notification",
+      metadata: {
+        taskNotification: true
+      },
+      content:
+        "<task-notification><task-id>ses_child</task-id><status>completed</status><summary>Agent completed.</summary></task-notification>",
+      createdAt: "2026-04-07T00:00:02.000Z"
+    };
+    const finalAssistantMessage = createAssistantMessage({
+      id: "msg_assistant_final",
+      runId: "run_1",
+      content: "integrated",
+      createdAt: "2026-04-07T00:00:03.000Z"
+    });
+
+    const viewModel = buildRuntimeViewModel({
+      messages: [userMessage, firstAssistantMessage, taskNotification, finalAssistantMessage],
+      queuedMessageIds: new Set(),
+      runSteps: [createModelCallStep()],
+      deferredEvents: [
+        createEvent({
+          cursor: "1",
+          runId: "run_1",
+          event: "message.completed",
+          data: {
+            messageId: firstAssistantMessage.id,
+            content: firstAssistantMessage.content
+          },
+          createdAt: "2026-04-07T00:00:01.000Z"
+        }),
+        createEvent({
+          cursor: "2",
+          runId: "run_1",
+          event: "message.completed",
+          data: {
+            messageId: finalAssistantMessage.id,
+            content: finalAssistantMessage.content
+          },
+          createdAt: "2026-04-07T00:00:03.000Z"
+        })
+      ],
+      liveMessagesByKey: {},
+      selectedTraceId: "",
+      selectedMessageId: "",
+      selectedStepId: "",
+      selectedEventId: "",
+      sessionId: "ses_1"
+    });
+
+    expect(viewModel.messageFeed.map((message) => message.id)).toEqual([
+      userMessage.id,
+      firstAssistantMessage.id,
+      taskNotification.id,
+      finalAssistantMessage.id
+    ]);
+  });
+
   it("projects interrupted assistant text into separate bubbles using session events", () => {
     const userMessage: Message = {
       id: "msg_user",

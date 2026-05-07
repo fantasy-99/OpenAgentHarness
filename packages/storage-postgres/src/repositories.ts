@@ -969,6 +969,7 @@ export class PostgresAgentTaskRepository implements AgentTaskRepository {
           finalText: values.finalText,
           errorMessage: values.errorMessage,
           usage: values.usage,
+          taskState: values.taskState,
           notifiedAt: values.notifiedAt,
           createdAt: values.createdAt,
           updatedAt: values.updatedAt
@@ -993,6 +994,7 @@ export class PostgresAgentTaskRepository implements AgentTaskRepository {
     finalText?: string | undefined;
     errorMessage?: string | undefined;
     usage?: Record<string, unknown> | undefined;
+    taskState?: AgentTaskRecord["taskState"] | undefined;
     notifiedAt?: string | undefined;
   }): Promise<AgentTaskRecord> {
     const [row] = await this.db
@@ -1006,6 +1008,7 @@ export class PostgresAgentTaskRepository implements AgentTaskRepository {
         ...(input.finalText !== undefined ? { finalText: input.finalText } : {}),
         ...(input.errorMessage !== undefined ? { errorMessage: input.errorMessage } : {}),
         ...(input.usage !== undefined ? { usage: input.usage } : {}),
+        ...(input.taskState !== undefined ? { taskState: input.taskState } : {}),
         ...(input.notifiedAt !== undefined ? { notifiedAt: input.notifiedAt } : {})
       })
       .where(eq(agentTasks.taskId, input.taskId))

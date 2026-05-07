@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import type { Message, Run } from "@oah/api-contracts";
 
 import { formatToolOutput } from "../capabilities/tool-output.js";
+import type { LocalAgentTaskStateRecord } from "../types.js";
 
 export interface AwaitedRunSummaryView {
   run: Run;
@@ -82,7 +83,6 @@ function taskNotificationContent(input: {
   childRunId?: string | undefined;
   toolUseId?: string | undefined;
   outputRef: string;
-  outputFile: string;
   status: "completed" | "failed" | "killed";
   summary: string;
   result?: string | undefined;
@@ -98,7 +98,6 @@ function taskNotificationContent(input: {
     ...(input.childRunId ? [`<child_run_id>${escapeXmlText(input.childRunId)}</child_run_id>`] : []),
     ...(input.toolUseId ? [`<tool_use_id>${escapeXmlText(input.toolUseId)}</tool_use_id>`] : []),
     `<output_ref>${escapeXmlText(input.outputRef)}</output_ref>`,
-    `<output_file>${escapeXmlText(input.outputFile)}</output_file>`,
     `<status>${escapeXmlText(input.status)}</status>`,
     `<summary>${escapeXmlText(input.summary)}</summary>`,
     ...(result ? [`<result>${escapeXmlText(result)}</result>`] : []),
@@ -141,6 +140,7 @@ export function buildDelegatedRunCompletedMessage(input: {
   outputRef: string;
   outputFile: string;
   usage?: Record<string, unknown> | undefined;
+  taskState?: LocalAgentTaskStateRecord | undefined;
 }): Message {
   const taskId = input.childSummary.run.sessionId ?? input.childSummary.run.id;
   return {
@@ -155,7 +155,6 @@ export function buildDelegatedRunCompletedMessage(input: {
       childRunId: input.childSummary.run.id,
       ...(input.toolUseId ? { toolUseId: input.toolUseId } : {}),
       outputRef: input.outputRef,
-      outputFile: input.outputFile,
       status: "completed",
       summary: `Agent "${input.childSummary.run.effectiveAgentName}" completed`,
       result: input.childSummary.outputContent,
@@ -177,6 +176,7 @@ export function buildDelegatedRunCompletedMessage(input: {
       ...(input.toolUseId ? { delegatedToolUseId: input.toolUseId } : {}),
       outputRef: input.outputRef,
       outputFile: input.outputFile,
+      ...(input.taskState ? { taskState: input.taskState } : {}),
       ...(input.usage ? { usage: input.usage } : {})
     },
     createdAt: input.createdAt
@@ -194,6 +194,7 @@ export function buildDelegatedRunFailedMessage(input: {
   outputRef: string;
   outputFile: string;
   usage?: Record<string, unknown> | undefined;
+  taskState?: LocalAgentTaskStateRecord | undefined;
 }): Message {
   const taskId = input.childRun.sessionId ?? input.childRun.id;
   return {
@@ -208,7 +209,6 @@ export function buildDelegatedRunFailedMessage(input: {
       childRunId: input.childRun.id,
       ...(input.toolUseId ? { toolUseId: input.toolUseId } : {}),
       outputRef: input.outputRef,
-      outputFile: input.outputFile,
       status: input.childRun.status === "cancelled" ? "killed" : "failed",
       summary: `Agent "${input.childRun.effectiveAgentName}" ${input.childRun.status}`,
       error: input.childRun.errorMessage,
@@ -230,6 +230,7 @@ export function buildDelegatedRunFailedMessage(input: {
       ...(input.toolUseId ? { delegatedToolUseId: input.toolUseId } : {}),
       outputRef: input.outputRef,
       outputFile: input.outputFile,
+      ...(input.taskState ? { taskState: input.taskState } : {}),
       ...(input.usage ? { usage: input.usage } : {})
     },
     createdAt: input.createdAt

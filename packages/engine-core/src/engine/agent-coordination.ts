@@ -26,6 +26,7 @@ import type {
   AgentTaskRepository,
   AgentTaskStatus
 } from "../types.js";
+import type { SessionPendingRunQueueRepository } from "../types.js";
 
 export interface DelegatedRunRecord {
   childRunId: string;
@@ -55,6 +56,7 @@ export interface AgentTaskOutputView {
   outputRef: string;
   outputFile?: string | undefined;
   usage?: Record<string, unknown> | undefined;
+  taskState?: AgentTaskRecord["taskState"] | undefined;
 }
 
 export interface AgentTaskOutputReadResult {
@@ -67,13 +69,21 @@ interface DelegatedRunMonitorState {
   promise?: Promise<void> | undefined;
 }
 
+interface DelegatedNotificationBatchState {
+  parentRun: Run;
+  records: DelegatedRunRecord[];
+  ready: boolean;
+  pendingNotifications: AgentTaskNotificationRecord[];
+}
+
 export interface AgentCoordinationPersistence {
   sessions: Pick<SessionRepository, "getById" | "create" | "update">;
   messages: Pick<MessageRepository, "create" | "listBySessionId">;
-  runs: Pick<RunRepository, "create" | "getById">;
+  runs: Pick<RunRepository, "create" | "getById" | "listBySessionId">;
   runSteps?: Pick<RunStepRepository, "listByRunId"> | undefined;
   agentTasks?: AgentTaskRepository | undefined;
   agentTaskNotifications?: AgentTaskNotificationRepository | undefined;
+  sessionPendingRuns?: SessionPendingRunQueueRepository | undefined;
 }
 
 export interface AgentCoordinationLifecycle {
@@ -319,6 +329,7 @@ export class AgentCoordinationService {
     return this.#serializeDelegation(input.parentRun.id, async () => {
       const latestParentRun = await this.#lifecycle.getRun(input.parentRun.id);
       await this.#enforceSubagentConcurrencyLimit(input.workspace, latestParentRun, input.currentAgentName);
+      const resumedActiveRun = resumedSession ? await this.#activeRunForSession(resumedSession.id) : null;
 
       const delegateStep = await this.#lifecycle.startRunStep({
         runId: input.parentRun.id,
@@ -414,6 +425,7 @@ export class AgentCoordinationService {
 
       const outputRef = this.#taskOutputRef(childSessionId);
       const outputFile = taskOutputPath(input.parentSession.id, childSessionId);
+      const existingAgentTask = input.taskId ? await this.#persistence.agentTasks?.getByTaskId(input.taskId) : null;
       await this.#persistence.agentTasks?.upsert({
         taskId: childSessionId,
         workspaceId: input.workspace.id,
@@ -429,6 +441,17 @@ export class AgentCoordinationService {
         ...(input.handoffSummary ? { handoffSummary: input.handoffSummary } : {}),
         outputRef,
         outputFile,
+        taskState: this.#localAgentTaskState({
+          taskId: childSessionId,
+          prompt: input.task,
+          agentType: resolvedTargetAgentName,
+          model: targetAgent.modelRef ?? parentModelRef,
+          existing: existingAgentTask?.taskState,
+          pendingMessage: resumedActiveRun ? input.task : undefined,
+          status: "queued",
+          isBackgrounded: input.notifyParentOnCompletion ?? existingAgentTask?.taskState?.isBackgrounded ?? false,
+          notified: false
+        }),
         createdAt: now,
         updatedAt: now
       });
@@ -465,8 +488,11 @@ export class AgentCoordinationService {
         ...(input.taskId ? { taskId: input.taskId, resumed: true } : {})
       });
 
-      await this.#lifecycle.enqueueRun(childSessionId, childRunId, {
-        priority: "subagent"
+      const delivery = await this.#enqueueChildRunRespectingSessionQueue({
+        childSessionId,
+        childRunId,
+        createdAt: now,
+        hasActiveRun: resumedActiveRun !== null
       });
       void this.#startDelegatedRunMonitor({
         parentSessionId: input.parentSession.id,
@@ -487,6 +513,37 @@ export class AgentCoordinationService {
         canReadOutputFile: input.canReadOutputFile ?? false
       };
     });
+  }
+
+  async #enqueueChildRunRespectingSessionQueue(input: {
+    childSessionId: string;
+    childRunId: string;
+    createdAt: string;
+    hasActiveRun: boolean;
+  }): Promise<"active_run" | "session_queue"> {
+    if (input.hasActiveRun && this.#persistence.sessionPendingRuns) {
+      await this.#persistence.sessionPendingRuns.enqueue({
+        sessionId: input.childSessionId,
+        runId: input.childRunId,
+        createdAt: input.createdAt
+      });
+      await this.#lifecycle.appendEvent({
+        sessionId: input.childSessionId,
+        runId: input.childRunId,
+        event: "queue.updated",
+        data: {
+          runId: input.childRunId,
+          action: "enqueued",
+          source: "subagent_pending_message"
+        }
+      });
+      return "session_queue";
+    }
+
+    await this.#lifecycle.enqueueRun(input.childSessionId, input.childRunId, {
+      priority: "subagent"
+    });
+    return "active_run";
   }
 
   async awaitDelegatedRuns(runIds: string[], mode: "all" | "any"): Promise<string> {
@@ -523,16 +580,18 @@ export class AgentCoordinationService {
     const run = await this.#lifecycle.getRun(task.childRunId);
     if (this.#isRunTerminal(run.status)) {
       const terminalTask = await this.#ensureAgentTaskTerminalOutput(task, run);
+      const retrievedTask = await this.#markAgentTaskRetrieved(terminalTask, run);
       return {
         retrievalStatus: "success",
-        task: this.#agentTaskOutputView(terminalTask)
+        task: this.#agentTaskOutputView(retrievedTask)
       };
     }
 
     if (input.block === false) {
+      const latestTask = await this.#syncAgentTaskRunningState(task, run, { retrieved: false });
       return {
         retrievalStatus: "not_ready",
-        task: this.#agentTaskOutputView(task, run)
+        task: this.#agentTaskOutputView(latestTask, run)
       };
     }
 
@@ -544,16 +603,18 @@ export class AgentCoordinationService {
     if (!completedRun || !this.#isRunTerminal(completedRun.status)) {
       const latestTask = (await repository.getByTaskId(input.taskId)) ?? task;
       const latestRun = await this.#lifecycle.getRun(task.childRunId);
+      const syncedTask = await this.#syncAgentTaskRunningState(latestTask, latestRun, { retrieved: false });
       return {
         retrievalStatus: "timeout",
-        task: this.#agentTaskOutputView(latestTask, latestRun)
+        task: this.#agentTaskOutputView(syncedTask, latestRun)
       };
     }
 
     const terminalTask = await this.#ensureAgentTaskTerminalOutput(task, completedRun);
+    const retrievedTask = await this.#markAgentTaskRetrieved(terminalTask, completedRun);
     return {
       retrievalStatus: "success",
-      task: this.#agentTaskOutputView(terminalTask)
+      task: this.#agentTaskOutputView(retrievedTask)
     };
   }
 
@@ -567,14 +628,24 @@ export class AgentCoordinationService {
       return { messageIds: [] };
     }
 
-    const pending = await repository.listPendingBySessionId(input.parentSessionId);
+    let pending = await repository.listPendingBySessionId(input.parentSessionId);
     if (pending.length === 0) {
+      return { messageIds: [] };
+    }
+
+    const targetRun = await this.#lifecycle.getRun(input.runId);
+    if (typeof targetRun.metadata?.taskNotificationBatchParentRunId === "string") {
+      pending = pending.filter((notification) => notification.parentRunId === targetRun.metadata?.taskNotificationBatchParentRunId);
+    }
+
+    const drainable = await this.#filterDrainableTaskNotifications(input.parentSessionId, pending);
+    if (drainable.length === 0) {
       return { messageIds: [] };
     }
 
     const createdAt = this.#helpers.nowIso();
     const messages: Message[] = [];
-    for (const notification of pending) {
+    for (const notification of drainable) {
       messages.push(
         await this.#persistence.messages.create({
           id: this.#helpers.createId("msg"),
@@ -602,7 +673,7 @@ export class AgentCoordinationService {
     }
 
     await repository.markConsumed({
-      ids: pending.map((notification) => notification.id),
+      ids: drainable.map((notification) => notification.id),
       consumedAt: createdAt
     });
 
@@ -914,16 +985,97 @@ export class AgentCoordinationService {
 
   #extractRunOutputContent(messages: Message[], runId: string): string | undefined {
     const runMessages = messages.filter((message) => message.runId === runId);
-    const assistantMessage = [...runMessages].reverse().find((message) => message.role === "assistant");
-    const assistantContent = assistantMessage ? this.#helpers.extractMessageDisplayText(assistantMessage) : undefined;
+    const assistantMessages = [...runMessages].reverse().filter((message) => message.role === "assistant");
+    let sawAssistantText = false;
 
-    if (this.#helpers.hasMeaningfulText(assistantContent)) {
-      return assistantContent;
+    for (const assistantMessage of assistantMessages) {
+      const assistantContent = this.#helpers.extractMessageDisplayText(assistantMessage);
+      if (!this.#helpers.hasMeaningfulText(assistantContent)) {
+        continue;
+      }
+
+      sawAssistantText = true;
+      if (this.#isAssistantMessageStillUsingTools(assistantMessage)) {
+        if (this.#isAssistantMessagePureToolUse(assistantMessage)) {
+          continue;
+        }
+        return undefined;
+      }
+
+      if (!this.#looksLikeIntermediateSubagentProgress(assistantContent)) {
+        return assistantContent;
+      }
+    }
+
+    if (sawAssistantText) {
+      return undefined;
     }
 
     const toolMessage = [...runMessages].reverse().find((message) => message.role === "tool");
     const toolContent = toolMessage ? this.#helpers.extractMessageDisplayText(toolMessage) : undefined;
     return this.#helpers.hasMeaningfulText(toolContent) ? toolContent : undefined;
+  }
+
+  #isAssistantMessageStillUsingTools(message: Message | undefined): boolean {
+    if (!message || message.role !== "assistant" || !Array.isArray(message.content)) {
+      return false;
+    }
+
+    return message.content.some((part) => part.type === "tool-call");
+  }
+
+  #isAssistantMessagePureToolUse(message: Message | undefined): boolean {
+    if (!message || message.role !== "assistant" || !Array.isArray(message.content) || message.content.length === 0) {
+      return false;
+    }
+
+    return message.content.every((part) => {
+      if (part.type === "tool-call") {
+        return true;
+      }
+      if (part.type === "text" && typeof part.text === "string") {
+        return part.text.trim().length === 0;
+      }
+      return false;
+    });
+  }
+
+  #looksLikeIntermediateSubagentProgress(content: string): boolean {
+    const trimmed = content.trim();
+    if (!trimmed) {
+      return true;
+    }
+
+    const normalized = trimmed.toLowerCase();
+    const progressPrefixes = [
+      "let me ",
+      "now let me ",
+      "i need to ",
+      "i will ",
+      "i'll ",
+      "i should ",
+      "让我",
+      "我需要",
+      "我将",
+      "现在让我",
+      "继续搜索",
+      "尝试搜索"
+    ];
+    const progressFragments = [
+      "let me try",
+      "let me search",
+      "let me continue",
+      "try to find",
+      "search for",
+      "获取成功了",
+      "重新搜索",
+      "继续搜索",
+      "尝试搜索"
+    ];
+    return (
+      progressPrefixes.some((marker) => normalized.startsWith(marker)) ||
+      progressFragments.some((marker) => normalized.includes(marker))
+    );
   }
 
   async #ensureDelegatedOutputFollowUpRun(completedRun: Run, messages: Message[]): Promise<Run> {
@@ -1093,74 +1245,45 @@ export class AgentCoordinationService {
           outputRef,
           outputFile,
           ...(agentTask?.usage ? { usage: agentTask.usage } : {}),
+          ...(agentTask?.taskState ? { taskState: agentTask.taskState } : {}),
           ...(agentTask?.toolUseId ? { toolUseId: agentTask.toolUseId } : {})
         })
       });
       return;
     }
 
-    const notificationRunId = this.#helpers.createId("run");
-    const notificationMessageId = this.#helpers.createId("msg");
-    const notificationRun = await this.#persistence.runs.create({
-      id: notificationRunId,
-      workspaceId: input.childSummary.run.workspaceId,
-      sessionId: input.parentSessionId,
-      parentRunId: input.parentRunId,
-      initiatorRef: input.childSummary.run.initiatorRef,
-      triggerType: "system",
-      triggerRef: notificationMessageId,
-      agentName: input.parentAgentName,
-      effectiveAgentName: input.parentAgentName,
-      switchCount: 0,
-      status: "queued",
+    const message = buildDelegatedRunCompletedMessage({
+      messageId: this.#taskNotificationId(taskId, input.childSummary.run.id, "completed"),
+      runId: input.parentRunId,
       createdAt,
-      metadata: {
-        synthetic: true,
-        taskNotification: true,
-        delegatedUpdate: "completed",
-        delegatedChildRunId: input.childSummary.run.id,
-        delegatedChildSessionId: taskId,
-        delegatedTaskId: taskId,
-        ...(agentTask?.toolUseId ? { delegatedToolUseId: agentTask.toolUseId } : {}),
-        outputRef,
-        outputFile,
-        origin: "engine",
-        mode: "task-notification",
-        runtimeKind: "task_notification"
-      }
+      parentSessionId: input.parentSessionId,
+      parentAgentName: input.parentAgentName,
+      childSummary: input.childSummary,
+      outputRef,
+      outputFile,
+      ...(agentTask?.usage ? { usage: agentTask.usage } : {}),
+      ...(agentTask?.taskState ? { taskState: agentTask.taskState } : {}),
+      ...(agentTask?.toolUseId ? { toolUseId: agentTask.toolUseId } : {})
     });
-    const message = await this.#persistence.messages.create(
-      buildDelegatedRunCompletedMessage({
-        messageId: notificationMessageId,
-        runId: notificationRunId,
-        createdAt,
-        parentSessionId: input.parentSessionId,
-        parentAgentName: input.parentAgentName,
-        childSummary: input.childSummary,
-        outputRef,
-        outputFile,
-        ...(agentTask?.usage ? { usage: agentTask.usage } : {}),
-        ...(agentTask?.toolUseId ? { toolUseId: agentTask.toolUseId } : {})
-      })
-    );
-
-    await this.#lifecycle.appendEvent({
-      sessionId: input.parentSessionId,
-      runId: notificationRun.id,
-      event: "run.queued",
-      data: {
-        runId: notificationRun.id,
-        sessionId: input.parentSessionId,
-        messageId: message.id,
-        content: message.content,
-        taskId,
-        outputRef,
-        outputFile,
-        status: notificationRun.status,
-        ...(message.metadata ? { metadata: message.metadata } : {})
-      }
+    await this.#enqueueOrPersistActiveTaskNotification({
+      workspaceId: input.childSummary.run.workspaceId,
+      parentSessionId: input.parentSessionId,
+      parentRunId: input.parentRunId,
+      parentAgentName: input.parentAgentName,
+      taskId,
+      ...(agentTask?.toolUseId ? { toolUseId: agentTask.toolUseId } : {}),
+      childRunId: input.childSummary.run.id,
+      childSessionId: taskId,
+      updateType: "completed",
+      message
     });
-    await this.#lifecycle.enqueueRun(input.parentSessionId, notificationRun.id);
+    await this.#enqueueParentContinuationIfReady({
+      workspaceId: input.childSummary.run.workspaceId,
+      parentSessionId: input.parentSessionId,
+      parentRunId: input.parentRunId,
+      parentAgentName: input.parentAgentName,
+      initiatorRef: input.childSummary.run.initiatorRef
+    });
   }
 
   async #persistDelegatedRunFailure(input: {
@@ -1225,74 +1348,45 @@ export class AgentCoordinationService {
           outputRef,
           outputFile,
           ...(agentTask?.usage ? { usage: agentTask.usage } : {}),
+          ...(agentTask?.taskState ? { taskState: agentTask.taskState } : {}),
           ...(agentTask?.toolUseId ? { toolUseId: agentTask.toolUseId } : {})
         })
       });
       return;
     }
 
-    const notificationRunId = this.#helpers.createId("run");
-    const notificationMessageId = this.#helpers.createId("msg");
-    const notificationRun = await this.#persistence.runs.create({
-      id: notificationRunId,
-      workspaceId: input.childRun.workspaceId,
-      sessionId: input.parentSessionId,
-      parentRunId: input.parentRunId,
-      initiatorRef: input.childRun.initiatorRef,
-      triggerType: "system",
-      triggerRef: notificationMessageId,
-      agentName: input.parentAgentName,
-      effectiveAgentName: input.parentAgentName,
-      switchCount: 0,
-      status: "queued",
+    const message = buildDelegatedRunFailedMessage({
+      messageId: this.#taskNotificationId(taskId, input.childRun.id, "failed"),
+      runId: input.parentRunId,
       createdAt,
-      metadata: {
-        synthetic: true,
-        taskNotification: true,
-        delegatedUpdate: "failed",
-        delegatedChildRunId: input.childRun.id,
-        delegatedChildSessionId: taskId,
-        delegatedTaskId: taskId,
-        ...(agentTask?.toolUseId ? { delegatedToolUseId: agentTask.toolUseId } : {}),
-        outputRef,
-        outputFile,
-        origin: "engine",
-        mode: "task-notification",
-        runtimeKind: "task_notification"
-      }
+      parentSessionId: input.parentSessionId,
+      parentAgentName: input.parentAgentName,
+      childRun: input.childRun,
+      outputRef,
+      outputFile,
+      ...(agentTask?.usage ? { usage: agentTask.usage } : {}),
+      ...(agentTask?.taskState ? { taskState: agentTask.taskState } : {}),
+      ...(agentTask?.toolUseId ? { toolUseId: agentTask.toolUseId } : {})
     });
-    const message = await this.#persistence.messages.create(
-      buildDelegatedRunFailedMessage({
-        messageId: notificationMessageId,
-        runId: notificationRunId,
-        createdAt,
-        parentSessionId: input.parentSessionId,
-        parentAgentName: input.parentAgentName,
-        childRun: input.childRun,
-        outputRef,
-        outputFile,
-        ...(agentTask?.usage ? { usage: agentTask.usage } : {}),
-        ...(agentTask?.toolUseId ? { toolUseId: agentTask.toolUseId } : {})
-      })
-    );
-
-    await this.#lifecycle.appendEvent({
-      sessionId: input.parentSessionId,
-      runId: notificationRun.id,
-      event: "run.queued",
-      data: {
-        runId: notificationRun.id,
-        sessionId: input.parentSessionId,
-        messageId: message.id,
-        content: message.content,
-        taskId,
-        outputRef,
-        outputFile,
-        status: notificationRun.status,
-        ...(message.metadata ? { metadata: message.metadata } : {})
-      }
+    await this.#enqueueOrPersistActiveTaskNotification({
+      workspaceId: input.childRun.workspaceId,
+      parentSessionId: input.parentSessionId,
+      parentRunId: input.parentRunId,
+      parentAgentName: input.parentAgentName,
+      taskId,
+      ...(agentTask?.toolUseId ? { toolUseId: agentTask.toolUseId } : {}),
+      childRunId: input.childRun.id,
+      childSessionId: taskId,
+      updateType: "failed",
+      message
     });
-    await this.#lifecycle.enqueueRun(input.parentSessionId, notificationRun.id);
+    await this.#enqueueParentContinuationIfReady({
+      workspaceId: input.childRun.workspaceId,
+      parentSessionId: input.parentSessionId,
+      parentRunId: input.parentRunId,
+      parentAgentName: input.parentAgentName,
+      initiatorRef: input.childRun.initiatorRef
+    });
   }
 
   async #persistDelegatedRunTerminalUpdate(input: {
@@ -1372,6 +1466,163 @@ export class AgentCoordinationService {
     });
   }
 
+  async #filterDrainableTaskNotifications(
+    parentSessionId: string,
+    notifications: AgentTaskNotificationRecord[]
+  ): Promise<AgentTaskNotificationRecord[]> {
+    const groupedByParentRunId = new Map<string, AgentTaskNotificationRecord[]>();
+    for (const notification of notifications) {
+      const entries = groupedByParentRunId.get(notification.parentRunId) ?? [];
+      entries.push(notification);
+      groupedByParentRunId.set(notification.parentRunId, entries);
+    }
+
+    const drainable: AgentTaskNotificationRecord[] = [];
+    for (const [parentRunId, entries] of groupedByParentRunId) {
+      const batchState = await this.#delegatedNotificationBatchState(parentSessionId, parentRunId, entries);
+      if (batchState.ready) {
+        drainable.push(...entries);
+      }
+    }
+    return drainable.sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
+  }
+
+  async #enqueueParentContinuationIfReady(input: {
+    workspaceId: string;
+    parentSessionId: string;
+    parentRunId: string;
+    parentAgentName: string;
+    initiatorRef?: string | undefined;
+  }): Promise<void> {
+    return this.#serializeDelegation(input.parentRunId, async () => {
+      const repository = this.#persistence.agentTaskNotifications;
+      if (!repository) {
+        return;
+      }
+
+      const pending = (await repository.listPendingBySessionId(input.parentSessionId)).filter(
+        (notification) => notification.parentRunId === input.parentRunId
+      );
+      if (pending.length === 0) {
+        return;
+      }
+
+      const batchState = await this.#delegatedNotificationBatchState(input.parentSessionId, input.parentRunId, pending);
+      if (!batchState.ready || this.#hasQueuedTaskNotificationContinuation(batchState.parentRun)) {
+        return;
+      }
+
+      const createdAt = this.#helpers.nowIso();
+      const continuationRunId = this.#taskNotificationContinuationRunId(input.parentRunId);
+      if (await this.#persistence.runs.getById(continuationRunId)) {
+        return;
+      }
+
+      const triggerRef = `task-notification:${input.parentRunId}`;
+      const continuationRun = await this.#persistence.runs.create({
+        id: continuationRunId,
+        workspaceId: input.workspaceId,
+        sessionId: input.parentSessionId,
+        parentRunId: input.parentRunId,
+        initiatorRef: input.initiatorRef,
+        triggerType: "system",
+        triggerRef,
+        agentName: input.parentAgentName,
+        effectiveAgentName: input.parentAgentName,
+        switchCount: batchState.parentRun.switchCount,
+        status: "queued",
+        createdAt,
+        metadata: {
+          synthetic: true,
+          taskNotificationContinuation: true,
+          taskNotificationBatchParentRunId: input.parentRunId,
+          delegatedTaskIds: batchState.pendingNotifications.map((notification) => notification.taskId),
+          delegatedChildRunIds: batchState.pendingNotifications.map((notification) => notification.childRunId),
+          origin: "engine",
+          mode: "task-notification",
+          runtimeKind: "task_notification"
+        }
+      });
+
+      await this.#lifecycle.updateRun(batchState.parentRun, {
+        metadata: {
+          ...(batchState.parentRun.metadata ?? {}),
+          taskNotificationContinuationRunId: continuationRun.id
+        }
+      });
+
+      await this.#lifecycle.appendEvent({
+        sessionId: input.parentSessionId,
+        runId: continuationRun.id,
+        event: "run.queued",
+        data: {
+          runId: continuationRun.id,
+          sessionId: input.parentSessionId,
+          parentRunId: input.parentRunId,
+          status: continuationRun.status,
+          taskNotificationCount: batchState.pendingNotifications.length,
+          metadata: continuationRun.metadata
+        }
+      });
+      await this.#lifecycle.enqueueRun(input.parentSessionId, continuationRun.id);
+    });
+  }
+
+  async #delegatedNotificationBatchState(
+    parentSessionId: string,
+    parentRunId: string,
+    pendingNotifications: AgentTaskNotificationRecord[]
+  ): Promise<DelegatedNotificationBatchState> {
+    const parentRun = await this.#lifecycle.getRun(parentRunId);
+    const records = this.delegatedRunRecords(parentRun).filter((record) => record.notifyParentOnCompletion === true);
+    if (records.length === 0) {
+      return {
+        parentRun,
+        records,
+        ready: true,
+        pendingNotifications
+      };
+    }
+
+    const childRuns = await Promise.all(records.map(async (record) => this.#persistence.runs.getById(record.childRunId)));
+    const allDelegatedRunsTerminal = childRuns.every((run) => run !== null && this.#isRunTerminal(run.status));
+    if (!allDelegatedRunsTerminal) {
+      return {
+        parentRun,
+        records,
+        ready: false,
+        pendingNotifications
+      };
+    }
+
+    const pendingChildRunIds = new Set(pendingNotifications.map((notification) => notification.childRunId));
+    const allTerminalRunsHaveNotifications = records.every((record, index) => {
+      const childRun = childRuns[index];
+      if (!childRun || !this.#isRunTerminal(childRun.status)) {
+        return false;
+      }
+      return pendingChildRunIds.has(record.childRunId);
+    });
+
+    return {
+      parentRun,
+      records,
+      ready: allTerminalRunsHaveNotifications,
+      pendingNotifications
+    };
+  }
+
+  #hasQueuedTaskNotificationContinuation(parentRun: Run): boolean {
+    return (
+      typeof parentRun.metadata?.taskNotificationContinuationRunId === "string" ||
+      typeof parentRun.metadata?.taskNotificationContinuationQueuedAt === "string"
+    );
+  }
+
+  #taskNotificationContinuationRunId(parentRunId: string): string {
+    return `run_task_notification_${parentRunId}`;
+  }
+
   async #ensureAgentTaskTerminalOutput(task: AgentTaskRecord, run: Run): Promise<AgentTaskRecord> {
     if (!this.#persistence.agentTasks) {
       return task;
@@ -1379,6 +1630,7 @@ export class AgentCoordinationService {
 
     if (run.status === "completed") {
       const summary = await this.#collectAwaitedRunSummary(run.id);
+      const usage = await this.#summarizeChildRunUsage(run);
       await this.#persistAgentTaskTerminalOutput({
         workspaceId: task.workspaceId,
         parentSessionId: task.parentSessionId,
@@ -1393,10 +1645,22 @@ export class AgentCoordinationService {
         outputRef: task.outputRef,
         outputFile: task.outputFile ?? taskOutputPath(task.parentSessionId, task.taskId),
         finalText: summary.outputContent ?? task.finalText ?? "",
+        usage,
+        taskState: this.#localAgentTaskState({
+          taskId: task.taskId,
+          prompt: task.description ?? "",
+          agentType: task.targetAgentName,
+          existing: task.taskState,
+          usage,
+          status: "completed",
+          finalText: summary.outputContent ?? task.finalText ?? "",
+          isBackgrounded: task.taskState?.isBackgrounded ?? true
+        }),
         updatedAt: this.#helpers.nowIso(),
         ...(task.notifiedAt ? { notifiedAt: task.notifiedAt } : {})
       });
     } else {
+      const usage = await this.#summarizeChildRunUsage(run);
       await this.#persistAgentTaskTerminalOutput({
         workspaceId: task.workspaceId,
         parentSessionId: task.parentSessionId,
@@ -1411,12 +1675,83 @@ export class AgentCoordinationService {
         outputRef: task.outputRef,
         outputFile: task.outputFile ?? taskOutputPath(task.parentSessionId, task.taskId),
         errorMessage: run.errorMessage ?? task.errorMessage ?? "",
+        usage,
+        taskState: this.#localAgentTaskState({
+          taskId: task.taskId,
+          prompt: task.description ?? "",
+          agentType: task.targetAgentName,
+          existing: task.taskState,
+          usage,
+          status: this.#agentTaskStatusFromRun(run.status),
+          errorMessage: run.errorMessage ?? task.errorMessage ?? "",
+          isBackgrounded: task.taskState?.isBackgrounded ?? true
+        }),
         updatedAt: this.#helpers.nowIso(),
         ...(task.notifiedAt ? { notifiedAt: task.notifiedAt } : {})
       });
     }
 
     return (await this.#persistence.agentTasks.getByTaskId(task.taskId)) ?? task;
+  }
+
+  async #syncAgentTaskRunningState(
+    task: AgentTaskRecord,
+    run: Run,
+    options: { retrieved?: boolean | undefined } = {}
+  ): Promise<AgentTaskRecord> {
+    if (!this.#persistence.agentTasks || this.#isRunTerminal(run.status)) {
+      return task;
+    }
+
+    const status: AgentTaskStatus = run.status === "queued" ? "queued" : "running";
+    return this.#persistence.agentTasks.update({
+      taskId: task.taskId,
+      status,
+      updatedAt: this.#helpers.nowIso(),
+      taskState: this.#localAgentTaskState({
+        taskId: task.taskId,
+        prompt: task.description ?? "",
+        agentType: task.targetAgentName,
+        existing: task.taskState,
+        status,
+        retrieved: options.retrieved ?? task.taskState?.retrieved,
+        isBackgrounded: task.taskState?.isBackgrounded ?? true
+      })
+    });
+  }
+
+  async #markAgentTaskRetrieved(task: AgentTaskRecord, run?: Run | undefined): Promise<AgentTaskRecord> {
+    if (!this.#persistence.agentTasks) {
+      return task;
+    }
+
+    return this.#persistence.agentTasks.update({
+      taskId: task.taskId,
+      status: task.status,
+      updatedAt: this.#helpers.nowIso(),
+      taskState: this.#localAgentTaskState({
+        taskId: task.taskId,
+        prompt: task.description ?? "",
+        agentType: task.targetAgentName,
+        existing: task.taskState,
+        usage: task.usage,
+        status: task.status,
+        retrieved: true,
+        isBackgrounded: task.taskState?.isBackgrounded ?? true,
+        notified: task.notifiedAt !== undefined || task.taskState?.notified
+      }),
+      ...(task.finalText !== undefined ? { finalText: task.finalText } : {}),
+      ...(task.errorMessage !== undefined ? { errorMessage: task.errorMessage } : {}),
+      ...(task.usage !== undefined ? { usage: task.usage } : {}),
+      ...(task.notifiedAt !== undefined ? { notifiedAt: task.notifiedAt } : {}),
+      ...(task.outputRef !== undefined ? { outputRef: task.outputRef } : {}),
+      ...(task.outputFile !== undefined ? { outputFile: task.outputFile } : {})
+    }).catch(async () => {
+      if (run && this.#isRunTerminal(run.status)) {
+        return this.#ensureAgentTaskTerminalOutput(task, run);
+      }
+      return task;
+    });
   }
 
   #agentTaskOutputView(task: AgentTaskRecord, run?: Run | undefined): AgentTaskOutputView {
@@ -1435,7 +1770,8 @@ export class AgentCoordinationService {
       ...(task.errorMessage !== undefined ? { error: task.errorMessage } : {}),
       outputRef: task.outputRef,
       ...(task.outputFile ? { outputFile: task.outputFile } : {}),
-      ...(task.usage ? { usage: task.usage } : {})
+      ...(task.usage ? { usage: task.usage } : {}),
+      ...(task.taskState ? { taskState: task.taskState } : {})
     };
   }
 
@@ -1546,6 +1882,19 @@ export class AgentCoordinationService {
       handoffSummary: typeof childRun.metadata?.handoffSummary === "string" ? childRun.metadata.handoffSummary : undefined,
       outputRef: this.#taskOutputRef(taskId),
       outputFile: taskOutputPath(childSession.parentSessionId, taskId),
+      taskState: this.#localAgentTaskState({
+        taskId,
+        prompt: typeof childRun.metadata?.delegatedTask === "string" ? childRun.metadata.delegatedTask : "",
+        agentType: delegatedRecord?.targetAgentName ?? childRun.effectiveAgentName,
+        status:
+          childRun.status === "queued" || childRun.status === "running" || childRun.status === "waiting_tool"
+            ? childRun.status === "queued"
+              ? "queued"
+              : "running"
+            : this.#agentTaskStatusFromRun(childRun.status),
+        isBackgrounded: delegatedRecord?.notifyParentOnCompletion ?? true,
+        notified: false
+      }),
       createdAt: childRun.createdAt,
       updatedAt: now
     });
@@ -1605,6 +1954,7 @@ export class AgentCoordinationService {
     finalText?: string | undefined;
     errorMessage?: string | undefined;
     usage?: Record<string, unknown> | undefined;
+    taskState?: AgentTaskRecord["taskState"] | undefined;
     notifiedAt?: string | undefined;
   }): Promise<AgentTaskRecord | undefined> {
     if (!this.#persistence.agentTasks) {
@@ -1626,6 +1976,19 @@ export class AgentCoordinationService {
         status: input.status,
         outputRef: input.outputRef,
         outputFile: input.outputFile,
+        taskState:
+          input.taskState ??
+          this.#localAgentTaskState({
+            taskId: input.taskId,
+            prompt: "",
+            agentType: input.targetAgentName,
+            status: input.status,
+            finalText: input.finalText,
+            errorMessage: input.errorMessage,
+            usage: input.usage,
+            isBackgrounded: true,
+            notified: input.notifiedAt !== undefined
+          }),
         ...(input.finalText !== undefined ? { finalText: input.finalText } : {}),
         ...(input.errorMessage !== undefined ? { errorMessage: input.errorMessage } : {}),
         ...(input.usage !== undefined ? { usage: input.usage } : {}),
@@ -1635,7 +1998,74 @@ export class AgentCoordinationService {
       });
     }
 
-    return this.#persistence.agentTasks.update(input);
+    return this.#persistence.agentTasks.update({
+      ...input,
+      taskState:
+        input.taskState ??
+        this.#localAgentTaskState({
+          taskId: input.taskId,
+          prompt: existing.description ?? "",
+          agentType: existing.targetAgentName,
+          existing: existing.taskState,
+          status: input.status,
+          finalText: input.finalText ?? existing.finalText,
+          errorMessage: input.errorMessage ?? existing.errorMessage,
+          usage: input.usage ?? existing.usage,
+          isBackgrounded: existing.taskState?.isBackgrounded ?? true,
+          notified: input.notifiedAt !== undefined ? true : existing.taskState?.notified
+        })
+    });
+  }
+
+  #localAgentTaskState(input: {
+    taskId: string;
+    prompt: string;
+    agentType: string;
+    model?: string | undefined;
+    existing?: AgentTaskRecord["taskState"] | undefined;
+    status?: AgentTaskStatus | undefined;
+    finalText?: string | undefined;
+    errorMessage?: string | undefined;
+    usage?: Record<string, unknown> | undefined;
+    pendingMessage?: string | undefined;
+    retrieved?: boolean | undefined;
+    isBackgrounded?: boolean | undefined;
+    notified?: boolean | undefined;
+  }): AgentTaskRecord["taskState"] {
+    const existing = input.existing;
+    const tokenCount = readNonNegativeInteger(input.usage?.totalTokens);
+    const toolCount = readNonNegativeInteger(input.usage?.toolUses);
+    const pendingMessages = [...(existing?.pendingMessages ?? [])];
+    if (input.pendingMessage?.trim()) {
+      pendingMessages.push(input.pendingMessage);
+    }
+    const isTerminal = input.status === "completed" || input.status === "failed" || input.status === "cancelled" || input.status === "timed_out";
+    return {
+      type: "local_agent",
+      agentId: input.taskId,
+      prompt: input.prompt || existing?.prompt || "",
+      agentType: input.agentType || existing?.agentType || "general-purpose",
+      ...(input.model ?? existing?.model ? { model: input.model ?? existing?.model } : {}),
+      retrieved: input.retrieved ?? existing?.retrieved ?? false,
+      lastReportedToolCount: Math.max(existing?.lastReportedToolCount ?? 0, toolCount),
+      lastReportedTokenCount: Math.max(existing?.lastReportedTokenCount ?? 0, tokenCount),
+      isBackgrounded: input.isBackgrounded ?? existing?.isBackgrounded ?? true,
+      pendingMessages: isTerminal ? [] : pendingMessages,
+      retain: existing?.retain ?? false,
+      diskLoaded: existing?.diskLoaded ?? false,
+      notified: input.notified ?? existing?.notified ?? false,
+      ...(isTerminal && !(existing?.retain ?? false) ? { evictAfter: existing?.evictAfter ?? Date.now() + 300_000 } : {}),
+      ...(existing?.evictAfter !== undefined ? { evictAfter: existing.evictAfter } : {})
+    };
+  }
+
+  async #activeRunForSession(sessionId: string): Promise<Run | null> {
+    const runs = await this.#persistence.runs.listBySessionId(sessionId).catch(() => []);
+    return (
+      runs
+        .filter((run) => run.status === "queued" || run.status === "running" || run.status === "waiting_tool")
+        .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0] ?? null
+    );
   }
 
   #agentTaskStatusFromRun(status: Run["status"]): AgentTaskStatus {

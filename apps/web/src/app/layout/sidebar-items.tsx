@@ -1,6 +1,6 @@
 import { memo } from "react";
 
-import { AlertCircle, Bot, ChevronDown, ChevronRight, Folder, LoaderCircle, PencilLine, Trash2 } from "lucide-react";
+import { AlertCircle, ChevronDown, ChevronRight, Folder, LoaderCircle, PencilLine, Trash2 } from "lucide-react";
 import type { Run } from "@oah/api-contracts";
 
 import { Button } from "@/components/ui/button";
@@ -181,36 +181,37 @@ function SessionNavItemImpl(props: SessionNavItemProps) {
   return (
     <div
       className={`ob-list-item group relative flex items-center gap-2 transition-colors cursor-pointer ${
-        isChild ? "ob-session-item-child rounded-md py-1.5 pr-2 pl-8 shadow-none" : "ob-session-item rounded-xl px-2 py-1.5 pl-8 pr-2"
+        isChild ? "ob-session-item-child rounded-md py-1.5 pr-2 shadow-none" : "ob-session-item rounded-xl py-1.5 pr-2"
       } ${rowSurfaceClass}`}
       style={{
-        paddingLeft: `${Math.max(2, (props.depth ?? 0) * 14 + 32)}px`
+        paddingLeft: "8px"
       }}
       onClick={() => {
         if (hasTextSelection()) return;
         props.onSelect();
       }}
     >
-      {props.hasChildren ? (
-        <Button
-          variant="ghost"
-          size="icon"
-          className="ob-list-item-control absolute left-2 top-1/2 h-5 w-5 -translate-y-1/2 shrink-0 rounded-md text-muted-foreground/58"
-          onClick={(event) => {
-            event.stopPropagation();
-            props.onToggleExpanded?.();
-          }}
-          title={props.expanded ? "Collapse child sessions" : "Expand child sessions"}
-        >
-          {props.expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-        </Button>
-      ) : null}
+      <div className="flex h-5 w-5 shrink-0 items-center justify-center">
+        {props.hasChildren ? (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="ob-list-item-control h-5 w-5 shrink-0 rounded-md text-muted-foreground/58"
+            onClick={(event) => {
+              event.stopPropagation();
+              props.onToggleExpanded?.();
+            }}
+            title={props.expanded ? "Collapse child sessions" : "Expand child sessions"}
+          >
+            {props.expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+          </Button>
+        ) : null}
+      </div>
       <Tooltip>
         <TooltipTrigger asChild>
           <div className="flex min-w-0 flex-1 items-center gap-2 text-left">
             <div className="min-w-0 flex-1 select-text leading-tight">
-              <div className="flex min-w-0 items-center gap-1.5">
-                {isChild ? <Bot className="h-3 w-3 shrink-0 text-muted-foreground/58" /> : null}
+              <div className="flex min-w-0 items-center">
                 <p className={`truncate ${titleToneClass}`}>
                   {props.entry.title || "Untitled session"}
                 </p>

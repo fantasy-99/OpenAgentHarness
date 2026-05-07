@@ -6870,7 +6870,7 @@ describe("runtime service", () => {
 
     const messages = await runtimeService.listSessionMessages(session.id, 50);
     const backgroundMessages = messages.items.filter(
-      (message) => message.role === "tool" && messageToolName(message) === "SubAgent"
+      (message) => message.role === "tool" && messageToolName(message) === "SubAgent" && messageText(message)?.includes("async_launched")
     );
     const backgroundMessage = backgroundMessages.find((message) => messageText(message)?.includes("async_launched"));
     const completionMessage = taskNotifications(messages.items)[0];
@@ -6880,17 +6880,16 @@ describe("runtime service", () => {
     expect(messageText(backgroundMessage)).toContain("subagent_name: researcher");
     expect(messageText(backgroundMessage)).toContain("description: Research in background");
     expect(messageText(backgroundMessage)).toContain("task_id:");
-    expect(messageText(backgroundMessage)).toContain("canReadOutputFile: true");
-    expect(messageText(backgroundMessage)).toContain("outputFile:");
     expect(messageText(backgroundMessage)).toContain("output_ref:");
-    expect(messageText(backgroundMessage)).toContain("output_file:");
+    expect(messageText(backgroundMessage)).not.toContain("outputFile:");
+    expect(messageText(backgroundMessage)).not.toContain("output_file:");
     expect(messageText(completionMessage)).toContain("<task-notification>");
     expect(messageText(completionMessage)).toContain("<status>completed</status>");
     expect(messageText(completionMessage)).toContain("<task-id>");
     expect(messageText(completionMessage)).toContain("<child_run_id>");
     expect(messageText(completionMessage)).toContain("<tool_use_id>call_agent_background</tool_use_id>");
     expect(messageText(completionMessage)).toContain("<output_ref>agent-task://");
-    expect(messageText(completionMessage)).toContain("<output_file>");
+    expect(messageText(completionMessage)).not.toContain("<output_file>");
     expect(messageText(completionMessage)).toContain("<usage>");
     expect(messageText(completionMessage)).toContain("<total_tokens>");
     expect(messageText(completionMessage)).toContain("<duration_ms>");
@@ -6951,6 +6950,7 @@ describe("runtime service", () => {
     expect(messageText(taskOutputMessages[0])).toContain(`<child_run_id>${taskRecord?.childRunId}</child_run_id>`);
     expect(messageText(taskOutputMessages[0])).toContain("<usage>");
     expect(messageText(taskOutputMessages[0])).toContain("<total_tokens>");
+    expect(messageText(taskOutputMessages[0])).not.toContain("<output_file>");
     expect(messageText(taskOutputMessages[0])).toContain("Background subagent finished its report.");
 
     const outputFileReadAccepted = await runtimeService.createSessionMessage({
@@ -7142,12 +7142,6 @@ describe("runtime service", () => {
 
     await waitForTaskNotifications(runtimeService, session.id, 1);
     await waitFor(async () => {
-      const runs = await runtimeService.listSessionRuns(session.id, 20);
-      const notificationRun = runs.items.find((run) => run.metadata?.taskNotification === true);
-      if (notificationRun) {
-        return notificationRun.status === "completed";
-      }
-
       const messages = await runtimeService.listSessionMessages(session.id, 100);
       return messages.items.some((message) => messageText(message)?.includes("Parent integrated delayed background research."));
     });
@@ -7159,7 +7153,7 @@ describe("runtime service", () => {
     );
     const notifications = taskNotifications(messages.items);
     const runs = await runtimeService.listSessionRuns(session.id, 20);
-    const notificationRun = runs.items.find((run) => run.metadata?.taskNotification === true);
+    const notificationRun = runs.items.find((run) => run.metadata?.taskNotificationContinuation === true);
 
     expect(toolMessages).toHaveLength(1);
     expect(messageText(toolMessages.at(-1))).toContain("status: async_launched");
@@ -7167,6 +7161,9 @@ describe("runtime service", () => {
     if (notificationRun) {
       expect(notificationRun.id).not.toBe(accepted.runId);
       expect(notificationRun.status).toBe("completed");
+      expect(notificationRun.metadata).toMatchObject({
+        taskNotificationBatchParentRunId: accepted.runId
+      });
     } else {
       expect(notifications[0]?.runId).toBe(accepted.runId);
     }
@@ -7180,20 +7177,575 @@ describe("runtime service", () => {
     expect(plannerInvocations.length).toBeLessThanOrEqual(3);
   });
 
-  it("recovers missing agent task records when reading historical subagent output", async () => {
+  it("coalesces terminal background subagent notifications into one parent continuation", async () => {
+    const gateway = new FakeModelGateway(10);
+    gateway.streamScenarioFactory = (input) => {
+      const systemMessages = input.messages?.filter((message) => message.role === "system").map((message) => message.content) ?? [];
+      const userText =
+        input.messages
+          ?.filter((message) => message.role === "user")
+          .map((message) => (typeof message.content === "string" ? message.content : ""))
+          .join("\n") ?? "";
+
+      if (systemMessages.some((message) => message.includes("You are the slow researcher subagent."))) {
+        return {
+          reasoningDeltas: [
+            {
+              text: "waiting for slow research",
+              delayMs: 300
+            }
+          ],
+          text: "Slow research result is ready."
+        };
+      }
+
+      if (systemMessages.some((message) => message.includes("You are the fast reviewer subagent."))) {
+        return {
+          text: "Fast review result is ready."
+        };
+      }
+
+      if (userText.includes("<task-notification>")) {
+        return {
+          text:
+            userText.includes("Slow research result is ready.") && userText.includes("Fast review result is ready.")
+              ? "Parent integrated both completed subagents once."
+              : "Parent integrated a partial subagent result too early."
+        };
+      }
+
+      return {
+        text: "Parent launched two background workers.",
+        toolBatches: [
+          [
+            {
+              toolName: "SubAgent",
+              input: {
+                description: "Slow research",
+                prompt: "Collect slow facts.",
+                subagent_name: "slow_researcher",
+                run_in_background: true
+              },
+              toolCallId: "call_slow_researcher"
+            },
+            {
+              toolName: "SubAgent",
+              input: {
+                description: "Fast review",
+                prompt: "Review quickly.",
+                subagent_name: "fast_reviewer",
+                run_in_background: true
+              },
+              toolCallId: "call_fast_reviewer"
+            }
+          ]
+        ]
+      };
+    };
+
     const persistence = createMemoryRuntimePersistence();
-    const gateway = new FakeModelGateway();
     const runtimeService = new EngineService({
       defaultModel: "openai-default",
       modelGateway: gateway,
       ...persistence
     });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_coalesced_background_agents",
+      name: "coalesced-background-agents",
+      rootPath: "/tmp/coalesced-background-agents",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "plan",
+      settings: {
+        defaultAgent: "plan",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        plan: {
+          name: "plan",
+          mode: "primary",
+          prompt: "You are the planner agent.",
+          tools: {
+            native: [],
+            external: []
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: ["slow_researcher", "fast_reviewer"]
+        },
+        slow_researcher: {
+          name: "slow_researcher",
+          mode: "subagent",
+          prompt: "You are the slow researcher subagent.",
+          tools: {
+            native: [],
+            external: []
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: []
+        },
+        fast_reviewer: {
+          name: "fast_reviewer",
+          mode: "subagent",
+          prompt: "You are the fast reviewer subagent.",
+          tools: {
+            native: [],
+            external: []
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_coalesced_background_agents",
+        agents: [
+          { name: "plan", mode: "primary", source: "workspace" },
+          { name: "slow_researcher", mode: "subagent", source: "workspace" },
+          { name: "fast_reviewer", mode: "subagent", source: "workspace" }
+        ],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+    const session = await runtimeService.createSession({
+      workspaceId: "project_coalesced_background_agents",
+      caller,
+      input: {
+        agentName: "plan"
+      }
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Start two background workers and integrate after both finish." }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const parentRun = await runtimeService.getRun(accepted.runId);
+    const delegatedRuns =
+      (parentRun.metadata?.delegatedRuns as Array<{ childRunId: string; childSessionId: string }> | undefined) ?? [];
+    expect(delegatedRuns).toHaveLength(2);
+
+    await waitForTaskNotifications(runtimeService, session.id, 2, 10_000);
+    await waitFor(async () => {
+      const messages = await runtimeService.listSessionMessages(session.id, 100);
+      return messages.items.some((message) => messageText(message)?.includes("Parent integrated both completed subagents once."));
+    }, 10_000);
+
+    const messages = await runtimeService.listSessionMessages(session.id, 100);
+    const assistantMessages = messages.items.filter((message) => message.role === "assistant");
+    const notifications = taskNotifications(messages.items);
+    const runs = await runtimeService.listSessionRuns(session.id, 20);
+    const continuationRuns = runs.items.filter((run) => run.metadata?.taskNotificationContinuation === true);
+    const plannerNotificationInvocations = gateway.invocations.filter((invocation) => {
+      const hasPlannerSystem = invocation.input.messages?.some(
+        (message) => message.role === "system" && message.content.includes("You are the planner agent.")
+      );
+      const userText =
+        invocation.input.messages
+          ?.filter((message) => message.role === "user")
+          .map((message) => (typeof message.content === "string" ? message.content : ""))
+          .join("\n") ?? "";
+      return hasPlannerSystem && userText.includes("<task-notification>");
+    });
+
+    expect(notifications).toHaveLength(2);
+    expect(continuationRuns).toHaveLength(1);
+    expect(continuationRuns[0]?.metadata).toMatchObject({
+      taskNotificationBatchParentRunId: accepted.runId
+    });
+    expect(plannerNotificationInvocations).toHaveLength(1);
+    expect(assistantMessages.filter((message) => messageText(message)?.includes("Parent integrated both completed subagents once."))).toHaveLength(1);
+    expect(assistantMessages.some((message) => messageText(message)?.includes("Parent integrated a partial subagent result too early."))).toBe(false);
+  }, 15_000);
+
+  it("asks a background subagent for final output when the terminal message is only intermediate progress", async () => {
+    const gateway = new FakeModelGateway(5);
+    gateway.streamScenarioFactory = (input) => {
+      const systemMessages = input.messages?.filter((message) => message.role === "system").map((message) => message.content) ?? [];
+      const userText =
+        input.messages
+          ?.filter((message) => message.role === "user")
+          .map((message) => (typeof message.content === "string" ? message.content : ""))
+          .join("\n") ?? "";
+
+      if (systemMessages.some((message) => message.includes("You are the researcher subagent."))) {
+        if (userText.includes("Please respond now with only the final result")) {
+          return {
+            text: "Final recovered research result."
+          };
+        }
+
+        return {
+          text: "Let me try to find more specific sources before summarizing."
+        };
+      }
+
+      if (userText.includes("<task-notification>")) {
+        return {
+          text: userText.includes("Final recovered research result.")
+            ? "Parent integrated recovered research."
+            : "Parent saw intermediate progress by mistake."
+        };
+      }
+
+      return {
+        text: "Parent launched background research.",
+        toolSteps: [
+          {
+            toolName: "SubAgent",
+            input: {
+              description: "Recover from intermediate progress",
+              prompt: "Research and provide a final summary.",
+              subagent_name: "researcher",
+              run_in_background: true
+            },
+            toolCallId: "call_background_intermediate"
+          }
+        ]
+      };
+    };
+
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_background_intermediate_result",
+      name: "background-intermediate-result",
+      rootPath: "/tmp/background-intermediate-result",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "plan",
+      settings: {
+        defaultAgent: "plan",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        plan: {
+          name: "plan",
+          mode: "primary",
+          prompt: "You are the planner agent.",
+          tools: {
+            native: [],
+            external: []
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: ["researcher"]
+        },
+        researcher: {
+          name: "researcher",
+          mode: "subagent",
+          prompt: "You are the researcher subagent.",
+          tools: {
+            native: [],
+            external: []
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_background_intermediate_result",
+        agents: [
+          { name: "plan", mode: "primary", source: "workspace" },
+          { name: "researcher", mode: "subagent", source: "workspace" }
+        ],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+    const session = await runtimeService.createSession({
+      workspaceId: "project_background_intermediate_result",
+      caller,
+      input: {
+        agentName: "plan"
+      }
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Start background research." }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const notifications = await waitForTaskNotifications(runtimeService, session.id, 1, 10_000);
+    await waitFor(async () => {
+      const messages = await runtimeService.listSessionMessages(session.id, 100);
+      return messages.items.some((message) => messageText(message)?.includes("Parent integrated recovered research."));
+    }, 10_000);
+    const notificationText = messageText(notifications[0]);
+    const parentMessages = await runtimeService.listSessionMessages(session.id, 100);
+
+    expect(notificationText).toContain("Final recovered research result.");
+    expect(notificationText).not.toContain("Let me try to find more specific sources");
+    expect(notificationText).not.toContain("<output_file>");
+    expect(parentMessages.items.some((message) => messageText(message)?.includes("Parent integrated recovered research."))).toBe(true);
+    expect(parentMessages.items.some((message) => messageText(message)?.includes("Parent saw intermediate progress by mistake."))).toBe(false);
+  }, 15_000);
+
+  it("uses the latest meaningful assistant text when a completed subagent ends with a pure tool call", async () => {
+    const gateway = new FakeModelGateway(5);
+    gateway.streamScenarioFactory = (input) => {
+      const systemMessages = input.messages?.filter((message) => message.role === "system").map((message) => message.content) ?? [];
+      const userText =
+        input.messages
+          ?.filter((message) => message.role === "user")
+          .map((message) => (typeof message.content === "string" ? message.content : ""))
+          .join("\n") ?? "";
+
+      if (systemMessages.some((message) => message.includes("You are the researcher subagent."))) {
+        if (userText.includes("Please respond now with only the final result")) {
+          return {
+            text: "Unexpected follow-up output."
+          };
+        }
+
+        return {
+          preToolText: "Clean final answer before bookkeeping.",
+          text: "",
+          toolSteps: [
+            {
+              toolName: "TaskOutput",
+              input: {
+                task_id: "missing_task",
+                block: false
+              },
+              toolCallId: "call_terminal_bookkeeping",
+              continueOnError: true
+            }
+          ]
+        };
+      }
+
+      if (userText.includes("<task-notification>")) {
+        return {
+          text: userText.includes("Clean final answer before bookkeeping.")
+            ? "Parent integrated clean final output."
+            : "Parent integrated wrong output."
+        };
+      }
+
+      return {
+        text: "Parent launched background research.",
+        toolSteps: [
+          {
+            toolName: "SubAgent",
+            input: {
+              description: "Final text before tool",
+              prompt: "Research and provide a final summary.",
+              subagent_name: "researcher",
+              run_in_background: true
+            },
+            toolCallId: "call_background_pure_tool_tail"
+          }
+        ]
+      };
+    };
+
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_background_pure_tool_tail",
+      name: "background-pure-tool-tail",
+      rootPath: "/tmp/background-pure-tool-tail",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "plan",
+      settings: {
+        defaultAgent: "plan",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        plan: {
+          name: "plan",
+          mode: "primary",
+          prompt: "You are the planner agent.",
+          tools: {
+            native: [],
+            external: []
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: ["researcher"]
+        },
+        researcher: {
+          name: "researcher",
+          mode: "subagent",
+          prompt: "You are the researcher subagent.",
+          tools: {
+            native: [],
+            external: []
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_background_pure_tool_tail",
+        agents: [
+          { name: "plan", mode: "primary", source: "workspace" },
+          { name: "researcher", mode: "subagent", source: "workspace" }
+        ],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+    const session = await runtimeService.createSession({
+      workspaceId: "project_background_pure_tool_tail",
+      caller,
+      input: {
+        agentName: "plan"
+      }
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Start background research." }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const notifications = await waitForTaskNotifications(runtimeService, session.id, 1, 10_000);
+    await waitFor(async () => {
+      const messages = await runtimeService.listSessionMessages(session.id, 100);
+      return messages.items.some((message) => messageText(message)?.includes("Parent integrated clean final output."));
+    }, 10_000);
+    const notificationText = messageText(notifications[0]);
+    const parentMessages = await runtimeService.listSessionMessages(session.id, 100);
+
+    expect(notificationText).toContain("Clean final answer before bookkeeping.");
+    expect(notificationText).not.toContain("Unexpected follow-up output.");
+    expect(notificationText).not.toContain("No task found");
+    expect(parentMessages.items.some((message) => messageText(message)?.includes("Parent integrated clean final output."))).toBe(true);
+    expect(parentMessages.items.some((message) => messageText(message)?.includes("Parent integrated wrong output."))).toBe(false);
+  }, 15_000);
+
+  it("recovers missing agent task records when reading historical subagent output", async () => {
+    const persistence = createMemoryRuntimePersistence();
+    const gateway = new FakeModelGateway();
     const now = "2026-01-01T00:00:00.000Z";
     const workspaceId = "project_agent_task_recovery";
     const parentSessionId = "ses_task_recovery_parent";
     const childSessionId = "ses_task_recovery_child";
     const parentRunId = "run_task_recovery_parent";
     const childRunId = "run_task_recovery_child";
+    gateway.streamScenarioFactory = () => ({
+      text: "Recovered task output through TaskOutput.",
+      toolSteps: [
+        {
+          toolName: "TaskOutput",
+          input: {
+            task_id: childSessionId,
+            block: false
+          },
+          toolCallId: "call_task_output_recovery"
+        }
+      ]
+    });
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
 
     await persistence.workspaceRepository.upsert({
       id: workspaceId,
@@ -7362,27 +7914,34 @@ describe("runtime service", () => {
 
     expect(await persistence.agentTaskRepository.getByTaskId(childSessionId)).toBeNull();
 
-    const result = await runtimeService.readAgentTaskOutput({
-      taskId: childSessionId,
-      block: false
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: parentSessionId,
+      caller,
+      input: {
+        content: `Read historical task output for ${childSessionId}.`
+      }
     });
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+    const messages = await runtimeService.listSessionMessages(parentSessionId, 100);
+    const taskOutputMessage = messages.items.find(
+      (message) => message.role === "tool" && messageToolName(message) === "TaskOutput"
+    );
 
-    expect(result.retrievalStatus).toBe("success");
-    expect(result.task).toMatchObject({
-      taskId: childSessionId,
-      childRunId,
-      childSessionId,
-      status: "completed",
-      result: "Recovered historical subagent result.",
-      outputRef: `agent-task://${childSessionId}/output`,
-      outputFile: `/tmp/open-agent-harness/${parentSessionId}/tasks/${childSessionId}.output`
-    });
-    expect(result.task?.usage).toMatchObject({
-      inputTokens: 3,
-      outputTokens: 4,
-      totalTokens: 7,
-      durationMs: 1000
-    });
+    expect(messageText(taskOutputMessage)).toContain("<retrieval_status>success</retrieval_status>");
+    expect(messageText(taskOutputMessage)).toContain(`<task_id>${childSessionId}</task_id>`);
+    expect(messageText(taskOutputMessage)).toContain(`<child_run_id>${childRunId}</child_run_id>`);
+    expect(messageText(taskOutputMessage)).toContain("Recovered historical subagent result.");
+    expect(messageText(taskOutputMessage)).toContain("<total_tokens>7</total_tokens>");
+    expect(messageText(taskOutputMessage)).toContain("<duration_ms>1000</duration_ms>");
     await expect(persistence.agentTaskRepository.getByTaskId(childSessionId)).resolves.toMatchObject({
       taskId: childSessionId,
       parentRunId,
@@ -8314,6 +8873,247 @@ describe("runtime service", () => {
     expect(messageText(resumedToolMessage)).toContain(`task_id: ${taskId}`);
     expect(messageText(resumedToolMessage)).toContain("Resumed subagent result: second pass complete.");
   });
+
+  it("queues resumed subagent messages while the child session is still running", async () => {
+    const gateway = new FakeModelGateway(20);
+    let taskId: string | undefined;
+    gateway.streamScenarioFactory = (input) => {
+      const systemMessages = input.messages?.filter((message) => message.role === "system").map((message) => message.content) ?? [];
+      const latestUserMessage = input.messages?.filter((message) => message.role === "user").at(-1);
+      const latestText = typeof latestUserMessage?.content === "string" ? latestUserMessage.content : "";
+
+      if (systemMessages.some((message) => message.includes("You are the researcher subagent."))) {
+        const delegatedTurns = input.messages?.filter((message) => {
+          if (message.role !== "user") return false;
+          const text = typeof message.content === "string" ? message.content : "";
+          return text.includes("<delegated_task");
+        }).length ?? 0;
+
+        return {
+          text:
+            delegatedTurns >= 2
+              ? "Queued resume result complete."
+              : `Initial slow result complete. ${"still working through the first pass. ".repeat(16)}`
+        };
+      }
+
+      if (latestText.includes("Queue more context")) {
+        return {
+          text: "Parent queued resumed context.",
+          toolBatches: [
+            [
+              {
+                toolName: "SubAgent",
+                input: {
+                  description: "Queue repo followup",
+                  prompt: "Continue once your current work finishes.",
+                  subagent_name: "researcher",
+                  task_id: taskId,
+                  run_in_background: true
+                },
+                toolCallId: "call_queue_resume"
+              }
+            ],
+            [
+              {
+                toolName: "TaskOutput",
+                input: {
+                  task_id: taskId,
+                  block: false
+                },
+                toolCallId: "call_check_pending_output"
+              }
+            ]
+          ]
+        };
+      }
+
+      if (latestText.includes("Start slow background")) {
+        return {
+          text: "Parent launched slow background research.",
+          toolSteps: [
+            {
+              toolName: "SubAgent",
+              input: {
+                description: "Slow repo research",
+                prompt: "Do a slow first pass.",
+                subagent_name: "researcher",
+                run_in_background: true
+              },
+              toolCallId: "call_start_slow_background"
+            }
+          ]
+        };
+      }
+
+      if (latestText.includes("<task-notification>")) {
+        return {
+          text: "Parent saw task notification."
+        };
+      }
+
+      return {
+        text: "Parent idle."
+      };
+    };
+
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_agent_pending_resume",
+      name: "agent-pending-resume",
+      rootPath: "/tmp/agent-pending-resume",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "plan",
+      settings: {
+        defaultAgent: "plan",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        plan: {
+          name: "plan",
+          mode: "primary",
+          prompt: "You are the planner agent.",
+          tools: {
+            native: [],
+            external: []
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: ["researcher"]
+        },
+        researcher: {
+          name: "researcher",
+          mode: "subagent",
+          prompt: "You are the researcher subagent.",
+          tools: {
+            native: [],
+            external: []
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_agent_pending_resume",
+        agents: [
+          { name: "plan", mode: "primary", source: "workspace" },
+          { name: "researcher", mode: "subagent", source: "workspace" }
+        ],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+    const session = await runtimeService.createSession({
+      workspaceId: "project_agent_pending_resume",
+      caller,
+      input: {
+        agentName: "plan"
+      }
+    });
+
+    const firstAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Start slow background." }
+    });
+
+    await waitFor(async () => {
+      const messages = await runtimeService.listSessionMessages(session.id, 20);
+      const toolMessage = messages.items.find(
+        (message) => message.role === "tool" && messageToolName(message) === "SubAgent" && messageText(message)?.includes("async_launched")
+      );
+      taskId = extractFieldValue(messageText(toolMessage), "task_id");
+      return Boolean(taskId);
+    }, 5_000);
+
+    expect(taskId).toBeTruthy();
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(firstAccepted.runId);
+      return run.status === "completed";
+    }, 5_000);
+
+    const secondAccepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Queue more context for the running subagent." }
+    });
+
+    await waitFor(async () => {
+      const queuedEntries = await persistence.sessionPendingRunQueueRepository.listBySessionId(taskId!);
+      return queuedEntries.length === 1;
+    }, 10_000);
+
+    const queuedEntries = await persistence.sessionPendingRunQueueRepository.listBySessionId(taskId!);
+    const queuedTask = await persistence.agentTaskRepository.getByTaskId(taskId!);
+    expect(queuedEntries).toHaveLength(1);
+    expect(queuedTask?.taskState?.pendingMessages).toEqual(["Continue once your current work finishes."]);
+    expect(queuedTask?.taskState?.isBackgrounded).toBe(true);
+
+    await waitFor(async () => {
+      const messages = await runtimeService.listSessionMessages(session.id, 100);
+      return messages.items.some(
+        (message) => message.role === "tool" && messageToolName(message) === "TaskOutput" && messageToolCallId(message) === "call_check_pending_output"
+      );
+    }, 10_000);
+    const taskOutputMessages = (await runtimeService.listSessionMessages(session.id, 100)).items.filter(
+      (message) => message.role === "tool" && messageToolName(message) === "TaskOutput"
+    );
+    const pendingOutputText = messageText(
+      taskOutputMessages.find((message) => messageToolCallId(message) === "call_check_pending_output")
+    );
+    expect(pendingOutputText).toContain("<retrieval_status>not_ready</retrieval_status>");
+    expect(pendingOutputText).toContain("<pending_messages>1</pending_messages>");
+    expect(pendingOutputText).not.toContain("Continue once your current work finishes.");
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(secondAccepted.runId);
+      return run.status === "completed";
+    }, 20_000);
+
+    await waitFor(async () => {
+      const childMessages = await runtimeService.listSessionMessages(taskId!, 20);
+      return childMessages.items.some((message) => message.role === "assistant" && messageText(message)?.includes("Queued resume result complete."));
+    }, 15_000);
+
+    const finalQueuedEntries = await persistence.sessionPendingRunQueueRepository.listBySessionId(taskId!);
+    const finalTask = await persistence.agentTaskRepository.getByTaskId(taskId!);
+    expect(finalQueuedEntries).toHaveLength(0);
+    expect(finalTask?.taskState?.pendingMessages).toEqual([]);
+    expect(finalTask?.taskState?.lastReportedTokenCount).toBeGreaterThan(0);
+    expect(finalTask?.taskState?.notified).toBe(true);
+    await expect(runtimeService.getRun(firstAccepted.runId)).resolves.toMatchObject({ status: "completed" });
+  }, 20_000);
 
   it("rejects resuming a missing subagent task_id", async () => {
     const gateway = new FakeModelGateway();

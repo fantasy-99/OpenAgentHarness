@@ -43,6 +43,23 @@ export interface ArtifactRecord {
 
 export type AgentTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "timed_out";
 
+export interface LocalAgentTaskStateRecord {
+  type: "local_agent";
+  agentId: string;
+  prompt: string;
+  agentType: string;
+  model?: string | undefined;
+  retrieved: boolean;
+  lastReportedToolCount: number;
+  lastReportedTokenCount: number;
+  isBackgrounded: boolean;
+  pendingMessages: string[];
+  retain: boolean;
+  diskLoaded: boolean;
+  notified?: boolean | undefined;
+  evictAfter?: number | undefined;
+}
+
 export interface AgentTaskRecord {
   taskId: string;
   workspaceId: string;
@@ -61,6 +78,7 @@ export interface AgentTaskRecord {
   finalText?: string | undefined;
   errorMessage?: string | undefined;
   usage?: Record<string, unknown> | undefined;
+  taskState?: LocalAgentTaskStateRecord | undefined;
   notifiedAt?: string | undefined;
   createdAt: string;
   updatedAt: string;
@@ -130,6 +148,7 @@ export interface AgentTaskRepository {
     finalText?: string | undefined;
     errorMessage?: string | undefined;
     usage?: Record<string, unknown> | undefined;
+    taskState?: LocalAgentTaskStateRecord | undefined;
     notifiedAt?: string | undefined;
   }): Promise<AgentTaskRecord>;
 }

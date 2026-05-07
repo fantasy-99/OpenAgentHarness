@@ -226,19 +226,19 @@ function projectRunConversation(messages: Message[], events: SessionEventContrac
     return [...fallbackMessages, ...projected];
   }
 
-  const firstProjectedMessageIndex = messages.findIndex(
-    (message) => seenProjectedMessageIds.has(readComparableMessageId(message)) || isStreamedAssistantTextMessage(message, deltaMessageIds)
-  );
-  if (firstProjectedMessageIndex <= 0) {
-    return [...projected, ...fallbackMessages];
+  const mergedProjectedMessages = [...projected];
+  for (const fallbackMessage of [...fallbackMessages].sort(compareMessagesChronologically)) {
+    const insertIndex = mergedProjectedMessages.findIndex(
+      (projectedMessage) => compareMessagesChronologically(fallbackMessage, projectedMessage) < 0
+    );
+    if (insertIndex < 0) {
+      mergedProjectedMessages.push(fallbackMessage);
+    } else {
+      mergedProjectedMessages.splice(insertIndex, 0, fallbackMessage);
+    }
   }
 
-  const fallbackMessageIds = new Set(fallbackMessages.map((message) => message.id));
-  const leadingFallbackMessages = messages.slice(0, firstProjectedMessageIndex).filter((message) => fallbackMessageIds.has(message.id));
-  const leadingFallbackIds = new Set(leadingFallbackMessages.map((message) => message.id));
-  const trailingFallbackMessages = fallbackMessages.filter((message) => !leadingFallbackIds.has(message.id));
-
-  return [...leadingFallbackMessages, ...projected, ...trailingFallbackMessages];
+  return mergedProjectedMessages;
 }
 
 function buildProjectedMessageFeed(params: {

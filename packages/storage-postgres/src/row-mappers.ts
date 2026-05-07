@@ -493,6 +493,7 @@ export function buildAgentTaskRow(input: AgentTaskRecord) {
     finalText: input.finalText ?? null,
     errorMessage: input.errorMessage ?? null,
     usage: input.usage ?? null,
+    taskState: input.taskState ?? null,
     notifiedAt: input.notifiedAt ?? null,
     createdAt: input.createdAt,
     updatedAt: input.updatedAt
@@ -518,6 +519,7 @@ export function toAgentTaskRecord(row: typeof agentTasks.$inferSelect): AgentTas
     ...(row.finalText !== null ? { finalText: row.finalText } : {}),
     ...(row.errorMessage !== null ? { errorMessage: row.errorMessage } : {}),
     ...(row.usage ? { usage: row.usage } : {}),
+    ...(row.taskState ? { taskState: row.taskState } : {}),
     ...(row.notifiedAt ? { notifiedAt: normalizeTimestamp(row.notifiedAt) ?? row.notifiedAt } : {}),
     createdAt: normalizeTimestamp(row.createdAt) ?? row.createdAt,
     updatedAt: normalizeTimestamp(row.updatedAt) ?? row.updatedAt

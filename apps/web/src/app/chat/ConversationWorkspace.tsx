@@ -82,9 +82,16 @@ type ParsedAgentTaskReference = {
   error?: string | undefined;
   outputRef?: string | undefined;
   outputFile?: string | undefined;
+  retrieved?: boolean | undefined;
+  notified?: boolean | undefined;
+  backgrounded?: boolean | undefined;
+  pendingMessageCount?: number | undefined;
+  reportedToolCount?: number | undefined;
+  reportedTokenCount?: number | undefined;
 };
 const MARKDOWN_REMARK_PLUGINS = [remarkGfm];
 const AUTO_SESSION_MODEL_VALUE = "__session_model_auto__";
+const CONVERSATION_BOTTOM_THRESHOLD_PX = 96;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -464,6 +471,20 @@ function readXmlTag(source: string, tagName: string) {
   return match?.[1] ? decodeXmlText(match[1]).trim() : undefined;
 }
 
+function readXmlBoolean(source: string, tagName: string) {
+  const value = readXmlTag(source, tagName);
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return undefined;
+}
+
+function readXmlInteger(source: string, tagName: string) {
+  const value = readXmlTag(source, tagName);
+  if (!value) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
 function messageContentTextParts(content: Message["content"]) {
   if (typeof content === "string") {
     return [content];
@@ -473,6 +494,7 @@ function messageContentTextParts(content: Message["content"]) {
 }
 
 function parseAgentTaskReference(text: string): ParsedAgentTaskReference | null {
+  const taskStateText = readXmlTag(text, "task_state") ?? "";
   if (text.includes("<task-notification>")) {
     const taskId = readXmlTag(text, "task-id");
     if (!taskId) {
@@ -489,7 +511,13 @@ function parseAgentTaskReference(text: string): ParsedAgentTaskReference | null 
       result: readXmlTag(text, "result"),
       error: readXmlTag(text, "error"),
       outputRef: readXmlTag(text, "output_ref"),
-      outputFile: readXmlTag(text, "output_file")
+      outputFile: readXmlTag(text, "output_file"),
+      retrieved: readXmlBoolean(taskStateText, "retrieved"),
+      notified: readXmlBoolean(taskStateText, "notified"),
+      backgrounded: readXmlBoolean(taskStateText, "backgrounded"),
+      pendingMessageCount: readXmlInteger(taskStateText, "pending_messages"),
+      reportedToolCount: readXmlInteger(taskStateText, "reported_tool_count"),
+      reportedTokenCount: readXmlInteger(taskStateText, "reported_token_count")
     };
   }
 
@@ -510,11 +538,34 @@ function parseAgentTaskReference(text: string): ParsedAgentTaskReference | null 
       output: readXmlTag(text, "output"),
       error: readXmlTag(text, "error"),
       outputRef: readXmlTag(text, "output_ref"),
-      outputFile: readXmlTag(text, "output_file")
+      outputFile: readXmlTag(text, "output_file"),
+      retrieved: readXmlBoolean(taskStateText, "retrieved"),
+      notified: readXmlBoolean(taskStateText, "notified"),
+      backgrounded: readXmlBoolean(taskStateText, "backgrounded"),
+      pendingMessageCount: readXmlInteger(taskStateText, "pending_messages"),
+      reportedToolCount: readXmlInteger(taskStateText, "reported_tool_count"),
+      reportedTokenCount: readXmlInteger(taskStateText, "reported_token_count")
     };
   }
 
   return null;
+}
+
+function readTaskStateFromMetadata(metadata: Message["metadata"] | undefined): Partial<ParsedAgentTaskReference> {
+  if (!isRecord(metadata) || !isRecord(metadata.taskState)) {
+    return {};
+  }
+
+  const taskState = metadata.taskState;
+  const pendingMessages = Array.isArray(taskState.pendingMessages) ? taskState.pendingMessages : undefined;
+  return {
+    ...(typeof taskState.retrieved === "boolean" ? { retrieved: taskState.retrieved } : {}),
+    ...(typeof taskState.notified === "boolean" ? { notified: taskState.notified } : {}),
+    ...(typeof taskState.isBackgrounded === "boolean" ? { backgrounded: taskState.isBackgrounded } : {}),
+    ...(pendingMessages ? { pendingMessageCount: pendingMessages.length } : {}),
+    ...(typeof taskState.lastReportedToolCount === "number" ? { reportedToolCount: taskState.lastReportedToolCount } : {}),
+    ...(typeof taskState.lastReportedTokenCount === "number" ? { reportedTokenCount: taskState.lastReportedTokenCount } : {})
+  };
 }
 
 function parseAgentTaskReferenceFromContent(content: Message["content"]) {
@@ -526,6 +577,18 @@ function parseAgentTaskReferenceFromContent(content: Message["content"]) {
   }
 
   return null;
+}
+
+function parseAgentTaskReferenceFromMessage(message: Message) {
+  const taskReference = parseAgentTaskReferenceFromContent(message.content);
+  if (!taskReference) {
+    return null;
+  }
+
+  return {
+    ...taskReference,
+    ...readTaskStateFromMetadata(message.metadata)
+  };
 }
 
 function isTaskNotificationMessage(message: Message) {
@@ -762,6 +825,17 @@ function agentTaskStatusDotClass(status?: string) {
   }
 }
 
+function taskStateBadges(task: ParsedAgentTaskReference) {
+  return [
+    task.backgrounded === true ? "background" : "",
+    task.pendingMessageCount && task.pendingMessageCount > 0 ? `${task.pendingMessageCount} queued` : "",
+    task.retrieved === true ? "retrieved" : "",
+    task.notified === true ? "notified" : "",
+    task.reportedToolCount && task.reportedToolCount > 0 ? `${Math.round(task.reportedToolCount)} tools` : "",
+    task.reportedTokenCount && task.reportedTokenCount > 0 ? `${Math.round(task.reportedTokenCount).toLocaleString()} tokens` : ""
+  ].filter(Boolean);
+}
+
 function AgentTaskReferenceCard({
   task,
   isUser,
@@ -787,10 +861,11 @@ function AgentTaskReferenceCard({
   const preview = bodyText.slice(0, 520).trimEnd();
   const canOpenSession = Boolean(onOpenSession && task.taskId.trim());
   const canInspectRun = Boolean(onInspectRun && task.childRunId?.trim());
+  const stateBadges = taskStateBadges(task);
 
   if (compactNotification) {
     const notificationText = task.summary ?? task.error ?? task.result ?? title;
-    const detailsText = [task.error, task.result, task.output, task.outputRef, task.outputFile]
+    const detailsText = [task.error, task.result, task.output, task.outputRef]
       .filter((value): value is string => typeof value === "string" && value.trim().length > 0 && value !== notificationText)
       .join("\n\n");
     const hasDetails = detailsText.length > 0;
@@ -806,6 +881,11 @@ function AgentTaskReferenceCard({
                 {primaryStatus}
               </span>
             ) : null}
+            {stateBadges.map((badge) => (
+              <span key={badge} className="hidden rounded-md border border-border/50 bg-muted/45 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground sm:inline-flex">
+                {badge}
+              </span>
+            ))}
           </div>
           <div className="flex flex-shrink-0 items-center gap-1.5">
             {hasDetails ? (
@@ -891,6 +971,15 @@ function AgentTaskReferenceCard({
               {task.taskType ? <span>{task.taskType}</span> : null}
               {task.toolUseId ? <code className="rounded-md bg-current/8 px-1.5 py-0.5 font-mono">{task.toolUseId}</code> : null}
             </div>
+            {stateBadges.length > 0 ? (
+              <div className={`mt-2 flex flex-wrap gap-1.5 text-[10px] ${isUser ? "text-background/62" : "text-muted-foreground"}`}>
+                {stateBadges.map((badge) => (
+                  <span key={badge} className="rounded-md border border-current/15 bg-current/7 px-1.5 py-0.5 font-medium uppercase tracking-[0.12em]">
+                    {badge}
+                  </span>
+                ))}
+              </div>
+            ) : null}
           </div>
         </div>
         <div className="flex flex-shrink-0 flex-wrap items-center justify-end gap-1.5">
@@ -947,7 +1036,6 @@ function AgentTaskReferenceCard({
 
       <div className={`mt-3 flex flex-wrap gap-2 text-[11px] ${isUser ? "text-background/62" : "text-muted-foreground"}`}>
         {task.outputRef ? <code className="rounded-md bg-current/8 px-1.5 py-0.5 font-mono">{task.outputRef}</code> : null}
-        {task.outputFile ? <code className="rounded-md bg-current/8 px-1.5 py-0.5 font-mono">{task.outputFile}</code> : null}
       </div>
     </div>
   );
@@ -1705,11 +1793,15 @@ function MessageContent({
   if (typeof content === "string") {
     const taskReference = parseAgentTaskReference(content);
     if (taskReference) {
+      const taskWithMetadata = {
+        ...taskReference,
+        ...readTaskStateFromMetadata(messageMetadata)
+      };
       return (
         <AgentTaskReferenceCard
-          task={taskReference}
+          task={taskWithMetadata}
           {...(isUser !== undefined ? { isUser } : {})}
-          compactNotification={compactTaskNotification && taskReference.kind === "notification"}
+          compactNotification={compactTaskNotification && taskWithMetadata.kind === "notification"}
           {...(onOpenSession ? { onOpenSession } : {})}
           {...(onInspectRun ? { onInspectRun } : {})}
         />
@@ -1734,11 +1826,17 @@ function MessageContent({
         <div key={i}>
           {"text" in part && part.text ? (() => {
             const taskReference = parseAgentTaskReference(part.text);
+            const taskWithMetadata = taskReference
+              ? {
+                  ...taskReference,
+                  ...readTaskStateFromMetadata(messageMetadata)
+                }
+              : null;
             return taskReference ? (
               <AgentTaskReferenceCard
-                task={taskReference}
+                task={taskWithMetadata ?? taskReference}
                 {...(isUser !== undefined ? { isUser } : {})}
-                compactNotification={compactTaskNotification && taskReference.kind === "notification"}
+                compactNotification={compactTaskNotification && (taskWithMetadata ?? taskReference).kind === "notification"}
                 {...(onOpenSession ? { onOpenSession } : {})}
                 {...(onInspectRun ? { onInspectRun } : {})}
               />
@@ -1891,7 +1989,7 @@ const ConversationMessageRow = memo(function ConversationMessageRow(props: Conve
   }
 
   if (isTaskNotification) {
-    const taskReference = parseAgentTaskReferenceFromContent(message.content);
+    const taskReference = parseAgentTaskReferenceFromMessage(message);
 
     return (
       <article className="group/message animate-fade-in py-2 md:py-3" style={deferredRenderStyle}>
@@ -2079,8 +2177,8 @@ type ConversationStatusBarProps = {
 function TodoProgressIcon({ status }: { status: TodoStatus }) {
   if (status === "completed") {
     return (
-      <span className="mt-0.5 inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-foreground/38 text-background">
-        <CheckCircle2 className="h-4 w-4" />
+      <span className="mt-px inline-flex h-[18px] w-[18px] flex-shrink-0 items-center justify-center rounded-full bg-foreground/34 text-background">
+        <CheckCircle2 className="h-3.5 w-3.5" />
       </span>
     );
   }
@@ -2088,19 +2186,19 @@ function TodoProgressIcon({ status }: { status: TodoStatus }) {
   if (status === "in_progress") {
     return (
       <span
-        className="mt-0.5 inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full border bg-background/72 text-foreground/72 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]"
+        className="mt-px inline-flex h-[18px] w-[18px] flex-shrink-0 items-center justify-center rounded-full border bg-background/72 text-foreground/72 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]"
         style={{
           borderColor: "color-mix(in srgb, var(--foreground) 14%, transparent)"
         }}
       >
-        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        <Loader2 className="h-3 w-3 animate-spin" />
       </span>
     );
   }
 
   return (
-    <span className="mt-0.5 inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-foreground/36">
-      <Circle className="h-5 w-5" />
+    <span className="mt-px inline-flex h-[18px] w-[18px] flex-shrink-0 items-center justify-center rounded-full text-foreground/36">
+      <Circle className="h-[18px] w-[18px]" />
     </span>
   );
 }
@@ -2121,7 +2219,7 @@ function CollapsibleStatusSection({
   const [expanded, setExpanded] = useState(defaultExpanded);
 
   return (
-    <section className="space-y-2.5">
+    <section className="space-y-2">
       <button
         type="button"
         onClick={() => setExpanded((current) => !current)}
@@ -2141,7 +2239,7 @@ function CollapsibleStatusSection({
           <ChevronRight className={`h-3.5 w-3.5 text-muted-foreground/52 transition-transform ${expanded ? "rotate-90" : ""}`} />
         </span>
       </button>
-      {expanded ? <div className="space-y-2.5">{children}</div> : null}
+      {expanded ? <div className="space-y-1.5">{children}</div> : null}
     </section>
   );
 }
@@ -2153,13 +2251,13 @@ function TodoProgressPanel({ progress }: { progress: ConversationTodoProgress })
 
   return (
     <CollapsibleStatusSection title="进度" icon={<ListTodo className="h-3.5 w-3.5" />} summary={progressLabel}>
-      <div className="space-y-2.5">
+      <div className="space-y-1">
         {visibleItems.map((item, index) => {
           const isActive = item.status === "in_progress";
           return (
             <div
               key={`${item.status}:${item.content}:${index}`}
-              className={`grid grid-cols-[1.25rem_minmax(0,1fr)] items-start gap-2.5 rounded-2xl border px-2.5 py-2 transition ${
+              className={`grid grid-cols-[1.125rem_minmax(0,1fr)] items-start gap-2 rounded-xl border px-2 py-1.5 transition ${
                 isActive ? "shadow-[inset_0_1px_0_rgba(255,255,255,0.44)]" : "border-transparent"
               }`}
               style={
@@ -2173,12 +2271,12 @@ function TodoProgressPanel({ progress }: { progress: ConversationTodoProgress })
             >
               <TodoProgressIcon status={item.status} />
               <span
-                className={`min-w-0 flex-1 text-[13px] ${
+                className={`min-w-0 flex-1 text-[12.5px] ${
                   item.status === "completed"
-                    ? "leading-6 text-muted-foreground/70"
+                    ? "leading-5 text-muted-foreground/70"
                     : isActive
                       ? "font-medium leading-5 text-foreground/86"
-                      : "leading-6 text-muted-foreground/78"
+                      : "leading-5 text-muted-foreground/78"
                 }`}
               >
                 {isActive && item.activeForm ? item.activeForm : item.content}
@@ -2187,7 +2285,7 @@ function TodoProgressPanel({ progress }: { progress: ConversationTodoProgress })
           );
         })}
         {hiddenCount > 0 ? (
-          <div className="pl-10 text-[11px] font-medium text-muted-foreground/62">
+          <div className="pl-8 text-[11px] font-medium text-muted-foreground/62">
             另有 {hiddenCount} 项
           </div>
         ) : null}
@@ -2561,7 +2659,7 @@ const ConversationStatusBar = memo(function ConversationStatusBar(props: Convers
   return (
     <div className="pointer-events-none absolute right-3 top-3 z-30 flex items-start justify-end md:right-5 md:top-5">
       <div
-        className="pointer-events-auto max-h-[calc(100vh-9rem)] w-[min(calc(100vw-1.5rem),340px)] overflow-y-auto rounded-[24px] border px-4 py-4 shadow-[0_18px_40px_-30px_rgba(17,17,17,0.45)] backdrop-blur-xl md:w-[330px]"
+        className="pointer-events-auto max-h-[calc(100vh-9rem)] w-[min(calc(100vw-1.5rem),330px)] overflow-y-auto rounded-[20px] border px-3.5 py-3.5 shadow-[0_18px_40px_-30px_rgba(17,17,17,0.45)] backdrop-blur-xl md:w-[320px]"
         style={{
           background: "color-mix(in srgb, var(--background) 84%, transparent)",
           borderColor: "color-mix(in srgb, var(--foreground) 9%, transparent)",
@@ -2569,7 +2667,7 @@ const ConversationStatusBar = memo(function ConversationStatusBar(props: Convers
             "inset 0 1px 0 rgba(255,255,255,0.54), 0 18px 40px -30px rgba(17,17,17,0.45)"
         }}
       >
-        <div className="space-y-4">
+        <div className="space-y-3">
           <div className="flex items-start justify-between gap-3 rounded-xl px-1 py-0.5">
             <div className="min-w-0">
               <div className="flex items-center gap-2 text-[13px] font-medium text-muted-foreground/76">
@@ -3051,6 +3149,9 @@ const scrollPositions = new Map<string, number>();
 function ConversationWorkspaceImpl(props: RuntimeProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
+  const autoFollowPausedRef = useRef(false);
+  const lastScrollTopRef = useRef(0);
+  const programmaticScrollUntilRef = useRef(0);
   const prevMessageCountRef = useRef(0);
   const restoredRef = useRef(false);
   const prependSnapshotRef = useRef<{ messageCount: number; scrollHeight: number; scrollTop: number } | null>(null);
@@ -3074,6 +3175,9 @@ function ConversationWorkspaceImpl(props: RuntimeProps) {
   // Reset restored flag when session changes
   useEffect(() => {
     restoredRef.current = false;
+    autoFollowPausedRef.current = false;
+    lastScrollTopRef.current = 0;
+    programmaticScrollUntilRef.current = 0;
   }, [sessionId]);
 
   // Restore saved scroll position once messages are loaded
@@ -3088,7 +3192,9 @@ function ConversationWorkspaceImpl(props: RuntimeProps) {
       requestAnimationFrame(() => {
         el.scrollTop = saved;
         setScrollTop(saved);
-        isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
+        lastScrollTopRef.current = el.scrollTop;
+        isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= CONVERSATION_BOTTOM_THRESHOLD_PX;
+        autoFollowPausedRef.current = !isNearBottomRef.current;
       });
     }
     restoredRef.current = true;
@@ -3099,9 +3205,20 @@ function ConversationWorkspaceImpl(props: RuntimeProps) {
   const handleScroll = useCallback(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
+    const nextScrollTop = el.scrollTop;
+    const previousScrollTop = lastScrollTopRef.current;
+    const isProgrammaticScroll = Date.now() < programmaticScrollUntilRef.current;
+    const bottomDistance = el.scrollHeight - nextScrollTop - el.clientHeight;
+    const isNearBottom = bottomDistance <= CONVERSATION_BOTTOM_THRESHOLD_PX;
     setScrollTop(el.scrollTop);
     setViewportHeight(el.clientHeight);
-    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
+    isNearBottomRef.current = isNearBottom;
+    if (isNearBottom) {
+      autoFollowPausedRef.current = false;
+    } else if (!isProgrammaticScroll && nextScrollTop < previousScrollTop - 1) {
+      autoFollowPausedRef.current = true;
+    }
+    lastScrollTopRef.current = nextScrollTop;
     if (sessionId) {
       scrollPositions.set(sessionId, el.scrollTop);
     }
@@ -3118,21 +3235,25 @@ function ConversationWorkspaceImpl(props: RuntimeProps) {
       const lastMsg = props.messageFeed[messageCount - 1];
       if (lastMsg?.role === "user" && !isTaskNotificationMessage(lastMsg)) {
         isNearBottomRef.current = true;
+        autoFollowPausedRef.current = false;
       }
     }
 
-    if (isNewMessage && isNearBottomRef.current) {
+    if (isNewMessage && isNearBottomRef.current && !autoFollowPausedRef.current) {
+      programmaticScrollUntilRef.current = Date.now() + 500;
       props.conversationTailRef?.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [messageCount, props.messageFeed, props.conversationTailRef]);
 
   // Streaming auto-scroll: pin to bottom without smooth animation
   useEffect(() => {
-    if (!isNearBottomRef.current || !hasStreamingMessage) return;
+    if (!isNearBottomRef.current || autoFollowPausedRef.current || !hasStreamingMessage) return;
     const el = scrollContainerRef.current;
     if (el) {
+      programmaticScrollUntilRef.current = Date.now() + 100;
       el.scrollTop = el.scrollHeight;
       setScrollTop(el.scrollTop);
+      lastScrollTopRef.current = el.scrollTop;
     }
   });
 

@@ -591,7 +591,7 @@ function RuntimeSidebar(props: SidebarProps & { onOpenRuntimeManager?: () => voi
                       onRemove={() => props.deleteWorkspace(entry.id)}
                     />
                     {isExpanded ? (
-                      <div className="runtime-session-tree ml-2 space-y-1.5 pl-1">
+                      <div className="runtime-session-tree space-y-1.5">
                         {topLevelSessions.length === 0 ? (
                           <div className="rounded-lg px-3 py-2.5 text-xs text-muted-foreground">No sessions yet.</div>
                         ) : (

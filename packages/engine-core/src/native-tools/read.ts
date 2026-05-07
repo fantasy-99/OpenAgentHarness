@@ -12,7 +12,7 @@ const READ_DESCRIPTION = `Reads a file from the local filesystem. You can access
 
 Usage:
 - The file_path parameter should point to a file inside the current workspace
-- Subagent task outputs can also be read with agent-task://<task_id>/output or the output_file returned by SubAgent/task notifications
+- Subagent task outputs can also be read with agent-task://<task_id>/output when the user explicitly asks you to inspect the stored transcript
 - By default, it reads up to 2000 lines starting from the beginning of the file
 - You can optionally specify an offset and limit for targeted reads
 - Results are returned with line numbers starting at 1

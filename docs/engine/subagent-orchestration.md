@@ -28,13 +28,14 @@ Claude Code 的核心模型：
 
 - `AgentTool` 启动 local agent task。
 - 异步启动结果包含 `status: "async_launched"`、`agentId`、`description`、`prompt`、`outputFile`、可选 `canReadOutputFile`。
-- task state 中保存 `toolUseId`、`outputFile`、`outputOffset`、`notified` 等字段。
+- `LocalAgentTaskState` 是一等内部状态，保存 `type: "local_agent"`、`agentId`、`prompt`、`selectedAgent`、`agentType`、`model`、`error`、`result`、`progress`、`retrieved`、`messages`、`lastReportedToolCount`、`lastReportedTokenCount`、`isBackgrounded`、`pendingMessages`、`retain`、`diskLoaded`、`evictAfter`，并继承 task base 里的 `toolUseId` / `notified` 等字段。
 - local agent 的 `outputFile` 通常是 agent transcript 的 symlink。
 - 子任务完成后通过 `enqueueAgentNotification()` 进入 pending notification queue。
 - notification XML 包含 `<task-id>`、可选 `<tool_use_id>`、`<output_file>`、`<status>`、`<summary>`、可选 `<result>`、`<usage>`、`<worktree>`。
 - `query.ts` drain pending notification，把它作为后续用户侧输入交给主 loop。
 - Claude Code 的内部 Message 设计把模型兼容和 UI 呈现分开：task notification 虽然作为用户侧输入进入主 loop，但队列项带有 `mode: "task-notification"`，属于 non-editable notification，不按普通用户输入渲染。
 - CLI UI 的 `UserAgentNotificationMessage` 只从 XML 中提取 `<summary>` 和 `<status>`，渲染为一条带状态色点的 compact agent notification，而不是 “You” 消息气泡。
+- Claude 的 agent finalization 会优先从最终 assistant/result content 提取干净 final text；`TaskOutputTool` 读取 local agent 时也优先使用 `agentTask.result`，避免把 transcript/tool result 当成最终答案。
 - `TaskOutputTool` 可按 `task_id` 读取任务输出，支持 `block` 和 `timeout`，返回 `<retrieval_status>`、`<task_id>`、`<task_type>`、`<status>`、`<output>`。
 - `TaskOutputTool` 在 Claude Code 中已经提示 deprecated，优先建议直接 `Read` task output file；但它仍是显式恢复/检查输出的稳定工具。
 
@@ -42,6 +43,7 @@ Claude Code 的核心模型：
 
 - OAH 应优先模仿 Claude 的 tool call 边界、task state 字段、notification XML 和 `TaskOutput` 语义。
 - OAH 不必照搬 disk transcript 作为事实源；在 OAH/OAP 双形态下，DB-first 更符合现有存储架构。
+- OAH 刻意不把 `.output`/`output_file` 暴露给模型。Claude Code 这样做是因为 transcript symlink 是本地事实源；OAH 的事实源是 PG/SQLite，历史会话证明模型看到 `.output` 后会倾向直接 `Read` 文件并拿到 transcript/过程文本，效果明显变差。因此 OAH 只保留内部 `outputFile` metadata 和 `output_ref`，模型可见结果走 notification / `TaskOutput`。
 - Claude 的 pending notification queue 已在 OAH 侧补齐为 session-scoped DB queue；后续重点转向 output file/Read 兼容、child session UX 和权限收窄。
 
 ## opencode 参考
@@ -72,12 +74,17 @@ opencode 的核心模型：
 当前已落地的行为：
 
 - `SubAgent` 支持后台启动，并返回 `status: async_launched`。
-- `SubAgent` 启动结果包含 `agentId`、`task_id`、`run_id`、`subagent_name`、`description`、`output_ref`、`outputFile`、`output_file`、`canReadOutputFile`。
+- `SubAgent` 启动结果包含 `agentId`、`task_id`、`run_id`、`subagent_name`、`description`、`output_ref`；不再把 `outputFile` / `output_file` / `canReadOutputFile` 暴露给模型。
 - tool call 的 `toolCallId` 会作为 `toolUseId` 贯穿到 delegated run metadata、`agent_tasks` 记录和 `<task-notification>`。
 - 后台子任务完成后会生成 user-role `<task-notification>` 消息。
-- notification XML 包含 `<task-id>`、`<tool_use_id>`、`<output_ref>`、`<output_file>`、`<status>`、`<summary>`、`<result>` 或 `<error>`。
+- notification XML 包含 `<task-id>`、`<tool_use_id>`、`<output_ref>`、`<status>`、`<summary>`、`<result>` 或 `<error>`；`<output_file>` 仅保留在历史兼容和内部 metadata 中，不进入新模型可见 XML。
 - OAH 额外在 notification XML 中包含 `<child_run_id>`，用于 Web/Inspector 从 task 卡片精确跳转到子 run 时间线。
 - notification / TaskOutput 会尽量携带 `<usage>`，字段包括 `total_tokens`、`input_tokens`、`output_tokens`、`tool_uses`、`duration_ms`。这些值由 child run 的 run steps 汇总而来。
+- 子任务最终结果提取已按 Claude Code 思路收敛：
+  - 优先使用 child run 中最近的有意义 assistant text。
+  - 如果最后一条 assistant 只是纯 tool call，会向前回退到最近一条 assistant text。
+  - 如果 assistant text 明显是过程话术，或 assistant 仍混合工具调用状态，则不把它当最终结果，而是创建一次 delegated output follow-up，让 subagent 只返回最终结果。
+  - 只有在没有 assistant text 时，才兼容性回退到最后一个 tool result。
 - 执行层现在会按当前 agent 的 OAH 内置工具白名单做最终授权；即使模型或 provider 返回了未暴露的 `SubAgent` / `TaskOutput` / native / action / skill tool call，也会在 tool execution 阶段返回 `tool_not_available_for_agent`，不会创建隐藏子任务。
 - 外部 MCP/tool server 工具已接入统一运行期追踪：`tool.started` / `tool.completed` / `tool.failed` event、`tool_call` run step、tool result message metadata、tool call audit record 都会保存 `sourceType: "tool"`。
 - 外部 MCP/tool server 工具在实际 `execute` 前会重新检查 `enabled`、`include`、`exclude` 和 `toolPrefix`；唯一短别名复用同一个 guarded tool definition，不能绕过 allowlist。
@@ -97,6 +104,15 @@ opencode 的核心模型：
   - OAH / PostgreSQL 使用 `agent_tasks` 表。
   - OAP / SQLite 使用 workspace 本地 `agent_tasks` 表和 JSON payload。
   - tests / embedded 使用 memory repository。
+- `agent_tasks.task_state` 保存 Claude-like `LocalAgentTaskStateRecord`：
+  - `type: "local_agent"`、`agentId`、`prompt`、`agentType`、`model`。
+  - `retrieved`、`lastReportedToolCount`、`lastReportedTokenCount`、`isBackgrounded`、`pendingMessages`、`retain`、`diskLoaded`、`notified`。
+  - OAH 不把这个结构直接发给模型，它用于 runtime 恢复、UI、审计、后续继续任务和更接近 Claude Code 的 task lifecycle。
+- `SubAgent(..., task_id=...)` 继续一个仍在运行的 child session 时，会按 Claude Code 的 `pendingMessages` 思路处理：
+  - 新的 child run 先进入 child session 的 pending run queue，不并发执行同一个 subagent session。
+  - `agent_tasks.task_state.pendingMessages` 记录追加 prompt，便于 UI/审计/恢复知道这不是一个新 worker，而是发给同一个 worker 的后续消息。
+  - 当前 child run terminal 后，session queue dispatch 下一条 queued child run，pending messages 在 terminal task state 中清空。
+- `TaskOutput` / `Read agent-task://.../output` 成功读取 terminal task 后会标记 `task_state.retrieved=true`；terminal notification 会标记 `task_state.notified=true`，usage 会同步到 `lastReportedToolCount` / `lastReportedTokenCount`。
 - `TaskOutput` 已提供 Claude 风格的显式读取能力，支持 `task_id`、`block`、`timeout`。
 - child session 浏览链路已落地：
   - `SessionRepository.listChildrenByParentSessionId()` 是存储侧统一接口。
@@ -109,8 +125,8 @@ opencode 的核心模型：
 仍保留的差异：
 
 - Claude Code 的 pending queue 是进程内 task state 结构；OAH 为了支持 OAH/OAP 恢复与审计，将 pending queue 持久化到 PG / SQLite / memory repository。
-- 如果父 run 已经 terminal，OAH 仍保留 synthetic notification run fallback，用于兼容旧调度路径和已结束父 run 的通知呈现；Claude Code 主路径不会创建单独 notification run。
-- OAH 的 `output_file` 已可通过 `Read` 读取 DB-backed task output，但它仍不是 Claude 那种 transcript symlink 事实源。
+- 如果父 run 已经 terminal，OAH 会把同一父 run 创建的 pending task notifications coalesce 到一个 `taskNotificationContinuation` run，再让主 agent 一次性看见 sibling subagents 的完成结果；Claude Code 主路径是 queued command drain，不创建单独 notification run。
+- OAH 新模型可见消息不再包含 `output_file`；历史 `output_file` 仍可被 Web 解析，内部 metadata 仍可用于调试。Claude 的 transcript symlink 事实源不适合直接照搬到 OAH/OAP。
 - OAH 还没有 `<worktree>` 输出。
 - OAH 已提供 API 级 child session 浏览；UI/TUI 级父子 session 切换体验仍待完善。
 - OAH 已有执行层内置工具授权 guard，并已为 MCP/tool server 工具补齐统一 run step / event / audit 记录和执行期 allowlist guard。
@@ -127,8 +143,8 @@ sequenceDiagram
 
     Main->>Tool: SubAgent(description, prompt, run_in_background)
     Tool->>Child: create/reuse child session and child run
-    Tool->>Store: upsert task record with toolUseId/outputRef/outputFile
-    Tool-->>Main: status=async_launched, task_id, outputFile
+    Tool->>Store: upsert task record with toolUseId/outputRef/internal outputFile/taskState
+    Tool-->>Main: status=async_launched, task_id, output_ref
     Child-->>Store: finalText/error/status
     Child-->>Queue: enqueue task-notification
     Queue-->>Main: drain notification as user-side input
@@ -146,6 +162,7 @@ sequenceDiagram
 - notification XML 增加 `<tool_use_id>`。
 - `agent_tasks` 在 PG / SQLite / memory 中落地。
 - 新增 `TaskOutput`。
+- 模型可见 `SubAgent` / `<task-notification>` / `TaskOutput` 输出移除 `output_file`，避免模型被引导读取 transcript 文件。
 
 ### Phase 2: Pending Notification Queue
 
@@ -158,21 +175,37 @@ sequenceDiagram
 - `ModelRunExecutor` 在模型输入前 drain 当前 session 的 pending notifications，并把它们作为 synthetic user messages 加入 `allMessages`。
 - 模型响应结束后如果刚好有子任务完成，会 drain notification 并继续同一个 run 的模型 loop，让主 agent 看到子任务结果后继续思考。
 - drain 后更新 consumed 状态，并发布现有 `message.completed` 兼容事件。
-- 保留 fallback notification run，仅在没有 notification repository 或父 run 已 terminal 时启用。
+- 父 run terminal 后不再为每个 child completion 单独续跑；同一父 run 的 sibling child notifications 会等全部 terminal 后 coalesce 为一个 `taskNotificationContinuation` run。
+- 保留 fallback notification run，仅在没有 notification repository 时启用。
 
-### Phase 3: Output File / Read Compatibility
+### Phase 2.5: Claude-like Task Lifecycle
 
 已部分完成：
 
-- 保持 DB-first，同时让 `output_file` 更有用。
-- `Read` 支持 `agent-task://<taskId>/output`，并从 `agent_tasks` 读取当前状态/输出。
-- `Read` 支持当前 `SubAgent` / `<task-notification>` 返回的 `output_file` 兼容路径。
-- 读取结果复用 `TaskOutput` 的 XML 结构，包含 `<retrieval_status>`、`<task_id>`、`<task_type>`、`<status>`、`<output_ref>`、`<output_file>`、`<output>` / `<error>`。
+- `agent_tasks.task_state` 从静态 metadata 扩展为 lifecycle state。
+- 子任务启动时记录 `isBackgrounded`、`prompt`、`agentType`、`model`。
+- 子任务 terminal 后记录 `notified`、`evictAfter`、token/tool count，并清空 `pendingMessages`。
+- `TaskOutput` 成功读取 terminal task 后记录 `retrieved=true`。
+- 运行中的 subagent 收到 `SubAgent(task_id=...)` 追加消息时，child run 进入 child session queue，`pendingMessages` 记录待处理 prompt。
 
 后续可选：
 
-- OAH 可选择物化 `.openharness/state/tasks/<taskId>.output` 作为缓存，但事实源仍是 DB。
-- OAP 可将 SQLite payload 物化为本地文件，提升 TUI / local UX。
+- Web 端用 `pendingMessages` 显示“已给 subagent 排队的后续指令”。
+- `retain` / `diskLoaded` 目前主要是为 child session UI 和 transcript bootstrap 预留，后续可在打开 subagent panel 时赋予真实行为。
+
+### Phase 3: Output File / Read Compatibility
+
+已完成但有 OAH 特化取舍：
+
+- 保持 DB-first，不把 `.output`/`output_file` 作为模型可见事实源。
+- `Read` 支持 `agent-task://<taskId>/output`，并从 `agent_tasks` 读取当前状态/输出。
+- `Read` 支持历史 `output_file` 兼容路径，但新 `SubAgent` / `<task-notification>` 不再返回该路径。
+- 读取结果复用 `TaskOutput` 的 XML 结构，包含 `<retrieval_status>`、`<task_id>`、`<task_type>`、`<status>`、`<output_ref>`、`<output>` / `<error>`。
+- `TaskOutput` 的 tool prompt 明确建议等待 notification；只有显式检查/恢复 missed output 时才用 `TaskOutput` 或 `agent-task://<taskId>/output`。
+
+后续可选：
+
+- OAH/OAP 可以物化 `.openharness/state/tasks/<taskId>.output` 作为调试缓存，但不要把路径放进模型默认输出；事实源仍是 PG/SQLite。
 
 ### Phase 4: Session UX
 
@@ -187,8 +220,8 @@ sequenceDiagram
   - 当前选中的子 session 会自动展开它的祖先 session。
   - 删除父 session 时会沿本地 session tree 一起移除已知子 session。
 - Web conversation 已识别 subagent task 输出：
-  - `<task-notification>` 不再只作为普通 XML 文本显示，而是展示状态、summary、result/error、`child_run_id`、`output_ref`、`output_file`、`usage`。
-  - `TaskOutput` / `Read agent-task://.../output` 返回的 `<retrieval_status>` XML 也会展示为同一类 task 卡片，并携带 `child_session_id` / `child_run_id` / `usage`。
+  - `<task-notification>` 不再只作为普通 XML 文本显示，而是展示状态、summary、result/error、`child_run_id`、`output_ref`、`usage` 和 task lifecycle 徽标；历史 `output_file` 只做兼容解析，不再作为新 UI 主信息展示。
+  - `TaskOutput` / `Read agent-task://.../output` 返回的 `<retrieval_status>` XML 也会展示为同一类 task 卡片，并携带 `child_session_id` / `child_run_id` / `usage` / `task_state`。
   - 卡片中的 `task_id` 在 OAH 中等于 child session id，因此可以直接打开 child session。
   - 如果 task 卡片带有 `child_run_id`，可以直接打开 Inspector 的 run 时间线。
 - service-routed PostgreSQL 的 `session_registry` 已持久化和回填 `parent_session_id`，避免通过 workspace session list 同步到 Web 时丢失父子关系。
@@ -197,6 +230,7 @@ sequenceDiagram
 
 - Web/TUI 能像 opencode 一样查看 subagent session。
 - `task_id` 继续同一个 child session 的行为在 UI 上可见。
+- UI 可显示 queued pending message 数量和 retrieved/notified/background/token/tool 状态，但不展示 pending prompt 原文。
 - notification 和 TaskOutput 都已能跳转到 child session 和 child run。
 
 ### Phase 5: Permissions and Safety

@@ -927,6 +927,7 @@ export class SQLiteAgentTaskRepository implements AgentTaskRepository {
     finalText?: string | undefined;
     errorMessage?: string | undefined;
     usage?: Record<string, unknown> | undefined;
+    taskState?: AgentTaskRecord["taskState"] | undefined;
     notifiedAt?: string | undefined;
   }): Promise<AgentTaskRecord> {
     const existing = await this.getByTaskId(input.taskId);
@@ -944,6 +945,7 @@ export class SQLiteAgentTaskRepository implements AgentTaskRepository {
       ...(input.finalText !== undefined ? { finalText: input.finalText } : {}),
       ...(input.errorMessage !== undefined ? { errorMessage: input.errorMessage } : {}),
       ...(input.usage !== undefined ? { usage: input.usage } : {}),
+      ...(input.taskState !== undefined ? { taskState: input.taskState } : {}),
       ...(input.notifiedAt !== undefined ? { notifiedAt: input.notifiedAt } : {})
     };
     const handle = await this.#coordinator.getWorkspaceHandle(next.workspaceId);

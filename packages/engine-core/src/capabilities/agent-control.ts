@@ -177,9 +177,6 @@ export function createSubAgentTool(
         }
 
         const shouldRunInBackground = runInBackground ?? targetAgent?.background ?? false;
-        const canReadOutputFile = (getCurrentAgent()?.tools?.native ?? []).some(
-          (toolName) => toolName === "Read" || toolName === "Bash"
-        );
 
         const accepted = await launchAgent(
           {
@@ -203,10 +200,7 @@ export function createSubAgentTool(
               ["run_id", accepted.childRunId],
               ["subagent_name", accepted.targetAgentName],
               ["description", description],
-              ["canReadOutputFile", accepted.canReadOutputFile ?? canReadOutputFile],
-              ["output_ref", accepted.outputRef],
-              ["outputFile", accepted.outputFile],
-              ["output_file", accepted.outputFile]
+              ["output_ref", accepted.outputRef]
             ],
             [
               {
@@ -215,7 +209,7 @@ export function createSubAgentTool(
                   "The agent is working in the background. You will be notified automatically when it completes.",
                   "Do not duplicate this agent's work, poll for its status, or call SubAgent with this task_id just to fetch results.",
                   "Briefly tell the user what you launched and end your response.",
-                  "When the task finishes, its result will arrive as a user-role <task-notification> message."
+                  "When the task finishes, its result will arrive inline as a user-role <task-notification> message."
                 ]
               }
             ]
@@ -262,6 +256,14 @@ export function renderTaskOutputResult(input: {
     result?: string | undefined;
     error?: string | undefined;
     usage?: Record<string, unknown> | undefined;
+    taskState?: {
+      retrieved?: boolean | undefined;
+      notified?: boolean | undefined;
+      isBackgrounded?: boolean | undefined;
+      pendingMessages?: string[] | undefined;
+      lastReportedToolCount?: number | undefined;
+      lastReportedTokenCount?: number | undefined;
+    } | undefined;
   } | null;
 }): string {
   const parts = [`<retrieval_status>${escapeXml(input.retrievalStatus)}</retrieval_status>`];
@@ -277,12 +279,13 @@ export function renderTaskOutputResult(input: {
     parts.push(`<status>${escapeXml(input.task.status)}</status>`);
     parts.push(`<description>${escapeXml(input.task.description)}</description>`);
     parts.push(`<output_ref>${escapeXml(input.task.outputRef)}</output_ref>`);
-    if (input.task.outputFile) {
-      parts.push(`<output_file>${escapeXml(input.task.outputFile)}</output_file>`);
-    }
     const usage = renderTaskUsage(input.task.usage);
     if (usage) {
       parts.push(usage);
+    }
+    const state = renderTaskState(input.task.taskState);
+    if (state) {
+      parts.push(state);
     }
     if (input.task.output.trim()) {
       parts.push(`<output>\n${escapeXml(input.task.output.trimEnd())}\n</output>`);
@@ -293,6 +296,35 @@ export function renderTaskOutputResult(input: {
   }
 
   return parts.join("\n\n");
+}
+
+function renderTaskState(taskState: {
+  retrieved?: boolean | undefined;
+  notified?: boolean | undefined;
+  isBackgrounded?: boolean | undefined;
+  pendingMessages?: string[] | undefined;
+  lastReportedToolCount?: number | undefined;
+  lastReportedTokenCount?: number | undefined;
+} | undefined): string | undefined {
+  if (!taskState) {
+    return undefined;
+  }
+
+  const pendingCount = Array.isArray(taskState.pendingMessages) ? taskState.pendingMessages.length : undefined;
+  const lines = [
+    typeof taskState.retrieved === "boolean" ? `<retrieved>${escapeXml(String(taskState.retrieved))}</retrieved>` : "",
+    typeof taskState.notified === "boolean" ? `<notified>${escapeXml(String(taskState.notified))}</notified>` : "",
+    typeof taskState.isBackgrounded === "boolean" ? `<backgrounded>${escapeXml(String(taskState.isBackgrounded))}</backgrounded>` : "",
+    pendingCount !== undefined ? `<pending_messages>${escapeXml(String(pendingCount))}</pending_messages>` : "",
+    typeof taskState.lastReportedToolCount === "number"
+      ? `<reported_tool_count>${escapeXml(String(Math.max(0, Math.round(taskState.lastReportedToolCount))))}</reported_tool_count>`
+      : "",
+    typeof taskState.lastReportedTokenCount === "number"
+      ? `<reported_token_count>${escapeXml(String(Math.max(0, Math.round(taskState.lastReportedTokenCount))))}</reported_token_count>`
+      : ""
+  ].filter(Boolean);
+
+  return lines.length > 0 ? `<task_state>${lines.join("")}</task_state>` : undefined;
 }
 
 function readUsageNumber(usage: Record<string, unknown> | undefined, key: string): number | undefined {
@@ -335,6 +367,14 @@ export function createTaskOutputTool(
       outputFile?: string | undefined;
       result?: string | undefined;
       error?: string | undefined;
+      taskState?: {
+        retrieved?: boolean | undefined;
+        notified?: boolean | undefined;
+        isBackgrounded?: boolean | undefined;
+        pendingMessages?: string[] | undefined;
+        lastReportedToolCount?: number | undefined;
+        lastReportedTokenCount?: number | undefined;
+      } | undefined;
     } | null;
   }>
 ): EngineToolSet {

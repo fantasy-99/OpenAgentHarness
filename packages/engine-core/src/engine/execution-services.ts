@@ -63,6 +63,7 @@ export interface CreateEngineExecutionServicesDependencies {
   sessionRepository: EngineServiceOptions["sessionRepository"];
   messageRepository: EngineServiceOptions["messageRepository"];
   runRepository: EngineServiceOptions["runRepository"];
+  sessionPendingRunQueueRepository: EngineServiceOptions["sessionPendingRunQueueRepository"];
   startRunStep: RunStepService["startRunStep"];
   completeRunStep: RunStepService["completeRunStep"];
   recordSystemStep: RunStepService["recordSystemStep"];
@@ -203,7 +204,8 @@ export function createEngineExecutionServices(
       runs: dependencies.runRepository,
       runSteps: dependencies.runStepRepository,
       agentTasks: dependencies.agentTaskRepository,
-      agentTaskNotifications: dependencies.agentTaskNotificationRepository
+      agentTaskNotifications: dependencies.agentTaskNotificationRepository,
+      sessionPendingRuns: dependencies.sessionPendingRunQueueRepository
     },
     lifecycle: {
       getRun: (runId) => dependencies.getRun(runId),

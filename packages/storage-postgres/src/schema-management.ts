@@ -254,6 +254,7 @@ const schemaStatements = [
     final_text text,
     error_message text,
     usage jsonb,
+    task_state jsonb,
     notified_at timestamptz,
     created_at timestamptz not null,
     updated_at timestamptz not null
@@ -264,6 +265,7 @@ const schemaStatements = [
   `alter table agent_tasks add column if not exists final_text text`,
   `alter table agent_tasks add column if not exists error_message text`,
   `alter table agent_tasks add column if not exists usage jsonb`,
+  `alter table agent_tasks add column if not exists task_state jsonb`,
   `alter table agent_tasks add column if not exists notified_at timestamptz`,
   `update agent_tasks set output_ref = 'agent-task://' || task_id || '/output' where output_ref is null`,
   `alter table agent_tasks alter column output_ref set not null`,

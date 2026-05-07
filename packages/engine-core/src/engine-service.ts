@@ -274,6 +274,7 @@ export class EngineService {
       sessionRepository: this.#sessionRepository,
       messageRepository: this.#messageRepository,
       runRepository: this.#runRepository,
+      sessionPendingRunQueueRepository: this.#sessionPendingRunQueueRepository,
       runStepRepository: this.#runStepRepository,
       startRunStep: (input) => this.#runSteps.startRunStep(input),
       completeRunStep: (step, status, output) => this.#runSteps.completeRunStep(step, status, output),
