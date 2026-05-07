@@ -212,20 +212,21 @@ export function normalizePersistedMessages(messages: Message[]): { messages: Mes
       continue;
     }
 
-    flushPendingToolCalls(normalizedMessage);
-    result.push(normalizedMessage);
-
-    if (normalizedMessage.role !== "assistant" || !Array.isArray(normalizedMessage.content)) {
-      continue;
-    }
-
-    const toolCalls = normalizedMessage.content.filter(isToolCallMessagePart);
+    const toolCalls =
+      normalizedMessage.role === "assistant" && Array.isArray(normalizedMessage.content)
+        ? normalizedMessage.content.filter(isToolCallMessagePart)
+        : [];
     if (toolCalls.length === 0) {
+      flushPendingToolCalls(normalizedMessage);
+      result.push(normalizedMessage);
       continue;
     }
 
-    pendingToolCalls = new Map(toolCalls.map((toolCall) => [toolCall.toolCallId, toolCall]));
-    pendingAnchor = normalizedMessage;
+    result.push(normalizedMessage);
+    for (const toolCall of toolCalls) {
+      pendingToolCalls.set(toolCall.toolCallId, toolCall);
+    }
+    pendingAnchor ??= normalizedMessage;
   }
 
   flushPendingToolCalls();

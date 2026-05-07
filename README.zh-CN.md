@@ -286,6 +286,8 @@ cp -R ./template/deploy-root/. /absolute/path/to/oah-deploy-root
 export OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root
 ```
 
+本地开发可以省略 `OAH_DEPLOY_ROOT`；`pnpm local:up` 和 `pnpm storage:sync` 默认使用 `OAH_HOME`（或 `~/.openagentharness`）。只有想把部署资产根目录和个人 home 分开时再显式设置 `OAH_DEPLOY_ROOT`。
+
 然后至少在下面目录中放入一个平台模型 YAML：
 
 ```text
@@ -402,9 +404,9 @@ pnpm test
 pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts -- --config "$HOME/.openagentharness/config/daemon.yaml"
 pnpm dev:web
 pnpm dev:cli -- --base-url http://127.0.0.1:8787 tui
-OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync
-OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync -- --include-workspaces
-OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm local:up
+pnpm storage:sync
+pnpm storage:sync -- --include-workspaces
+pnpm local:up
 pnpm local:down
 helm upgrade --install oah ./deploy/charts/open-agent-harness --namespace open-agent-harness --create-namespace --set-file config.serverYaml=/absolute/path/to/oah-deploy-root/config/kubernetes.server.yaml
 ```

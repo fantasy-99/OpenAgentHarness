@@ -8,7 +8,6 @@ import {
   CheckCircle2,
   ChevronRight,
   Circle,
-  CircleDot,
   Clock3,
   CornerDownRight,
   Cpu,
@@ -1676,8 +1675,13 @@ function TodoProgressIcon({ status }: { status: TodoStatus }) {
 
   if (status === "in_progress") {
     return (
-      <span className="mt-0.5 inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full border border-foreground/26 bg-background/50 text-foreground/62">
-        <CircleDot className="h-3.5 w-3.5 animate-pulse" />
+      <span
+        className="mt-0.5 inline-flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full border bg-background/72 text-foreground/72 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]"
+        style={{
+          borderColor: "color-mix(in srgb, var(--foreground) 14%, transparent)"
+        }}
+      >
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
       </span>
     );
   }
@@ -1738,24 +1742,40 @@ function TodoProgressPanel({ progress }: { progress: ConversationTodoProgress })
   return (
     <CollapsibleStatusSection title="进度" icon={<ListTodo className="h-3.5 w-3.5" />} summary={progressLabel}>
       <div className="space-y-2.5">
-        {visibleItems.map((item, index) => (
-          <div key={`${item.status}:${item.content}:${index}`} className="flex items-start gap-2.5">
-            <TodoProgressIcon status={item.status} />
-            <span
-              className={`min-w-0 flex-1 text-[13px] leading-6 ${
-                item.status === "completed"
-                  ? "text-muted-foreground/70"
-                  : item.status === "in_progress"
-                    ? "font-medium text-foreground/82"
-                    : "text-muted-foreground/78"
+        {visibleItems.map((item, index) => {
+          const isActive = item.status === "in_progress";
+          return (
+            <div
+              key={`${item.status}:${item.content}:${index}`}
+              className={`grid grid-cols-[1.25rem_minmax(0,1fr)] items-start gap-2.5 rounded-2xl border px-2.5 py-2 transition ${
+                isActive ? "shadow-[inset_0_1px_0_rgba(255,255,255,0.44)]" : "border-transparent"
               }`}
+              style={
+                isActive
+                  ? {
+                      background: "color-mix(in srgb, var(--foreground) 4%, transparent)",
+                      borderColor: "color-mix(in srgb, var(--foreground) 8%, transparent)"
+                    }
+                  : undefined
+              }
             >
-              {item.status === "in_progress" && item.activeForm ? item.activeForm : item.content}
-            </span>
-          </div>
-        ))}
+              <TodoProgressIcon status={item.status} />
+              <span
+                className={`min-w-0 flex-1 text-[13px] ${
+                  item.status === "completed"
+                    ? "leading-6 text-muted-foreground/70"
+                    : isActive
+                      ? "font-medium leading-5 text-foreground/86"
+                      : "leading-6 text-muted-foreground/78"
+                }`}
+              >
+                {isActive && item.activeForm ? item.activeForm : item.content}
+              </span>
+            </div>
+          );
+        })}
         {hiddenCount > 0 ? (
-          <div className="pl-7 text-[11px] font-medium text-muted-foreground/62">
+          <div className="pl-10 text-[11px] font-medium text-muted-foreground/62">
             另有 {hiddenCount} 项
           </div>
         ) : null}

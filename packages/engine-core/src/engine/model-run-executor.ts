@@ -1,5 +1,6 @@
 import type { ChatMessage, Message, ModelGenerateResponse, Run, RunStep, Session } from "@oah/api-contracts";
 
+import { AppError } from "../errors.js";
 import { textContent } from "../execution-message-content.js";
 import {
   activeToolNamesForAgent as resolveActiveToolNamesForAgent,
@@ -23,8 +24,19 @@ import type { ToolErrorContentPart } from "./model-call-serialization.js";
 import type { AgentCoordinationService } from "./agent-coordination.js";
 import type { ToolExecutionService } from "./tool-execution.js";
 
+function isDelegatedTerminalUpdateMessage(message: Message): boolean {
+  const metadata = message.metadata as { delegatedUpdate?: unknown } | undefined;
+  return (
+    message.role === "tool" &&
+    (metadata?.delegatedUpdate === "completed" || metadata?.delegatedUpdate === "failed")
+  );
+}
+
 interface ModelRunExecutorExecutionServices {
-  agentCoordination: Pick<AgentCoordinationService, "delegatedRunRecords">;
+  agentCoordination: Pick<
+    AgentCoordinationService,
+    "delegatedRunRecords" | "persistUnreportedTerminalDelegatedRuns"
+  >;
   toolExecution: Pick<ToolExecutionService, "runStepRetryPolicy" | "wrapEngineToolsForEvents">;
 }
 
@@ -262,92 +274,95 @@ export class ModelRunExecutor {
       injectSystemReminder: false,
       delegatedRunIds: execution.agentCoordination.delegatedRunRecords(run).map((record) => record.childRunId)
     };
-    const engineMessages = await this.#prepareMessagesForModelInput(
-      workspace,
-      session,
-      run,
-      executionContext.currentAgentName,
-      allMessages
-    );
-    const modelInput = await this.#buildModelInput(
-      workspace,
-      session,
-      run,
-      engineMessages,
-      executionContext.currentAgentName
-    );
-    const hookedModelInput = await this.#applyBeforeModelHooks(workspace, session, run, modelInput);
+    const buildInitialHookedModelInput = async () => {
+      const latestRun = await this.#getRun(run.id);
+      const engineMessages = await this.#prepareMessagesForModelInput(
+        workspace,
+        session,
+        latestRun,
+        executionContext.currentAgentName,
+        allMessages
+      );
+      const modelInput = await this.#buildModelInput(
+        workspace,
+        session,
+        latestRun,
+        engineMessages,
+        executionContext.currentAgentName
+      );
+      return this.#applyBeforeModelHooks(workspace, session, latestRun, modelInput);
+    };
+    let hookedModelInput = await buildInitialHookedModelInput();
     const engineTools = this.#buildEngineTools(workspace, run, session, executionContext);
     const activeToolServers = listVisibleEnabledToolServers(workspace, executionContext.currentAgentName);
     const engineToolNames = Object.keys(engineTools);
     let streamCoordinator: ModelStreamCoordinator<ModelExecutionInput> | undefined;
 
     try {
-      streamCoordinator = new ModelStreamCoordinator({
-        workspace,
-        session,
-        run,
-        executionContext,
-        allMessages,
-        initialModelInput: hookedModelInput,
-        engineTools,
-        activeToolServers,
-        engineToolNames,
-        logger: this.#logger,
-        planning: {
-          buildModelInput: async (
-            targetWorkspace,
-            targetSession,
-            targetRun,
-            targetMessages,
-            activeAgentName,
-            injectSystemReminder
-          ) =>
-            this.#buildModelInput(
+      let continuationCount = 0;
+      while (true) {
+        streamCoordinator = new ModelStreamCoordinator({
+          workspace,
+          session,
+          run,
+          executionContext,
+          allMessages,
+          initialModelInput: hookedModelInput,
+          engineTools,
+          activeToolServers,
+          engineToolNames,
+          logger: this.#logger,
+          planning: {
+            buildModelInput: async (
               targetWorkspace,
               targetSession,
               targetRun,
-              await this.#prepareMessagesForModelInput(
+              targetMessages,
+              activeAgentName,
+              injectSystemReminder
+            ) =>
+              this.#buildModelInput(
                 targetWorkspace,
                 targetSession,
                 targetRun,
+                await this.#prepareMessagesForModelInput(
+                  targetWorkspace,
+                  targetSession,
+                  targetRun,
+                  activeAgentName,
+                  targetMessages
+                ),
                 activeAgentName,
-                targetMessages
+                injectSystemReminder
               ),
-              activeAgentName,
-              injectSystemReminder
-            ),
-          applyBeforeModelHooks: (targetWorkspace, targetSession, targetRun, nextModelInput) =>
-            this.#applyBeforeModelHooks(targetWorkspace, targetSession, targetRun, nextModelInput),
-          getRun: (targetRunId) => this.#getRun(targetRunId),
-          getActiveToolNames: (agentName) => resolveActiveToolNamesForAgent(workspace, agentName)
-        },
-        steps: {
-          startRunStep: (input) => this.#startRunStep(input),
-          completeRunStep: (step, status, output) => this.#completeRunStep(step, status, output),
-          setRunStatusIfPossible: (targetRunId, nextStatus) => this.#setRunStatusIfPossible(targetRunId, nextStatus),
-          recordToolCallAuditFromStep: (step, toolName, status) =>
-            this.#recordToolCallAuditFromStep(step, toolName, status),
-          runStepRetryPolicy: (step) => execution.toolExecution.runStepRetryPolicy(step)
-        },
-        messages: {
-          ensureAssistantMessage: (targetSession, targetRun, currentMessage, targetMessages, content, metadata) =>
-            this.#ensureAssistantMessage(targetSession, targetRun, currentMessage, targetMessages, content, metadata),
-          persistAssistantStepText: (targetSession, targetRun, step, currentMessage, targetMessages, metadata) =>
-            this.#persistAssistantStepText(targetSession, targetRun, step, currentMessage, targetMessages, metadata),
-          persistAssistantToolCalls: (targetSession, targetRun, step, targetMessages, metadata, toolMetadataByCallId) =>
-            this.#persistAssistantToolCalls(targetSession, targetRun, step, targetMessages, metadata, toolMetadataByCallId),
-          persistToolResults: (
-            targetSession,
-            targetRun,
-            step,
-            failedToolResults,
-            persistedToolCalls,
-            targetMessages,
-            metadata,
-            toolMetadataByCallId
-          ) =>
-            this.#persistToolResults(
+            applyBeforeModelHooks: (targetWorkspace, targetSession, targetRun, nextModelInput) =>
+              this.#applyBeforeModelHooks(targetWorkspace, targetSession, targetRun, nextModelInput),
+            getRun: (targetRunId) => this.#getRun(targetRunId),
+            getActiveToolNames: (agentName) => resolveActiveToolNamesForAgent(workspace, agentName)
+          },
+          steps: {
+            startRunStep: (input) => this.#startRunStep(input),
+            completeRunStep: (step, status, output) => this.#completeRunStep(step, status, output),
+            setRunStatusIfPossible: (targetRunId, nextStatus) => this.#setRunStatusIfPossible(targetRunId, nextStatus),
+            recordToolCallAuditFromStep: (step, toolName, status) =>
+              this.#recordToolCallAuditFromStep(step, toolName, status),
+            runStepRetryPolicy: (step) => execution.toolExecution.runStepRetryPolicy(step)
+          },
+          messages: {
+            ensureAssistantMessage: (targetSession, targetRun, currentMessage, targetMessages, content, metadata) =>
+              this.#ensureAssistantMessage(targetSession, targetRun, currentMessage, targetMessages, content, metadata),
+            persistAssistantStepText: (targetSession, targetRun, step, currentMessage, targetMessages, metadata) =>
+              this.#persistAssistantStepText(targetSession, targetRun, step, currentMessage, targetMessages, metadata),
+            persistAssistantToolCalls: (targetSession, targetRun, step, targetMessages, metadata, toolMetadataByCallId) =>
+              this.#persistAssistantToolCalls(
+                targetSession,
+                targetRun,
+                step,
+                targetMessages,
+                metadata,
+                toolMetadataByCallId
+              ),
+            persistToolResults: (
               targetSession,
               targetRun,
               step,
@@ -356,33 +371,49 @@ export class ModelRunExecutor {
               targetMessages,
               metadata,
               toolMetadataByCallId
-            ),
-          appendEvent: (input) => this.#appendEvent(input),
-          updateMessageContent: (message, content) =>
-            this.#messageRepository.update({
-              ...message,
-              content: textContent(content)
-            }) as Promise<Extract<Message, { role: "assistant" }>>
-        },
-        serialization: {
-          serializeModelCallStepInput: (modelExecutionInput, activeToolNames, toolServers, currentEngineToolNames, currentEngineTools) =>
-            this.#serializeModelCallStepInput(
+            ) =>
+              this.#persistToolResults(
+                targetSession,
+                targetRun,
+                step,
+                failedToolResults,
+                persistedToolCalls,
+                targetMessages,
+                metadata,
+                toolMetadataByCallId
+              ),
+            appendEvent: (input) => this.#appendEvent(input),
+            updateMessageContent: (message, content) =>
+              this.#messageRepository.update({
+                ...message,
+                content: textContent(content)
+              }) as Promise<Extract<Message, { role: "assistant" }>>
+          },
+          serialization: {
+            serializeModelCallStepInput: (
               modelExecutionInput,
               activeToolNames,
               toolServers,
               currentEngineToolNames,
               currentEngineTools
-            ),
-          serializeModelCallStepOutput: (step, failedToolResults) =>
-            this.#serializeModelCallStepOutput(step, failedToolResults),
-          extractFailedToolResults: (step) => this.#extractFailedToolResults(step),
-          buildGeneratedMessageMetadata: (targetWorkspace, agentName, currentModelInput, modelCallStep) =>
-            this.#buildGeneratedMessageMetadata(targetWorkspace, agentName, currentModelInput, modelCallStep),
-          normalizeJsonObject: (value) => this.#normalizeJsonObject(value),
-          resolveToolSourceType,
-          previewValue: (value, maxLength) => this.#previewValue(value, maxLength)
-        }
-      });
+            ) =>
+              this.#serializeModelCallStepInput(
+                modelExecutionInput,
+                activeToolNames,
+                toolServers,
+                currentEngineToolNames,
+                currentEngineTools
+              ),
+            serializeModelCallStepOutput: (step, failedToolResults) =>
+              this.#serializeModelCallStepOutput(step, failedToolResults),
+            extractFailedToolResults: (step) => this.#extractFailedToolResults(step),
+            buildGeneratedMessageMetadata: (targetWorkspace, agentName, currentModelInput, modelCallStep) =>
+              this.#buildGeneratedMessageMetadata(targetWorkspace, agentName, currentModelInput, modelCallStep),
+            normalizeJsonObject: (value) => this.#normalizeJsonObject(value),
+            resolveToolSourceType,
+            previewValue: (value, maxLength) => this.#previewValue(value, maxLength)
+          }
+        });
 
       const observableEngineTools = execution.toolExecution.wrapEngineToolsForEvents({
         workspace,
@@ -437,6 +468,36 @@ export class ModelRunExecutor {
       }
 
       const latestRun = await this.#getRun(run.id);
+      const persistedDelegations = await execution.agentCoordination.persistUnreportedTerminalDelegatedRuns({
+        parentSessionId: session.id,
+        parentRun: latestRun,
+        parentAgentName: executionContext.currentAgentName
+      });
+      const knownMessageIds = new Set(allMessages.map((message) => message.id));
+      const latestMessages = await this.#repairSessionHistoryIfNeeded(
+        session.id,
+        await this.#messageRepository.listBySessionId(session.id)
+      );
+      const hasUnseenDelegatedUpdate = latestMessages.some(
+        (message) => isDelegatedTerminalUpdateMessage(message) && !knownMessageIds.has(message.id)
+      );
+      if (persistedDelegations.childRunIds.length > 0 || hasUnseenDelegatedUpdate) {
+        continuationCount += 1;
+        if (continuationCount > (workspace.agents[executionContext.currentAgentName]?.policy?.maxSteps ?? 8)) {
+          throw new AppError(
+            409,
+            "delegated_run_continuation_limit_exceeded",
+            `Run ${run.id} exceeded the delegated run continuation limit.`
+          );
+        }
+
+        await this.#setRunStatusIfPossible(run.id, "running");
+        allMessages.length = 0;
+        allMessages.push(...latestMessages);
+        hookedModelInput = await buildInitialHookedModelInput();
+        continue;
+      }
+
       const hookedCompleted = await this.#applyAfterModelHooks(
         workspace,
         session,
@@ -453,6 +514,8 @@ export class ModelRunExecutor {
         streamCoordinator.finalAssistantStep,
         streamCoordinator.latestMessageGenerationMetadata
       );
+      break;
+      }
     } catch (error) {
       const pendingModelStepStatus = abortSignal.aborted ? resolveAbortStepStatus?.() ?? "cancelled" : "failed";
       if (streamCoordinator) {

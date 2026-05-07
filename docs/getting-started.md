@@ -26,6 +26,8 @@ export OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root
 pnpm local:up
 ```
 
+本地开发也可以只设置 `OAH_HOME`，或完全不设置环境变量；`pnpm local:up` 会默认使用 `OAH_HOME`（再 fallback 到 `~/.openagentharness`）。显式 `OAH_DEPLOY_ROOT` 主要用于团队/部署资产根目录需要独立管理的场景。
+
 这条命令会一次性启动本地整套 stack：`PostgreSQL`、`Redis`、`MinIO`、`oah-api`、`oah-controller`、`oah-compose-scaler`、`oah-sandbox`。其中 `oah-api` 对外监听 `http://127.0.0.1:8787`，`oah-sandbox` 在本地栈中承载 standalone worker，`oah-compose-scaler` 负责按 controller 目标副本数动态扩缩 `oah-sandbox`，并会在启动阶段自动执行一次 storage sync。
 
 本地默认使用 `oah-sandbox + OSS/MinIO workspace_backing_store` 承载 active workspace copy。`oah-api` 不挂载持久 workspace volume，避免 API 容器累积已回收 workspace 的本地目录壳。
@@ -83,12 +85,12 @@ pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts 
 | 命令 | 作用 |
 | --- | --- |
 | `pnpm install` | 安装依赖 |
-| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync` | 把部署根目录里的只读数据同步到 MinIO（默认不含 `workspaces`） |
-| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync -- --include-workspaces` | 连同 `workspaces` 一起同步到 MinIO |
-| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm local:up` | 启动本地整套服务（`oah-api` / `oah-controller` / `oah-compose-scaler` / `oah-sandbox`） |
-| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root OAH_SKIP_BUILD=1 pnpm local:up` | 复用本地已有 OAH 镜像，跳过 Docker 构建 |
-| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root OAH_LOCAL_SYNC_ON_CHANGE_ONLY=1 pnpm local:up` | 仍通过 MinIO/rclone 模拟对象存储部署，但只在只读源目录变化时重新同步 |
-| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root OAH_LOCAL_SKIP_READONLY_VOLUME_RECREATE=1 pnpm local:up` | 保留已有 rclone 只读卷，适合 Docker/rclone 插件未重启且只想快速重启服务 |
+| `pnpm storage:sync` | 把部署根目录里的只读数据同步到 MinIO（默认不含 `workspaces`） |
+| `pnpm storage:sync -- --include-workspaces` | 连同 `workspaces` 一起同步到 MinIO |
+| `pnpm local:up` | 启动本地整套服务（`oah-api` / `oah-controller` / `oah-compose-scaler` / `oah-sandbox`） |
+| `OAH_SKIP_BUILD=1 pnpm local:up` | 复用本地已有 OAH 镜像，跳过 Docker 构建 |
+| `OAH_LOCAL_SYNC_ON_CHANGE_ONLY=1 pnpm local:up` | 仍通过 MinIO/rclone 模拟对象存储部署，但只在只读源目录变化时重新同步 |
+| `OAH_LOCAL_SKIP_READONLY_VOLUME_RECREATE=1 pnpm local:up` | 保留已有 rclone 只读卷，适合 Docker/rclone 插件未重启且只想快速重启服务 |
 | `pnpm local:down` | 停止本地整套服务 |
 | `pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts -- --api-only --config ./server.example.yaml` | 仅启动 `oah-api` |
 | `pnpm exec tsx --tsconfig ./apps/controller/tsconfig.json ./apps/controller/src/index.ts -- --config ./server.example.yaml` | 单独启动 `oah-controller` |
@@ -115,7 +117,7 @@ pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts 
 
 - 如果本地已经有 `openagentharness-oah:latest`，可以直接跳过构建：
   ```bash
-  OAH_DEPLOY_ROOT=/absolute/path OAH_SKIP_BUILD=1 pnpm local:up
+  OAH_SKIP_BUILD=1 pnpm local:up
   ```
 - 旧版本本地环境如果已经缓存的是 `openagentharness-oah-api` / `openagentharness-oah-controller` / `openagentharness-oah-sandbox`，`local:up` 现在也会自动识别并回退到 `--no-build`
 - 如果必须重新构建，先确认 Docker Desktop 自身能访问 Docker Hub，再重试。

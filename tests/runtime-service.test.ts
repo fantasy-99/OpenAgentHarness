@@ -6598,6 +6598,22 @@ describe("runtime service", () => {
         };
       }
 
+      const toolResultText =
+        input.messages
+          ?.filter((message) => message.role === "tool")
+          .map((message) => messageText({ content: message.content as Message["content"] }) ?? "")
+          .join("\n") ?? "";
+      if (toolResultText.includes("Background subagent finished its report.")) {
+        return {
+          text: "Parent observed the background result."
+        };
+      }
+      if (toolResultText.includes("started: true")) {
+        return {
+          text: "Parent is waiting for the background result."
+        };
+      }
+
       return {
         text: "Parent observed the background result.",
         toolSteps: [
@@ -6721,8 +6737,10 @@ describe("runtime service", () => {
     const backgroundMessages = messages.items.filter(
       (message) => message.role === "tool" && messageToolName(message) === "SubAgent"
     );
-    const backgroundMessage = backgroundMessages[0];
-    const completionMessage = backgroundMessages.at(-1);
+    const backgroundMessage = backgroundMessages.find((message) => messageText(message)?.includes("started: true"));
+    const completionMessage = backgroundMessages.find(
+      (message) => (message.metadata as { delegatedUpdate?: unknown } | undefined)?.delegatedUpdate === "completed"
+    );
 
     expect(backgroundMessages).toHaveLength(2);
     expect(messageText(backgroundMessage)).toContain("started: true");
@@ -6759,6 +6777,170 @@ describe("runtime service", () => {
     });
   });
 
+  it("keeps the parent run active until background subagent results are integrated", async () => {
+    const gateway = new FakeModelGateway(80);
+    gateway.streamScenarioFactory = (input) => {
+      const systemMessages = input.messages?.filter((message) => message.role === "system").map((message) => message.content) ?? [];
+
+      if (systemMessages.some((message) => message.includes("You are the researcher subagent."))) {
+        return {
+          text: "Delayed background research result."
+        };
+      }
+
+      const toolResultText =
+        input.messages
+          ?.filter((message) => message.role === "tool")
+          .map((message) => messageText({ content: message.content as Message["content"] }) ?? "")
+          .join("\n") ?? "";
+      if (toolResultText.includes("Delayed background research result.")) {
+        return {
+          text: "Parent integrated delayed background research."
+        };
+      }
+
+      return {
+        text: "Parent launched delayed background research.",
+        toolSteps: [
+          {
+            toolName: "SubAgent",
+            input: {
+              description: "Delayed research",
+              prompt: "Collect delayed repository facts.",
+              subagent_name: "researcher",
+              run_in_background: true
+            },
+            toolCallId: "call_delayed_background_research"
+          }
+        ]
+      };
+    };
+
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_agent_background_holdback",
+      name: "agent-background-holdback",
+      rootPath: "/tmp/agent-background-holdback",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "plan",
+      settings: {
+        defaultAgent: "plan",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        plan: {
+          name: "plan",
+          mode: "primary",
+          prompt: "You are the planner agent.",
+          tools: {
+            native: [],
+            external: []
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: ["researcher"]
+        },
+        researcher: {
+          name: "researcher",
+          mode: "subagent",
+          prompt: "You are the researcher subagent.",
+          tools: {
+            native: [],
+            external: []
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_agent_background_holdback",
+        agents: [
+          { name: "plan", mode: "primary", source: "workspace" },
+          { name: "researcher", mode: "subagent", source: "workspace" }
+        ],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: "project_agent_background_holdback",
+      caller,
+      input: {
+        agentName: "plan"
+      }
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Start background research and integrate the result." }
+    });
+
+    await waitFor(async () => {
+      const parentRun = await runtimeService.getRun(accepted.runId);
+      const delegatedRuns =
+        (parentRun.metadata?.delegatedRuns as Array<{ childRunId: string; childSessionId: string }> | undefined) ?? [];
+      return parentRun.status !== "completed" && delegatedRuns.length === 1;
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const messages = await runtimeService.listSessionMessages(session.id, 100);
+    const assistantMessages = messages.items.filter((message) => message.role === "assistant");
+    const toolMessages = messages.items.filter(
+      (message) => message.role === "tool" && messageToolName(message) === "SubAgent"
+    );
+    const events = await runtimeService.listSessionEvents(session.id, undefined, accepted.runId);
+    const runCompleted = events.find((event) => event.event === "run.completed");
+    const delegatedCompleted = events.find((event) => event.event === "agent.delegate.completed");
+
+    expect(toolMessages).toHaveLength(2);
+    expect(messageText(toolMessages.at(-1))).toContain("Delayed background research result.");
+    expect(
+      gateway.invocations.filter((invocation) =>
+        invocation.input.messages?.some(
+          (message) => message.role === "system" && message.content.includes("You are the planner agent.")
+        )
+      )
+    ).toHaveLength(3);
+    expect(Number(delegatedCompleted?.cursor)).toBeLessThan(Number(runCompleted?.cursor));
+  });
+
   it("can launch multiple background subagents in parallel when maxConcurrentSubagents is not configured", async () => {
     const gateway = new FakeModelGateway(20);
     gateway.streamScenarioFactory = (input) => {
@@ -6773,6 +6955,25 @@ describe("runtime service", () => {
       if (systemMessages.some((message) => message.includes("You are the reviewer subagent."))) {
         return {
           text: "Review background result is ready."
+        };
+      }
+
+      const toolResultText =
+        input.messages
+          ?.filter((message) => message.role === "tool")
+          .map((message) => messageText({ content: message.content as Message["content"] }) ?? "")
+          .join("\n") ?? "";
+      if (
+        toolResultText.includes("Research background result is ready.") &&
+        toolResultText.includes("Review background result is ready.")
+      ) {
+        return {
+          text: "Parent integrated two background delegations."
+        };
+      }
+      if (toolResultText.includes("started: true")) {
+        return {
+          text: "Parent is waiting for two background delegations."
         };
       }
 
@@ -6928,7 +7129,7 @@ describe("runtime service", () => {
         await waitFor(async () => {
           const childRun = await runtimeService.getRun(record.childRunId);
           return childRun.status === "completed";
-        });
+        }, 10_000);
       })
     );
 
@@ -6937,7 +7138,7 @@ describe("runtime service", () => {
         (message) => message.role === "tool" && messageToolName(message) === "SubAgent"
       );
       return toolMessages.length === 4;
-    });
+    }, 10_000);
 
     const toolMessages = (await runtimeService.listSessionMessages(session.id, 100)).items.filter(
       (message) => message.role === "tool" && messageToolName(message) === "SubAgent"
@@ -6947,7 +7148,7 @@ describe("runtime service", () => {
     expect(toolMessages.some((message) => messageText(message).includes("Research background result is ready."))).toBe(true);
     expect(toolMessages.some((message) => messageText(message).includes("Review background result is ready."))).toBe(true);
     expect(gateway.maxConcurrentStreams).toBeGreaterThanOrEqual(3);
-  });
+  }, 15_000);
 
   it("respects configured maxConcurrentSubagents for background subagents", async () => {
     const gateway = new FakeModelGateway(20);
@@ -6963,6 +7164,25 @@ describe("runtime service", () => {
       if (systemMessages.some((message) => message.includes("You are the reviewer subagent."))) {
         return {
           text: "Review background result is ready."
+        };
+      }
+
+      const toolResultText =
+        input.messages
+          ?.filter((message) => message.role === "tool")
+          .map((message) => messageText({ content: message.content as Message["content"] }) ?? "")
+          .join("\n") ?? "";
+      if (
+        toolResultText.includes("Research background result is ready.") &&
+        toolResultText.includes("reached max_concurrent_subagents=1")
+      ) {
+        return {
+          text: "Parent integrated the limited background delegation."
+        };
+      }
+      if (toolResultText.includes("started: true") || toolResultText.includes("reached max_concurrent_subagents=1")) {
+        return {
+          text: "Parent is waiting for the limited background delegation."
         };
       }
 
@@ -7407,6 +7627,22 @@ describe("runtime service", () => {
             delegatedTurns >= 2
               ? "Resumed subagent result: second pass complete."
               : "Initial subagent result: first pass complete."
+        };
+      }
+
+      const toolResultText =
+        input.messages
+          ?.filter((message) => message.role === "tool")
+          .map((message) => messageText({ content: message.content as Message["content"] }) ?? "")
+          .join("\n") ?? "";
+      if (toolResultText.includes("Initial subagent result: first pass complete.")) {
+        return {
+          text: "Parent observed the initial background delegation."
+        };
+      }
+      if (toolResultText.includes("started: true")) {
+        return {
+          text: "Parent is waiting for the initial background delegation."
         };
       }
 

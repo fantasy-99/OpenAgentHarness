@@ -13,6 +13,7 @@ import {
   statSync,
   writeFileSync
 } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "../packages/config/node_modules/yaml/dist/index.js";
@@ -113,6 +114,14 @@ function tryRunCapture(command, args, options = {}) {
   }
 }
 
+function resolveOahHome() {
+  return path.resolve(process.env.OAH_HOME?.trim() || path.join(os.homedir(), ".openagentharness"));
+}
+
+function resolveRequestedDeployRoot() {
+  return path.resolve(process.env.OAH_DEPLOY_ROOT?.trim() || resolveOahHome());
+}
+
 async function waitForComposeServiceHealthy(service, label = service) {
   let containerId = "";
   for (let attempt = 0; attempt < 60; attempt += 1) {
@@ -187,14 +196,6 @@ async function resetLocalRedisCoordinationState() {
     console.warn(`Redis not ready for FLUSHALL yet; retrying (${attempt + 1}/5).`);
     await ensureComposeServiceRunning("redis");
     await sleep(1000);
-  }
-}
-
-function ensureDeployRoot() {
-  if (!process.env.OAH_DEPLOY_ROOT) {
-    console.error("OAH_DEPLOY_ROOT is required. Example:");
-    console.error("  export OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root");
-    process.exit(1);
   }
 }
 
@@ -285,11 +286,7 @@ function ensureLocalRuntimeSources(deployRoot) {
 }
 
 function prepareDockerServerConfigs() {
-  const requestedDeployRoot = process.env.OAH_DEPLOY_ROOT;
-  if (!requestedDeployRoot) {
-    throw new Error("OAH_DEPLOY_ROOT is required.");
-  }
-  const deployRoot = path.resolve(requestedDeployRoot);
+  const deployRoot = resolveRequestedDeployRoot();
   process.env.OAH_DEPLOY_ROOT = deployRoot;
 
   let sourceConfigPath = findDockerServerConfigPath(deployRoot);
@@ -786,10 +783,8 @@ function syncReadonlyObjectStorageSources() {
     return;
   }
 
-  const deployRoot = process.env.OAH_DEPLOY_ROOT;
-  if (!deployRoot) {
-    throw new Error("OAH_DEPLOY_ROOT is required before storage sync.");
-  }
+  const deployRoot = resolveRequestedDeployRoot();
+  process.env.OAH_DEPLOY_ROOT = deployRoot;
 
   const generatedDir = path.join(deployRoot, ".oah-local");
   const fingerprintPath = path.join(generatedDir, "readonly-source.fingerprint");
@@ -810,7 +805,6 @@ function syncReadonlyObjectStorageSources() {
 }
 
 async function up() {
-  ensureDeployRoot();
   prepareDockerServerConfigs();
   ensureDockerBuildBaseImages();
   ensureRclonePlugin();
@@ -887,7 +881,6 @@ async function up() {
 }
 
 function down() {
-  ensureDeployRoot();
   prepareDockerServerConfigs();
   run("docker", ["compose", "-f", composeFile, "down"]);
 }

@@ -54,6 +54,7 @@ type DaemonMaintenanceOptions = {
 };
 
 type UpdateOptions = {
+  home?: string;
   installRoot?: string;
   repo?: string;
   apiBaseUrl?: string;
@@ -65,6 +66,7 @@ type UpdateOptions = {
 };
 
 type RollbackOptions = {
+  home?: string;
   installRoot?: string;
 };
 
@@ -89,17 +91,24 @@ export function createProgram(): Command {
   program
     .command("version")
     .description("Show CLI and local installation version information")
-    .option("--install-root <path>", "OAH installation root; defaults to OAH_INSTALL_ROOT or OAH_HOME")
-    .action(async (options: { installRoot?: string }) => {
+    .option("--home <path>", "OAH home directory; defaults to OAH_HOME")
+    .option("--install-root <path>", "Deprecated alias for --home")
+    .action(async (options: { home?: string; installRoot?: string }) => {
       const { describeInstallation } = await import("../release/installation.js");
-      console.log(await describeInstallation({ home: program.opts<GlobalOptions>().home, installRoot: options.installRoot }));
+      console.log(
+        await describeInstallation({
+          home: options.home ?? program.opts<GlobalOptions>().home,
+          installRoot: options.installRoot
+        })
+      );
     });
 
   program
     .command("update")
     .description("Download and switch to a GitHub Release build")
     .argument("[version]", "Release version or tag; defaults to the selected channel")
-    .option("--install-root <path>", "OAH installation root; defaults to OAH_INSTALL_ROOT or OAH_HOME")
+    .option("--home <path>", "OAH home directory; defaults to OAH_HOME")
+    .option("--install-root <path>", "Deprecated alias for --home")
     .option("--repo <owner/repo>", "GitHub repository that publishes OAH releases")
     .option("--api-base-url <url>", "GitHub API base URL for release metadata")
     .option("--release-base-url <url>", "Release download base URL")
@@ -111,7 +120,7 @@ export function createProgram(): Command {
       const { updateInstallation } = await import("../release/installation.js");
       console.log(
         await updateInstallation({
-          home: program.opts<GlobalOptions>().home,
+          home: options.home ?? program.opts<GlobalOptions>().home,
           installRoot: options.installRoot,
           repo: options.repo,
           apiBaseUrl: options.apiBaseUrl,
@@ -129,10 +138,17 @@ export function createProgram(): Command {
     .command("rollback")
     .description("Switch current to a previously installed release")
     .argument("[version]", "Installed release version to switch to; defaults to the newest non-current version")
-    .option("--install-root <path>", "OAH installation root; defaults to OAH_INSTALL_ROOT or OAH_HOME")
+    .option("--home <path>", "OAH home directory; defaults to OAH_HOME")
+    .option("--install-root <path>", "Deprecated alias for --home")
     .action(async (version: string | undefined, options: RollbackOptions) => {
       const { rollbackInstallation } = await import("../release/installation.js");
-      console.log(await rollbackInstallation({ home: program.opts<GlobalOptions>().home, installRoot: options.installRoot, version }));
+      console.log(
+        await rollbackInstallation({
+          home: options.home ?? program.opts<GlobalOptions>().home,
+          installRoot: options.installRoot,
+          version
+        })
+      );
     });
 
   const daemon = program.command("daemon").description("Manage the local OAP daemon").option("--home <path>", "OAH home directory");

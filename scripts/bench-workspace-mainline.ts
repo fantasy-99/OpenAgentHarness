@@ -131,8 +131,11 @@ function parseArgs(argv: string[]): BenchmarkOptions {
         index += 1;
         break;
       case "--runtime-name":
-        if (process.env.OAH_DEPLOY_ROOT) {
-          options.runtimeSourceDir = path.resolve(resolveDeployAssetRoot(process.env.OAH_DEPLOY_ROOT), "runtimes", value);
+        {
+          const deployRoot = process.env.OAH_DEPLOY_ROOT?.trim() || process.env.OAH_HOME?.trim();
+          if (deployRoot) {
+            options.runtimeSourceDir = path.resolve(resolveDeployAssetRoot(deployRoot), "runtimes", value);
+          }
           options.runtimeSourceLabel = value;
         }
         index += 1;
@@ -155,7 +158,7 @@ function resolveRuntimeSourceOptions(): Pick<BenchmarkOptions, "runtimeSourceDir
     };
   }
 
-  const deployRoot = process.env.OAH_DEPLOY_ROOT?.trim();
+  const deployRoot = process.env.OAH_DEPLOY_ROOT?.trim() || process.env.OAH_HOME?.trim();
   const runtimeName = process.env.OAH_BENCH_MAINLINE_RUNTIME_NAME?.trim();
   if (deployRoot && runtimeName) {
     return {

@@ -23,11 +23,17 @@ export interface DelegatedRunRecord {
   childSessionId: string;
   targetAgentName: string;
   parentAgentName: string;
+  notifyParentOnCompletion?: boolean | undefined;
 }
 
 export interface AwaitedRunSummary {
   run: Run;
   outputContent?: string | undefined;
+}
+
+interface DelegatedRunMonitorState {
+  notifyParentOnCompletion: boolean;
+  promise?: Promise<void> | undefined;
 }
 
 export interface AgentCoordinationPersistence {
@@ -83,6 +89,7 @@ export class AgentCoordinationService {
   readonly #lifecycle: AgentCoordinationLifecycle;
   readonly #helpers: AgentCoordinationHelpers;
   readonly #delegationQueues = new Map<string, Promise<void>>();
+  readonly #delegatedRunMonitors = new Map<string, DelegatedRunMonitorState>();
 
   constructor(dependencies: AgentCoordinationServiceDependencies) {
     this.#persistence = dependencies.persistence;
@@ -110,7 +117,10 @@ export class AgentCoordinationService {
             childRunId: (entry as { childRunId: string }).childRunId,
             childSessionId: (entry as { childSessionId: string }).childSessionId,
             targetAgentName: (entry as { targetAgentName: string }).targetAgentName,
-            parentAgentName: (entry as { parentAgentName: string }).parentAgentName
+            parentAgentName: (entry as { parentAgentName: string }).parentAgentName,
+            ...(typeof (entry as { notifyParentOnCompletion?: unknown }).notifyParentOnCompletion === "boolean"
+              ? { notifyParentOnCompletion: (entry as { notifyParentOnCompletion: boolean }).notifyParentOnCompletion }
+              : {})
           }
         ];
       }
@@ -349,7 +359,8 @@ export class AgentCoordinationService {
         childRunId,
         childSessionId,
         targetAgentName: resolvedTargetAgentName,
-        parentAgentName: input.currentAgentName
+        parentAgentName: input.currentAgentName,
+        ...(input.notifyParentOnCompletion ? { notifyParentOnCompletion: true } : {})
       });
 
       await this.#lifecycle.appendEvent({
@@ -376,7 +387,7 @@ export class AgentCoordinationService {
       await this.#lifecycle.enqueueRun(childSessionId, childRunId, {
         priority: "subagent"
       });
-      void this.#monitorDelegatedRun({
+      void this.#startDelegatedRunMonitor({
         parentSessionId: input.parentSession.id,
         parentRunId: input.parentRun.id,
         parentAgentName: input.currentAgentName,
@@ -406,6 +417,62 @@ export class AgentCoordinationService {
     }
 
     return [`mode: ${mode}`, `results: ${rendered.length}`, "", rendered.join("\n\n")].join("\n");
+  }
+
+  async persistUnreportedTerminalDelegatedRuns(input: {
+    parentSessionId: string;
+    parentRun: Run;
+    parentAgentName: string;
+  }): Promise<{ childRunIds: string[] }> {
+    const latestParentRun = await this.#lifecycle.getRun(input.parentRun.id);
+    const records = this.delegatedRunRecords(latestParentRun);
+    if (records.length === 0) {
+      return { childRunIds: [] };
+    }
+
+    const childRuns = await Promise.all(
+      records
+        .filter((record) => record.notifyParentOnCompletion === true)
+        .map(async (record) => ({
+          record,
+          run: await this.#persistence.runs.getById(record.childRunId)
+        }))
+    );
+    const unreportedTerminalRuns: Array<{ record: DelegatedRunRecord; run: Run }> = [];
+    for (const entry of childRuns) {
+      if (!entry.run || !this.#isRunTerminal(entry.run.status)) {
+        continue;
+      }
+
+      if (
+        !(await this.#hasDelegatedRunTerminalMessage({
+          parentSessionId: input.parentSessionId,
+          childRunId: entry.record.childRunId
+        }))
+      ) {
+        unreportedTerminalRuns.push({
+          record: entry.record,
+          run: entry.run
+        });
+      }
+    }
+
+    if (unreportedTerminalRuns.length === 0) {
+      return { childRunIds: [] };
+    }
+
+    for (const { record, run } of unreportedTerminalRuns) {
+      await this.#persistDelegatedRunTerminalUpdate({
+        parentSessionId: input.parentSessionId,
+        parentRunId: latestParentRun.id,
+        parentAgentName: record.parentAgentName || input.parentAgentName,
+        childRun: run
+      });
+    }
+
+    return {
+      childRunIds: unreportedTerminalRuns.map((entry) => entry.record.childRunId)
+    };
   }
 
   async #enforceSubagentConcurrencyLimit(
@@ -455,7 +522,7 @@ export class AgentCoordinationService {
     }
   }
 
-  async #monitorDelegatedRun(input: {
+  #startDelegatedRunMonitor(input: {
     parentSessionId: string;
     parentRunId: string;
     parentAgentName: string;
@@ -463,11 +530,45 @@ export class AgentCoordinationService {
     childRunId: string;
     notifyParentOnCompletion: boolean;
   }): Promise<void> {
+    const existing = this.#delegatedRunMonitors.get(input.childRunId);
+    if (existing) {
+      existing.notifyParentOnCompletion ||= input.notifyParentOnCompletion;
+      return existing.promise ?? Promise.resolve();
+    }
+
+    const state: DelegatedRunMonitorState = {
+      notifyParentOnCompletion: input.notifyParentOnCompletion
+    };
+    const monitor = this.#monitorDelegatedRun(input, state).finally(() => {
+      if (this.#delegatedRunMonitors.get(input.childRunId) === state) {
+        this.#delegatedRunMonitors.delete(input.childRunId);
+      }
+    });
+    state.promise = monitor;
+    this.#delegatedRunMonitors.set(input.childRunId, state);
+    return monitor;
+  }
+
+  async #monitorDelegatedRun(input: {
+    parentSessionId: string;
+    parentRunId: string;
+    parentAgentName: string;
+    targetAgentName: string;
+    childRunId: string;
+    notifyParentOnCompletion: boolean;
+  }, state?: DelegatedRunMonitorState | undefined): Promise<void> {
     const childRun = await this.#waitForRunTerminalState(input.childRunId);
     const childSummary = await this.#collectAwaitedRunSummary(input.childRunId);
+    const alreadyReported = await this.#hasDelegatedRunTerminalMessage({
+      parentSessionId: input.parentSessionId,
+      childRunId: input.childRunId
+    });
+    if (alreadyReported) {
+      return;
+    }
 
     if (childRun.status === "completed") {
-      if (input.notifyParentOnCompletion) {
+      if (state?.notifyParentOnCompletion ?? input.notifyParentOnCompletion) {
         await this.#persistDelegatedRunUpdate({
           parentSessionId: input.parentSessionId,
           parentRunId: input.parentRunId,
@@ -492,7 +593,7 @@ export class AgentCoordinationService {
       return;
     }
 
-    if (input.notifyParentOnCompletion) {
+    if (state?.notifyParentOnCompletion ?? input.notifyParentOnCompletion) {
       await this.#persistDelegatedRunFailure({
         parentSessionId: input.parentSessionId,
         parentRunId: input.parentRunId,
@@ -701,6 +802,15 @@ export class AgentCoordinationService {
     parentAgentName: string;
     childSummary: AwaitedRunSummary;
   }): Promise<void> {
+    if (
+      await this.#hasDelegatedRunTerminalMessage({
+        parentSessionId: input.parentSessionId,
+        childRunId: input.childSummary.run.id
+      })
+    ) {
+      return;
+    }
+
     const message = await this.#persistence.messages.create(
       buildDelegatedRunCompletedMessage({
         createId: this.#helpers.createId,
@@ -733,6 +843,15 @@ export class AgentCoordinationService {
     parentAgentName: string;
     childRun: Run;
   }): Promise<void> {
+    if (
+      await this.#hasDelegatedRunTerminalMessage({
+        parentSessionId: input.parentSessionId,
+        childRunId: input.childRun.id
+      })
+    ) {
+      return;
+    }
+
     const message = await this.#persistence.messages.create(
       buildDelegatedRunFailedMessage({
         createId: this.#helpers.createId,
@@ -757,6 +876,50 @@ export class AgentCoordinationService {
         resultType: "error",
         ...(message.metadata ? { metadata: message.metadata } : {})
       }
+    });
+  }
+
+  async #persistDelegatedRunTerminalUpdate(input: {
+    parentSessionId: string;
+    parentRunId: string;
+    parentAgentName: string;
+    childRun: Run;
+  }): Promise<void> {
+    if (input.childRun.status === "completed") {
+      await this.#persistDelegatedRunUpdate({
+        parentSessionId: input.parentSessionId,
+        parentRunId: input.parentRunId,
+        parentAgentName: input.parentAgentName,
+        childSummary: await this.#collectAwaitedRunSummary(input.childRun.id)
+      });
+      return;
+    }
+
+    await this.#persistDelegatedRunFailure({
+      parentSessionId: input.parentSessionId,
+      parentRunId: input.parentRunId,
+      parentAgentName: input.parentAgentName,
+      childRun: input.childRun
+    });
+  }
+
+  async #hasDelegatedRunTerminalMessage(input: {
+    parentSessionId: string;
+    childRunId: string;
+  }): Promise<boolean> {
+    const messages = await this.#persistence.messages.listBySessionId(input.parentSessionId);
+    return messages.some((message) => {
+      const metadata = message.metadata as
+        | {
+            delegatedUpdate?: unknown;
+            delegatedChildRunId?: unknown;
+          }
+        | undefined;
+      return (
+        message.role === "tool" &&
+        metadata?.delegatedChildRunId === input.childRunId &&
+        (metadata.delegatedUpdate === "completed" || metadata.delegatedUpdate === "failed")
+      );
     });
   }
 }

@@ -6,8 +6,9 @@ It can also seed a local `OAH_HOME` directory. For local single-user daemon usag
 
 ```bash
 export OAH_HOME="${OAH_HOME:-$HOME/.openagentharness}"
-export OAH_DEPLOY_ROOT="${OAH_DEPLOY_ROOT:-$OAH_HOME}"
 ```
+
+`OAH_DEPLOY_ROOT` is optional for local workflows; when it is unset, local scripts use `OAH_HOME`, then `~/.openagentharness`.
 
 Suggested flow:
 
@@ -44,7 +45,7 @@ If this deploy root is copied outside the repository, `./scripts/sync_to_minio.p
   workspaces/              # Optional managed workspace source
   config/
     daemon.yaml            # Local daemon profile: SQLite + embedded worker + local disk
-    server.docker.yaml     # Docker Compose / OAH_DEPLOY_ROOT compatibility entrypoint
+    server.docker.yaml     # Docker Compose profile, using OAH_HOME by default or OAH_DEPLOY_ROOT when set
     kubernetes.server.yaml # K8S/Helm server.yaml profile source
 ```
 

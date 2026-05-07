@@ -51,7 +51,7 @@ interface BenchmarkRow {
 
 const DEFAULT_OPTIONS: BenchmarkOptions = {
   iterations: Number.parseInt(process.env.OAH_BENCH_RUNTIME_MATERIALIZE_ITERATIONS || "8", 10) || 8,
-  deployRoot: process.env.OAH_DEPLOY_ROOT?.trim() || undefined,
+  deployRoot: process.env.OAH_DEPLOY_ROOT?.trim() || process.env.OAH_HOME?.trim() || undefined,
   runtimeName: process.env.OAH_BENCH_RUNTIME_MATERIALIZE_RUNTIME_NAME?.trim() || undefined,
   runtimeLimit: Number.parseInt(process.env.OAH_BENCH_RUNTIME_MATERIALIZE_RUNTIME_LIMIT || "4", 10) || 4,
   syntheticFiles: Number.parseInt(process.env.OAH_BENCH_RUNTIME_MATERIALIZE_SYNTHETIC_FILES || "1024", 10) || 1024,

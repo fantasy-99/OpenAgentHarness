@@ -252,15 +252,14 @@ The packaged daemon command is the intended product shape. A release install sho
 ```bash
 curl -fsSL https://raw.githubusercontent.com/fairyshine/OpenAgentHarness/master/scripts/install.sh | sh
 export OAH_HOME="$HOME/.openagentharness"
-export OAH_INSTALL_ROOT="$HOME/.openagentharness"
-export PATH="$HOME/.openagentharness/bin:$PATH"
+export PATH="$OAH_HOME/bin:$PATH"
 oah daemon init
 oah daemon start
 cd /path/to/repo
 oah tui
 ```
 
-If a new terminal cannot find `oah`, add the `OAH_HOME`, `OAH_INSTALL_ROOT`, and `PATH` lines above to `~/.zshrc` and reload it with `source ~/.zshrc`. As an alternative, keep the two environment variables and add `alias oah="$OAH_INSTALL_ROOT/bin/oah"`.
+If a new terminal cannot find `oah`, add the `OAH_HOME` and `PATH` lines above to `~/.zshrc` and reload it with `source ~/.zshrc`. As an alternative, add `alias oah="$OAH_HOME/bin/oah"`.
 
 The installer places program files under `~/.openagentharness/versions/<version>`, keeps `~/.openagentharness/current` as the active release pointer, and exposes a stable `~/.openagentharness/bin/oah` shim. User config, state, logs, tools, skills, models, and workspaces remain under the same `OAH_HOME` but outside `versions/`, so updates do not rewrite local data.
 
@@ -351,6 +350,8 @@ mkdir -p /absolute/path/to/oah-deploy-root
 cp -R ./template/deploy-root/. /absolute/path/to/oah-deploy-root
 export OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root
 ```
+
+For local development you can omit `OAH_DEPLOY_ROOT`; `pnpm local:up` and `pnpm storage:sync` default to `OAH_HOME` (or `~/.openagentharness`). Set `OAH_DEPLOY_ROOT` only when you want a separate deploy asset root.
 
 Then add at least one platform model YAML under:
 
@@ -470,10 +471,10 @@ pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts 
 pnpm dev:cli -- web
 pnpm dev:cli -- tui --workspace .
 pnpm dev:desktop
-OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync
-OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync -- --include-workspaces
-OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm local:up
-OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root OAH_SKIP_BUILD=1 OAH_LOCAL_SYNC_ON_CHANGE_ONLY=1 pnpm local:up
+pnpm storage:sync
+pnpm storage:sync -- --include-workspaces
+pnpm local:up
+OAH_SKIP_BUILD=1 OAH_LOCAL_SYNC_ON_CHANGE_ONLY=1 pnpm local:up
 pnpm local:down
 helm upgrade --install oah ./deploy/charts/open-agent-harness --namespace open-agent-harness --create-namespace --set-file config.serverYaml=/absolute/path/to/oah-deploy-root/config/kubernetes.server.yaml
 ```

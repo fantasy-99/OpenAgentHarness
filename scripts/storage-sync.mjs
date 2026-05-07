@@ -2,6 +2,7 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 const managedPathDirNames = {
@@ -26,7 +27,7 @@ const awsCliImage = "amazon/aws-cli:latest";
 
 function parseArgs(argv) {
   const options = {
-    root: process.env.OAH_DEPLOY_ROOT,
+    root: process.env.OAH_DEPLOY_ROOT || process.env.OAH_HOME || path.join(os.homedir(), ".openagentharness"),
     bucket: "test-oah-server",
     awsEndpointUrl: process.env.MINIO_AWS_ENDPOINT_URL || "http://host.docker.internal:9000",
     accessKey: process.env.MINIO_ROOT_USER || "oahadmin",
@@ -118,7 +119,7 @@ function printUsage() {
   console.log("Usage: node ./scripts/storage-sync.mjs [options]");
   console.log("");
   console.log("Options:");
-  console.log("  --root <path>                Deploy root. Defaults to $OAH_DEPLOY_ROOT.");
+  console.log("  --root <path>                Deploy root. Defaults to $OAH_DEPLOY_ROOT, $OAH_HOME, or ~/.openagentharness.");
   console.log("  --source-root <path>         Asset source root. Defaults to <root>, falling back to <root>/source.");
   console.log("  --bucket <name>              Bucket name. Defaults to test-oah-server.");
   console.log("  --aws-endpoint-url <url>     Docker-reachable MinIO endpoint.");
@@ -315,7 +316,7 @@ function syncDirectory(pathKey, directory, options) {
 function main() {
   const options = parseArgs(process.argv.slice(2));
   if (!options.root) {
-    throw new Error("Deploy root not provided. Pass --root or set OAH_DEPLOY_ROOT.");
+    throw new Error("Deploy root not provided. Pass --root or set OAH_HOME.");
   }
 
   const root = path.resolve(options.root);

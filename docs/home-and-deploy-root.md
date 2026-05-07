@@ -43,7 +43,7 @@ Desktop   ┘          └── OAP local daemon
 ~/.openagentharness
 ```
 
-它是 local daemon 的 home，也可以作为本机默认的 `OAH_DEPLOY_ROOT`。推荐布局：
+它是 local daemon 的 home、release 安装根目录，也是本机默认的 deploy root。推荐布局：
 
 ```text
 ~/.openagentharness/
@@ -84,7 +84,7 @@ Desktop   ┘          └── OAP local daemon
 
 ### `OAH_DEPLOY_ROOT`
 
-`OAH_DEPLOY_ROOT` 是部署发布根目录，现有脚本会读取：
+`OAH_DEPLOY_ROOT` 是可选的部署发布根目录覆盖项。未设置时，`local:up`、`storage:sync` 和相关 benchmark 默认使用 `OAH_HOME`，再 fallback 到 `~/.openagentharness`。设置后，现有脚本会读取：
 
 ```text
 $OAH_DEPLOY_ROOT/config/server.docker.yaml
@@ -98,11 +98,10 @@ $OAH_DEPLOY_ROOT/server.docker.yaml
 $OAH_DEPLOY_ROOT/source/
 ```
 
-本地 daemon 可以默认令：
+本地 daemon / OAP 场景通常只需要：
 
 ```bash
 export OAH_HOME="${OAH_HOME:-$HOME/.openagentharness}"
-export OAH_DEPLOY_ROOT="${OAH_DEPLOY_ROOT:-$OAH_HOME}"
 ```
 
 生产或团队环境仍建议显式指定独立 deploy root，例如：

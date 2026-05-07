@@ -4,7 +4,7 @@ set -eu
 REPO="${OAH_UPDATE_REPO:-fairyshine/OpenAgentHarness}"
 API_BASE_URL="${OAH_RELEASE_API_BASE_URL:-https://api.github.com/repos/$REPO}"
 RELEASE_BASE_URL="${OAH_RELEASE_BASE_URL:-https://github.com/$REPO/releases/download}"
-INSTALL_ROOT="${OAH_INSTALL_ROOT:-${OAH_HOME:-$HOME/.openagentharness}}"
+INSTALL_ROOT="${OAH_HOME:-${OAH_INSTALL_ROOT:-$HOME/.openagentharness}}"
 VERSION="${OAH_UPDATE_VERSION:-latest-prerelease}"
 CHANNEL="${OAH_UPDATE_CHANNEL:-latest-prerelease}"
 GITHUB_USER_AGENT="${OAH_GITHUB_USER_AGENT:-OpenAgentHarness installer}"
@@ -98,7 +98,7 @@ write_root_shim() {
 #!/usr/bin/env sh
 set -eu
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-export OAH_INSTALL_ROOT="${OAH_INSTALL_ROOT:-$ROOT}"
+export OAH_HOME="${OAH_HOME:-$ROOT}"
 exec "$ROOT/current/bin/oah" "$@"
 EOF
   chmod +x "$INSTALL_ROOT/bin/oah"
@@ -189,20 +189,19 @@ echo "OpenAgentHarness installed:"
 
 echo
 echo "Next steps:"
-echo "  export PATH=\"$INSTALL_ROOT/bin:\$PATH\""
+echo "  export OAH_HOME=\"$INSTALL_ROOT\""
+echo "  export PATH=\"\$OAH_HOME/bin:\$PATH\""
 echo "  oah daemon init"
 echo "  oah daemon start"
 echo "  cd /path/to/repo && oah tui"
 echo
 echo "Optional zsh setup. Add this to ~/.zshrc so new terminals use the same OAH home and command:"
 echo "  export OAH_HOME=\"$INSTALL_ROOT\""
-echo "  export OAH_INSTALL_ROOT=\"$INSTALL_ROOT\""
-echo "  export PATH=\"\$OAH_INSTALL_ROOT/bin:\$PATH\""
+echo "  export PATH=\"\$OAH_HOME/bin:\$PATH\""
 echo
 echo "Or create an alias instead:"
 echo "  export OAH_HOME=\"$INSTALL_ROOT\""
-echo "  export OAH_INSTALL_ROOT=\"$INSTALL_ROOT\""
-echo "  alias oah=\"\$OAH_INSTALL_ROOT/bin/oah\""
+echo "  alias oah=\"\$OAH_HOME/bin/oah\""
 echo
 echo "Then reload zsh:"
 echo "  source ~/.zshrc"

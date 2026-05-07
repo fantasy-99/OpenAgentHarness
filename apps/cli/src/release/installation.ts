@@ -57,9 +57,9 @@ const DEFAULT_REPO = "fairyshine/OpenAgentHarness";
 export function resolveInstallRoot(options: InstallationInfoOptions = {}): string {
   return path.resolve(
     options.installRoot ??
-      process.env.OAH_INSTALL_ROOT ??
       options.home ??
       process.env.OAH_HOME ??
+      process.env.OAH_INSTALL_ROOT ??
       path.join(homedir(), ".openagentharness")
   );
 }
@@ -96,7 +96,7 @@ export async function describeInstallation(options: InstallationInfoOptions = {}
   const installedVersions = await listInstalledVersions(paths);
   return [
     `OpenAgentHarness ${OAH_VERSION}`,
-    `Install root: ${paths.installRoot}`,
+    `OAH_HOME: ${paths.installRoot}`,
     `Current release: ${currentVersion ?? "unmanaged"}`,
     `Installed releases: ${installedVersions.length > 0 ? installedVersions.join(", ") : "none"}`
   ].join("\n");
@@ -118,7 +118,7 @@ export async function updateInstallation(options: ReleaseInstallOptions = {}): P
     return [
       `Would install OpenAgentHarness ${tag} for ${asset.platform}.`,
       `Archive: ${archiveUrl}`,
-      `Install root: ${paths.installRoot}`,
+      `OAH_HOME: ${paths.installRoot}`,
       `Target: ${targetPath}`,
       `Current symlink: ${paths.currentPath}`
     ].join("\n");
@@ -236,7 +236,7 @@ async function writeRootShim(paths: ReleasePaths): Promise<void> {
         "@echo off",
         "setlocal",
         "set OAH_ROOT=%~dp0..",
-        "if not defined OAH_INSTALL_ROOT set OAH_INSTALL_ROOT=%OAH_ROOT%",
+        "if not defined OAH_HOME set OAH_HOME=%OAH_ROOT%",
         "\"%OAH_ROOT%\\current\\bin\\oah.cmd\" %*",
         ""
       ].join("\r\n"),
@@ -251,7 +251,7 @@ async function writeRootShim(paths: ReleasePaths): Promise<void> {
       "#!/usr/bin/env sh",
       "set -eu",
       "ROOT=\"$(CDPATH= cd -- \"$(dirname -- \"$0\")/..\" && pwd)\"",
-      "export OAH_INSTALL_ROOT=\"${OAH_INSTALL_ROOT:-$ROOT}\"",
+      "export OAH_HOME=\"${OAH_HOME:-$ROOT}\"",
       "exec \"$ROOT/current/bin/oah\" \"$@\"",
       ""
     ].join("\n"),

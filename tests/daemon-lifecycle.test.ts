@@ -13,7 +13,7 @@ afterEach(async () => {
 });
 
 describe("OAP daemon lifecycle helpers", () => {
-  it("uses OAH_INSTALL_ROOT as the default daemon home when OAH_HOME is unset", async () => {
+  it("keeps OAH_INSTALL_ROOT as a deprecated daemon home fallback when OAH_HOME is unset", async () => {
     const installRoot = await mkdtemp(path.join(os.tmpdir(), "oah-install-root-home-"));
     tempDirs.push(installRoot);
     const previousHome = process.env.OAH_HOME;

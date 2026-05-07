@@ -4,7 +4,7 @@ set -eu
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 REPO_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 RELEASE_DIR="${OAH_LOCAL_RELEASE_DIR:-$REPO_ROOT/release}"
-INSTALL_ROOT="${OAH_INSTALL_ROOT:-${OAH_HOME:-$HOME/.openagentharness}}"
+INSTALL_ROOT="${OAH_HOME:-${OAH_INSTALL_ROOT:-$HOME/.openagentharness}}"
 VERSION="${OAH_LOCAL_RELEASE_VERSION:-}"
 ASSET="${OAH_LOCAL_RELEASE_ASSET:-}"
 FORCE="${OAH_LOCAL_RELEASE_FORCE:-0}"
@@ -86,7 +86,7 @@ write_root_shim() {
 @echo off
 setlocal
 set OAH_ROOT=%~dp0..
-if not defined OAH_INSTALL_ROOT set OAH_INSTALL_ROOT=%OAH_ROOT%
+if not defined OAH_HOME set OAH_HOME=%OAH_ROOT%
 "%OAH_ROOT%\current\bin\oah.cmd" %*
 EOF
     return
@@ -96,7 +96,7 @@ EOF
 #!/usr/bin/env sh
 set -eu
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-export OAH_INSTALL_ROOT="${OAH_INSTALL_ROOT:-$ROOT}"
+export OAH_HOME="${OAH_HOME:-$ROOT}"
 exec "$ROOT/current/bin/oah" "$@"
 EOF
   chmod +x "$INSTALL_ROOT/bin/oah"
@@ -202,14 +202,13 @@ echo "OpenAgentHarness local release installed:"
 "$INSTALL_ROOT/bin/$BIN_NAME" version
 
 echo
-echo "Install root: $INSTALL_ROOT"
+echo "OAH_HOME: $INSTALL_ROOT"
 echo "Current release: $TARGET"
 echo "Command shim: $INSTALL_ROOT/bin/$BIN_NAME"
 echo
 echo "Next steps:"
 echo "  export OAH_HOME=\"$INSTALL_ROOT\""
-echo "  export OAH_INSTALL_ROOT=\"$INSTALL_ROOT\""
-echo "  export PATH=\"$INSTALL_ROOT/bin:\$PATH\""
+echo "  export PATH=\"\$OAH_HOME/bin:\$PATH\""
 echo "  oah daemon init"
 echo "  oah daemon start"
 echo "  cd /path/to/repo && oah tui"

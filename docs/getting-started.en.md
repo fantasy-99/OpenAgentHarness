@@ -26,6 +26,8 @@ export OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root
 pnpm local:up
 ```
 
+For local development, you can also set only `OAH_HOME`, or set no environment variable at all; `pnpm local:up` defaults to `OAH_HOME`, then `~/.openagentharness`. Use an explicit `OAH_DEPLOY_ROOT` mainly when a team/deployment asset root should be managed separately.
+
 This single command starts the full local stack: `PostgreSQL`, `Redis`, `MinIO`, `oah-api`, `oah-controller`, `oah-compose-scaler`, and `oah-sandbox`. `oah-api` listens on `http://127.0.0.1:8787`, `oah-sandbox` hosts the standalone worker in the local topology, `oah-compose-scaler` applies controller-driven `oah-sandbox` replica changes, and the startup flow also runs one storage sync automatically.
 
 The local default uses `oah-sandbox + OSS/MinIO workspace_backing_store` for active workspace copies. `oah-api` does not mount a persistent workspace volume, so recycled workspaces do not accumulate as local directory shells in the API container.
@@ -83,12 +85,12 @@ Optional flags: `--tool-dir`, `--skill-dir`, `--host`, `--port`
 | Command | Purpose |
 | --- | --- |
 | `pnpm install` | Install dependencies |
-| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync` | Sync readonly data from the deploy root to MinIO (does not include `workspaces` by default) |
-| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm storage:sync -- --include-workspaces` | Also sync `workspaces` to MinIO |
-| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root pnpm local:up` | Start the full local stack (`oah-api` / `oah-controller` / `oah-compose-scaler` / `oah-sandbox`) |
-| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root OAH_SKIP_BUILD=1 pnpm local:up` | Reuse an already-built local OAH image and skip Docker build |
-| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root OAH_LOCAL_SYNC_ON_CHANGE_ONLY=1 pnpm local:up` | Keep the MinIO/rclone object-storage simulation, but resync readonly sources only when they changed |
-| `OAH_DEPLOY_ROOT=/absolute/path/to/oah-deploy-root OAH_LOCAL_SKIP_READONLY_VOLUME_RECREATE=1 pnpm local:up` | Reuse existing rclone readonly volumes when Docker/rclone has not restarted and you only need a fast service restart |
+| `pnpm storage:sync` | Sync readonly data from the deploy root to MinIO (does not include `workspaces` by default) |
+| `pnpm storage:sync -- --include-workspaces` | Also sync `workspaces` to MinIO |
+| `pnpm local:up` | Start the full local stack (`oah-api` / `oah-controller` / `oah-compose-scaler` / `oah-sandbox`) |
+| `OAH_SKIP_BUILD=1 pnpm local:up` | Reuse an already-built local OAH image and skip Docker build |
+| `OAH_LOCAL_SYNC_ON_CHANGE_ONLY=1 pnpm local:up` | Keep the MinIO/rclone object-storage simulation, but resync readonly sources only when they changed |
+| `OAH_LOCAL_SKIP_READONLY_VOLUME_RECREATE=1 pnpm local:up` | Reuse existing rclone readonly volumes when Docker/rclone has not restarted and you only need a fast service restart |
 | `pnpm local:down` | Stop the full local stack |
 | `pnpm exec tsx --tsconfig ./apps/server/tsconfig.json ./apps/server/src/index.ts -- --api-only --config ./server.example.yaml` | Start `oah-api` only |
 | `pnpm exec tsx --tsconfig ./apps/controller/tsconfig.json ./apps/controller/src/index.ts -- --config ./server.example.yaml` | Start `oah-controller` only |
