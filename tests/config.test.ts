@@ -1126,6 +1126,27 @@ compat-main:
     await expect(stat(path.join(runtimeDir, "managed"))).rejects.toThrow();
   });
 
+  it("normalizes uploaded runtime zips that contain a top-level folder", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-runtimes-upload-root-"));
+    tempDirs.push(tempDir);
+    const runtimeDir = path.join(tempDir, "runtimes");
+    await mkdir(runtimeDir, { recursive: true });
+
+    await uploadWorkspaceRuntime({
+      runtimeDir,
+      runtimeName: "micro-learning-test",
+      zipBuffer: createStoredZip({
+        "micro-learning-test/.openharness/settings.yaml": "default_agent: learn\n",
+        "micro-learning-test/.openharness/agents/learn.md": "# Learn\n"
+      })
+    });
+
+    await expect(
+      readFile(path.join(runtimeDir, "micro-learning-test", ".openharness", "settings.yaml"), "utf8")
+    ).resolves.toBe("default_agent: learn\n");
+    await expect(stat(path.join(runtimeDir, "micro-learning-test", "micro-learning-test"))).rejects.toThrow();
+  });
+
   it("applies a runtime template into a local workspace root only when .openharness is absent", async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-runtime-apply-"));
     tempDirs.push(tempDir);

@@ -1,5 +1,6 @@
+import { constants as fsConstants } from "node:fs";
 import path from "node:path";
-import { access, realpath, stat } from "node:fs/promises";
+import { access, mkdir, realpath, rm, stat } from "node:fs/promises";
 
 import {
   platformModelSnapshotSchema,
@@ -485,6 +486,106 @@ function parseBooleanEnv(name: string, fallback: boolean): boolean {
 export function resolveObjectStorageMirrorBlockingInit(): boolean {
   const latencyFirst = parseBooleanEnv("OAH_LATENCY_FIRST_PROFILE", false);
   return parseBooleanEnv("OAH_OBJECT_STORAGE_MIRROR_BLOCKING_INIT", !latencyFirst);
+}
+
+export function resolveRuntimeUploadCacheDir(paths: Pick<ServerConfig["paths"], "workspace_dir" | "runtime_state_dir">): string {
+  return resolveRuntimeUploadCacheDirs(paths)[0]!;
+}
+
+function resolveRuntimeUploadCacheDirs(paths: Pick<ServerConfig["paths"], "workspace_dir" | "runtime_state_dir">): string[] {
+  const assetRoot = process.env.OAH_DEPLOY_ROOT?.trim() || process.env.OAH_HOME?.trim();
+  const candidates = [
+    ...(process.env.OAH_DEPLOY_ROOT?.trim() ? [path.join(path.resolve(process.env.OAH_DEPLOY_ROOT.trim()), "runtimes")] : []),
+    ...(process.env.OAH_HOME?.trim() ? [path.join(path.resolve(process.env.OAH_HOME.trim()), "runtimes")] : []),
+    path.join(resolveRuntimeStateDir(paths), "runtimes")
+  ];
+
+  if (assetRoot) {
+    return [...new Set(candidates)];
+  }
+
+  return [path.join(resolveRuntimeStateDir(paths), "runtimes")];
+}
+
+async function prepareRuntimeUploadCacheDir(paths: Pick<ServerConfig["paths"], "workspace_dir" | "runtime_state_dir">): Promise<string> {
+  let lastError: unknown;
+  for (const candidate of resolveRuntimeUploadCacheDirs(paths)) {
+    try {
+      await mkdir(candidate, { recursive: true });
+      await access(candidate, fsConstants.W_OK);
+      return candidate;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw new Error(
+    `Unable to prepare a writable runtime upload cache directory: ${
+      lastError instanceof Error ? lastError.message : String(lastError)
+    }`
+  );
+}
+
+async function pathExistsForBootstrap(targetPath: string): Promise<boolean> {
+  return stat(targetPath)
+    .then(() => true)
+    .catch((error) => {
+      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+        return false;
+      }
+      throw error;
+    });
+}
+
+async function runtimeExistsInUploadCache(
+  paths: Pick<ServerConfig["paths"], "workspace_dir" | "runtime_state_dir">,
+  runtimeName: string
+): Promise<boolean> {
+  for (const runtimeCacheDir of resolveRuntimeUploadCacheDirs(paths)) {
+    if (await pathExistsForBootstrap(path.join(runtimeCacheDir, runtimeName))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function removeRuntimeFromUploadCaches(
+  paths: Pick<ServerConfig["paths"], "workspace_dir" | "runtime_state_dir">,
+  runtimeName: string
+): Promise<void> {
+  await Promise.all(
+    resolveRuntimeUploadCacheDirs(paths).map(async (runtimeCacheDir) => {
+      await rm(path.join(runtimeCacheDir, runtimeName), { recursive: true, force: true });
+    })
+  );
+}
+
+async function resolveRuntimeSourceDirForBootstrap(
+  runtimeName: string,
+  paths: Pick<ServerConfig["paths"], "runtime_dir" | "workspace_dir" | "runtime_state_dir">,
+  useRuntimeUploadCache: boolean,
+  objectStorage: ServerConfig["object_storage"] | undefined,
+  objectStorageModule: typeof import("./object-storage.js") | undefined
+): Promise<string> {
+  if (useRuntimeUploadCache) {
+    for (const runtimeCacheDir of resolveRuntimeUploadCacheDirs(paths)) {
+      if (await pathExistsForBootstrap(path.join(runtimeCacheDir, runtimeName))) {
+        return runtimeCacheDir;
+      }
+    }
+  }
+
+  if (objectStorage) {
+    const runtimeCacheDir = await prepareRuntimeUploadCacheDir(paths);
+    const runtimeCacheTarget = path.join(runtimeCacheDir, runtimeName);
+    await objectStorageModule!.syncRuntimeDirectoryFromObjectStore(objectStorage, runtimeName, runtimeCacheTarget, (message) => {
+      console.info(`[oah-object-storage] ${message}`);
+    });
+    return runtimeCacheDir;
+  }
+
+  return paths.runtime_dir;
 }
 
 export function resolveWorkspacePrewarmConfig(): { enabled: boolean; delayMs: number; coalesceWindowMs: number } {
@@ -1065,6 +1166,7 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
   if (nativeBridge.isNativeWorkspaceSyncEnabled()) {
     await nativeBridge.ensureNativeWorkspaceSyncWorkerPoolReady();
   }
+  const useRuntimeObjectStorageManagement = config.object_storage !== undefined;
   let workspaceMaterializationManager: WorkspaceMaterializationManager | undefined;
   let sandboxHost: SandboxHost | undefined;
   const modelDir = config.paths.model_dir;
@@ -1632,9 +1734,17 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
                     rootPath: input.rootPath
                   });
 
+                  const runtimeDir = await resolveRuntimeSourceDirForBootstrap(
+                    input.runtime,
+                    config.paths,
+                    useRuntimeObjectStorageManagement,
+                    config.object_storage,
+                    objectStorageModule
+                  );
+
                   await initializeWorkspaceFromRuntime(
                     {
-                      runtimeDir: config.paths.runtime_dir,
+                      runtimeDir,
                       runtimeName: input.runtime,
                       rootPath: workspaceRoot,
                       platformToolDir: config.paths.tool_dir,
@@ -1999,7 +2109,20 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
       ? {
           listWorkspaceRuntimes: async () => {
             const { listWorkspaceRuntimes } = await loadConfigRuntimesModule();
-            return listWorkspaceRuntimes(config.paths.runtime_dir);
+            const runtimesByName = new Map<string, { name: string }>();
+            for (const runtime of await listWorkspaceRuntimes(config.paths.runtime_dir)) {
+              runtimesByName.set(runtime.name, runtime);
+            }
+
+            if (useRuntimeObjectStorageManagement) {
+              for (const runtimeCacheDir of resolveRuntimeUploadCacheDirs(config.paths)) {
+                for (const runtime of await listWorkspaceRuntimes(runtimeCacheDir)) {
+                  runtimesByName.set(runtime.name, runtime);
+                }
+              }
+            }
+
+            return [...runtimesByName.values()].sort((left, right) => left.name.localeCompare(right.name));
           },
           uploadWorkspaceRuntime: async (input: {
             runtimeName: string;
@@ -2008,6 +2131,39 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
             requireExisting?: boolean | undefined;
           }) => {
             const { uploadWorkspaceRuntime } = await loadConfigRuntimesModule();
+            if (useRuntimeObjectStorageManagement) {
+              const runtimeCacheDir = await prepareRuntimeUploadCacheDir(config.paths);
+              const runtimeCacheTarget = path.join(runtimeCacheDir, input.runtimeName);
+              const visibleRuntimeExists = await pathExistsForBootstrap(path.join(config.paths.runtime_dir, input.runtimeName));
+              const cachedRuntimeExists = await runtimeExistsInUploadCache(config.paths, input.runtimeName);
+              const runtimeExists = visibleRuntimeExists || cachedRuntimeExists;
+
+              if (!runtimeExists && input.requireExisting) {
+                throw new AppError(404, "runtime_not_found", `Runtime "${input.runtimeName}" does not exist`);
+              }
+
+              if (runtimeExists && !input.overwrite) {
+                throw new AppError(409, "runtime_already_exists", `Runtime "${input.runtimeName}" already exists`);
+              }
+
+              await mkdir(runtimeCacheDir, { recursive: true });
+              const runtime = await uploadWorkspaceRuntime({
+                runtimeDir: runtimeCacheDir,
+                runtimeName: input.runtimeName,
+                zipBuffer: input.zipBuffer,
+                overwrite: true
+              });
+              await objectStorageModule!.syncRuntimeDirectoryToObjectStore(
+                config.object_storage!,
+                input.runtimeName,
+                runtimeCacheTarget,
+                (message) => {
+                  console.info(`[oah-object-storage] ${message}`);
+                }
+              );
+              return runtime;
+            }
+
             return uploadWorkspaceRuntime({
               runtimeDir: config.paths.runtime_dir,
               runtimeName: input.runtimeName,
@@ -2018,6 +2174,21 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
           },
           deleteWorkspaceRuntime: async (input: { runtimeName: string }) => {
             const { deleteWorkspaceRuntime } = await loadConfigRuntimesModule();
+            if (useRuntimeObjectStorageManagement) {
+              const visibleRuntimeExists = await pathExistsForBootstrap(path.join(config.paths.runtime_dir, input.runtimeName));
+              const cachedRuntimeExists = await runtimeExistsInUploadCache(config.paths, input.runtimeName);
+
+              if (!visibleRuntimeExists && !cachedRuntimeExists) {
+                throw new AppError(404, "runtime_not_found", `Runtime "${input.runtimeName}" does not exist`);
+              }
+
+              await removeRuntimeFromUploadCaches(config.paths, input.runtimeName);
+              await objectStorageModule!.deleteRuntimeFromObjectStore(config.object_storage!, input.runtimeName, (message) => {
+                console.info(`[oah-object-storage] ${message}`);
+              });
+              return;
+            }
+
             return deleteWorkspaceRuntime({
               runtimeDir: config.paths.runtime_dir,
               runtimeName: input.runtimeName
@@ -2064,8 +2235,15 @@ export async function bootstrapRuntime(options: BootstrapOptions = {}): Promise<
                   const rootPath = await resolveLocalWorkspaceRoot(input.rootPath);
                   if (input.runtime) {
                     const { applyWorkspaceRuntimeToExistingRoot } = await loadConfigRuntimesModule();
+                    const runtimeDir = await resolveRuntimeSourceDirForBootstrap(
+                      input.runtime,
+                      config.paths,
+                      useRuntimeObjectStorageManagement,
+                      config.object_storage,
+                      objectStorageModule
+                    );
                     await applyWorkspaceRuntimeToExistingRoot({
-                      runtimeDir: config.paths.runtime_dir,
+                      runtimeDir,
                       runtimeName: input.runtime,
                       rootPath,
                       platformToolDir: config.paths.tool_dir,

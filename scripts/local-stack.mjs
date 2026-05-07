@@ -585,8 +585,11 @@ function ensureDockerBuildBaseImages() {
     process.env.OAH_DOCKER_RUNTIME_BASE_IMAGE &&
     process.env.OAH_DOCKER_RUST_BASE_IMAGE
   ) {
+    if (!process.env.OAH_DOCKER_CLI_BASE_IMAGE) {
+      process.env.OAH_DOCKER_CLI_BASE_IMAGE = "docker:cli";
+    }
     console.log(
-      `Using preconfigured Docker base images: build=${process.env.OAH_DOCKER_BUILD_BASE_IMAGE} runtime=${process.env.OAH_DOCKER_RUNTIME_BASE_IMAGE} rust=${process.env.OAH_DOCKER_RUST_BASE_IMAGE}`
+      `Using preconfigured Docker base images: build=${process.env.OAH_DOCKER_BUILD_BASE_IMAGE} runtime=${process.env.OAH_DOCKER_RUNTIME_BASE_IMAGE} dockerCli=${process.env.OAH_DOCKER_CLI_BASE_IMAGE} rust=${process.env.OAH_DOCKER_RUST_BASE_IMAGE}`
     );
     return;
   }
@@ -595,8 +598,9 @@ function ensureDockerBuildBaseImages() {
     {
       build: "node:24-alpine",
       runtime: "alpine:3.22",
+      dockerCli: "docker:cli",
       rust: "rust:1.95-alpine",
-      description: "Docker Hub Node 24 Alpine build image + Alpine runtime + Rust Alpine native build image"
+      description: "Docker Hub Node 24 Alpine build image + Alpine runtime + Docker CLI image + Rust Alpine native build image"
     }
   ];
 
@@ -617,6 +621,13 @@ function ensureDockerBuildBaseImages() {
       continue;
     }
 
+    const dockerCliReady =
+      dockerImageExists(candidate.dockerCli) ||
+      runMaybe("docker", ["pull", candidate.dockerCli], { stdio: ["ignore", "inherit", "inherit"] }).status === 0;
+    if (!dockerCliReady) {
+      continue;
+    }
+
     const rustReady =
       dockerImageExists(candidate.rust) ||
       runMaybe("docker", ["pull", candidate.rust], { stdio: ["ignore", "inherit", "inherit"] }).status === 0;
@@ -626,6 +637,7 @@ function ensureDockerBuildBaseImages() {
 
     process.env.OAH_DOCKER_BUILD_BASE_IMAGE = candidate.build;
     process.env.OAH_DOCKER_RUNTIME_BASE_IMAGE = candidate.runtime;
+    process.env.OAH_DOCKER_CLI_BASE_IMAGE = candidate.dockerCli;
     process.env.OAH_DOCKER_RUST_BASE_IMAGE = candidate.rust;
     console.log(`Using Docker base image source: ${candidate.description}`);
     return;

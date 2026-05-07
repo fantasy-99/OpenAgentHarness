@@ -57,6 +57,16 @@ function isLocalAuthPublicPath(url: string): boolean {
   );
 }
 
+function isHttpStatusError(error: unknown): error is Error & { statusCode: number; code?: string } {
+  const statusCode = error instanceof Error ? (error as Error & { statusCode?: unknown }).statusCode : undefined;
+  return (
+    error instanceof Error &&
+    typeof statusCode === "number" &&
+    statusCode >= 400 &&
+    statusCode < 600
+  );
+}
+
 export function createBaseApp(dependencies: AppDependencies) {
   const app = Fastify({
     logger: dependencies.logger ?? true
@@ -106,6 +116,11 @@ export function createBaseApp(dependencies: AppDependencies) {
 
     if (isAppError(error)) {
       void sendError(reply, error.statusCode, error.code, error.message, error.details);
+      return;
+    }
+
+    if (isHttpStatusError(error)) {
+      void sendError(reply, error.statusCode, error.code ?? "http_error", error.message);
       return;
     }
 

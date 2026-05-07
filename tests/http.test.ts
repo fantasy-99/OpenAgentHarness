@@ -269,6 +269,12 @@ async function createStartedAppWithEngineService(
     }) => Promise<void>;
     clearWorkspaceCoordination?: (workspaceId: string) => Promise<void>;
     touchWorkspaceActivity?: (workspaceId: string) => Promise<void>;
+    uploadWorkspaceRuntime?: (input: {
+      runtimeName: string;
+      zipBuffer: Buffer;
+      overwrite: boolean;
+      requireExisting?: boolean | undefined;
+    }) => Promise<{ name: string }>;
     sandboxHostProviderKind?: "embedded" | "self_hosted" | "e2b";
     sandboxOwnerFallbackBaseUrl?: string;
     localOwnerBaseUrl?: string;
@@ -282,6 +288,7 @@ async function createStartedAppWithEngineService(
     ...(options?.systemProfile ? { systemProfile: options.systemProfile } : {}),
     logger: false,
     listWorkspaceRuntimes: async () => [{ name: "workspace" }],
+    ...(options?.uploadWorkspaceRuntime ? { uploadWorkspaceRuntime: options.uploadWorkspaceRuntime } : {}),
     ...(options?.listPlatformModels ? { listPlatformModels: options.listPlatformModels } : {}),
     ...(options?.getPlatformModelSnapshot ? { getPlatformModelSnapshot: options.getPlatformModelSnapshot } : {}),
     ...(options?.refreshPlatformModels ? { refreshPlatformModels: options.refreshPlatformModels } : {}),
@@ -918,6 +925,76 @@ describe("http api", () => {
     expect(runtimesResponse.status).toBe(200);
     await expect(runtimesResponse.json()).resolves.toEqual({
       items: [{ name: "workspace" }]
+    });
+  });
+
+  it("uploads workspace runtimes with boolean query strings from the web client", async () => {
+    const uploads: Array<{ runtimeName: string; overwrite: boolean; bytes: number }> = [];
+    activeApp = await createStartedAppWithEngineService(new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: new FakeModelGateway(20),
+      ...createMemoryRuntimePersistence()
+    }), new FakeModelGateway(20), {
+      uploadWorkspaceRuntime: async (input) => {
+        uploads.push({
+          runtimeName: input.runtimeName,
+          overwrite: input.overwrite,
+          bytes: input.zipBuffer.length
+        });
+        return { name: input.runtimeName };
+      }
+    });
+
+    const response = await fetch(`${activeApp.baseUrl}/api/v1/runtimes/upload?name=micro-learning-test&overwrite=false`, {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body: Buffer.from("zip-bytes")
+    });
+
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toEqual({ name: "micro-learning-test" });
+    expect(uploads).toEqual([
+      {
+        runtimeName: "micro-learning-test",
+        overwrite: false,
+        bytes: "zip-bytes".length
+      }
+    ]);
+  });
+
+  it("returns a client error for invalid runtime zip uploads", async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "oah-http-runtime-upload-"));
+    tempWorkspaceRoots.push(tempDir);
+    const runtimeDir = path.join(tempDir, "runtimes");
+    await mkdir(runtimeDir, { recursive: true });
+
+    activeApp = await createStartedAppWithEngineService(new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: new FakeModelGateway(20),
+      ...createMemoryRuntimePersistence()
+    }), new FakeModelGateway(20), {
+      uploadWorkspaceRuntime: async (input) => {
+        const { uploadWorkspaceRuntime } = await import("@oah/config");
+        return uploadWorkspaceRuntime({
+          runtimeDir,
+          runtimeName: input.runtimeName,
+          zipBuffer: input.zipBuffer,
+          overwrite: input.overwrite
+        });
+      }
+    });
+
+    const response = await fetch(`${activeApp.baseUrl}/api/v1/runtimes/upload?name=micro-learning-test`, {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body: Buffer.from("not-a-zip")
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: {
+        code: "invalid_runtime_zip"
+      }
     });
   });
 

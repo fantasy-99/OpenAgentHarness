@@ -31,6 +31,7 @@
     "start:controller": "pnpm --filter @oah/controller start",
     "start:compose-scaler": "pnpm --filter @oah/compose-scaler start",
     "storage:sync": "node ./scripts/storage-sync.mjs --delete",
+    "install:local-release": "./scripts/install-local-release.sh",
     "local:up": "node ./scripts/local-stack.mjs up",
     "local:down": "node ./scripts/local-stack.mjs down",
     "version:sync": "node ./scripts/sync-root-version.mjs",

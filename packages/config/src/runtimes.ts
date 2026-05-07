@@ -415,7 +415,10 @@ function openZip(buffer: Buffer): Promise<yauzl.ZipFile> {
   return new Promise((resolve, reject) => {
     yauzl.fromBuffer(buffer, { lazyEntries: true }, (err, zipfile) => {
       if (err) {
-        reject(err);
+        const invalidZipError = new Error(`Invalid runtime zip archive: ${err.message}`);
+        (invalidZipError as Error & { statusCode?: number }).statusCode = 400;
+        (invalidZipError as Error & { code?: string }).code = "invalid_runtime_zip";
+        reject(invalidZipError);
       } else {
         resolve(zipfile);
       }
@@ -430,6 +433,40 @@ function readZipEntry(readable: NodeJS.ReadableStream): Promise<Buffer> {
     readable.on("end", () => resolve(Buffer.concat(chunks)));
     readable.on("error", reject);
   });
+}
+
+async function findRuntimeRootInUpload(stagingDir: string): Promise<string> {
+  const openHarnessParents: string[] = [];
+
+  async function walk(currentDir: string): Promise<void> {
+    const entries = await readdir(currentDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+
+      const entryPath = path.join(currentDir, entry.name);
+      if (entry.name === ".openharness") {
+        openHarnessParents.push(path.dirname(entryPath));
+        continue;
+      }
+
+      await walk(entryPath);
+    }
+  }
+
+  await walk(stagingDir);
+  if (openHarnessParents.length === 0) {
+    return stagingDir;
+  }
+
+  openHarnessParents.sort((left, right) => {
+    const leftDepth = path.relative(stagingDir, left).split(path.sep).filter(Boolean).length;
+    const rightDepth = path.relative(stagingDir, right).split(path.sep).filter(Boolean).length;
+    return leftDepth - rightDepth || left.localeCompare(right);
+  });
+
+  return openHarnessParents[0]!;
 }
 
 export async function uploadWorkspaceRuntime(input: {
@@ -549,11 +586,25 @@ export async function uploadWorkspaceRuntime(input: {
       }
 
       try {
+        const runtimeSourceDir = await findRuntimeRootInUpload(stagingDir);
         if (runtimeExists) {
           await rm(targetDir, { recursive: true, force: true });
         }
         await mkdir(path.dirname(targetDir), { recursive: true });
-        await rename(stagingDir, targetDir);
+        if (runtimeSourceDir === stagingDir) {
+          await rename(stagingDir, targetDir);
+        } else {
+          await mkdir(targetDir, { recursive: true });
+          for (const entry of await readdir(runtimeSourceDir, { withFileTypes: true })) {
+            await cp(path.join(runtimeSourceDir, entry.name), path.join(targetDir, entry.name), {
+              recursive: true,
+              force: false,
+              errorOnExist: true,
+              preserveTimestamps: true
+            });
+          }
+          await rm(stagingDir, { recursive: true, force: true });
+        }
         settled = true;
         resolve({ name: input.runtimeName });
       } catch (error) {

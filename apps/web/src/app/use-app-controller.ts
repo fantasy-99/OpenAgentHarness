@@ -406,6 +406,7 @@ export function useAppController() {
   const messageRefreshSeqRef = useRef(0);
   const olderMessagesSeqRef = useRef(0);
   const sessionQueueRefreshSeqRef = useRef(0);
+  const sidebarSessionRunsRefreshSeqRef = useRef(0);
   const runRefreshTimerRef = useRef<number | undefined>(undefined);
   const workspaceIndexRefreshTimerRef = useRef<number | undefined>(undefined);
   const runPollingTimerRef = useRef<number | undefined>(undefined);
@@ -418,6 +419,7 @@ export function useAppController() {
   const conversationTailRef = useRef<HTMLDivElement | null>(null);
   const shouldAutoFollowConversationRef = useRef(true);
   const selectedRunIdValue = selectedRunId.trim();
+  const [sidebarSessionRunsById, setSidebarSessionRunsById] = useState<Record<string, Run[]>>({});
   const hasActiveSessionRun = useMemo(
     () => sessionRuns.some((item) => !isTerminalRunStatus(item.status)),
     [sessionRuns]
@@ -486,6 +488,29 @@ export function useAppController() {
       filteredSavedWorkspaces.reduce((count, entry) => count + (sessionsByWorkspaceId.get(entry.id)?.length ?? 0), 0),
     [filteredSavedWorkspaces, sessionsByWorkspaceId]
   );
+  const visibleSidebarSessionIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const workspaceEntry of filteredSavedWorkspaces) {
+      for (const sessionEntry of sessionsByWorkspaceId.get(workspaceEntry.id) ?? []) {
+        ids.push(sessionEntry.id);
+      }
+    }
+    return ids;
+  }, [filteredSavedWorkspaces, sessionsByWorkspaceId]);
+  const visibleSidebarSessionKey = useMemo(() => visibleSidebarSessionIds.join("\n"), [visibleSidebarSessionIds]);
+  const sidebarSessionRuns = useMemo(() => {
+    const byRunId = new Map<string, Run>();
+
+    for (const sessionRun of Object.values(sidebarSessionRunsById).flat()) {
+      byRunId.set(sessionRun.id, sessionRun);
+    }
+
+    for (const sessionRun of sessionRuns) {
+      byRunId.set(sessionRun.id, sessionRun);
+    }
+
+    return Array.from(byRunId.values());
+  }, [sessionRuns, sidebarSessionRunsById]);
   const queuedMessageIds = useMemo(() => new Set(sessionQueuedRuns.map((item) => item.messageId)), [sessionQueuedRuns]);
   const runtimeViewModel = useMemo(
     () =>
@@ -1085,6 +1110,58 @@ export function useAppController() {
       if (!quiet) {
         reportError(error);
       }
+    }
+  }
+
+  async function refreshSidebarSessionRuns(quiet = true): Promise<boolean> {
+    const sessionIds = visibleSidebarSessionIds.slice(0, 80);
+    const seq = ++sidebarSessionRunsRefreshSeqRef.current;
+
+    if (sessionIds.length === 0) {
+      startTransition(() => {
+        setSidebarSessionRunsById({});
+      });
+      return false;
+    }
+
+    try {
+      const entries = await Promise.all(
+        sessionIds.map(async (targetSessionId) => {
+          const page = await request<RunPage>(`/api/v1/sessions/${targetSessionId}/runs?pageSize=20`);
+          return [targetSessionId, page.items] as const;
+        })
+      );
+
+      if (seq !== sidebarSessionRunsRefreshSeqRef.current) {
+        return false;
+      }
+
+      const hasNonTerminalRun = entries.flatMap(([, runs]) => runs).some((item) => !isTerminalRunStatus(item.status));
+
+      startTransition(() => {
+        const visibleIdSet = new Set(sessionIds);
+        setSidebarSessionRunsById((current) => {
+          const next: Record<string, Run[]> = {};
+          for (const [targetSessionId, runs] of Object.entries(current)) {
+            if (visibleIdSet.has(targetSessionId)) {
+              next[targetSessionId] = runs;
+            }
+          }
+          for (const [targetSessionId, runs] of entries) {
+            next[targetSessionId] = runs;
+          }
+          return next;
+        });
+      });
+
+      return hasNonTerminalRun;
+    } catch (error) {
+      if (!quiet) {
+        reportError(error);
+      }
+      return Object.values(sidebarSessionRunsById)
+        .flat()
+        .some((item) => !isTerminalRunStatus(item.status));
     }
   }
 
@@ -2107,6 +2184,32 @@ export function useAppController() {
   }, [connection.baseUrl, connection.token, sessionId]);
 
   useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+
+    async function refreshLoop() {
+      if (cancelled) {
+        return;
+      }
+
+      const hasNonTerminalSidebarRun = await refreshSidebarSessionRuns(true);
+
+      if (cancelled) {
+        return;
+      }
+
+      timer = window.setTimeout(refreshLoop, hasNonTerminalSidebarRun ? 2_000 : 10_000);
+    }
+
+    void refreshLoop();
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [connection.baseUrl, connection.token, visibleSidebarSessionKey]);
+
+  useEffect(() => {
     if (!sessionId.trim() || session?.id !== sessionId) {
       streamAbortRef.current?.abort();
       setStreamState("idle");
@@ -2390,7 +2493,7 @@ export function useAppController() {
       refreshWorkspaceIndex: navigationActions.refreshWorkspaceIndex,
       createSession: navigationActions.createSession,
       sessionId,
-      sessionRuns,
+      sessionRuns: sidebarSessionRuns,
       refreshSessionById: navigationActions.refreshSession,
       removeSavedSession: navigationActions.removeSavedSession,
       renameSession: navigationActions.renameSession,
@@ -2472,7 +2575,7 @@ export function useAppController() {
       serviceScopeOptions,
       selectedServiceScopeLabel,
       sessionId,
-      sessionRuns,
+      sidebarSessionRuns,
       sessionsByWorkspaceId,
       setExpandedSessionIds,
       setShowWorkspaceCreator,

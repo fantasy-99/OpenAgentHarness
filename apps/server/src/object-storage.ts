@@ -8,7 +8,7 @@ import { performance } from "node:perf_hooks";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
-import type { ServerConfig } from "@oah/config";
+import { normalizeObjectStorageConfig, type ServerConfig } from "@oah/config";
 import {
   computeNativeDirectoryFingerprint,
   computeNativeDirectoryFingerprintBatch,
@@ -251,6 +251,13 @@ function normalizeRelativePath(value: string): string {
 function buildRemoteKey(prefix: string, relativePath: string): string {
   const normalizedRelativePath = normalizeRelativePath(relativePath);
   return prefix.length === 0 ? normalizedRelativePath : `${prefix}/${normalizedRelativePath}`;
+}
+
+function resolveManagedPathMapping(
+  mappings: readonly ManagedPathMapping[],
+  key: ManagedPathKey
+): ManagedPathMapping | undefined {
+  return mappings.find((candidate) => candidate.key === key);
 }
 
 async function collectObjectStorageEntries(store: DirectoryObjectStore, prefix: string): Promise<ObjectStorageEntry[]> {
@@ -2869,6 +2876,10 @@ export class ObjectStorageMirrorController {
     return this.#mappings.length > 0;
   }
 
+  hasManagedPath(key: ManagedPathKey): boolean {
+    return resolveManagedPathMapping(this.#mappings, key) !== undefined;
+  }
+
   managedWorkspaceExternalRef(rootPath: string, kind: "project", paths: Pick<ServerConfig["paths"], "workspace_dir">): string | undefined {
     const mapping = this.#mappings.find((candidate) => candidate.key === "workspace");
     if (!mapping) {
@@ -2947,6 +2958,68 @@ export class ObjectStorageMirrorController {
     })();
 
     return this.#syncInFlight;
+  }
+
+  async syncManagedPathSubdirectoryToRemote(
+    key: ManagedPathKey,
+    relativePath: string,
+    localDir: string
+  ): Promise<DirectorySyncResult> {
+    await this.#initializationPromise;
+
+    const mapping = resolveManagedPathMapping(this.#mappings, key);
+    if (!mapping) {
+      throw new Error(`Object storage mirror is not configured for managed path "${key}".`);
+    }
+
+    const normalizedRelativePath = normalizeRelativePath(relativePath);
+    if (
+      !normalizedRelativePath ||
+      normalizedRelativePath === ".." ||
+      normalizedRelativePath.startsWith("../") ||
+      normalizedRelativePath.split("/").includes("..")
+    ) {
+      throw new Error(`Invalid managed path relative path: ${relativePath}`);
+    }
+
+    return syncLocalDirectoryToRemote(
+      this.#store,
+      buildRemoteKey(mapping.remotePrefix, normalizedRelativePath),
+      localDir,
+      this.#logger,
+      `${key}/${normalizedRelativePath}`,
+      key === "workspace"
+        ? {
+            excludeRelativePath: shouldExcludeWorkspaceMirrorRelativePath
+          }
+        : undefined
+    );
+  }
+
+  async deleteManagedPathSubdirectoryFromRemote(key: ManagedPathKey, relativePath: string): Promise<void> {
+    await this.#initializationPromise;
+
+    const mapping = resolveManagedPathMapping(this.#mappings, key);
+    if (!mapping) {
+      throw new Error(`Object storage mirror is not configured for managed path "${key}".`);
+    }
+
+    const normalizedRelativePath = normalizeRelativePath(relativePath);
+    if (
+      !normalizedRelativePath ||
+      normalizedRelativePath === ".." ||
+      normalizedRelativePath.startsWith("../") ||
+      normalizedRelativePath.split("/").includes("..")
+    ) {
+      throw new Error(`Invalid managed path relative path: ${relativePath}`);
+    }
+
+    await deleteRemotePrefixFromObjectStore(
+      this.#store,
+      buildRemoteKey(mapping.remotePrefix, normalizedRelativePath),
+      this.#logger,
+      `${key}/${normalizedRelativePath}`
+    );
   }
 
   async #captureFingerprint(directory: string): Promise<string> {
@@ -3108,6 +3181,67 @@ export async function syncWorkspaceRootToObjectStore(
   return syncLocalDirectoryToRemote(store, remotePrefix, localDir, logger, label, {
     excludeRelativePath: shouldExcludeWorkspaceBackingStoreRelativePath
   });
+}
+
+export function resolveRuntimeRemotePrefix(config: ObjectStorageConfig, runtimeName: string): string {
+  const normalizedConfig = normalizeObjectStorageConfig(config);
+  return buildRemoteKey(normalizePrefix(normalizedConfig.mirrors?.key_prefixes?.runtime ?? "runtime"), runtimeName);
+}
+
+export async function syncRuntimeDirectoryToObjectStore(
+  config: ObjectStorageConfig,
+  runtimeName: string,
+  localDir: string,
+  logger?: (message: string) => void
+): Promise<DirectorySyncResult> {
+  const store = new S3DirectoryStore(config);
+  try {
+    return syncLocalDirectoryToRemote(
+      store,
+      resolveRuntimeRemotePrefix(config, runtimeName),
+      localDir,
+      logger,
+      `runtime/${runtimeName}`
+    );
+  } finally {
+    await store.close();
+  }
+}
+
+export async function syncRuntimeDirectoryFromObjectStore(
+  config: ObjectStorageConfig,
+  runtimeName: string,
+  localDir: string,
+  logger?: (message: string) => void
+): Promise<RemoteToLocalDirectorySyncResult> {
+  const store = new S3DirectoryStore(config);
+  const remotePrefix = resolveRuntimeRemotePrefix(config, runtimeName);
+  try {
+    const entries = await collectObjectStorageEntries(store, remotePrefix);
+    if (entries.length === 0) {
+      const err = new Error(`Runtime "${runtimeName}" does not exist in object storage.`);
+      (err as Error & { statusCode?: number }).statusCode = 404;
+      (err as Error & { code?: string }).code = "runtime_not_found";
+      throw err;
+    }
+
+    return syncRemotePrefixToLocal(store, remotePrefix, localDir, logger, `runtime/${runtimeName}`);
+  } finally {
+    await store.close();
+  }
+}
+
+export async function deleteRuntimeFromObjectStore(
+  config: ObjectStorageConfig,
+  runtimeName: string,
+  logger?: (message: string) => void
+): Promise<void> {
+  const store = new S3DirectoryStore(config);
+  try {
+    await deleteRemotePrefixFromObjectStore(store, resolveRuntimeRemotePrefix(config, runtimeName), logger, `runtime/${runtimeName}`);
+  } finally {
+    await store.close();
+  }
 }
 
 export async function deleteRemotePrefixFromObjectStore(

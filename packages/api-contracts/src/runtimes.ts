@@ -8,13 +8,28 @@ export const workspaceRuntimeListSchema = z.object({
   items: z.array(workspaceRuntimeSchema)
 });
 
+const booleanQuerySchema = z.preprocess((value) => {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true" || normalized === "1") {
+    return true;
+  }
+  if (normalized === "false" || normalized === "0") {
+    return false;
+  }
+  return value;
+}, z.boolean());
+
 export const uploadWorkspaceRuntimeRequestSchema = z.object({
   name: z
     .string()
     .min(1)
     .max(128)
     .regex(/^[a-zA-Z0-9_-]+$/, "Runtime name must contain only alphanumeric characters, hyphens, and underscores"),
-  overwrite: z.boolean().default(false)
+  overwrite: booleanQuerySchema.default(false)
 });
 
 export const uploadWorkspaceRuntimeResponseSchema = z.object({

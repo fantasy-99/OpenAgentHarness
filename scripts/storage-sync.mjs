@@ -22,6 +22,8 @@ const remotePrefixByPathKey = {
   archive_dir: "archive"
 };
 
+const awsCliImage = "amazon/aws-cli:latest";
+
 function parseArgs(argv) {
   const options = {
     root: process.env.OAH_DEPLOY_ROOT,
@@ -161,7 +163,7 @@ function buildAwsDockerCommand(awsArgs, options, mountDir = null) {
     command.push("-v", `${mountDir}:/sync-source:ro`);
   }
 
-  command.push("amazon/aws-cli:latest", "--endpoint-url", options.awsEndpointUrl, ...awsArgs);
+  command.push(awsCliImage, "--endpoint-url", options.awsEndpointUrl, ...awsArgs);
   return command;
 }
 
@@ -195,7 +197,24 @@ function runCommand(command, options, contextLabel) {
   }
 }
 
+function dockerImageExists(imageName) {
+  const result = spawnSync("docker", ["image", "inspect", imageName], {
+    stdio: "ignore",
+    env: process.env
+  });
+  return result.status === 0;
+}
+
+function ensureAwsCliImage(options) {
+  if (options.dryRun || dockerImageExists(awsCliImage)) {
+    return;
+  }
+
+  runCommand(["docker", "pull", awsCliImage], options, "pull aws-cli image");
+}
+
 function ensureBucket(options) {
+  ensureAwsCliImage(options);
   const headCommand = buildAwsDockerCommand(["s3api", "head-bucket", "--bucket", options.bucket], options);
 
   if (options.dryRun) {
@@ -203,8 +222,9 @@ function ensureBucket(options) {
     return;
   }
 
+  console.log(`Checking bucket exists: ${options.bucket}`);
   const headResult = spawnSync(headCommand[0], headCommand.slice(1), {
-    stdio: "ignore",
+    stdio: ["ignore", "inherit", "inherit"],
     env: process.env
   });
 

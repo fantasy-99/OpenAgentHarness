@@ -1281,6 +1281,58 @@ describe("object storage sync", () => {
     ).toBeUndefined();
   });
 
+  it("syncs a single managed runtime subdirectory without touching sibling runtime prefixes", async () => {
+    const runtimeCacheRoot = await mkdtemp(path.join(os.tmpdir(), "oah-runtime-cache-"));
+    const runtimeCacheDir = path.join(runtimeCacheRoot, "managed");
+    tempDirs.push(runtimeCacheRoot);
+
+    await mkdir(runtimeCacheDir, { recursive: true });
+    await writeFile(path.join(runtimeCacheDir, "AGENTS.md"), "# managed\n", "utf8");
+
+    const store = new FakeDirectoryObjectStore();
+    await store.putObject("runtime/other/AGENTS.md", Buffer.from("# other\n"));
+
+    const controller = new ObjectStorageMirrorController(
+      {
+        provider: "s3",
+        bucket: "test-bucket",
+        region: "us-east-1",
+        endpoint: "http://127.0.0.1:9000",
+        force_path_style: true,
+        managed_paths: ["runtime"],
+        sync_on_boot: false,
+        sync_on_change: false
+      },
+      {
+        workspace_dir: "/tmp/workspaces",
+        runtime_dir: "/tmp/runtimes",
+        model_dir: "/tmp/models",
+        tool_dir: "/tmp/tools",
+        skill_dir: "/tmp/skills"
+      },
+      undefined,
+      {
+        store
+      }
+    );
+
+    await controller.initialize();
+    await controller.syncManagedPathSubdirectoryToRemote("runtime", "managed", runtimeCacheDir);
+
+    expect((await store.getObject("runtime/managed/AGENTS.md")).body.toString("utf8")).toBe("# managed\n");
+    expect((await store.getObject("runtime/other/AGENTS.md")).body.toString("utf8")).toBe("# other\n");
+
+    await rm(path.join(runtimeCacheDir, "AGENTS.md"));
+    await writeFile(path.join(runtimeCacheDir, "README.md"), "# updated\n", "utf8");
+    await controller.syncManagedPathSubdirectoryToRemote("runtime", "managed", runtimeCacheDir);
+
+    await expect(store.getObject("runtime/managed/AGENTS.md")).rejects.toThrow(/Missing object/u);
+    expect((await store.getObject("runtime/managed/README.md")).body.toString("utf8")).toBe("# updated\n");
+    expect((await store.getObject("runtime/other/AGENTS.md")).body.toString("utf8")).toBe("# other\n");
+
+    await controller.close();
+  });
+
   it("can continue mirror initialization in the background after local paths are prepared", async () => {
     const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-bg-init-workspaces-"));
     const runtimeDir = await mkdtemp(path.join(os.tmpdir(), "oah-object-storage-bg-init-runtimes-"));

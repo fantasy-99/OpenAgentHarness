@@ -26,10 +26,33 @@ import { registerPublicStorageRoutes } from "./public-storage-lazy.js";
 import { buildSystemProfile } from "../../system-profile.js";
 
 let developerDocsModulePromise: Promise<typeof import("../developer-docs.js")> | undefined;
+const RUNTIME_UPLOAD_BODY_LIMIT_BYTES = 256 * 1024 * 1024;
 
 function loadDeveloperDocsModule(): Promise<typeof import("../developer-docs.js")> {
   developerDocsModulePromise ??= import("../developer-docs.js");
   return developerDocsModulePromise;
+}
+
+function runtimeUploadErrorToAppError(error: unknown): AppError | undefined {
+  if (!(error instanceof Error)) {
+    return undefined;
+  }
+
+  const code = (error as Error & { code?: string }).code;
+  if (code === "runtime_already_exists") {
+    return new AppError(409, "runtime_already_exists", error.message);
+  }
+  if (code === "runtime_not_found") {
+    return new AppError(404, "runtime_not_found", error.message);
+  }
+  if (code === "empty_runtime_zip") {
+    return new AppError(400, "empty_runtime_zip", error.message);
+  }
+  if (code === "invalid_runtime_zip") {
+    return new AppError(400, "invalid_runtime_zip", error.message);
+  }
+
+  return undefined;
 }
 
 export function registerPublicRoutes(app: FastifyInstance, dependencies: AppDependencies, options: AppRouteOptions): void {
@@ -66,12 +89,8 @@ export function registerPublicRoutes(app: FastifyInstance, dependencies: AppDepe
       });
       return reply.status(201).send(uploadWorkspaceRuntimeResponseSchema.parse({ name: runtime.name }));
     } catch (error) {
-      if (error instanceof Error && (error as Error & { code?: string }).code === "runtime_already_exists") {
-        throw new AppError(409, "runtime_already_exists", error.message);
-      }
-      if (error instanceof Error && (error as Error & { code?: string }).code === "empty_runtime_zip") {
-        throw new AppError(400, "empty_runtime_zip", error.message);
-      }
+      const appError = runtimeUploadErrorToAppError(error);
+      if (appError) throw appError;
       throw error;
     }
   };
@@ -96,12 +115,8 @@ export function registerPublicRoutes(app: FastifyInstance, dependencies: AppDepe
       });
       return reply.send(updateWorkspaceRuntimeResponseSchema.parse({ name: runtime.name }));
     } catch (error) {
-      if (error instanceof Error && (error as Error & { code?: string }).code === "runtime_not_found") {
-        throw new AppError(404, "runtime_not_found", error.message);
-      }
-      if (error instanceof Error && (error as Error & { code?: string }).code === "empty_runtime_zip") {
-        throw new AppError(400, "empty_runtime_zip", error.message);
-      }
+      const appError = runtimeUploadErrorToAppError(error);
+      if (appError) throw appError;
       throw error;
     }
   };
@@ -232,13 +247,13 @@ export function registerPublicRoutes(app: FastifyInstance, dependencies: AppDepe
   );
 
   app.get("/api/v1/runtimes", listRuntimes);
-  app.post("/api/v1/runtimes/upload", uploadRuntime);
-  app.put("/api/v1/runtimes/:runtimeName", updateRuntime);
+  app.post("/api/v1/runtimes/upload", { bodyLimit: RUNTIME_UPLOAD_BODY_LIMIT_BYTES }, uploadRuntime);
+  app.put("/api/v1/runtimes/:runtimeName", { bodyLimit: RUNTIME_UPLOAD_BODY_LIMIT_BYTES }, updateRuntime);
   app.delete("/api/v1/runtimes/:runtimeName", deleteRuntime);
   // Keep legacy /blueprints aliases during the runtime API rename so staggered web/api deploys do not 404.
   app.get("/api/v1/blueprints", listRuntimes);
-  app.post("/api/v1/blueprints/upload", uploadRuntime);
-  app.put("/api/v1/blueprints/:runtimeName", updateRuntime);
+  app.post("/api/v1/blueprints/upload", { bodyLimit: RUNTIME_UPLOAD_BODY_LIMIT_BYTES }, uploadRuntime);
+  app.put("/api/v1/blueprints/:runtimeName", { bodyLimit: RUNTIME_UPLOAD_BODY_LIMIT_BYTES }, updateRuntime);
   app.delete("/api/v1/blueprints/:runtimeName", deleteRuntime);
 
   app.get("/api/v1/model-providers", async (_request, reply) =>

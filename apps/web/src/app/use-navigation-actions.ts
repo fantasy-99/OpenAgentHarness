@@ -562,7 +562,10 @@ export function useNavigationActions(params: {
 
   async function uploadWorkspaceRuntime(file: File, name: string, overwrite: boolean): Promise<boolean> {
     try {
-      const query = new URLSearchParams({ name, overwrite: String(overwrite) });
+      const query = new URLSearchParams({ name });
+      if (overwrite) {
+        query.set("overwrite", "true");
+      }
       const response = await fetchWorkspaceRuntimeEndpoint(
         `/api/v1/runtimes/upload?${query.toString()}`,
         `/api/v1/blueprints/upload?${query.toString()}`,

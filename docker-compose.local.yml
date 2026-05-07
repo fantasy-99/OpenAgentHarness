@@ -87,6 +87,7 @@ services:
       args:
         BASE_BUILD_IMAGE: ${OAH_DOCKER_BUILD_BASE_IMAGE:-node:24-alpine}
         BASE_RUNTIME_IMAGE: ${OAH_DOCKER_RUNTIME_BASE_IMAGE:-alpine:3.22}
+        BASE_DOCKER_CLI_IMAGE: ${OAH_DOCKER_CLI_BASE_IMAGE:-docker:cli}
         BASE_RUST_IMAGE: ${OAH_DOCKER_RUST_BASE_IMAGE:-rust:1.95-alpine}
     restart: unless-stopped
     command:
@@ -103,6 +104,7 @@ services:
       OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT: ${OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT:-1}
       OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT: ${OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT:-primary}
       OAH_OBJECT_STORAGE_SYNC_TRUST_MANAGED_PREFIXES: ${OAH_OBJECT_STORAGE_SYNC_TRUST_MANAGED_PREFIXES:-1}
+      OAH_DEPLOY_ROOT: ${OAH_LOCAL_DEPLOY_ROOT:?set OAH_LOCAL_DEPLOY_ROOT}
       OAH_POSTGRES_POOL_MAX: ${OAH_API_POSTGRES_POOL_MAX:-5}
       OAH_REDIS_READY_QUEUE_READINESS_LIMIT: ${OAH_REDIS_READY_QUEUE_READINESS_LIMIT:-100}
       OAH_REDIS_READY_QUEUE_CLAIM_SCAN_LIMIT: ${OAH_REDIS_READY_QUEUE_CLAIM_SCAN_LIMIT:-100}
@@ -125,6 +127,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ${OAH_DOCKER_API_CONFIG:?set OAH_DOCKER_API_CONFIG}:/config/server.docker.yaml:ro
+      - ${OAH_LOCAL_DEPLOY_ROOT:?set OAH_LOCAL_DEPLOY_ROOT}:${OAH_LOCAL_DEPLOY_ROOT:?set OAH_LOCAL_DEPLOY_ROOT}
       - oah-runtime-state:/data/runtime-state
       - oah-runtimes:/data/runtimes:ro
       - oah-models:/data/models:ro
@@ -141,6 +144,7 @@ services:
       args:
         BASE_BUILD_IMAGE: ${OAH_DOCKER_BUILD_BASE_IMAGE:-node:24-alpine}
         BASE_RUNTIME_IMAGE: ${OAH_DOCKER_RUNTIME_BASE_IMAGE:-alpine:3.22}
+        BASE_DOCKER_CLI_IMAGE: ${OAH_DOCKER_CLI_BASE_IMAGE:-docker:cli}
         BASE_RUST_IMAGE: ${OAH_DOCKER_RUST_BASE_IMAGE:-rust:1.95-alpine}
     restart: unless-stopped
     command:
@@ -182,6 +186,7 @@ services:
       args:
         BASE_BUILD_IMAGE: ${OAH_DOCKER_BUILD_BASE_IMAGE:-node:24-alpine}
         BASE_RUNTIME_IMAGE: ${OAH_DOCKER_RUNTIME_BASE_IMAGE:-alpine:3.22}
+        BASE_DOCKER_CLI_IMAGE: ${OAH_DOCKER_CLI_BASE_IMAGE:-docker:cli}
         BASE_RUST_IMAGE: ${OAH_DOCKER_RUST_BASE_IMAGE:-rust:1.95-alpine}
     restart: unless-stopped
     environment:
@@ -229,6 +234,7 @@ services:
       args:
         BASE_BUILD_IMAGE: ${OAH_DOCKER_BUILD_BASE_IMAGE:-node:24-alpine}
         BASE_RUNTIME_IMAGE: ${OAH_DOCKER_RUNTIME_BASE_IMAGE:-alpine:3.22}
+        BASE_DOCKER_CLI_IMAGE: ${OAH_DOCKER_CLI_BASE_IMAGE:-docker:cli}
         BASE_RUST_IMAGE: ${OAH_DOCKER_RUST_BASE_IMAGE:-rust:1.95-alpine}
     restart: unless-stopped
     command:
@@ -246,6 +252,7 @@ services:
       OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT: ${OAH_NATIVE_WORKSPACE_SYNC_PERSISTENT:-1}
       OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT: ${OAH_OBJECT_STORAGE_SYNC_BUNDLE_LAYOUT:-primary}
       OAH_OBJECT_STORAGE_SYNC_TRUST_MANAGED_PREFIXES: ${OAH_OBJECT_STORAGE_SYNC_TRUST_MANAGED_PREFIXES:-1}
+      OAH_DEPLOY_ROOT: ${OAH_LOCAL_DEPLOY_ROOT:?set OAH_LOCAL_DEPLOY_ROOT}
       OAH_OBJECT_STORAGE_SYNC_MAX_OBJECTS: ${OAH_OBJECT_STORAGE_SYNC_MAX_OBJECTS:-50000}
       OAH_OBJECT_STORAGE_SYNC_MAX_BYTES: ${OAH_OBJECT_STORAGE_SYNC_MAX_BYTES:-4294967296}
       OAH_OBJECT_STORAGE_SYNC_MAX_FILE_BYTES: ${OAH_OBJECT_STORAGE_SYNC_MAX_FILE_BYTES:-536870912}
@@ -270,6 +277,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ${OAH_DOCKER_SANDBOX_CONFIG:?set OAH_DOCKER_SANDBOX_CONFIG}:/config/server.docker.yaml:ro
+      - ${OAH_LOCAL_DEPLOY_ROOT:?set OAH_LOCAL_DEPLOY_ROOT}:${OAH_LOCAL_DEPLOY_ROOT:?set OAH_LOCAL_DEPLOY_ROOT}
       - /data/workspaces
       - oah-runtime-state:/data/runtime-state
       - oah-runtimes:/data/runtimes:ro
