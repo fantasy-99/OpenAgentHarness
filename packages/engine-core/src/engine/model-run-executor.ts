@@ -25,10 +25,14 @@ import type { AgentCoordinationService } from "./agent-coordination.js";
 import type { ToolExecutionService } from "./tool-execution.js";
 
 function isDelegatedTerminalUpdateMessage(message: Message): boolean {
-  const metadata = message.metadata as { delegatedUpdate?: unknown } | undefined;
+  const metadata = message.metadata as
+    | { delegatedUpdate?: unknown; taskNotificationPendingModelDelivery?: unknown; eligibleForModelContext?: unknown }
+    | undefined;
   return (
     (message.role === "tool" || message.role === "user") &&
-    (metadata?.delegatedUpdate === "completed" || metadata?.delegatedUpdate === "failed")
+    (metadata?.delegatedUpdate === "completed" || metadata?.delegatedUpdate === "failed") &&
+    metadata?.taskNotificationPendingModelDelivery !== true &&
+    metadata?.eligibleForModelContext !== false
   );
 }
 

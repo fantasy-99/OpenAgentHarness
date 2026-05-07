@@ -6054,13 +6054,24 @@ describe("runtime service", () => {
     expect(parentRunSteps.items.some((step) => step.stepType === "tool_call" && step.name === "SubAgent")).toBe(true);
   });
 
-  it("falls back to the last tool result when the awaited subagent assistant message is blank", async () => {
+  it("asks the subagent for final output instead of returning a raw tool result", async () => {
     const workspaceRoot = await mkdtemp(path.join(tmpdir(), "oah-agent-delegate-fallback-"));
     const gateway = new FakeModelGateway();
     gateway.streamScenarioFactory = (input) => {
       const systemMessages = input.messages?.filter((message) => message.role === "system").map((message) => message.content) ?? [];
+      const userText =
+        input.messages
+          ?.filter((message) => message.role === "user")
+          .map((message) => (typeof message.content === "string" ? message.content : ""))
+          .join("\n") ?? "";
 
       if (systemMessages.some((message) => message.includes("You are the researcher subagent."))) {
+        if (userText.includes("Please respond now with only the final result")) {
+          return {
+            text: "Final synthesized subagent result."
+          };
+        }
+
         return {
           text: "   \n",
           toolSteps: [
@@ -6076,7 +6087,7 @@ describe("runtime service", () => {
       }
 
       return {
-        text: "Parent integrated the fallback result.",
+        text: "Parent integrated the synthesized result.",
         toolSteps: [
           {
             toolName: "SubAgent",
@@ -6192,15 +6203,19 @@ describe("runtime service", () => {
     const agentToolMessage = parentMessages.items.find(
       (message) => message.role === "tool" && messageToolName(message) === "SubAgent"
     );
-    const events = await runtimeService.listSessionEvents(session.id);
+    const childMessages = (
+      await runtimeService.listSessionMessages(
+        extractFieldValue(messageText(agentToolMessage), "task_id") ?? "",
+        50
+      )
+    ).items;
 
     expect(messageText(agentToolMessage)).toContain("result:");
-    expect(messageText(agentToolMessage)).toContain("exit_code: 0");
-    expect(messageText(agentToolMessage)).toContain("stdout:");
-    expect(messageText(agentToolMessage)).toContain("subagent-tool-fallback");
-    expect(events.find((event) => event.event === "agent.delegate.completed")?.data).toMatchObject({
-      output: expect.stringContaining("subagent-tool-fallback")
-    });
+    expect(messageText(agentToolMessage)).toContain("Final synthesized subagent result.");
+    expect(messageText(agentToolMessage)).not.toContain("exit_code: 0");
+    expect(messageText(agentToolMessage)).not.toContain("stdout:");
+    expect(messageText(agentToolMessage)).not.toContain("subagent-tool-fallback");
+    expect(childMessages.some((message) => messageText(message)?.includes("Please respond now with only the final result"))).toBe(true);
   });
 
   it("persists reasoning-only assistant completions as message parts", async () => {
@@ -7358,6 +7373,30 @@ describe("runtime service", () => {
       (parentRun.metadata?.delegatedRuns as Array<{ childRunId: string; childSessionId: string }> | undefined) ?? [];
     expect(delegatedRuns).toHaveLength(2);
 
+    await waitFor(async () => {
+      const messages = await runtimeService.listSessionMessages(session.id, 100);
+      const notifications = taskNotifications(messages.items);
+      return notifications.some(
+        (message) =>
+          messageText(message)?.includes("Fast review result is ready.") &&
+          message.metadata?.eligibleForModelContext === false &&
+          message.metadata?.taskNotificationPendingModelDelivery === true
+      );
+    }, 10_000);
+    expect(
+      gateway.invocations.some((invocation) => {
+        const hasPlannerSystem = invocation.input.messages?.some(
+          (message) => message.role === "system" && message.content.includes("You are the planner agent.")
+        );
+        const userText =
+          invocation.input.messages
+            ?.filter((message) => message.role === "user")
+            .map((message) => (typeof message.content === "string" ? message.content : ""))
+            .join("\n") ?? "";
+        return hasPlannerSystem && userText.includes("Fast review result is ready.") && !userText.includes("Slow research result is ready.");
+      })
+    ).toBe(false);
+
     await waitForTaskNotifications(runtimeService, session.id, 2, 10_000);
     await waitFor(async () => {
       const messages = await runtimeService.listSessionMessages(session.id, 100);
@@ -7386,6 +7425,19 @@ describe("runtime service", () => {
     expect(continuationRuns[0]?.metadata).toMatchObject({
       taskNotificationBatchParentRunId: accepted.runId
     });
+    expect(notifications.map((message) => message.createdAt)).toEqual(
+      [...notifications].map((message) => message.createdAt).sort((left, right) => left.localeCompare(right))
+    );
+    expect(new Set(notifications.map((message) => message.createdAt)).size).toBeGreaterThan(1);
+    expect(
+      notifications.every(
+        (message) =>
+          typeof message.metadata?.taskNotificationConsumedAt === "string" &&
+          message.metadata.taskNotificationDeliveredToModel === true &&
+          message.metadata.taskNotificationPendingModelDelivery === false &&
+          message.metadata.eligibleForModelContext === true
+      )
+    ).toBe(true);
     expect(plannerNotificationInvocations).toHaveLength(1);
     expect(assistantMessages.filter((message) => messageText(message)?.includes("Parent integrated both completed subagents once."))).toHaveLength(1);
     expect(assistantMessages.some((message) => messageText(message)?.includes("Parent integrated a partial subagent result too early."))).toBe(false);
@@ -13510,6 +13562,147 @@ describe("runtime service", () => {
     expect(
       messages.items.some((message) => message.role === "assistant" && messageText(message) === "Recovered the legacy session.")
     ).toBe(true);
+  });
+
+  it("does not synthesize a missing result when a tool result is persisted later in the same run", async () => {
+    const persistence = createMemoryRuntimePersistence();
+    const gateway = new FakeModelGateway();
+    gateway.streamScenarioFactory = () => ({
+      text: "Continued without repairing a real WebFetch result."
+    });
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+    await persistence.workspaceRepository.upsert({
+      id: "project_late_tool_result_repair",
+      name: "late-tool-result-repair",
+      rootPath: "/tmp/late-tool-result-repair",
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "default",
+      settings: {
+        defaultAgent: "default",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        default: {
+          name: "default",
+          mode: "primary",
+          prompt: "Continue helping the user.",
+          tools: {
+            native: ["WebFetch"],
+            actions: [],
+            skills: [],
+            external: []
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_late_tool_result_repair",
+        agents: [{ name: "default", mode: "primary", source: "workspace" }],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: ["WebFetch"]
+      }
+    });
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+    const session = await runtimeService.createSession({
+      workspaceId: "project_late_tool_result_repair",
+      caller,
+      input: {}
+    });
+
+    await persistence.messageRepository.create({
+      id: "msg_user_before_webfetch",
+      sessionId: session.id,
+      role: "user",
+      content: "Fetch the page.",
+      createdAt: "2026-04-07T10:00:00.000Z"
+    });
+    await persistence.messageRepository.create({
+      id: "msg_assistant_webfetch_call",
+      sessionId: session.id,
+      runId: "run_webfetch_done",
+      role: "assistant",
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: "call_webfetch_done",
+          toolName: "WebFetch",
+          input: {
+            url: "https://example.com",
+            prompt: "Summarize"
+          }
+        }
+      ],
+      createdAt: "2026-04-07T10:00:01.000Z"
+    });
+    await persistence.messageRepository.create({
+      id: "msg_assistant_intermediate_after_webfetch_call",
+      sessionId: session.id,
+      runId: "run_webfetch_done",
+      role: "assistant",
+      content: "I will summarize the fetched page.",
+      createdAt: "2026-04-07T10:00:02.000Z"
+    });
+    await persistence.messageRepository.create({
+      id: "msg_tool_webfetch_done",
+      sessionId: session.id,
+      runId: "run_webfetch_done",
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "call_webfetch_done",
+          toolName: "WebFetch",
+          output: {
+            type: "text",
+            value: "Example Domain fetched successfully."
+          }
+        }
+      ],
+      createdAt: "2026-04-07T10:00:03.000Z"
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Continue." }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const messages = await runtimeService.listSessionMessages(session.id, 20);
+    expect(messages.items.some((message) => message.id === "msg_assistant_webfetch_call~missing-tool-result")).toBe(false);
+    expect(messageText(messages.items.find((message) => message.id === "msg_tool_webfetch_done"))).toContain(
+      "Example Domain fetched successfully."
+    );
+    expect(messages.items.some((message) => messageText(message)?.includes("Tool result unavailable because"))).toBe(false);
   });
 
   it("writes hook and tool call audit records when hooks and actions run", async () => {

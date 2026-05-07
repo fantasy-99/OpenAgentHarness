@@ -638,6 +638,115 @@ describe("runtime message projections", () => {
     });
   });
 
+  it("omits duplicate composite tool-call messages from model context", async () => {
+    const messages: Message[] = [
+      {
+        id: "msg_user",
+        sessionId: "sess_1",
+        runId: "run_1",
+        role: "user",
+        content: "Fetch and summarize.",
+        createdAt: "2026-04-08T00:00:00.000Z"
+      },
+      {
+        id: "msg_reasoning",
+        sessionId: "sess_1",
+        runId: "run_1",
+        role: "assistant",
+        content: [
+          {
+            type: "reasoning",
+            text: "I should fetch the page."
+          }
+        ],
+        createdAt: "2026-04-08T00:00:01.000Z"
+      },
+      {
+        id: "msg_tool_call",
+        sessionId: "sess_1",
+        runId: "run_1",
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "functions.WebFetch:9",
+            toolName: "WebFetch",
+            input: {
+              url: "https://example.com",
+              prompt: "Summarize"
+            }
+          }
+        ],
+        createdAt: "2026-04-08T00:00:02.000Z"
+      },
+      {
+        id: "msg_tool_result",
+        sessionId: "sess_1",
+        runId: "run_1",
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "functions.WebFetch:9",
+            toolName: "WebFetch",
+            output: {
+              type: "text",
+              value: "Example fetched."
+            }
+          }
+        ],
+        createdAt: "2026-04-08T00:00:03.000Z"
+      },
+      {
+        id: "msg_composite",
+        sessionId: "sess_1",
+        runId: "run_1",
+        role: "assistant",
+        content: [
+          {
+            type: "reasoning",
+            text: "I should fetch the page."
+          },
+          {
+            type: "tool-call",
+            toolCallId: "functions.WebFetch:9",
+            toolName: "WebFetch",
+            input: {
+              url: "https://example.com",
+              prompt: "Summarize"
+            }
+          }
+        ],
+        createdAt: "2026-04-08T00:00:04.000Z"
+      },
+      {
+        id: "msg_followup",
+        sessionId: "sess_1",
+        runId: "run_2",
+        role: "user",
+        content: "Please summarize now.",
+        createdAt: "2026-04-08T00:00:05.000Z"
+      }
+    ];
+
+    const engineMessages = buildSessionEngineMessages({
+      messages,
+      events: []
+    });
+    const modelProjection = new EngineMessageProjector().projectToModel(engineMessages, {
+      sessionId: "sess_1",
+      activeAgentName: "research",
+      includeReasoning: true,
+      includeToolResults: true
+    });
+    const serialized = await new ModelMessageSerializer().toAiSdkMessages(modelProjection.messages);
+
+    const serializedJson = JSON.stringify(serialized);
+    expect(serializedJson.match(/functions.WebFetch:9/g)).toHaveLength(2);
+    expect(modelProjection.messages.flatMap((message) => message.sourceMessageIds)).not.toContain("msg_composite");
+    expect(serialized.map((message) => message.role)).toEqual(["user", "assistant", "assistant", "tool", "user"]);
+  });
+
   it("infers compact engine kinds from runtime metadata", () => {
     const messages: Message[] = [
       {

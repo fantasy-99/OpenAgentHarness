@@ -182,16 +182,33 @@ export function normalizePersistedMessages(messages: Message[]): { messages: Mes
   let changed = false;
   let pendingToolCalls = new Map<string, ToolCallMessagePart>();
   let pendingAnchor: Message | null = null;
+  const persistedToolResultIds = new Set<string>();
+  for (const message of messages) {
+    if (!Array.isArray(message.content)) {
+      continue;
+    }
+
+    for (const part of message.content) {
+      if (isToolResultMessagePart(part)) {
+        persistedToolResultIds.add(part.toolCallId);
+      }
+    }
+  }
 
   const flushPendingToolCalls = (nextMessage?: Message) => {
     if (pendingToolCalls.size === 0 || pendingAnchor === null) {
       return;
     }
 
-    result.push(buildSyntheticToolMessage(pendingAnchor, [...pendingToolCalls.values()], nextMessage));
+    const missingToolCalls = [...pendingToolCalls.values()].filter(
+      (toolCall) => !persistedToolResultIds.has(toolCall.toolCallId)
+    );
+    if (missingToolCalls.length > 0) {
+      result.push(buildSyntheticToolMessage(pendingAnchor, missingToolCalls, nextMessage));
+    }
     pendingToolCalls = new Map<string, ToolCallMessagePart>();
     pendingAnchor = null;
-    changed = true;
+    changed ||= missingToolCalls.length > 0;
   };
 
   for (const message of messages) {

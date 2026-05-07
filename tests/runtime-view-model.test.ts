@@ -5,6 +5,7 @@ import type { Message, RunStep, SessionEventContract } from "@oah/api-contracts"
 import { buildRuntimeViewModel } from "../apps/web/src/app/engine-view-model";
 import {
   buildMessageRecord,
+  hasActiveRunForSessionTree,
   hasDisplayableRunMessages,
   inferCompletedMessageRole
 } from "../apps/web/src/app/support";
@@ -127,6 +128,36 @@ describe("buildRuntimeViewModel", () => {
       id: "msg_compact_summary",
       role: "system",
       content: "Compacted summary"
+    });
+  });
+
+  it("reconstructs runtime task notification completed events as user messages", () => {
+    const eventData = {
+      role: "user",
+      origin: "engine",
+      mode: "task-notification",
+      content: "<task-notification><status>completed</status></task-notification>"
+    } satisfies Record<string, unknown>;
+
+    const message = buildMessageRecord({
+      id: "task_notification_ses_child_run_child_completed",
+      sessionId: "ses_1",
+      runId: "run_1",
+      role: inferCompletedMessageRole(eventData),
+      content: eventData.content,
+      metadata: {
+        taskNotification: true
+      },
+      createdAt: "2026-04-07T00:00:02.000Z"
+    });
+
+    expect(message).toMatchObject({
+      id: "task_notification_ses_child_run_child_completed",
+      role: "user",
+      content: eventData.content,
+      metadata: {
+        taskNotification: true
+      }
     });
   });
 
@@ -1171,5 +1202,51 @@ describe("buildRuntimeViewModel", () => {
       "user:live:msg_user_1",
       "assistant:live:msg_assistant_1"
     ]);
+  });
+});
+
+describe("session run status helpers", () => {
+  it("treats a parent session as active while a descendant subagent run is active", () => {
+    expect(
+      hasActiveRunForSessionTree(
+        "ses_parent",
+        [
+          {
+            id: "ses_parent",
+            workspaceId: "ws_1",
+            createdAt: "2026-04-07T00:00:00.000Z",
+            lastOpenedAt: "2026-04-07T00:00:00.000Z"
+          },
+          {
+            id: "ses_child",
+            workspaceId: "ws_1",
+            parentSessionId: "ses_parent",
+            createdAt: "2026-04-07T00:00:01.000Z",
+            lastOpenedAt: "2026-04-07T00:00:01.000Z"
+          }
+        ],
+        [
+          {
+            id: "run_parent_done",
+            workspaceId: "ws_1",
+            sessionId: "ses_parent",
+            triggerType: "message",
+            effectiveAgentName: "plan",
+            status: "completed",
+            createdAt: "2026-04-07T00:00:02.000Z"
+          },
+          {
+            id: "run_child_active",
+            workspaceId: "ws_1",
+            sessionId: "ses_child",
+            parentRunId: "run_parent_done",
+            triggerType: "message",
+            effectiveAgentName: "researcher",
+            status: "running",
+            createdAt: "2026-04-07T00:00:03.000Z"
+          }
+        ]
+      )
+    ).toBe(true);
   });
 });

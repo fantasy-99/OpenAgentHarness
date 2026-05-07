@@ -14,7 +14,9 @@ import {
   type ModelGenerateResponse,
   type Run,
   type RunPage,
+  type Session,
   type RunStep,
+  type SessionPage,
   type SessionQueue,
   type SessionQueuedRun,
   type SessionTerminalInputAccepted,
@@ -32,6 +34,7 @@ import {
   consumeSse,
   createHttpRequestError,
   downloadJsonFile,
+  hasActiveRunForSessionTree,
   hasDisplayableRunMessages,
   inferCompletedMessageRole,
   isNotFoundError,
@@ -47,9 +50,11 @@ import {
   serviceScopeMatches,
   toErrorSummary,
   toErrorMessage,
+  compareSavedSessionsByRecency,
   mergeSessionMessages,
   upsertSessionMessage,
   type AppRequestErrorSummary,
+  type SavedSessionRecord,
   type HealthReportResponse,
   type LiveConversationMessageRecord,
   type PlatformModelListResponse,
@@ -115,6 +120,20 @@ function mergeMessageCursor(current: string | null, incoming: string | undefined
   }
 
   return normalizedCurrent;
+}
+
+function savedSessionFromSession(sessionRecord: Session, existing?: SavedSessionRecord): SavedSessionRecord {
+  return {
+    id: sessionRecord.id,
+    workspaceId: sessionRecord.workspaceId,
+    ...(sessionRecord.parentSessionId ? { parentSessionId: sessionRecord.parentSessionId } : {}),
+    title: sessionRecord.title,
+    modelRef: sessionRecord.modelRef,
+    agentName: sessionRecord.activeAgentName,
+    lastRunAt: sessionRecord.lastRunAt,
+    createdAt: sessionRecord.createdAt,
+    lastOpenedAt: existing?.lastOpenedAt ?? sessionRecord.createdAt
+  };
 }
 
 function readQueuedRunsFromEventData(data: Record<string, unknown>): SessionQueuedRun[] | null {
@@ -420,10 +439,6 @@ export function useAppController() {
   const shouldAutoFollowConversationRef = useRef(true);
   const selectedRunIdValue = selectedRunId.trim();
   const [sidebarSessionRunsById, setSidebarSessionRunsById] = useState<Record<string, Run[]>>({});
-  const hasActiveSessionRun = useMemo(
-    () => sessionRuns.some((item) => !isTerminalRunStatus(item.status)),
-    [sessionRuns]
-  );
   const normalizedServiceScope = useMemo(() => normalizeServiceScope(serviceScope), [serviceScope]);
   const serviceFilteredWorkspaces = useMemo(
     () => orderedSavedWorkspaces.filter((entry) => serviceScopeMatches(normalizedServiceScope, entry.serviceName)),
@@ -511,6 +526,19 @@ export function useAppController() {
 
     return Array.from(byRunId.values());
   }, [sessionRuns, sidebarSessionRunsById]);
+  const activeWorkspaceSessions = useMemo(() => {
+    const activeSessionId = session?.id?.trim();
+    const activeWorkspaceId = session?.workspaceId?.trim();
+    if (!activeSessionId || !activeWorkspaceId) {
+      return [];
+    }
+
+    return sessionsByWorkspaceId.get(activeWorkspaceId) ?? [];
+  }, [session?.id, session?.workspaceId, sessionsByWorkspaceId]);
+  const hasActiveSessionRun = useMemo(
+    () => hasActiveRunForSessionTree(sessionId, activeWorkspaceSessions, sidebarSessionRuns),
+    [activeWorkspaceSessions, sessionId, sidebarSessionRuns]
+  );
   const queuedMessageIds = useMemo(() => new Set(sessionQueuedRuns.map((item) => item.messageId)), [sessionQueuedRuns]);
   const runtimeViewModel = useMemo(
     () =>
@@ -1113,6 +1141,41 @@ export function useAppController() {
     }
   }
 
+  async function refreshVisibleSidebarChildSessions(rootSessionIds: string[]): Promise<SavedSessionRecord[]> {
+    const parentSessionIds = Array.from(new Set(rootSessionIds.map((entry) => entry.trim()).filter(Boolean)));
+    if (parentSessionIds.length === 0) {
+      return [];
+    }
+
+    const pages = await Promise.allSettled(
+      parentSessionIds.map(async (parentSessionId) => {
+        const page = await request<SessionPage>(`/api/v1/sessions/${parentSessionId}/children?pageSize=100`);
+        return page.items;
+      })
+    );
+    const childSessions = pages
+      .filter((result): result is PromiseFulfilledResult<Session[]> => result.status === "fulfilled")
+      .flatMap((result) => result.value);
+    if (childSessions.length === 0) {
+      return [];
+    }
+
+    const existingById = new Map(savedSessions.map((entry) => [entry.id, entry]));
+    const childRecords = childSessions.map((entry) => savedSessionFromSession(entry, existingById.get(entry.id)));
+    startTransition(() => {
+      setSavedSessions((current) => {
+        const nextById = new Map(current.map((entry) => [entry.id, entry]));
+        for (const childRecord of childRecords) {
+          const existing = nextById.get(childRecord.id);
+          nextById.set(childRecord.id, existing ? { ...existing, ...childRecord } : childRecord);
+        }
+        return Array.from(nextById.values()).sort(compareSavedSessionsByRecency);
+      });
+    });
+
+    return childRecords;
+  }
+
   async function refreshSidebarSessionRuns(quiet = true): Promise<boolean> {
     const sessionIds = visibleSidebarSessionIds.slice(0, 80);
     const seq = ++sidebarSessionRunsRefreshSeqRef.current;
@@ -1125,8 +1188,36 @@ export function useAppController() {
     }
 
     try {
+      const refreshedChildSessions = await refreshVisibleSidebarChildSessions(sessionIds);
+      const workspaceSessionsById = new Map<string, SavedSessionRecord[]>();
+      for (const [targetWorkspaceId, workspaceSessions] of sessionsByWorkspaceId) {
+        workspaceSessionsById.set(targetWorkspaceId, [...workspaceSessions]);
+      }
+      for (const childSession of refreshedChildSessions) {
+        const workspaceSessions = workspaceSessionsById.get(childSession.workspaceId) ?? [];
+        const existingIndex = workspaceSessions.findIndex((entry) => entry.id === childSession.id);
+        if (existingIndex >= 0) {
+          workspaceSessions[existingIndex] = {
+            ...workspaceSessions[existingIndex],
+            ...childSession
+          };
+        } else {
+          workspaceSessions.push(childSession);
+        }
+        workspaceSessionsById.set(childSession.workspaceId, workspaceSessions);
+      }
+      const effectiveSessionIds = Array.from(
+        new Set(
+          [
+            ...sessionIds,
+            ...refreshedChildSessions
+              .filter((entry) => entry.parentSessionId && sessionIds.includes(entry.parentSessionId))
+              .map((entry) => entry.id)
+          ].slice(0, 120)
+        )
+      );
       const entries = await Promise.all(
-        sessionIds.map(async (targetSessionId) => {
+        effectiveSessionIds.map(async (targetSessionId) => {
           const page = await request<RunPage>(`/api/v1/sessions/${targetSessionId}/runs?pageSize=20`);
           return [targetSessionId, page.items] as const;
         })
@@ -1136,19 +1227,63 @@ export function useAppController() {
         return false;
       }
 
-      const hasNonTerminalRun = entries.flatMap(([, runs]) => runs).some((item) => !isTerminalRunStatus(item.status));
+      const activeRunEntries = entries.filter(([, runs]) => runs.some((item) => !isTerminalRunStatus(item.status)));
+      const activeRunEntryIds = new Set(activeRunEntries.map(([targetSessionId]) => targetSessionId));
+      const activeRunParentIds = new Set<string>();
+      for (const workspaceSessions of workspaceSessionsById.values()) {
+        for (const sessionEntry of workspaceSessions) {
+          if (sessionEntry.parentSessionId && activeRunEntryIds.has(sessionEntry.id)) {
+            activeRunParentIds.add(sessionEntry.parentSessionId);
+          }
+        }
+      }
+      const hasNonTerminalRun = activeRunEntries.length > 0;
 
       startTransition(() => {
+        const retainedIdSet = new Set(effectiveSessionIds);
         const visibleIdSet = new Set(sessionIds);
         setSidebarSessionRunsById((current) => {
           const next: Record<string, Run[]> = {};
           for (const [targetSessionId, runs] of Object.entries(current)) {
-            if (visibleIdSet.has(targetSessionId)) {
+            if (retainedIdSet.has(targetSessionId)) {
               next[targetSessionId] = runs;
             }
           }
           for (const [targetSessionId, runs] of entries) {
             next[targetSessionId] = runs;
+          }
+          for (const parentSessionId of activeRunParentIds) {
+            if (!visibleIdSet.has(parentSessionId) || next[parentSessionId]?.some((item) => !isTerminalRunStatus(item.status))) {
+              continue;
+            }
+
+            const representativeRun = activeRunEntries
+              .find(([targetSessionId]) => {
+                for (const workspaceSessions of workspaceSessionsById.values()) {
+                  const childSession = workspaceSessions.find((entry) => entry.id === targetSessionId);
+                  if (childSession?.parentSessionId === parentSessionId) {
+                    return true;
+                  }
+                }
+                return false;
+              })
+              ?.[1]
+              .find((item) => !isTerminalRunStatus(item.status));
+            if (representativeRun) {
+              next[parentSessionId] = [
+                {
+                  ...representativeRun,
+                  id: `${parentSessionId}:active-child:${representativeRun.id}`,
+                  sessionId: parentSessionId,
+                  metadata: {
+                    ...(representativeRun.metadata ?? {}),
+                    statusDerivedFromChildRunId: representativeRun.id,
+                    statusDerivedFromChildSessionId: representativeRun.sessionId
+                  }
+                },
+                ...(next[parentSessionId] ?? [])
+              ];
+            }
           }
           return next;
         });
@@ -2019,6 +2154,14 @@ export function useAppController() {
 
     if (event.event === "agent.delegate.started") {
       scheduleWorkspaceIndexRefresh();
+    }
+
+    if (
+      event.event === "agent.delegate.started" ||
+      event.event === "agent.delegate.completed" ||
+      event.event === "agent.delegate.failed"
+    ) {
+      void refreshSidebarSessionRuns(true);
     }
 
     if (typeof event.runId === "string" && isTerminalRunEvent(event.event)) {

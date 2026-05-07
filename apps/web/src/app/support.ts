@@ -1275,9 +1275,18 @@ function mergeSessionMessages(current: Message[], incoming: Message[]) {
   return [...mergedById.values()].sort(compareMessagesChronologically);
 }
 
-function inferCompletedMessageRole(data: Record<string, unknown>): "system" | "assistant" | "tool" {
+function inferCompletedMessageRole(data: Record<string, unknown>): Message["role"] {
   if (data.role === "system") {
     return "system";
+  }
+  if (data.role === "user") {
+    return "user";
+  }
+  if (data.role === "assistant") {
+    return "assistant";
+  }
+  if (data.role === "tool") {
+    return "tool";
   }
 
   return typeof data.toolName === "string" && typeof data.toolCallId === "string" ? "tool" : "assistant";
@@ -1345,6 +1354,45 @@ function isTerminalRunEvent(event: string) {
 
 function isTerminalRunStatus(status?: Run["status"] | null) {
   return status === "completed" || status === "failed" || status === "cancelled" || status === "timed_out";
+}
+
+function sessionDescendantIds(rootSessionId: string, sessions: SavedSessionRecord[]) {
+  const normalizedRootSessionId = rootSessionId.trim();
+  if (!normalizedRootSessionId) {
+    return [];
+  }
+
+  const childIdsByParentId = new Map<string, string[]>();
+  for (const sessionEntry of sessions) {
+    if (!sessionEntry.parentSessionId) {
+      continue;
+    }
+
+    const childIds = childIdsByParentId.get(sessionEntry.parentSessionId) ?? [];
+    childIds.push(sessionEntry.id);
+    childIdsByParentId.set(sessionEntry.parentSessionId, childIds);
+  }
+
+  const descendants: string[] = [];
+  const visited = new Set<string>([normalizedRootSessionId]);
+  const stack = [...(childIdsByParentId.get(normalizedRootSessionId) ?? [])];
+  while (stack.length > 0) {
+    const childId = stack.pop();
+    if (!childId || visited.has(childId)) {
+      continue;
+    }
+
+    visited.add(childId);
+    descendants.push(childId);
+    stack.push(...(childIdsByParentId.get(childId) ?? []));
+  }
+
+  return descendants;
+}
+
+function hasActiveRunForSessionTree(rootSessionId: string, sessions: SavedSessionRecord[], runs: Run[]) {
+  const sessionIds = new Set([rootSessionId, ...sessionDescendantIds(rootSessionId, sessions)].filter((entry) => entry.trim().length > 0));
+  return runs.some((run) => run.sessionId && sessionIds.has(run.sessionId) && !isTerminalRunStatus(run.status));
 }
 
 function formatTimestamp(value?: string) {
@@ -1854,6 +1902,8 @@ export {
   compareSavedSessionsByRecency,
   isTerminalRunEvent,
   isTerminalRunStatus,
+  sessionDescendantIds,
+  hasActiveRunForSessionTree,
   formatTimestamp,
   formatTimestampPrecise,
   formatRelativeTimestamp,

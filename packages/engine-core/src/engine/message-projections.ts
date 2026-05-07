@@ -82,6 +82,68 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isToolCallPart(value: unknown): value is Extract<Extract<Message["content"], unknown[]>[number], { type: "tool-call" }> {
+  return isRecord(value) && value.type === "tool-call" && typeof value.toolCallId === "string";
+}
+
+function isToolResultPart(value: unknown): value is Extract<Extract<Message["content"], unknown[]>[number], { type: "tool-result" }> {
+  return isRecord(value) && value.type === "tool-result" && typeof value.toolCallId === "string";
+}
+
+function contentToolCallIds(content: Message["content"]): string[] {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+
+  return content.filter(isToolCallPart).map((part) => part.toolCallId);
+}
+
+function contentToolResultIds(content: Message["content"]): string[] {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+
+  return content.filter(isToolResultPart).map((part) => part.toolCallId);
+}
+
+function isPureToolCallMessage(message: EngineMessage): boolean {
+  if (message.role !== "assistant" || !Array.isArray(message.content)) {
+    return false;
+  }
+
+  return message.content.length > 0 && message.content.every((part) => part.type === "tool-call");
+}
+
+function removeDuplicateCompositeToolCallMessages(messages: EngineMessage[]): EngineMessage[] {
+  const canonicalToolCallIds = new Set<string>();
+  const toolResultIds = new Set<string>();
+
+  for (const message of messages) {
+    if (isPureToolCallMessage(message)) {
+      for (const toolCallId of contentToolCallIds(message.content)) {
+        canonicalToolCallIds.add(toolCallId);
+      }
+    }
+
+    for (const toolCallId of contentToolResultIds(message.content)) {
+      toolResultIds.add(toolCallId);
+    }
+  }
+
+  if (canonicalToolCallIds.size === 0 || toolResultIds.size === 0) {
+    return messages;
+  }
+
+  return messages.filter((message) => {
+    if (isPureToolCallMessage(message) || message.role !== "assistant" || !Array.isArray(message.content)) {
+      return true;
+    }
+
+    const toolCallIds = contentToolCallIds(message.content);
+    return !toolCallIds.some((toolCallId) => canonicalToolCallIds.has(toolCallId) && toolResultIds.has(toolCallId));
+  });
+}
+
 function findLatestCompactBoundaryIndex(messages: EngineMessage[]): number {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     if (messages[index]?.kind === "compact_boundary") {
@@ -305,7 +367,7 @@ export class EngineMessageProjector {
       appliedCompactBoundaryId = bounded.appliedCompactBoundaryId;
     }
 
-    messages = hoistTransientMemoryContextNotes(messages);
+    messages = hoistTransientMemoryContextNotes(removeDuplicateCompositeToolCallMessages(messages));
 
     const projected = messages.flatMap((message) => {
       if (!isEligibleForModelContext(message)) {

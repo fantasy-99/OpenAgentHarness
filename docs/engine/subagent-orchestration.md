@@ -76,7 +76,7 @@ opencode 的核心模型：
 - `SubAgent` 支持后台启动，并返回 `status: async_launched`。
 - `SubAgent` 启动结果包含 `agentId`、`task_id`、`run_id`、`subagent_name`、`description`、`output_ref`；不再把 `outputFile` / `output_file` / `canReadOutputFile` 暴露给模型。
 - tool call 的 `toolCallId` 会作为 `toolUseId` 贯穿到 delegated run metadata、`agent_tasks` 记录和 `<task-notification>`。
-- 后台子任务完成后会生成 user-role `<task-notification>` 消息。
+- 后台子任务完成后会立即在父 session 中生成 user-role `<task-notification>` runtime message。
 - notification XML 包含 `<task-id>`、`<tool_use_id>`、`<output_ref>`、`<status>`、`<summary>`、`<result>` 或 `<error>`；`<output_file>` 仅保留在历史兼容和内部 metadata 中，不进入新模型可见 XML。
 - OAH 额外在 notification XML 中包含 `<child_run_id>`，用于 Web/Inspector 从 task 卡片精确跳转到子 run 时间线。
 - notification / TaskOutput 会尽量携带 `<usage>`，字段包括 `total_tokens`、`input_tokens`、`output_tokens`、`tool_uses`、`duration_ms`。这些值由 child run 的 run steps 汇总而来。
@@ -93,12 +93,16 @@ opencode 的核心模型：
   - OAH / PostgreSQL 使用 `agent_task_notifications` 表。
   - OAP / SQLite 使用 workspace 本地 `agent_task_notifications` 表和 JSON payload。
 - `ModelRunExecutor` 会在模型调用前 drain 已存在的 pending notifications；模型响应结束后如发现子任务刚完成，也会 drain 并继续同一个 run 的模型 loop。
-- drain 后 notification 会作为 synthetic user message 注入父会话，并标记 consumed；仅在没有 notification repository 或父 run 已经 terminal 的兼容路径下，才创建 synthetic notification run。
+- notification 有两段状态：
+  - child terminal 时，先创建父 session runtime message，`visibleInTranscript: true`、`eligibleForModelContext: false`、`taskNotificationPendingModelDelivery: true`，因此 Web 端能立刻看到结果，但主模型不会提前看到 partial sibling result。
+  - sibling batch ready 且 drain 时，更新同一条 message，标记 `taskNotificationConsumedAt`、`taskNotificationDeliveredToModel: true`、`taskNotificationPendingModelDelivery: false`、`eligibleForModelContext: true`，再进入 LLM 输入投影。
+- drain 不再创建第二条 Web/Transcript message，而是更新同一个 runtime message；仅在没有 notification repository 的兼容路径下才直接创建可投喂 message。
 - Runtime Message 已按 Claude Code 的内部 Message 设计拆分语义：
   - `role` 仍表示 provider chat role；task notification 保持 `role: "user"`，确保模型以 user-side input 接收。
   - `origin: "engine"` 表示它不是人类输入。
   - `mode: "task-notification"` 对齐 Claude Code 的 queued command mode，后续 UI、队列、投影、历史管理都应优先用它判断。
   - `EngineMessage.kind: "task_notification"` 是 OAH 内部 runtime 语义；旧数据如果只有 `metadata.taskNotification: true`，也会被投影为 `task_notification`。
+  - Web / transcript 展示读取的是 runtime message 流，不读取 LLM 输入 projection；LLM projection 只是同一批 runtime messages 的消费侧过滤，主要通过 `eligibleForModelContext` 控制。
   - 外部 `createSessionMessage` 的用户 metadata 会清理 `runtimeKind`、`origin`、`mode`、`synthetic`、`taskNotification`、`delegatedUpdate` 等保留字段，避免客户端伪造 runtime notification。
 - `agent_tasks` 是子任务输出事实源：
   - OAH / PostgreSQL 使用 `agent_tasks` 表。
@@ -147,7 +151,8 @@ sequenceDiagram
     Tool-->>Main: status=async_launched, task_id, output_ref
     Child-->>Store: finalText/error/status
     Child-->>Queue: enqueue task-notification
-    Queue-->>Main: drain notification as user-side input
+    Child-->>Main: persist visible runtime notification
+    Queue-->>Main: mark same notification model-eligible when batch drains
     Main->>Store: optional TaskOutput(task_id)
 ```
 
@@ -171,10 +176,10 @@ sequenceDiagram
 - 新增 `AgentTaskNotificationRecord` 和 `AgentTaskNotificationRepository`。
 - pending notification record 将 `toolUseId` 作为一等字段保存，便于和原始 `SubAgent` tool call 对齐。
 - memory / PG / SQLite 分别实现 pending notification repository。
-- 子任务完成时，如果父 run 仍 active，优先 enqueue notification payload，不直接创建 notification run。
+- 子任务完成时，如果父 run 仍 active，优先 enqueue notification payload，并立即创建父 session 中可见但暂不进入模型上下文的 runtime message。
 - `ModelRunExecutor` 在模型输入前 drain 当前 session 的 pending notifications，并把它们作为 synthetic user messages 加入 `allMessages`。
 - 模型响应结束后如果刚好有子任务完成，会 drain notification 并继续同一个 run 的模型 loop，让主 agent 看到子任务结果后继续思考。
-- drain 后更新 consumed 状态，并发布现有 `message.completed` 兼容事件。
+- drain 后更新同一条 message 的 metadata，使其进入模型上下文，更新 consumed 状态，并发布现有 `message.completed` 兼容事件。
 - 父 run terminal 后不再为每个 child completion 单独续跑；同一父 run 的 sibling child notifications 会等全部 terminal 后 coalesce 为一个 `taskNotificationContinuation` run。
 - 保留 fallback notification run，仅在没有 notification repository 时启用。
 
@@ -280,6 +285,9 @@ sequenceDiagram
   - 失败不是因为 `task_id` 错误；该会话里的 `task_id` 就是 child session id，符合 Claude/opencode 风格。
 - service-routed PostgreSQL 现在会把 `agent_tasks` 按 workspace service 路由到 service DB，把 pending task notifications 按 parent session 路由到对应 DB。
 - 为历史缺失 `agent_tasks` 的会话增加了 recovery：`TaskOutput` 找不到 task row 时，会从 child session、child run、parent run `delegatedRuns` metadata 和 child messages 恢复 task 记录，并在 child run 已 terminal 时回填 final output。
+- 现场会话 `ses_2042339fcc864d7a964a7207f62d20cb` 暴露了两个细节：
+  - sibling subagents 的 notification 可以等全部 terminal 后再 coalesce 给父 agent，但注入父会话的 runtime message `createdAt` 必须保留各自 child completion time；drain/consume 时间只放入 metadata，避免 Web conversation 看起来所有 subagent 都在最后一刻返回。
+  - subagent final output 不能用最后一个成功 tool result 兜底。成功的 `WebFetch` / `Bash` result 只是过程证据，不是 delegated final answer；如果没有可用 assistant final text，应发 delegated output follow-up 让 subagent 综合已有工作输出最终结果。失败 tool result 仍可作为错误诊断兜底，例如 nested `SubAgent` 被执行期 guard 拦截。
 
 后续目标：
 
