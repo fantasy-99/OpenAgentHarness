@@ -216,6 +216,22 @@ describe("native tools", () => {
     await mkdir(path.join(workspaceRoot, "assets"), { recursive: true });
     await writeFile(path.join(workspaceRoot, "assets", "pixel.png"), pixelBytes);
 
+    const imageGlobResult = await tools.Glob.execute({ pattern: "**/*.{png,jpg,jpeg,gif,bmp,webp,svg}" }, {});
+    expect(String(imageGlobResult)).toContain("files:");
+    expect(String(imageGlobResult)).toContain("assets/pixel.png");
+
+    const leadingDotGlobResult = await tools.Glob.execute({ pattern: "./**/*.{png,jpg}" }, {});
+    expect(String(leadingDotGlobResult)).toContain("assets/pixel.png");
+
+    const windowsSeparatorGlobResult = await tools.Glob.execute({ pattern: "assets\\*.png" }, {});
+    expect(String(windowsSeparatorGlobResult)).toContain("assets/pixel.png");
+
+    const characterClassGlobResult = await tools.Glob.execute({ pattern: "assets/pixel.[pj][np]g" }, {});
+    expect(String(characterClassGlobResult)).toContain("assets/pixel.png");
+
+    const negatedClassGlobResult = await tools.Glob.execute({ pattern: "assets/pixel.[!j]ng" }, {});
+    expect(String(negatedClassGlobResult)).toContain("assets/pixel.png");
+
     const readDirectoryResult = await tools.Read.execute({ file_path: "assets" }, {});
     expect(String(readDirectoryResult)).toContain("kind: directory");
     expect(String(readDirectoryResult)).toContain("file  pixel.png");

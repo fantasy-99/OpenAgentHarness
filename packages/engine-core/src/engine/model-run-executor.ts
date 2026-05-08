@@ -462,6 +462,7 @@ export class ModelRunExecutor {
         engineToolNames,
         toolServerNames: activeToolServers.map((server) => server.name)
       });
+      const agentPolicy = workspace.agents[executionContext.currentAgentName]?.policy;
       const response = await this.#modelGateway.stream(
         {
           model: hookedModelInput.model,
@@ -475,8 +476,8 @@ export class ModelRunExecutor {
           signal: abortSignal,
           ...(Object.keys(observableEngineTools).length > 0 ? { tools: observableEngineTools } : {}),
           ...(activeToolServers.length > 0 ? { toolServers: activeToolServers } : {}),
-          maxSteps: workspace.agents[executionContext.currentAgentName]?.policy?.maxSteps ?? 8,
-          parallelToolCalls: workspace.agents[executionContext.currentAgentName]?.policy?.parallelToolCalls,
+          ...(agentPolicy?.maxSteps !== undefined ? { maxSteps: agentPolicy.maxSteps } : {}),
+          parallelToolCalls: agentPolicy?.parallelToolCalls,
           ...streamCoordinator.buildStreamOptions()
         }
       );
@@ -508,7 +509,7 @@ export class ModelRunExecutor {
       );
       if (hasUnseenDelegatedUpdate || drainedNotifications.messageIds.length > 0) {
         continuationCount += 1;
-        if (continuationCount > (workspace.agents[executionContext.currentAgentName]?.policy?.maxSteps ?? 8)) {
+        if (agentPolicy?.maxSteps !== undefined && continuationCount > agentPolicy.maxSteps) {
           throw new AppError(
             409,
             "delegated_run_continuation_limit_exceeded",
@@ -530,12 +531,14 @@ export class ModelRunExecutor {
         streamCoordinator.latestHookedModelInput,
         completed
       );
-      const maxSteps = hookedCompleted.maxSteps ?? workspace.agents[executionContext.currentAgentName]?.policy?.maxSteps ?? 8;
+      const maxSteps = hookedCompleted.maxSteps ?? agentPolicy?.maxSteps;
       if (hookedCompleted.stopReason === "max_steps") {
         throw new AppError(
           409,
           "model_max_steps_exhausted",
-          `Run reached the max model steps (${maxSteps}) before the assistant could finish. Increase the agent policy.max_steps or retry with a narrower request.`
+          maxSteps === undefined
+            ? "Run reached the provider or runtime max model steps before the assistant could finish. Set agent policy.max_steps higher or retry with a narrower request."
+            : `Run reached the max model steps (${maxSteps}) before the assistant could finish. Increase the agent policy.max_steps or retry with a narrower request.`
         );
       }
 

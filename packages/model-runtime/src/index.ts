@@ -127,11 +127,11 @@ export class AiSdkModelRuntime implements ModelGateway {
       parallelToolCalls: options?.parallelToolCalls
     });
 
-    const maxSteps = Math.max(2, options?.maxSteps ?? 8);
-    const maxStepsStopCondition = stepCountIs(maxSteps);
+    const maxSteps = options?.maxSteps !== undefined ? Math.max(2, options.maxSteps) : undefined;
+    const maxStepsStopCondition = maxSteps !== undefined ? stepCountIs(maxSteps) : undefined;
     let maxStepsReached = false;
     const trackMaxStepsStop: StopCondition<ToolSet> = async (event) => {
-      const shouldStop = await maxStepsStopCondition(event);
+      const shouldStop = (await maxStepsStopCondition?.(event)) ?? false;
       if (shouldStop) {
         maxStepsReached = true;
       }
@@ -155,7 +155,7 @@ export class AiSdkModelRuntime implements ModelGateway {
       ...(aiTools
         ? {
             tools: aiTools,
-            stopWhen: trackMaxStepsStop
+            ...(maxStepsStopCondition ? { stopWhen: trackMaxStepsStop } : {})
           }
         : {}),
       ...(options?.prepareStep

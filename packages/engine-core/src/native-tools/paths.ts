@@ -4,7 +4,7 @@ import { AppError } from "../errors.js";
 import type { WorkspaceFileSystem } from "../types.js";
 
 export function normalizePathForMatch(value: string): string {
-  return value.split(path.sep).join("/");
+  return value.replaceAll("\\", "/").split(path.sep).join("/");
 }
 
 export async function resolveWorkspacePath(

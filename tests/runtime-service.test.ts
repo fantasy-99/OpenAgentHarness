@@ -12799,6 +12799,75 @@ describe("runtime service", () => {
     expect(run.errorMessage).toContain("max model steps (2)");
   });
 
+  it("does not impose a default max steps limit when the agent does not configure one", async () => {
+    const { gateway, runtimeService, workspace } = await createRuntime(0, {
+      workspaceSettings: {
+        defaultAgent: "researcher"
+      },
+      agents: {
+        researcher: {
+          name: "researcher",
+          mode: "primary",
+          prompt: "Use WebFetch until you have enough context.",
+          tools: {
+            native: ["WebFetch"]
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: [],
+          policy: {}
+        }
+      }
+    });
+
+    gateway.streamScenarioFactory = () => ({
+      text: "I completed the research after many steps.",
+      toolBatches: Array.from({ length: 9 }, (_, index) => [
+        {
+          toolName: "WebFetch",
+          input: {
+            url: `https://example.com/source-${index + 1}`,
+            prompt: "Extract the useful detail."
+          },
+          toolCallId: `call_fetch_${index + 1}`,
+          output: `Fetched source ${index + 1}.`
+        }
+      ])
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: workspace.id,
+      caller,
+      input: {
+        agentName: "researcher"
+      }
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Research this thoroughly." }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const run = await runtimeService.getRun(accepted.runId);
+    expect(run.status).toBe("completed");
+    expect(run.errorCode).toBeUndefined();
+    expect(gateway.invocations.length).toBeGreaterThan(8);
+  });
+
   it("runs actions through the built-in run_action tool and persists the tool result", async () => {
     const gateway = new FakeModelGateway();
     gateway.streamScenarioFactory = () => ({

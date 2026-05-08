@@ -12,7 +12,7 @@ import { globToRegExp } from "./search-utils.js";
 import { getNativeToolRetryPolicy, type NativeToolFactoryContext } from "./types.js";
 
 const GLOB_DESCRIPTION = `- Fast file pattern matching tool that works with any codebase size
-- Supports glob patterns like "**/*.js" or "src/**/*.ts"
+- Supports glob patterns like "**/*.js", "src/**/*.ts", "**/*.{png,jpg}", and "file[0-9].md"
 - Returns matching file paths sorted by modification time
 - Use this tool when you need to find files by name patterns`;
 
