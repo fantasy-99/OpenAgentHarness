@@ -230,7 +230,13 @@ export function createEngineRuntimeKernel(
     applyAfterModelHooks: (workspace, session, run, modelInput, response) =>
       dependencies.applyAfterModelHooks(workspace, session, run, modelInput, response),
     buildEngineTools: (workspace, run, session, executionContext) =>
-      dependencies.buildEngineTools(workspace, run, session, executionContext),
+      dependencies.buildEngineTools(workspace, run, session, {
+        ...executionContext,
+        injectModelContextMessage: (message) => {
+          executionContext.pendingModelContextMessages ??= [];
+          executionContext.pendingModelContextMessages.push(message);
+        }
+      }),
     startRunStep: (input) => dependencies.runSteps.startRunStep(input),
     completeRunStep: (step, status, output) => dependencies.runSteps.completeRunStep(step, status, output),
     setRunStatusIfPossible: (runId, nextStatus) => dependencies.runState.setRunStatusIfPossible(runId, nextStatus),
@@ -445,6 +451,7 @@ export function buildRuntimeEngineTools(input: {
   }>;
   awaitDelegatedRuns: (input: { runIds: string[]; mode: "all" | "any" }) => Promise<string>;
   switchAgent: (targetAgentName: string, currentAgentName: string) => Promise<void>;
+  injectModelContextMessage?: ((message: ChatMessage) => void) | undefined;
 }): EngineToolSet {
   return createWorkspaceEngineTools({
     workspace: input.workspace,
@@ -455,6 +462,7 @@ export function buildRuntimeEngineTools(input: {
     defaultModel: input.defaultModel,
     commandExecutor: input.commandExecutor,
     fileSystem: input.fileSystem,
+    ...(input.injectModelContextMessage ? { injectModelContextMessage: input.injectModelContextMessage } : {}),
     ...(input.workspaceFileAccessProvider ? { workspaceFileAccessProvider: input.workspaceFileAccessProvider } : {}),
     executeAction: async (action, value, context) => input.executeAction(action, value, context),
     delegateAgent: (options, currentAgentName) => input.delegateAgent(options, currentAgentName),

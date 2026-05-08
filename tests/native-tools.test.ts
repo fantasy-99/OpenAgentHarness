@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createNativeToolSet } from "../packages/engine-core/src/native-tools.ts";
 import { createLocalWorkspaceFileSystem } from "../packages/engine-core/src/workspace/workspace-file-system.ts";
-import type { GenerateModelInput, WorkspaceCommandExecutor, WorkspaceFileAccessProvider, WorkspaceFileSystem, WorkspaceRecord } from "../packages/engine-core/src/types.ts";
-import { FakeModelGateway } from "./helpers/fake-model-runtime.ts";
+import type { WorkspaceCommandExecutor, WorkspaceFileAccessProvider, WorkspaceFileSystem, WorkspaceRecord } from "../packages/engine-core/src/types.ts";
+import type { ChatMessage } from "@oah/api-contracts";
 
 const tempDirs: string[] = [];
 
@@ -90,29 +90,16 @@ describe("native tools", () => {
     await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
     await writeFile(path.join(workspaceRoot, "src", "app.ts"), "export const answer = 41;\n", "utf8");
 
-    const imageDescriptionGateway = new FakeModelGateway();
-    const imageDescriptionInputs: GenerateModelInput[] = [];
-    imageDescriptionGateway.generateResponseFactory = (input) => {
-      imageDescriptionInputs.push(input);
-      return {
-        model: input.model ?? "vision-test-model",
-        text: "A one-pixel PNG image used as a test fixture.",
-        finishReason: "stop",
-        usage: {
-          inputTokens: 10,
-          outputTokens: 9,
-          totalTokens: 19
-        }
-      };
-    };
+    const injectedModelContextMessages: ChatMessage[] = [];
 
     const tools = createNativeToolSet(
       workspaceRoot,
       () => ["AskUserQuestion", "Bash", "LS", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "ViewImage", "TodoWrite"],
       {
         sessionId: "session-title-case",
-        modelGateway: imageDescriptionGateway,
-        imageDescriptionModel: "vision-test-model"
+        injectModelContextMessage: (message) => {
+          injectedModelContextMessages.push(message);
+        }
       }
     );
 
@@ -240,14 +227,14 @@ describe("native tools", () => {
     expect(String(readImageResult)).toContain("file_path: assets/pixel.png");
     expect(String(readImageResult)).toContain("media_type: image/png");
     expect(String(readImageResult)).toContain("kind: image");
-    expect(String(readImageResult)).toContain("description:");
-    expect(String(readImageResult)).toContain("A one-pixel PNG image used as a test fixture.");
+    expect(String(readImageResult)).toContain("context_injected: true");
+    expect(String(readImageResult)).toContain("context:");
+    expect(String(readImageResult)).toContain("Image content was injected into the current model context");
     expect(String(readImageResult)).not.toContain(pixelBytes.toString("base64"));
-    expect(imageDescriptionInputs).toHaveLength(1);
-    expect(imageDescriptionInputs[0]?.model).toBe("vision-test-model");
-    const imageDescriptionContent = imageDescriptionInputs[0]?.messages?.at(-1)?.content;
-    expect(Array.isArray(imageDescriptionContent)).toBe(true);
-    expect(imageDescriptionContent).toEqual(
+    expect(injectedModelContextMessages).toHaveLength(1);
+    const readImageContextContent = injectedModelContextMessages[0]?.content;
+    expect(Array.isArray(readImageContextContent)).toBe(true);
+    expect(readImageContextContent).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           type: "image",
@@ -268,11 +255,12 @@ describe("native tools", () => {
     expect(String(imageResult)).toContain("media_type: image/png");
     expect(String(imageResult)).toContain("kind: image");
     expect(String(imageResult)).toContain("prompt: What is the primary visual content?");
-    expect(String(imageResult)).toContain("description:");
-    expect(String(imageResult)).toContain("A one-pixel PNG image used as a test fixture.");
+    expect(String(imageResult)).toContain("context_injected: true");
+    expect(String(imageResult)).toContain("context:");
+    expect(String(imageResult)).toContain("Image content was injected into the current model context");
     expect(String(imageResult)).not.toContain(pixelBytes.toString("base64"));
-    expect(imageDescriptionInputs).toHaveLength(2);
-    const viewImageContent = imageDescriptionInputs[1]?.messages?.at(-1)?.content;
+    expect(injectedModelContextMessages).toHaveLength(2);
+    const viewImageContent = injectedModelContextMessages[1]?.content;
     expect(Array.isArray(viewImageContent)).toBe(true);
     expect(viewImageContent).toEqual(
       expect.arrayContaining([

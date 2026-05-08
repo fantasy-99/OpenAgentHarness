@@ -1,6 +1,6 @@
 import type { ChatMessage, Message, ModelGenerateResponse, Run, Session } from "@oah/api-contracts";
 
-import { assistantContentFromModelOutput } from "../execution-message-content.js";
+import { assistantNarrativeContentFromModelOutput, textContent } from "../execution-message-content.js";
 import type { ModelStepResult, SessionRepository, WorkspaceRecord } from "../types.js";
 
 type AssistantMessage = Extract<Message, { role: "assistant" }>;
@@ -91,11 +91,12 @@ export class RunFinalizationService {
     finalAssistantStep: ModelStepResult | undefined;
     messageMetadata?: Record<string, unknown> | undefined;
   }): Promise<void> {
-    const finalizedAssistantContent = assistantContentFromModelOutput({
-      text: input.completed.text,
-      content: Array.isArray(input.completed.content) ? input.completed.content : input.finalAssistantStep?.content,
-      reasoning: Array.isArray(input.completed.reasoning) ? input.completed.reasoning : input.finalAssistantStep?.reasoning
-    });
+    const finalizedAssistantContent =
+      assistantNarrativeContentFromModelOutput({
+        text: input.completed.text,
+        content: Array.isArray(input.completed.content) ? input.completed.content : input.finalAssistantStep?.content,
+        reasoning: Array.isArray(input.completed.reasoning) ? input.completed.reasoning : input.finalAssistantStep?.reasoning
+      }) ?? textContent(input.completed.text);
     const latestRun = await this.#getRun(input.run.id);
     const persistedAssistantMessage = await this.#ensureAssistantMessage(
       input.session,

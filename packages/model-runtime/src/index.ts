@@ -129,6 +129,7 @@ export class AiSdkModelRuntime implements ModelGateway {
 
     const maxSteps = options?.maxSteps !== undefined ? Math.max(2, options.maxSteps) : undefined;
     const maxStepsStopCondition = maxSteps !== undefined ? stepCountIs(maxSteps) : undefined;
+    const continueUntilModelStops: StopCondition<ToolSet> = () => false;
     let maxStepsReached = false;
     const trackMaxStepsStop: StopCondition<ToolSet> = async (event) => {
       const shouldStop = (await maxStepsStopCondition?.(event)) ?? false;
@@ -155,7 +156,7 @@ export class AiSdkModelRuntime implements ModelGateway {
       ...(aiTools
         ? {
             tools: aiTools,
-            ...(maxStepsStopCondition ? { stopWhen: trackMaxStepsStop } : {})
+            stopWhen: maxStepsStopCondition ? trackMaxStepsStop : continueUntilModelStops
           }
         : {}),
       ...(options?.prepareStep

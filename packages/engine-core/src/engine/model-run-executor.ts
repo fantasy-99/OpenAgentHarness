@@ -276,7 +276,8 @@ export class ModelRunExecutor {
     const executionContext: RunExecutionContext = {
       currentAgentName: run.effectiveAgentName,
       injectSystemReminder: false,
-      delegatedRunIds: execution.agentCoordination.delegatedRunRecords(run).map((record) => record.childRunId)
+      delegatedRunIds: execution.agentCoordination.delegatedRunRecords(run).map((record) => record.childRunId),
+      pendingModelContextMessages: []
     };
     const buildInitialHookedModelInput = async () => {
       const latestRun = await this.#getRun(run.id);

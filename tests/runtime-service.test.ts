@@ -12868,6 +12868,136 @@ describe("runtime service", () => {
     expect(gateway.invocations.length).toBeGreaterThan(8);
   });
 
+  it("does not persist final assistant tool-call content that was already recorded as tool messages", async () => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), "oah-final-tool-content-"));
+    await writeFile(path.join(workspaceRoot, "beach.jpg"), "fake image bytes");
+    const gateway = new FakeModelGateway();
+    gateway.streamScenarioFactory = () => ({
+      text: "Found beach.jpg.",
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: "call_glob",
+          toolName: "Glob",
+          input: {
+            pattern: "**/*.{png,jpg,jpeg}"
+          }
+        },
+        {
+          type: "tool-result",
+          toolCallId: "call_glob",
+          toolName: "Glob",
+          output: {
+            type: "text",
+            value: "matches: 1\nbeach.jpg"
+          }
+        },
+        {
+          type: "text",
+          text: "Found beach.jpg."
+        }
+      ],
+      toolSteps: [
+        {
+          toolName: "Glob",
+          input: {
+            pattern: "**/*.{png,jpg,jpeg}"
+          },
+          toolCallId: "call_glob"
+        }
+      ]
+    });
+
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_final_tool_content",
+      name: "final-tool-content",
+      rootPath: workspaceRoot,
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "builder",
+      settings: {
+        defaultAgent: "builder",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        builder: {
+          name: "builder",
+          mode: "primary",
+          prompt: "Use Glob when needed.",
+          tools: {
+            native: ["Glob"],
+            actions: [],
+            skills: [],
+            external: []
+          },
+          switch: [],
+          subagents: [],
+          policy: {}
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_final_tool_content",
+        agents: [{ name: "builder", mode: "primary", source: "workspace" }],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: ["Glob"]
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: "project_final_tool_content",
+      caller,
+      input: {}
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Find image files." }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    const messages = await runtimeService.listSessionMessages(session.id, 20);
+    expect(messages.items.filter((message) => hasToolCallPart(message, "Glob", "call_glob"))).toHaveLength(1);
+    expect(messages.items.filter((message) => hasToolResultPart(message, "Glob", "call_glob"))).toHaveLength(1);
+    const finalAssistantMessage = messages.items.at(-1);
+    expect(finalAssistantMessage?.role).toBe("assistant");
+    expect(messageText(finalAssistantMessage)).toBe("Found beach.jpg.");
+    expect(hasToolCallPart(finalAssistantMessage, "Glob", "call_glob")).toBe(false);
+    expect(hasToolResultPart(finalAssistantMessage, "Glob", "call_glob")).toBe(false);
+  });
+
   it("runs actions through the built-in run_action tool and persists the tool result", async () => {
     const gateway = new FakeModelGateway();
     gateway.streamScenarioFactory = () => ({
@@ -13506,6 +13636,125 @@ describe("runtime service", () => {
     expect(runSteps.items.find((step) => step.name === "Bash")?.input).toMatchObject({
       retryPolicy: "manual"
     });
+  });
+
+  it("injects Read image content into the next model step without persisting base64 in tool output", async () => {
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), "oah-read-image-context-"));
+    const pixelBytes = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+      "base64"
+    );
+    await mkdir(path.join(workspaceRoot, "assets"), { recursive: true });
+    await writeFile(path.join(workspaceRoot, "assets", "pixel.png"), pixelBytes);
+
+    const gateway = new FakeModelGateway();
+    gateway.streamScenarioFactory = () => ({
+      text: "I can now see the injected image.",
+      toolSteps: [
+        {
+          toolName: "Read",
+          input: {
+            file_path: "assets/pixel.png"
+          },
+          toolCallId: "call_read_image"
+        }
+      ]
+    });
+
+    const persistence = createMemoryRuntimePersistence();
+    const runtimeService = new EngineService({
+      defaultModel: "openai-default",
+      modelGateway: gateway,
+      ...persistence
+    });
+
+    await persistence.workspaceRepository.upsert({
+      id: "project_read_image_context",
+      name: "read-image-context",
+      rootPath: workspaceRoot,
+      executionPolicy: "local",
+      status: "active",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      kind: "project",
+      readOnly: false,
+      historyMirrorEnabled: false,
+      defaultAgent: "builder",
+      settings: {
+        defaultAgent: "builder",
+        skillDirs: []
+      },
+      workspaceModels: {},
+      agents: {
+        builder: {
+          name: "builder",
+          mode: "primary",
+          prompt: "Use Read for local files.",
+          tools: {
+            native: ["Read"],
+            actions: [],
+            skills: [],
+            external: []
+          },
+          switch: [],
+          subagents: []
+        }
+      },
+      actions: {},
+      skills: {},
+      toolServers: {},
+      hooks: {},
+      catalog: {
+        workspaceId: "project_read_image_context",
+        agents: [{ name: "builder", mode: "primary", source: "workspace" }],
+        models: [],
+        actions: [],
+        skills: [],
+        tools: [],
+        hooks: [],
+        nativeTools: []
+      }
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: "project_read_image_context",
+      caller,
+      input: {}
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Read the image and answer from it." }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "completed";
+    });
+
+    expect(gateway.invocations.length).toBeGreaterThanOrEqual(2);
+    const followupMessages = gateway.invocations.at(-1)?.input.messages ?? [];
+    const injectedImageMessage = followupMessages.find(
+      (message) =>
+        message.role === "user" &&
+        Array.isArray(message.content) &&
+        message.content.some((part) => part.type === "image" && part.mediaType === "image/png")
+    );
+    expect(injectedImageMessage).toBeDefined();
+    expect(JSON.stringify(injectedImageMessage)).toContain(pixelBytes.toString("base64"));
+
+    const page = await runtimeService.listSessionMessages(session.id, 20);
+    const readToolMessage = page.items.find((message) => hasToolResultPart(message, "Read", "call_read_image"));
+    expect(messageText(readToolMessage)).toContain("context_injected: true");
+    expect(messageText(readToolMessage)).not.toContain(pixelBytes.toString("base64"));
   });
 
   it("persists failed tool executions as tool results so later runs can reuse the session history", async () => {

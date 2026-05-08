@@ -5,7 +5,7 @@ import { formatToolOutput } from "../capabilities/tool-output.js";
 import type { EngineToolSet, WorkspaceFileSystemEntry } from "../types.js";
 import { DEFAULT_READ_LIMIT } from "./constants.js";
 import { formatReadLines } from "./fs-utils.js";
-import { describeImageWithModel, formatImageDescriptionOutput, guessImageMimeType } from "./media.js";
+import { formatImageDescriptionOutput, guessImageMimeType, imageContextMessage } from "./media.js";
 import { resolveWorkspacePath } from "./paths.js";
 import { getNativeToolRetryPolicy, type NativeToolFactoryContext } from "./types.js";
 
@@ -18,7 +18,7 @@ Usage:
 - You can optionally specify an offset and limit for targeted reads
 - Results are returned with line numbers starting at 1
 - Directories are returned as sorted listings
-- Images are analyzed with the configured model and returned as text descriptions.`;
+- Images are injected into the current model context as an internal user message instead of being returned as base64.`;
 
 const ReadInputSchema = z
   .object({
@@ -128,23 +128,21 @@ export function createReadTool(context: NativeToolFactoryContext): EngineToolSet
           if (mediaType) {
             const bytes = await fileSystem.readFile(resolved.absolutePath);
             await context.rememberRead(resolved.relativePath, workspaceRoot, fileSystem);
-            const description = await describeImageWithModel(
-              context.options,
-              {
+            context.injectModelContextMessage(
+              imageContextMessage({
                 absolutePath: resolved.absolutePath,
                 relativePath: resolved.relativePath,
                 mediaType,
                 sizeBytes: entry.size,
                 bytes
-              },
-              executionContext.abortSignal
+              })
             );
             return formatImageDescriptionOutput({
               absolutePath: resolved.absolutePath,
               relativePath: resolved.relativePath,
               mediaType,
               sizeBytes: entry.size,
-              description
+              injected: Boolean(context.options?.injectModelContextMessage)
             });
           }
 

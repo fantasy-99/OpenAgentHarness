@@ -6,6 +6,7 @@ import type {
   WorkspaceFileSystem,
   WorkspaceRecord
 } from "../types.js";
+import type { ChatMessage } from "@oah/api-contracts";
 import { AppError } from "../errors.js";
 
 export const PUBLIC_NATIVE_TOOL_NAMES = [
@@ -52,7 +53,7 @@ export interface NativeToolSetOptions {
   sessionId?: string | undefined;
   modelGateway?: ModelGateway | undefined;
   webFetchModel?: string | undefined;
-  imageDescriptionModel?: string | undefined;
+  injectModelContextMessage?: ((message: ChatMessage) => void) | undefined;
   commandExecutor?: WorkspaceCommandExecutor | undefined;
   fileSystem?: WorkspaceFileSystem | undefined;
   workspace?: WorkspaceRecord | undefined;
@@ -86,6 +87,7 @@ export interface NativeToolFactoryContext {
     filePath: string;
     content: string;
   } | null>;
+  injectModelContextMessage: (message: ChatMessage) => void;
   assertVisible: (toolName: NativeToolName) => void;
   omitLegacyKeys: <T extends Record<string, unknown>>(value: T, keys: string[]) => Record<string, unknown>;
   rememberRead: (relativePath: string, workspaceRoot?: string, fileSystem?: WorkspaceFileSystem) => Promise<void>;

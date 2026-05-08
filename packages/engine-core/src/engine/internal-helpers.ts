@@ -1,9 +1,12 @@
 import { nowIso } from "../utils.js";
+import type { ChatMessage } from "@oah/api-contracts";
 
 export interface RunExecutionContext {
   currentAgentName: string;
   injectSystemReminder: boolean;
   delegatedRunIds: string[];
+  pendingModelContextMessages?: ChatMessage[] | undefined;
+  injectModelContextMessage?: ((message: ChatMessage) => void) | undefined;
 }
 
 export type AutomaticRecoveryStrategy = "fail" | "requeue_running" | "requeue_all";

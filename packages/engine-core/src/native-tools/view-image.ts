@@ -2,16 +2,16 @@ import { z } from "zod";
 
 import { AppError } from "../errors.js";
 import type { EngineToolSet } from "../types.js";
-import { describeImageWithModel, formatImageDescriptionOutput, guessImageMimeType } from "./media.js";
+import { formatImageDescriptionOutput, guessImageMimeType, imageContextMessage } from "./media.js";
 import { resolveWorkspacePath } from "./paths.js";
 import { getNativeToolRetryPolicy, type NativeToolFactoryContext } from "./types.js";
 
-const VIEW_IMAGE_DESCRIPTION = `Views a local image file and returns a model-generated text description.
+const VIEW_IMAGE_DESCRIPTION = `Views a local image file by injecting it into the current model context.
 
 Usage:
 - First locate image files with Glob, Grep, or Bash, then pass the full local path or workspace-relative path here
-- The image is analyzed with the configured model; the tool result contains text only and never returns base64 image data
-- Use the optional prompt parameter to ask a targeted question about the image
+- The image is injected as an internal user message for the next model step; the tool result never returns base64 image data
+- Use the optional prompt parameter to ask a targeted question about the image in the current conversation context
 - The path parameter is the local image path to view`;
 
 const ViewImageInputSchema = z
@@ -46,17 +46,15 @@ export function createViewImageTool(context: NativeToolFactoryContext): EngineTo
           const bytes = await fileSystem.readFile(resolved.absolutePath);
           await context.rememberRead(resolved.relativePath, workspaceRoot, fileSystem);
 
-          const description = await describeImageWithModel(
-            context.options,
-            {
+          context.injectModelContextMessage(
+            imageContextMessage({
               absolutePath: resolved.absolutePath,
               relativePath: resolved.relativePath,
               mediaType,
               sizeBytes: entry.size,
               bytes,
               prompt: input.prompt
-            },
-            executionContext.abortSignal
+            })
           );
 
           return formatImageDescriptionOutput({
@@ -64,7 +62,7 @@ export function createViewImageTool(context: NativeToolFactoryContext): EngineTo
             relativePath: resolved.relativePath,
             mediaType,
             sizeBytes: entry.size,
-            description,
+            injected: Boolean(context.options?.injectModelContextMessage),
             prompt: input.prompt
           });
         });

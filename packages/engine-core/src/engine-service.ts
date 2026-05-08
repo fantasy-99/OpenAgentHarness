@@ -882,6 +882,10 @@ export class EngineService {
       defaultModel: this.#defaultModel,
       commandExecutor: this.#workspaceCommandExecutor,
       fileSystem: this.#workspaceFileSystem,
+      injectModelContextMessage: (message) => {
+        executionContext.pendingModelContextMessages ??= [];
+        executionContext.pendingModelContextMessages.push(message);
+      },
       ...(this.#workspaceFileAccessProvider ? { workspaceFileAccessProvider: this.#workspaceFileAccessProvider } : {}),
       executeAction: async (action, input, context) => this.#executeAction(workspace, action, run, context.abortSignal, input),
       delegateAgent: async ({ targetAgentName, task, handoffSummary, taskId, notifyParentOnCompletion, toolUseId }, currentAgentName) => {

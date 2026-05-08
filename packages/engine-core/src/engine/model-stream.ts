@@ -1,4 +1,4 @@
-import type { Message, Run, RunStep, Session } from "@oah/api-contracts";
+import type { ChatMessage, Message, Run, RunStep, Session } from "@oah/api-contracts";
 
 import type {
   ActionRetryPolicy,
@@ -14,6 +14,7 @@ import type { ModelExecutionInputSnapshot, ToolErrorContentPart } from "./model-
 interface RunExecutionContextLike {
   currentAgentName: string;
   injectSystemReminder: boolean;
+  pendingModelContextMessages?: ChatMessage[] | undefined;
 }
 
 type ToolMessageMetadata = {
@@ -100,6 +101,15 @@ function readToolResultText(output: unknown): string | undefined {
 
 function inferSuccessfulToolMessageStatus(output: unknown): ToolMessageMetadata["toolStatus"] {
   return /^started:\s*true(?:\s|$)/mu.test(readToolResultText(output) ?? "") ? "started" : "completed";
+}
+
+function drainPendingModelContextMessages(executionContext: RunExecutionContextLike): ChatMessage[] {
+  const pending = executionContext.pendingModelContextMessages;
+  if (!Array.isArray(pending) || pending.length === 0) {
+    return [];
+  }
+
+  return pending.splice(0, pending.length);
 }
 
 function errorCodeFromUnknown(error: unknown): string {
@@ -380,7 +390,20 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
           this.#executionContext.currentAgentName,
           this.#executionContext.injectSystemReminder
         );
-        const hookedNextInput = await this.#planning.applyBeforeModelHooks(this.#workspace, this.#session, latestRun, nextInput);
+        const pendingModelContextMessages = drainPendingModelContextMessages(this.#executionContext);
+        const nextInputWithInjectedContext =
+          pendingModelContextMessages.length > 0
+            ? {
+                ...nextInput,
+                messages: [...nextInput.messages, ...pendingModelContextMessages]
+              }
+            : nextInput;
+        const hookedNextInput = await this.#planning.applyBeforeModelHooks(
+          this.#workspace,
+          this.#session,
+          latestRun,
+          nextInputWithInjectedContext
+        );
         this.#latestHookedModelInput = hookedNextInput;
         this.#executionContext.injectSystemReminder = false;
         const followupModelCallStep = await this.#steps.startRunStep({
@@ -414,6 +437,7 @@ export class ModelStreamCoordinator<TModelInput extends ModelExecutionInputSnaps
           provider: hookedNextInput.provider,
           canonicalModelRef: hookedNextInput.canonicalModelRef,
           messageCount: hookedNextInput.messages.length,
+          injectedContextMessages: pendingModelContextMessages.length,
           activeToolNames
         });
 

@@ -1,4 +1,4 @@
-import type { Run, Session } from "@oah/api-contracts";
+import type { ChatMessage, Run, Session } from "@oah/api-contracts";
 
 import { createRunActionTool } from "./action-dispatch.js";
 import {
@@ -375,6 +375,7 @@ export interface BuildEngineToolsInput {
   }>;
   awaitDelegatedRuns: (input: { runIds: string[]; mode: "all" | "any" }) => Promise<string>;
   switchAgent: (targetAgentName: string, currentAgentName: string) => Promise<void>;
+  injectModelContextMessage?: ((message: ChatMessage) => void) | undefined;
   commandExecutor?: import("../types.js").WorkspaceCommandExecutor | undefined;
   fileSystem?: WorkspaceFileSystem | undefined;
   workspaceFileAccessProvider?: WorkspaceFileAccessProvider | undefined;
@@ -430,7 +431,7 @@ export function buildEngineTools(input: BuildEngineToolsInput): EngineToolSet {
           sessionId: session.id,
           modelGateway,
           webFetchModel: defaultModel,
-          imageDescriptionModel: defaultModel,
+          ...(input.injectModelContextMessage ? { injectModelContextMessage: input.injectModelContextMessage } : {}),
           workspace,
           readVirtualFile: async ({ filePath, abortSignal }) => {
             const taskId = taskIdFromAgentTaskOutputTarget(filePath, session.id);
