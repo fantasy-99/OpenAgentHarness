@@ -12645,7 +12645,7 @@ describe("runtime service", () => {
     ).toBe(true);
   });
 
-  it("fails with a clear message when max steps are exhausted after a tool call", async () => {
+  it("fails with a clear message when max steps are exhausted", async () => {
     const { gateway, runtimeService, workspace } = await createRuntime(0, {
       workspaceSettings: {
         defaultAgent: "researcher"
@@ -12707,7 +12707,9 @@ describe("runtime service", () => {
     const session = await runtimeService.createSession({
       workspaceId: workspace.id,
       caller,
-      input: {}
+      input: {
+        agentName: "researcher"
+      }
     });
 
     const accepted = await runtimeService.createSessionMessage({
@@ -12722,17 +12724,79 @@ describe("runtime service", () => {
     });
 
     const run = await runtimeService.getRun(accepted.runId);
-    expect(run.errorCode).toBe("model_max_steps_exhausted_after_tool_call");
+    expect(run.errorCode).toBe("model_max_steps_exhausted");
     expect(run.errorMessage).toContain("max model steps (2)");
-    expect(run.errorMessage).toContain("tool result was saved");
+    expect(run.errorMessage).toContain("before the assistant could finish");
 
     const events = await runtimeService.listSessionEvents(session.id, undefined, accepted.runId);
     const failedEvent = events.find((event) => event.event === "run.failed");
     expect(failedEvent?.data).toMatchObject({
-      errorCode: "model_max_steps_exhausted_after_tool_call",
+      errorCode: "model_max_steps_exhausted",
       errorMessage: expect.stringContaining("max model steps (2)")
     });
     expect(events.some((event) => event.event === "run.completed")).toBe(false);
+  });
+
+  it("fails with a clear message when max steps stop a non-tool response", async () => {
+    const { gateway, runtimeService, workspace } = await createRuntime(0, {
+      workspaceSettings: {
+        defaultAgent: "researcher"
+      },
+      agents: {
+        researcher: {
+          name: "researcher",
+          mode: "primary",
+          prompt: "Answer carefully.",
+          tools: {
+            native: []
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: [],
+          policy: {
+            maxSteps: 2
+          }
+        }
+      }
+    });
+
+    gateway.streamScenarioFactory = () => ({
+      text: "Partial answer before stopping.",
+      stopReason: "max_steps",
+      stepCount: 2,
+      maxSteps: 2
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: workspace.id,
+      caller,
+      input: {
+        agentName: "researcher"
+      }
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Give a long answer." }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "failed";
+    });
+
+    const run = await runtimeService.getRun(accepted.runId);
+    expect(run.errorCode).toBe("model_max_steps_exhausted");
+    expect(run.errorMessage).toContain("max model steps (2)");
   });
 
   it("runs actions through the built-in run_action tool and persists the tool result", async () => {

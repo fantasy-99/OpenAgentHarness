@@ -5,7 +5,7 @@ import { formatToolOutput } from "../capabilities/tool-output.js";
 import type { EngineToolSet, WorkspaceFileSystemEntry } from "../types.js";
 import { DEFAULT_READ_LIMIT } from "./constants.js";
 import { formatReadLines } from "./fs-utils.js";
-import { guessImageMimeType, imageToolContent } from "./media.js";
+import { describeImageWithModel, formatImageDescriptionOutput, guessImageMimeType } from "./media.js";
 import { resolveWorkspacePath } from "./paths.js";
 import { getNativeToolRetryPolicy, type NativeToolFactoryContext } from "./types.js";
 
@@ -18,7 +18,7 @@ Usage:
 - You can optionally specify an offset and limit for targeted reads
 - Results are returned with line numbers starting at 1
 - Directories are returned as sorted listings
-- Images are returned as visual input content for the model; use ViewImage when you want an explicit image-only tool call.`;
+- Images are analyzed with the configured model and returned as text descriptions.`;
 
 const ReadInputSchema = z
   .object({
@@ -128,12 +128,23 @@ export function createReadTool(context: NativeToolFactoryContext): EngineToolSet
           if (mediaType) {
             const bytes = await fileSystem.readFile(resolved.absolutePath);
             await context.rememberRead(resolved.relativePath, workspaceRoot, fileSystem);
-            return imageToolContent({
+            const description = await describeImageWithModel(
+              context.options,
+              {
+                absolutePath: resolved.absolutePath,
+                relativePath: resolved.relativePath,
+                mediaType,
+                sizeBytes: entry.size,
+                bytes
+              },
+              executionContext.abortSignal
+            );
+            return formatImageDescriptionOutput({
               absolutePath: resolved.absolutePath,
               relativePath: resolved.relativePath,
               mediaType,
               sizeBytes: entry.size,
-              bytes
+              description
             });
           }
 

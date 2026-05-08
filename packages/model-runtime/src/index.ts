@@ -4,7 +4,9 @@ import {
   generateText,
   stepCountIs,
   streamText,
-  type LanguageModel
+  type LanguageModel,
+  type StopCondition,
+  type ToolSet
 } from "ai";
 
 import type { PlatformModelDefinition, PlatformModelRegistry } from "@oah/config";
@@ -125,6 +127,16 @@ export class AiSdkModelRuntime implements ModelGateway {
       parallelToolCalls: options?.parallelToolCalls
     });
 
+    const maxSteps = Math.max(2, options?.maxSteps ?? 8);
+    const maxStepsStopCondition = stepCountIs(maxSteps);
+    let maxStepsReached = false;
+    const trackMaxStepsStop: StopCondition<ToolSet> = async (event) => {
+      const shouldStop = await maxStepsStopCondition(event);
+      if (shouldStop) {
+        maxStepsReached = true;
+      }
+      return shouldStop;
+    };
     const result = streamText({
       model,
       ...toPrompt(input),
@@ -143,7 +155,7 @@ export class AiSdkModelRuntime implements ModelGateway {
       ...(aiTools
         ? {
             tools: aiTools,
-            stopWhen: stepCountIs(Math.max(2, options?.maxSteps ?? 8))
+            stopWhen: trackMaxStepsStop
           }
         : {}),
       ...(options?.prepareStep
@@ -244,13 +256,14 @@ export class AiSdkModelRuntime implements ModelGateway {
           await cleanup();
         }
       })(),
-      completed: Promise.all([result.text, result.finishReason, result.usage, result.content, result.reasoning])
-        .then(([text, finishReason, usage, content, reasoning]) => ({
+      completed: Promise.all([result.text, result.finishReason, result.usage, result.content, result.reasoning, result.steps])
+        .then(([text, finishReason, usage, content, reasoning, steps]) => ({
           model: modelName,
           text,
           ...(Array.isArray(content) ? { content } : {}),
           ...(Array.isArray(reasoning) ? { reasoning } : {}),
           finishReason,
+          ...(maxStepsReached ? { stopReason: "max_steps", stepCount: steps.length, maxSteps } : {}),
           usage: toUsage(usage)
         }))
         .catch((error) => {

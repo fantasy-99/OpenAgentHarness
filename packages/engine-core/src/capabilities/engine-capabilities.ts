@@ -430,6 +430,7 @@ export function buildEngineTools(input: BuildEngineToolsInput): EngineToolSet {
           sessionId: session.id,
           modelGateway,
           webFetchModel: defaultModel,
+          imageDescriptionModel: defaultModel,
           workspace,
           readVirtualFile: async ({ filePath, abortSignal }) => {
             const taskId = taskIdFromAgentTaskOutputTarget(filePath, session.id);

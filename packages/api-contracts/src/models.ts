@@ -85,6 +85,9 @@ export const modelGenerateResponseSchema = z.object({
   content: z.array(jsonValueSchema).optional(),
   reasoning: z.array(jsonValueSchema).optional(),
   finishReason: z.string().optional(),
+  stopReason: z.string().optional(),
+  stepCount: z.number().int().min(0).optional(),
+  maxSteps: z.number().int().min(1).optional(),
   usage: usageSchema.optional()
 });
 

@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createNativeToolSet } from "../packages/engine-core/src/native-tools.ts";
 import { createLocalWorkspaceFileSystem } from "../packages/engine-core/src/workspace/workspace-file-system.ts";
-import type { WorkspaceCommandExecutor, WorkspaceFileAccessProvider, WorkspaceFileSystem, WorkspaceRecord } from "../packages/engine-core/src/types.ts";
+import type { GenerateModelInput, WorkspaceCommandExecutor, WorkspaceFileAccessProvider, WorkspaceFileSystem, WorkspaceRecord } from "../packages/engine-core/src/types.ts";
+import { FakeModelGateway } from "./helpers/fake-model-runtime.ts";
 
 const tempDirs: string[] = [];
 
@@ -89,10 +90,30 @@ describe("native tools", () => {
     await mkdir(path.join(workspaceRoot, "src"), { recursive: true });
     await writeFile(path.join(workspaceRoot, "src", "app.ts"), "export const answer = 41;\n", "utf8");
 
+    const imageDescriptionGateway = new FakeModelGateway();
+    const imageDescriptionInputs: GenerateModelInput[] = [];
+    imageDescriptionGateway.generateResponseFactory = (input) => {
+      imageDescriptionInputs.push(input);
+      return {
+        model: input.model ?? "vision-test-model",
+        text: "A one-pixel PNG image used as a test fixture.",
+        finishReason: "stop",
+        usage: {
+          inputTokens: 10,
+          outputTokens: 9,
+          totalTokens: 19
+        }
+      };
+    };
+
     const tools = createNativeToolSet(
       workspaceRoot,
       () => ["AskUserQuestion", "Bash", "LS", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "ViewImage", "TodoWrite"],
-      { sessionId: "session-title-case" }
+      {
+        sessionId: "session-title-case",
+        modelGateway: imageDescriptionGateway,
+        imageDescriptionModel: "vision-test-model"
+      }
     );
 
     const askUserQuestionResult = await tools.AskUserQuestion.execute(
@@ -200,37 +221,56 @@ describe("native tools", () => {
     expect(String(readDirectoryResult)).toContain("file  pixel.png");
 
     const readImageResult = await tools.Read.execute({ file_path: path.join(workspaceRoot, "assets", "pixel.png") }, {});
-    expect(readImageResult).toMatchObject({
-      type: "content",
-      value: [
-        {
-          type: "text",
-          text: expect.stringContaining("workspace_path: assets/pixel.png")
-        },
-        {
-          type: "image-data",
-          data: pixelBytes.toString("base64"),
+    expect(String(readImageResult)).toContain("file_path: assets/pixel.png");
+    expect(String(readImageResult)).toContain("media_type: image/png");
+    expect(String(readImageResult)).toContain("kind: image");
+    expect(String(readImageResult)).toContain("description:");
+    expect(String(readImageResult)).toContain("A one-pixel PNG image used as a test fixture.");
+    expect(String(readImageResult)).not.toContain(pixelBytes.toString("base64"));
+    expect(imageDescriptionInputs).toHaveLength(1);
+    expect(imageDescriptionInputs[0]?.model).toBe("vision-test-model");
+    const imageDescriptionContent = imageDescriptionInputs[0]?.messages?.at(-1)?.content;
+    expect(Array.isArray(imageDescriptionContent)).toBe(true);
+    expect(imageDescriptionContent).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "image",
+          image: pixelBytes.toString("base64"),
           mediaType: "image/png"
-        }
-      ]
-    });
+        })
+      ])
+    );
 
-    const imageResult = await tools.ViewImage.execute({ path: path.join(workspaceRoot, "assets", "pixel.png"), detail: "original" }, {});
-    expect(imageResult).toMatchObject({
-      type: "content",
-      value: [
-        {
+    const imageResult = await tools.ViewImage.execute(
+      {
+        path: path.join(workspaceRoot, "assets", "pixel.png"),
+        prompt: "What is the primary visual content?"
+      },
+      {}
+    );
+    expect(String(imageResult)).toContain("file_path: assets/pixel.png");
+    expect(String(imageResult)).toContain("media_type: image/png");
+    expect(String(imageResult)).toContain("kind: image");
+    expect(String(imageResult)).toContain("prompt: What is the primary visual content?");
+    expect(String(imageResult)).toContain("description:");
+    expect(String(imageResult)).toContain("A one-pixel PNG image used as a test fixture.");
+    expect(String(imageResult)).not.toContain(pixelBytes.toString("base64"));
+    expect(imageDescriptionInputs).toHaveLength(2);
+    const viewImageContent = imageDescriptionInputs[1]?.messages?.at(-1)?.content;
+    expect(Array.isArray(viewImageContent)).toBe(true);
+    expect(viewImageContent).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
           type: "text",
-          text: expect.stringContaining("workspace_path: assets/pixel.png")
-        },
-        {
-          type: "image-data",
-          data: pixelBytes.toString("base64"),
-          mediaType: "image/png",
-          providerOptions: { detail: "original" }
-        }
-      ]
-    });
+          text: expect.stringContaining("What is the primary visual content?")
+        }),
+        expect.objectContaining({
+          type: "image",
+          image: pixelBytes.toString("base64"),
+          mediaType: "image/png"
+        })
+      ])
+    );
 
     const bashResult = await tools.Bash.execute({ command: "printf bash-ok" }, {});
     expect(String(bashResult)).toContain("exit_code: 0");

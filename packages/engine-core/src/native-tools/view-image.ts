@@ -2,22 +2,22 @@ import { z } from "zod";
 
 import { AppError } from "../errors.js";
 import type { EngineToolSet } from "../types.js";
-import { guessImageMimeType, imageToolContent } from "./media.js";
+import { describeImageWithModel, formatImageDescriptionOutput, guessImageMimeType } from "./media.js";
 import { resolveWorkspacePath } from "./paths.js";
 import { getNativeToolRetryPolicy, type NativeToolFactoryContext } from "./types.js";
 
-const VIEW_IMAGE_DESCRIPTION = `Views a local image file as visual input for the model.
+const VIEW_IMAGE_DESCRIPTION = `Views a local image file and returns a model-generated text description.
 
 Usage:
 - First locate image files with Glob, Grep, or Bash, then pass the full local path or workspace-relative path here
-- Do not use Read for images; this tool returns AI SDK image content so the next model step can inspect the picture visually
-- The path parameter is the local image path to view
-- The optional detail parameter can be "original" to request the image at original detail/resolution when supported`;
+- The image is analyzed with the configured model; the tool result contains text only and never returns base64 image data
+- Use the optional prompt parameter to ask a targeted question about the image
+- The path parameter is the local image path to view`;
 
 const ViewImageInputSchema = z
   .object({
     path: z.string().min(1).describe("The full local path or workspace-relative path of the image to view"),
-    detail: z.enum(["original"]).optional().describe('Optional detail mode. Use "original" to request original resolution when supported')
+    prompt: z.string().trim().min(1).optional().describe("Optional targeted question or instruction for analyzing the image")
   })
   .strict();
 
@@ -27,7 +27,7 @@ export function createViewImageTool(context: NativeToolFactoryContext): EngineTo
       description: VIEW_IMAGE_DESCRIPTION,
       retryPolicy: getNativeToolRetryPolicy("ViewImage"),
       inputSchema: ViewImageInputSchema,
-      async execute(rawInput) {
+      async execute(rawInput, executionContext) {
         context.assertVisible("ViewImage");
         const input = ViewImageInputSchema.parse(rawInput);
 
@@ -46,13 +46,26 @@ export function createViewImageTool(context: NativeToolFactoryContext): EngineTo
           const bytes = await fileSystem.readFile(resolved.absolutePath);
           await context.rememberRead(resolved.relativePath, workspaceRoot, fileSystem);
 
-          return imageToolContent({
+          const description = await describeImageWithModel(
+            context.options,
+            {
+              absolutePath: resolved.absolutePath,
+              relativePath: resolved.relativePath,
+              mediaType,
+              sizeBytes: entry.size,
+              bytes,
+              prompt: input.prompt
+            },
+            executionContext.abortSignal
+          );
+
+          return formatImageDescriptionOutput({
             absolutePath: resolved.absolutePath,
             relativePath: resolved.relativePath,
             mediaType,
             sizeBytes: entry.size,
-            bytes,
-            detail: input.detail
+            description,
+            prompt: input.prompt
           });
         });
       }

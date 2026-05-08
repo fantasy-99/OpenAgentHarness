@@ -82,6 +82,9 @@ export class FakeModelGateway implements ModelGateway {
             stepRequest?: Record<string, unknown> | undefined;
             stepResponse?: Record<string, unknown> | undefined;
             stepProviderMetadata?: Record<string, unknown> | undefined;
+            stopReason?: string | undefined;
+            stepCount?: number | undefined;
+            maxSteps?: number | undefined;
             preToolText?: string | undefined;
             preToolContent?: unknown[] | undefined;
             preToolReasoning?: unknown[] | undefined;
@@ -341,6 +344,23 @@ export class FakeModelGateway implements ModelGateway {
               : {})
           });
 
+          if (options?.maxSteps && index + 1 >= Math.max(2, options.maxSteps)) {
+            resolveCompleted({
+              model: modelName,
+              text: preToolEmitted,
+              finishReason: "tool-calls",
+              stopReason: "max_steps",
+              stepCount: index + 1,
+              maxSteps: Math.max(2, options.maxSteps),
+              usage: {
+                inputTokens: 10,
+                outputTokens: Math.max(0, preToolEmitted.length),
+                totalTokens: 10 + Math.max(0, preToolEmitted.length)
+              }
+            });
+            return;
+          }
+
           await applyPreparation(index + 1);
           text = scenario?.text ?? gateway.#buildText(currentInput);
           chunks = text.match(/.{1,4}/g) ?? [text];
@@ -401,6 +421,9 @@ export class FakeModelGateway implements ModelGateway {
           ...(Array.isArray(scenario?.content) ? { content: scenario.content } : {}),
           ...(Array.isArray(scenario?.reasoning) ? { reasoning: scenario.reasoning } : {}),
           finishReason: "stop",
+          ...(scenario?.stopReason ? { stopReason: scenario.stopReason } : {}),
+          ...(typeof scenario?.stepCount === "number" ? { stepCount: scenario.stepCount } : {}),
+          ...(typeof scenario?.maxSteps === "number" ? { maxSteps: scenario.maxSteps } : {}),
           usage: {
             inputTokens: 10,
             outputTokens: emitted.length,

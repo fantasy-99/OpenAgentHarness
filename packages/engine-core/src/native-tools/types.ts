@@ -52,6 +52,7 @@ export interface NativeToolSetOptions {
   sessionId?: string | undefined;
   modelGateway?: ModelGateway | undefined;
   webFetchModel?: string | undefined;
+  imageDescriptionModel?: string | undefined;
   commandExecutor?: WorkspaceCommandExecutor | undefined;
   fileSystem?: WorkspaceFileSystem | undefined;
   workspace?: WorkspaceRecord | undefined;

@@ -530,12 +530,12 @@ export class ModelRunExecutor {
         streamCoordinator.latestHookedModelInput,
         completed
       );
-      const maxSteps = workspace.agents[executionContext.currentAgentName]?.policy?.maxSteps ?? 8;
-      if (hookedCompleted.finishReason === "tool-calls") {
+      const maxSteps = hookedCompleted.maxSteps ?? workspace.agents[executionContext.currentAgentName]?.policy?.maxSteps ?? 8;
+      if (hookedCompleted.stopReason === "max_steps") {
         throw new AppError(
           409,
-          "model_max_steps_exhausted_after_tool_call",
-          `Run reached the max model steps (${maxSteps}) immediately after a tool call. The tool result was saved, but the model did not get another step to summarize it. Increase the agent policy.max_steps or retry with a narrower request.`
+          "model_max_steps_exhausted",
+          `Run reached the max model steps (${maxSteps}) before the assistant could finish. Increase the agent policy.max_steps or retry with a narrower request.`
         );
       }
 
