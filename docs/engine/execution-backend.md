@@ -31,15 +31,19 @@ export interface ExecutionBackend {
 
 | Tool | 功能 | Backend 方法 |
 | --- | --- | --- |
+| `AskUserQuestion` | 生成需要用户回答的结构化问题 | structured tool result |
 | `Bash` | 执行 shell 命令；可启动后台终端 | `execShell()` / command executor |
 | `TerminalOutput` | 查看后台终端状态和输出 | command executor |
 | `TerminalInput` | 向后台终端继续写入输入 | command executor |
 | `TerminalStop` | 停止后台终端 | command executor |
-| `Read` | 读取文件（utf8 / base64） | `readFile()` |
+| `LS` | 列出目录内容 | `listFiles()` |
+| `Read` | 读取文件、目录和图片视觉内容 | `readFile()` |
 | `Write` | 创建或覆盖文件 | `writeFile()` |
 | `Edit` | 编辑文件指定段落 | `readFile()` + `writeFile()` |
+| `MultiEdit` | 对单文件应用多处原子字符串替换 | `readFile()` + `writeFile()` |
 | `Glob` | 模式匹配搜索文件 | `listFiles()` |
 | `Grep` | 正则搜索文件内容 | `execShell()` (ripgrep) |
+| `ViewImage` | 将本地图片作为视觉输入传给模型 | `readFile()` + AI SDK image content |
 | `WebFetch` | 获取网页内容 | 直接 HTTP |
 | `TodoWrite` | session 级任务列表 | 内存状态 |
 

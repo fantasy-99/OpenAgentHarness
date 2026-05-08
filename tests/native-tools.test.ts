@@ -91,9 +91,49 @@ describe("native tools", () => {
 
     const tools = createNativeToolSet(
       workspaceRoot,
-      () => ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "TodoWrite"],
+      () => ["AskUserQuestion", "Bash", "LS", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "ViewImage", "TodoWrite"],
       { sessionId: "session-title-case" }
     );
+
+    const askUserQuestionResult = await tools.AskUserQuestion.execute(
+      {
+        context: "Choosing a persistence strategy changes the implementation.",
+        questions: [
+          {
+            question: "Which persistence strategy should we use?",
+            header: "Persistence",
+            options: [
+              { label: "SQLite", description: "Use a local SQLite database." },
+              { label: "Postgres", description: "Use the existing Postgres deployment." }
+            ]
+          }
+        ]
+      },
+      {}
+    );
+    expect(askUserQuestionResult).toMatchObject({
+      type: "json",
+      value: {
+        status: "awaiting_user",
+        context: "Choosing a persistence strategy changes the implementation.",
+        questions: [
+          {
+            question: "Which persistence strategy should we use?",
+            header: "Persistence",
+            options: [
+              { label: "SQLite", description: "Use a local SQLite database." },
+              { label: "Postgres", description: "Use the existing Postgres deployment." }
+            ],
+            multiSelect: false,
+            freeText: true
+          }
+        ]
+      }
+    });
+
+    const lsResult = await tools.LS.execute({ path: "." }, {});
+    expect(String(lsResult)).toContain("contents:");
+    expect(String(lsResult)).toContain("directory  src/");
 
     const writeResult = await tools.Write.execute({
       file_path: "notes/summary.txt",
@@ -121,12 +161,76 @@ describe("native tools", () => {
     expect(String(editResult)).toContain("occurrences: 1");
     expect(await readFile(path.join(workspaceRoot, "src", "app.ts"), "utf8")).toContain("42");
 
+    const multiEditResult = await tools.MultiEdit.execute(
+      {
+        file_path: "src/app.ts",
+        edits: [
+          {
+            old_string: "answer",
+            new_string: "ultimateAnswer"
+          },
+          {
+            old_string: "42",
+            new_string: "43"
+          }
+        ]
+      },
+      {}
+    );
+    expect(String(multiEditResult)).toContain("file_path: src/app.ts");
+    expect(String(multiEditResult)).toContain("edits: 2");
+    expect(await readFile(path.join(workspaceRoot, "src", "app.ts"), "utf8")).toContain("ultimateAnswer = 43");
+
     const globResult = await tools.Glob.execute({ pattern: "**/*.ts" }, {});
     expect(String(globResult)).toContain("files:");
     expect(String(globResult)).toContain("src/app.ts");
 
-    const grepResult = await tools.Grep.execute({ pattern: "answer", path: "src", output_mode: "content" }, {});
-    expect(String(grepResult)).toContain('src/app.ts:1:export const answer = 42;');
+    const grepResult = await tools.Grep.execute({ pattern: "ultimateAnswer", path: "src", output_mode: "content" }, {});
+    expect(String(grepResult)).toContain('src/app.ts:1:export const ultimateAnswer = 43;');
+
+    const pixelBytes = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+      "base64"
+    );
+    await mkdir(path.join(workspaceRoot, "assets"), { recursive: true });
+    await writeFile(path.join(workspaceRoot, "assets", "pixel.png"), pixelBytes);
+
+    const readDirectoryResult = await tools.Read.execute({ file_path: "assets" }, {});
+    expect(String(readDirectoryResult)).toContain("kind: directory");
+    expect(String(readDirectoryResult)).toContain("file  pixel.png");
+
+    const readImageResult = await tools.Read.execute({ file_path: path.join(workspaceRoot, "assets", "pixel.png") }, {});
+    expect(readImageResult).toMatchObject({
+      type: "content",
+      value: [
+        {
+          type: "text",
+          text: expect.stringContaining("workspace_path: assets/pixel.png")
+        },
+        {
+          type: "image-data",
+          data: pixelBytes.toString("base64"),
+          mediaType: "image/png"
+        }
+      ]
+    });
+
+    const imageResult = await tools.ViewImage.execute({ path: path.join(workspaceRoot, "assets", "pixel.png"), detail: "original" }, {});
+    expect(imageResult).toMatchObject({
+      type: "content",
+      value: [
+        {
+          type: "text",
+          text: expect.stringContaining("workspace_path: assets/pixel.png")
+        },
+        {
+          type: "image-data",
+          data: pixelBytes.toString("base64"),
+          mediaType: "image/png",
+          providerOptions: { detail: "original" }
+        }
+      ]
+    });
 
     const bashResult = await tools.Bash.execute({ command: "printf bash-ok" }, {});
     expect(String(bashResult)).toContain("exit_code: 0");
@@ -154,6 +258,47 @@ describe("native tools", () => {
       { content: "Inspect files", activeForm: "Inspecting files", status: "completed" },
       { content: "Ship fix", activeForm: "Shipping fix", status: "in_progress" }
     ]);
+  });
+
+  it("validates AskUserQuestion structure", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-native-tools-ask-user-question-"));
+    tempDirs.push(workspaceRoot);
+
+    const tools = createNativeToolSet(workspaceRoot, () => ["AskUserQuestion"], {
+      sessionId: "session-ask-user-question"
+    });
+
+    await expect(
+      tools.AskUserQuestion.execute(
+        {
+          questions: [
+            {
+              question: "Which option should we use?",
+              options: [
+                { label: "Same", description: "First option." },
+                { label: "Same", description: "Second option." }
+              ]
+            }
+          ]
+        },
+        {}
+      )
+    ).rejects.toThrow(/option labels must be unique/i);
+
+    await expect(
+      tools.AskUserQuestion.execute(
+        {
+          questions: [
+            { question: "One?" },
+            { question: "Two?" },
+            { question: "Three?" },
+            { question: "Four?" },
+            { question: "Five?" }
+          ]
+        },
+        {}
+      )
+    ).rejects.toThrow();
   });
 
   it("requires existing files to be read before Write or Edit", async () => {
@@ -200,6 +345,39 @@ describe("native tools", () => {
     ).resolves.toContain("file_path: existing.txt");
   });
 
+  it("does not write partial MultiEdit changes when a later edit fails", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-native-tools-multi-edit-atomic-"));
+    tempDirs.push(workspaceRoot);
+
+    await writeFile(path.join(workspaceRoot, "existing.txt"), "alpha\nbeta\n", "utf8");
+
+    const tools = createNativeToolSet(workspaceRoot, () => ["Read", "MultiEdit"], {
+      sessionId: "session-multi-edit-atomic"
+    });
+
+    await tools.Read.execute({ file_path: "existing.txt" }, {});
+    await expect(
+      tools.MultiEdit.execute(
+        {
+          file_path: "existing.txt",
+          edits: [
+            {
+              old_string: "alpha",
+              new_string: "ALPHA"
+            },
+            {
+              old_string: "missing",
+              new_string: "MISSING"
+            }
+          ]
+        },
+        {}
+      )
+    ).rejects.toThrow(/not found/i);
+
+    expect(await readFile(path.join(workspaceRoot, "existing.txt"), "utf8")).toBe("alpha\nbeta\n");
+  });
+
   it("supports Bash run_in_background with a readable output file", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "oah-native-tools-background-"));
     tempDirs.push(workspaceRoot);
@@ -225,7 +403,7 @@ describe("native tools", () => {
 
     const outputPath = outputPathMatch?.[1] ?? "";
     let output = "";
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
       output = await readFile(path.join(workspaceRoot, outputPath), "utf8").catch(() => "");
       if (output.includes("background-ok")) {
         break;

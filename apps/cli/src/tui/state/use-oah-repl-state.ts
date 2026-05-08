@@ -3,7 +3,7 @@ import type { SetStateAction } from "react";
 import type { Run, Session, SessionEventContract, SystemProfile, Workspace, WorkspaceCatalog, WorkspaceRuntime } from "@oah/api-contracts";
 
 import { OahApiClient, type OahConnection } from "../../api/oah-api.js";
-import type { ChatLine, Dialog, Notice, SessionStartupMode, WorkspaceCreateDialog } from "../domain/types.js";
+import type { AskUserQuestionSelection, ChatLine, Dialog, Notice, SessionStartupMode, WorkspaceCreateDialog } from "../domain/types.js";
 import {
   createWorkspaceDialog,
   formatSessionActivity,
@@ -39,6 +39,7 @@ export function useOahReplState(
   const [composer, setComposer] = useState("");
   const [composerCursor, setComposerCursor] = useState(0);
   const [slashSelection, setSlashSelection] = useState(0);
+  const [askUserQuestionSelection, setAskUserQuestionSelection] = useState<AskUserQuestionSelection | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [notice, setNotice] = useState<Notice>({ level: "info", message: "Loading workspaces..." });
   const [streamState, setStreamState] = useState("idle");
@@ -459,12 +460,14 @@ export function useOahReplState(
     composer,
     composerCursor,
     slashSelection,
+    askUserQuestionSelection,
     dialog,
     notice,
     streamState,
     setComposerCursor: setComposerCursorValue,
     setComposerValue,
     setSlashSelection,
+    setAskUserQuestionSelection,
     setDialog,
     insertComposerInput,
     deleteComposerInput,

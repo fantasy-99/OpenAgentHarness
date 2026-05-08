@@ -1628,6 +1628,24 @@ export function useAppController() {
     }
   }
 
+  async function answerAskUserQuestion(answer: string) {
+    if (!sessionId.trim()) {
+      reportError("请先创建或加载 session。");
+      return;
+    }
+
+    try {
+      await submitSessionMessage(answer, {
+        clearDraft: false,
+        runningRunBehavior: "interrupt",
+        activityLabel: "已发送问题答复，正在继续当前对话"
+      });
+    } catch (error) {
+      reportError(error);
+      openConsoleForErrors();
+    }
+  }
+
   async function guideQueuedSessionInput(runId: string) {
     if (!sessionId.trim() || !runId.trim()) {
       reportError("请先创建或加载 session。");
@@ -2576,6 +2594,9 @@ export function useAppController() {
   const handleGuideMessage = useEffectEvent(() => {
     void guideMessage();
   });
+  const handleAnswerAskUserQuestion = useEffectEvent((answer: string) => {
+    void answerAskUserQuestion(answer);
+  });
   const handleGuideQueuedSessionInput = useEffectEvent((runId: string) => {
     void guideQueuedSessionInput(runId);
   });
@@ -2793,6 +2814,7 @@ export function useAppController() {
       loadOlderMessages: handleLoadOlderMessages,
       refreshMessages: handleRefreshMessages,
       sendMessage: handleSendMessage,
+      answerAskUserQuestion: handleAnswerAskUserQuestion,
       guideMessage: handleGuideMessage,
       guideQueuedSessionInput: handleGuideQueuedSessionInput,
       guideMessageSupported: true,
@@ -2846,6 +2868,7 @@ export function useAppController() {
       workspaceFileManager.fileManagerSurfaceProps,
       firstModelCallTrace,
       handleCancelCurrentRun,
+      handleAnswerAskUserQuestion,
       handleGuideMessage,
       navigationActions.refreshSession,
       handleGuideQueuedSessionInput,

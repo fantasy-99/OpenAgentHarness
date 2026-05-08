@@ -2,8 +2,8 @@ import React from "react";
 import { Box, Text, useCursor, useWindowSize } from "ink";
 import { formatSystemProfileDisplayName, type Run, type Session, type SystemProfile, type Workspace } from "@oah/api-contracts";
 
-import type { Notice } from "../domain/types.js";
-import { clampIndex, getSlashCommandMatches, shortId } from "../domain/utils.js";
+import type { AskUserQuestionPrompt, AskUserQuestionSelection, Notice } from "../domain/types.js";
+import { clampIndex, getSlashCommandMatches, isAskUserQuestionSelectionCurrent, shortId } from "../domain/utils.js";
 
 export function PromptInput(props: {
   value: string;
@@ -19,12 +19,18 @@ export function PromptInput(props: {
   notice: Notice;
   streamState: string;
   agentMode: string;
+  askUserQuestionPrompt?: AskUserQuestionPrompt | undefined;
+  askUserQuestionSelection?: AskUserQuestionSelection | null | undefined;
 }) {
   const { setCursorPosition } = useCursor();
   const { columns, rows } = useWindowSize();
   const prompt = "❯ ";
   const inputLayout = layoutComposerInput(props.value, props.cursor, columns);
-  const suggestionRows = props.disabled ? 0 : getSlashSuggestionRowCount(props.value);
+  const askQuestionRows =
+    !props.disabled && props.askUserQuestionPrompt && props.value.trim().length === 0
+      ? getAskUserQuestionPickerRowCount(props.askUserQuestionPrompt)
+      : 0;
+  const suggestionRows = props.disabled || askQuestionRows > 0 ? 0 : getSlashSuggestionRowCount(props.value);
   const cursorX = Math.min(Math.max(0, columns - 1), terminalWidth(prompt) + inputLayout.cursorColumn);
   const nativeCursorY = props.cursorY + inputLayout.cursorLine;
   const shouldParkNativeCursor = !props.disabled && nativeCursorY <= rows * 3;
@@ -39,7 +45,7 @@ export function PromptInput(props: {
   );
 
   return (
-    <Box flexDirection="column" height={inputLayout.rows.length + suggestionRows + 4} overflow="hidden">
+    <Box flexDirection="column" height={inputLayout.rows.length + suggestionRows + askQuestionRows + 4} overflow="hidden">
       <Text dimColor>{"─".repeat(Math.max(0, columns))}</Text>
       <Box flexDirection="column" width="100%">
         {inputLayout.rows.map((row, index) => (
@@ -54,7 +60,13 @@ export function PromptInput(props: {
         ))}
       </Box>
       <Text dimColor>{"─".repeat(Math.max(0, columns))}</Text>
-      {!props.disabled ? <SlashSuggestions value={props.value} selectedIndex={props.slashSelection} /> : null}
+      {!props.disabled && askQuestionRows > 0 && props.askUserQuestionPrompt ? (
+        <AskUserQuestionPicker
+          prompt={props.askUserQuestionPrompt}
+          selection={props.askUserQuestionSelection}
+        />
+      ) : null}
+      {!props.disabled && askQuestionRows === 0 ? <SlashSuggestions value={props.value} selectedIndex={props.slashSelection} /> : null}
       <PromptFooter
         {...(props.disabled === undefined ? {} : { disabled: props.disabled })}
         workspace={props.workspace}
@@ -122,9 +134,60 @@ export function getPromptInputRowCount(value: string, columns: number) {
   return layoutComposerInput(value, value.length, columns).rows.length;
 }
 
+export function getAskUserQuestionPickerRowCount(prompt: AskUserQuestionPrompt | undefined) {
+  if (!prompt) {
+    return 0;
+  }
+  const question = prompt.questions[0];
+  return Math.min(8, 3 + (question?.options?.length ?? 0));
+}
+
 export function getSlashSuggestionRowCount(value: string) {
   const matches = getSlashCommandMatches(value);
   return matches.length > 0 ? Math.min(matches.length, SLASH_SUGGESTION_MAX_ROWS) : 0;
+}
+
+function AskUserQuestionPicker(props: {
+  prompt: AskUserQuestionPrompt;
+  selection?: AskUserQuestionSelection | null | undefined;
+}) {
+  const selection = props.selection && isAskUserQuestionSelectionCurrent(props.prompt, props.selection) ? props.selection : null;
+  const questionIndex = selection?.questionIndex ?? 0;
+  const question = props.prompt.questions[questionIndex];
+  if (!question) {
+    return null;
+  }
+  const selectedLabels = new Set(selection?.selectedByQuestion[questionIndex] ?? []);
+  const optionIndex = selection?.optionIndex ?? 0;
+
+  return (
+    <Box flexDirection="column" paddingX={2}>
+      {props.prompt.questions.length > 1 ? (
+        <Text dimColor>
+          Question {questionIndex + 1}/{props.prompt.questions.length} · ←/→ switch
+        </Text>
+      ) : null}
+      <Text color="cyan" bold>
+        {question.header ? `[${question.header}] ` : ""}
+        {question.question}
+      </Text>
+      {question.options?.map((option, index) => {
+        const focused = index === optionIndex;
+        const selected = selectedLabels.has(option.label);
+        const marker = question.multiSelect ? (selected ? "[x]" : "[ ]") : focused ? "(*)" : "( )";
+        return (
+          <Text key={`${option.label}:${index}`} {...(focused ? { color: "cyan" } : {})} dimColor={!focused && !selected} wrap="truncate">
+            {focused ? "❯ " : "  "}
+            {marker} {option.label}
+            {option.description ? <Text dimColor> - {option.description}</Text> : null}
+          </Text>
+        );
+      })}
+      <Text dimColor>
+        ↑↓/j/k move · {question.multiSelect ? "space toggle · " : ""}enter submit · type text for custom answer
+      </Text>
+    </Box>
+  );
 }
 
 function layoutComposerInput(value: string, cursor: number, columns: number) {

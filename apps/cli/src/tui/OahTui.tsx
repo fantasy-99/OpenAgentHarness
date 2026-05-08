@@ -12,10 +12,11 @@ import {
   TranscriptItemView,
   type TranscriptItem
 } from "./components/messages.js";
-import { getPromptInputRowCount, getSlashSuggestionRowCount, PromptInput } from "./components/prompt.js";
+import { getAskUserQuestionPickerRowCount, getPromptInputRowCount, getSlashSuggestionRowCount, PromptInput } from "./components/prompt.js";
 import { useTuiInput } from "./input/use-tui-input.js";
 import { useOahReplState } from "./state/use-oah-repl-state.js";
 import type { SessionStartupMode } from "./domain/types.js";
+import { latestAskUserQuestionPrompt } from "./domain/utils.js";
 
 function OahApp(props: { children: React.ReactNode }) {
   return <Box flexDirection="column">{props.children}</Box>;
@@ -38,9 +39,14 @@ function OahRepl({
 
   const latestRun = state.runs[0] ?? null;
   const runActive = latestRun?.status === "queued" || latestRun?.status === "running" || latestRun?.status === "waiting_tool";
-  const suggestionRows = !state.dialog ? getSlashSuggestionRowCount(state.composer) : 0;
+  const askUserQuestionPrompt = latestAskUserQuestionPrompt(state.messages);
+  const askUserQuestionRows =
+    !state.dialog && askUserQuestionPrompt && state.composer.trim().length === 0
+      ? getAskUserQuestionPickerRowCount(askUserQuestionPrompt)
+      : 0;
+  const suggestionRows = !state.dialog && askUserQuestionRows === 0 ? getSlashSuggestionRowCount(state.composer) : 0;
   const spinnerRows = runActive ? 2 : 0;
-  const promptRows = getPromptInputRowCount(state.composer, columns) + suggestionRows + 4;
+  const promptRows = getPromptInputRowCount(state.composer, columns) + suggestionRows + askUserQuestionRows + 4;
   const chromeRows = promptRows + spinnerRows;
   const dialogRows = state.dialog ? Math.max(8, Math.min(Math.floor(height * 0.66), height - chromeRows - 3)) : 0;
   const transcriptHeight = Math.max(3, height - dialogRows - chromeRows);
@@ -116,6 +122,8 @@ function OahRepl({
         notice={state.notice}
         streamState={state.streamState}
         agentMode={agentMode}
+        askUserQuestionPrompt={askUserQuestionPrompt}
+        askUserQuestionSelection={state.askUserQuestionSelection}
       />
     </Box>
   );

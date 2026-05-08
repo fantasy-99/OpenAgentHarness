@@ -5,13 +5,22 @@ import type { Dialog, WorkspaceCreateDialog } from "../domain/types.js";
 import {
   cleanControlInput,
   clampIndex,
+  createAskUserQuestionSelection,
   createWorkspaceDialog,
   cycleRuntime,
+  formatAskUserQuestionAnswer,
+  formatAskUserQuestionSelectionAnswer,
   getSlashCommandMatches,
   getRuntimeMatches,
   hasRawControl,
   insertTextAt,
+  isAskUserQuestionSelectionCurrent,
   isReturnInput,
+  latestAskUserQuestionPrompt,
+  moveAskUserQuestionQuestion,
+  moveAskUserQuestionSelection,
+  selectFocusedAskUserQuestionOption,
+  toggleAskUserQuestionSelection,
   moveWorkspaceCreateField
 } from "../domain/utils.js";
 import type { useOahReplState } from "../state/use-oah-repl-state.js";
@@ -390,6 +399,12 @@ function handleSessionCreateInput(input: {
 
 function handleComposerInput(input: { value: string; key: TuiInputKey; state: OahReplState; exit: () => void }) {
   const { value, key, state } = input;
+  const askPrompt = latestAskUserQuestionPrompt(state.messages);
+  if (askPrompt && !isAskUserQuestionSelectionCurrent(askPrompt, state.askUserQuestionSelection)) {
+    state.setAskUserQuestionSelection(createAskUserQuestionSelection(askPrompt));
+  } else if (!askPrompt && state.askUserQuestionSelection) {
+    state.setAskUserQuestionSelection(null);
+  }
   const slashMatches = getSlashCommandMatches(state.composer);
   const slashSuggestionsActive = slashMatches.length > 0;
   if (isCtrlInput(value, key, "w", "\u0017")) {
@@ -412,6 +427,31 @@ function handleComposerInput(input: { value: string; key: TuiInputKey; state: Oa
     state.setSlashSelection((current) => clampIndex(current - 1, slashMatches.length));
     return;
   }
+  if (askPrompt && state.composer.trim().length === 0 && !slashSuggestionsActive) {
+    const selection = isAskUserQuestionSelectionCurrent(askPrompt, state.askUserQuestionSelection)
+      ? state.askUserQuestionSelection!
+      : createAskUserQuestionSelection(askPrompt);
+    if (key.downArrow || value === "j") {
+      state.setAskUserQuestionSelection(moveAskUserQuestionSelection(askPrompt, selection, 1));
+      return;
+    }
+    if (key.upArrow || value === "k") {
+      state.setAskUserQuestionSelection(moveAskUserQuestionSelection(askPrompt, selection, -1));
+      return;
+    }
+    if (value === " ") {
+      state.setAskUserQuestionSelection(toggleAskUserQuestionSelection(askPrompt, selection));
+      return;
+    }
+    if (key.leftArrow) {
+      state.setAskUserQuestionSelection(moveAskUserQuestionQuestion(askPrompt, selection, -1));
+      return;
+    }
+    if (key.rightArrow) {
+      state.setAskUserQuestionSelection(moveAskUserQuestionQuestion(askPrompt, selection, 1));
+      return;
+    }
+  }
   if (isShiftReturnInput(value, key)) {
     state.insertComposerInput(cleanComposerTextInput(value) || "\n");
     return;
@@ -425,7 +465,12 @@ function handleComposerInput(input: { value: string; key: TuiInputKey; state: Oa
         return;
       }
       state.setComposerValue(nextComposer);
-      void state.sendComposer(nextComposer);
+      const askPrompt = latestAskUserQuestionPrompt(state.messages);
+      const answer = askPrompt ? formatAskUserQuestionAnswer(askPrompt, nextComposer) : "";
+      if (answer) {
+        state.setAskUserQuestionSelection(null);
+      }
+      void state.sendComposer(answer || nextComposer);
     } else if (slashSuggestionsActive) {
       const selectedCommand = slashMatches[clampIndex(state.slashSelection, slashMatches.length)]?.command;
       if (selectedCommand === "/quit") {
@@ -438,7 +483,26 @@ function handleComposerInput(input: { value: string; key: TuiInputKey; state: Oa
         input.exit();
         return;
       }
-      void state.sendComposer();
+      const askPrompt = latestAskUserQuestionPrompt(state.messages);
+      let selection =
+        askPrompt && isAskUserQuestionSelectionCurrent(askPrompt, state.askUserQuestionSelection)
+          ? state.askUserQuestionSelection
+          : askPrompt
+            ? createAskUserQuestionSelection(askPrompt)
+            : null;
+      if (askPrompt && selection) {
+        selection = selectFocusedAskUserQuestionOption(askPrompt, selection);
+      }
+      const answer =
+        askPrompt && state.composer.trim().length === 0 && selection
+          ? formatAskUserQuestionSelectionAnswer(askPrompt, selection)
+          : askPrompt
+            ? formatAskUserQuestionAnswer(askPrompt, state.composer)
+            : "";
+      if (answer) {
+        state.setAskUserQuestionSelection(null);
+      }
+      void state.sendComposer(answer || undefined);
     }
     return;
   }

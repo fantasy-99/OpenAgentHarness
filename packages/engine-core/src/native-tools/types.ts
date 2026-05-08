@@ -9,12 +9,16 @@ import type {
 import { AppError } from "../errors.js";
 
 export const PUBLIC_NATIVE_TOOL_NAMES = [
+  "AskUserQuestion",
   "Bash",
+  "LS",
   "Read",
   "Write",
   "Edit",
+  "MultiEdit",
   "Glob",
   "Grep",
+  "ViewImage",
   "WebFetch",
   "TodoWrite",
   "TerminalOutput",
@@ -27,12 +31,16 @@ export const NATIVE_TOOL_NAMES = [...PUBLIC_NATIVE_TOOL_NAMES] as const;
 export type NativeToolName = (typeof NATIVE_TOOL_NAMES)[number];
 
 const NATIVE_TOOL_RETRY_POLICY: Record<NativeToolName, ActionRetryPolicy> = {
+  AskUserQuestion: "safe",
   Bash: "manual",
+  LS: "safe",
   Read: "safe",
   Write: "manual",
   Edit: "manual",
+  MultiEdit: "manual",
   Glob: "safe",
   Grep: "safe",
+  ViewImage: "safe",
   WebFetch: "safe",
   TodoWrite: "manual",
   TerminalOutput: "safe",
@@ -82,7 +90,7 @@ export interface NativeToolFactoryContext {
   rememberRead: (relativePath: string, workspaceRoot?: string, fileSystem?: WorkspaceFileSystem) => Promise<void>;
   assertReadBeforeMutating: (
     relativePath: string,
-    toolName: "Write" | "Edit",
+    toolName: "Write" | "Edit" | "MultiEdit",
     workspaceRoot?: string,
     fileSystem?: WorkspaceFileSystem
   ) => Promise<void>;

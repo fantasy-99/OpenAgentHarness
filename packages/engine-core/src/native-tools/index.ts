@@ -2,10 +2,13 @@ import path from "node:path";
 
 import { AppError } from "../errors.js";
 import type { EngineToolSet } from "../types.js";
+import { createAskUserQuestionTool } from "./ask-user-question.js";
 import { createBashTool } from "./bash.js";
 import { createEditTool } from "./edit.js";
 import { createGlobTool } from "./glob.js";
 import { createGrepTool } from "./grep.js";
+import { createLsTool } from "./ls.js";
+import { createMultiEditTool } from "./multi-edit.js";
 import { createReadTool } from "./read.js";
 import { READ_STATE_DIRECTORY, TODO_STATE_DIRECTORY } from "./constants.js";
 import { ensureParentDirectory, readJsonFile } from "./fs-utils.js";
@@ -13,6 +16,7 @@ import { createTerminalInputTool } from "./terminal-input.js";
 import { createTerminalOutputTool } from "./terminal-output.js";
 import { createTerminalStopTool } from "./terminal-stop.js";
 import { createTodoWriteTool } from "./todo-write.js";
+import { createViewImageTool } from "./view-image.js";
 import { createWebFetchTool } from "./web-fetch.js";
 import { createWriteTool } from "./write.js";
 import { createLocalWorkspaceCommandExecutor } from "../workspace/workspace-command-executor.js";
@@ -116,12 +120,16 @@ export function createNativeToolSet(
   };
 
   return {
+    ...createAskUserQuestionTool(context),
     ...createBashTool(context),
+    ...createLsTool(context),
     ...createReadTool(context),
     ...createWriteTool(context),
     ...createEditTool(context),
+    ...createMultiEditTool(context),
     ...createGlobTool(context),
     ...createGrepTool(context),
+    ...createViewImageTool(context),
     ...createWebFetchTool(context),
     ...createTodoWriteTool(context),
     ...createTerminalOutputTool(context),

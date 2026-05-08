@@ -20,6 +20,31 @@ export type ChatLine = {
   toolOutputText?: string | undefined;
   durationMs?: number | undefined;
   sourceType?: string | undefined;
+  askUserQuestion?: AskUserQuestionPrompt | undefined;
+};
+
+export type AskUserQuestionPrompt = {
+  questions: AskUserQuestionItem[];
+};
+
+export type AskUserQuestionSelection = {
+  promptKey: string;
+  questionIndex: number;
+  optionIndex: number;
+  selectedByQuestion: Record<number, string[]>;
+};
+
+export type AskUserQuestionItem = {
+  question: string;
+  header?: string | undefined;
+  options?: AskUserQuestionOption[] | undefined;
+  multiSelect?: boolean | undefined;
+  freeText?: boolean | undefined;
+};
+
+export type AskUserQuestionOption = {
+  label: string;
+  description?: string | undefined;
 };
 
 export type WorkspaceCreateField = "name" | "runtime" | "rootPath" | "ownerId" | "serviceName";

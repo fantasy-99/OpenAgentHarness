@@ -129,7 +129,7 @@ Run 内的步骤级记录，用于诊断、审计和可视化。
 
 ### Native Tool
 
-平台内建能力：`Bash`、`TerminalOutput`、`TerminalInput`、`TerminalStop`、`Read`、`Write`、`Edit`、`Glob`、`Grep`、`WebFetch`、`TodoWrite`。
+平台内建能力：`AskUserQuestion`、`Bash`、`TerminalOutput`、`TerminalInput`、`TerminalStop`、`LS`、`Read`、`Write`、`Edit`、`MultiEdit`、`Glob`、`Grep`、`ViewImage`、`WebFetch`、`TodoWrite`。
 
 native tool 是否暴露由 workspace 声明与运行时能力共同决定。
 

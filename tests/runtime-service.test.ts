@@ -237,7 +237,9 @@ describe("runtime service", () => {
     const session = await runtimeService.createSession({
       workspaceId: workspace.id,
       caller,
-      input: {}
+      input: {
+        agentName: "researcher"
+      }
     });
 
     await runtimeService.createSessionMessage({
@@ -1263,7 +1265,9 @@ describe("runtime service", () => {
     const session = await runtimeService.createSession({
       workspaceId: workspace.id,
       caller,
-      input: {}
+      input: {
+        agentName: "researcher"
+      }
     });
     const accepted = await runtimeService.createSessionMessage({
       sessionId: session.id,
@@ -12641,6 +12645,96 @@ describe("runtime service", () => {
     ).toBe(true);
   });
 
+  it("fails with a clear message when max steps are exhausted after a tool call", async () => {
+    const { gateway, runtimeService, workspace } = await createRuntime(0, {
+      workspaceSettings: {
+        defaultAgent: "researcher"
+      },
+      agents: {
+        researcher: {
+          name: "researcher",
+          mode: "primary",
+          prompt: "Use WebFetch when research needs source material.",
+          tools: {
+            native: ["WebFetch"]
+          },
+          actions: [],
+          skills: [],
+          switch: [],
+          subagents: [],
+          policy: {
+            maxSteps: 2
+          }
+        }
+      }
+    });
+
+    gateway.streamScenarioFactory = () => ({
+      text: "This final answer should not be reached.",
+      toolBatches: [
+        [
+          {
+            toolName: "WebFetch",
+            input: {
+              url: "https://example.com/newton",
+              prompt: "Extract Newton's second law."
+            },
+            toolCallId: "call_fetch",
+            output: "Fetched Newton second law notes."
+          }
+        ],
+        [
+          {
+            toolName: "WebFetch",
+            input: {
+              url: "https://example.com/follow-up",
+              prompt: "Fetch one more source."
+            },
+            toolCallId: "call_fetch_again",
+            output: "Fetched another source."
+          }
+        ]
+      ]
+    });
+
+    const caller = {
+      subjectRef: "dev:test",
+      authSource: "standalone_server",
+      scopes: [],
+      workspaceAccess: []
+    };
+
+    const session = await runtimeService.createSession({
+      workspaceId: workspace.id,
+      caller,
+      input: {}
+    });
+
+    const accepted = await runtimeService.createSessionMessage({
+      sessionId: session.id,
+      caller,
+      input: { content: "Research Newton's second law." }
+    });
+
+    await waitFor(async () => {
+      const run = await runtimeService.getRun(accepted.runId);
+      return run.status === "failed";
+    });
+
+    const run = await runtimeService.getRun(accepted.runId);
+    expect(run.errorCode).toBe("model_max_steps_exhausted_after_tool_call");
+    expect(run.errorMessage).toContain("max model steps (2)");
+    expect(run.errorMessage).toContain("tool result was saved");
+
+    const events = await runtimeService.listSessionEvents(session.id, undefined, accepted.runId);
+    const failedEvent = events.find((event) => event.event === "run.failed");
+    expect(failedEvent?.data).toMatchObject({
+      errorCode: "model_max_steps_exhausted_after_tool_call",
+      errorMessage: expect.stringContaining("max model steps (2)")
+    });
+    expect(events.some((event) => event.event === "run.completed")).toBe(false);
+  });
+
   it("runs actions through the built-in run_action tool and persists the tool result", async () => {
     const gateway = new FakeModelGateway();
     gateway.streamScenarioFactory = () => ({
@@ -13070,12 +13164,16 @@ describe("runtime service", () => {
 
     const catalog = await runtimeService.getWorkspaceCatalog("project_native_catalog");
     expect(catalog.nativeTools).toEqual([
+      "AskUserQuestion",
       "Bash",
+      "LS",
       "Read",
       "Write",
       "Edit",
+      "MultiEdit",
       "Glob",
       "Grep",
+      "ViewImage",
       "WebFetch",
       "TodoWrite",
       "TerminalOutput",

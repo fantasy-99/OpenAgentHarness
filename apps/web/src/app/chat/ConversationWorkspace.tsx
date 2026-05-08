@@ -5,6 +5,7 @@ import {
   Archive,
   ArrowRight,
   Bot,
+  Check,
   CheckCircle2,
   ChevronRight,
   Circle,
@@ -67,6 +68,23 @@ type ConversationTerminalState = {
   terminalKind?: string | undefined;
   updatedAt?: string | undefined;
 };
+type AskUserQuestionOption = {
+  label: string;
+  description?: string | undefined;
+  preview?: string | undefined;
+};
+type AskUserQuestionItem = {
+  question: string;
+  header?: string | undefined;
+  options?: AskUserQuestionOption[] | undefined;
+  multiSelect?: boolean | undefined;
+  freeText?: boolean | undefined;
+};
+type AskUserQuestionPayload = {
+  status: "awaiting_user";
+  context?: string | undefined;
+  questions: AskUserQuestionItem[];
+};
 type ParsedAgentTaskReference = {
   kind: "notification" | "task_output";
   taskId: string;
@@ -99,6 +117,74 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isImageFile(file: File) {
   return file.type.startsWith("image/");
+}
+
+function readOptionalString(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function readAskUserQuestionPayload(output: ToolResultOutput | undefined): AskUserQuestionPayload | null {
+  if (!output || output.type !== "json" || !isRecord(output.value) || output.value.status !== "awaiting_user") {
+    return null;
+  }
+
+  const rawQuestions = Array.isArray(output.value.questions) ? output.value.questions : [];
+  const questions = rawQuestions.flatMap((rawQuestion): AskUserQuestionItem[] => {
+    if (!isRecord(rawQuestion)) {
+      return [];
+    }
+    const question = readOptionalString(rawQuestion.question);
+    if (!question) {
+      return [];
+    }
+    const options = Array.isArray(rawQuestion.options)
+      ? rawQuestion.options.flatMap((rawOption): AskUserQuestionOption[] => {
+          if (!isRecord(rawOption)) {
+            return [];
+          }
+          const label = readOptionalString(rawOption.label);
+          if (!label) {
+            return [];
+          }
+          return [
+            {
+              label,
+              description: readOptionalString(rawOption.description),
+              preview: readOptionalString(rawOption.preview)
+            }
+          ];
+        })
+      : undefined;
+
+    return [
+      {
+        question,
+        header: readOptionalString(rawQuestion.header),
+        ...(options && options.length > 0 ? { options } : {}),
+        ...(typeof rawQuestion.multiSelect === "boolean" ? { multiSelect: rawQuestion.multiSelect } : {}),
+        ...(typeof rawQuestion.freeText === "boolean" ? { freeText: rawQuestion.freeText } : {})
+      }
+    ];
+  });
+
+  if (questions.length === 0) {
+    return null;
+  }
+
+  return {
+    status: "awaiting_user",
+    context: readOptionalString(output.value.context),
+    questions
+  };
+}
+
+function formatAskUserQuestionAnswer(payload: AskUserQuestionPayload, answers: string[]) {
+  const lines = ["Answers to your questions:"];
+  payload.questions.forEach((question, index) => {
+    const answer = answers[index]?.trim() || "(no answer)";
+    lines.push(`${index + 1}. ${question.question} ${answer}`);
+  });
+  return lines.join("\n");
 }
 
 function sessionAgentLabel(agent: { name: string; mode: "primary" | "subagent" | "all" }) {
@@ -1408,10 +1494,12 @@ function resolveToolResultContent(output: ToolResultOutput | undefined): { conte
 
 function ToolResultBlock({
   part,
-  messageMetadata
+  messageMetadata,
+  onAnswerAskUserQuestion
 }: {
   part: { type: "tool-result"; toolName?: string; output?: ToolResultOutput };
   messageMetadata?: Message["metadata"];
+  onAnswerAskUserQuestion?: (answer: string) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
   const { content, isError } = resolveToolResultContent(part.output);
@@ -1419,6 +1507,16 @@ function ToolResultBlock({
   const toolMeta = readToolMeta(messageMetadata);
   const durationLabel = formatToolDuration(toolMeta.durationMs);
   const shouldDeferOutput = content.length > 800 || part.output?.type === "json" || part.output?.type === "error-json";
+  const askUserQuestionPayload = part.toolName === "AskUserQuestion" ? readAskUserQuestionPayload(part.output) : null;
+
+  if (askUserQuestionPayload) {
+    return (
+      <AskUserQuestionCard
+        payload={askUserQuestionPayload}
+        {...(onAnswerAskUserQuestion ? { onAnswer: onAnswerAskUserQuestion } : {})}
+      />
+    );
+  }
 
   return (
     <div className={isError ? "rounded-2xl border border-destructive/20 bg-destructive/5 overflow-hidden shadow-sm" : "info-panel rounded-2xl overflow-hidden"}>
@@ -1473,6 +1571,125 @@ function ToolResultBlock({
           </div>
         </DeferredConversationBlock>
       )}
+    </div>
+  );
+}
+
+function AskUserQuestionCard({ payload, onAnswer }: { payload: AskUserQuestionPayload; onAnswer?: (answer: string) => void }) {
+  const [selectedByQuestion, setSelectedByQuestion] = useState<Record<number, string[]>>({});
+  const [notesByQuestion, setNotesByQuestion] = useState<Record<number, string>>({});
+
+  const toggleOption = useCallback((questionIndex: number, optionLabel: string, multiSelect: boolean) => {
+    setSelectedByQuestion((current) => {
+      const selected = current[questionIndex] ?? [];
+      const next = multiSelect
+        ? selected.includes(optionLabel)
+          ? selected.filter((item) => item !== optionLabel)
+          : [...selected, optionLabel]
+        : [optionLabel];
+      return {
+        ...current,
+        [questionIndex]: next
+      };
+    });
+  }, []);
+
+  const answers = payload.questions.map((question, index) => {
+    const selected = selectedByQuestion[index] ?? [];
+    const note = notesByQuestion[index]?.trim();
+    return [selected.join(", "), note].filter(Boolean).join(note && selected.length > 0 ? " — " : "");
+  });
+  const canSubmit = answers.some((answer) => answer.trim().length > 0);
+
+  return (
+    <div className="rounded-2xl border border-sky-200/70 bg-sky-50/70 p-4 text-sm shadow-sm dark:border-sky-500/25 dark:bg-sky-500/10">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-sky-300/60 bg-background/80 text-sky-600 dark:border-sky-400/30 dark:text-sky-300">
+          <MessageSquare className="h-3.5 w-3.5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-sky-700/75 dark:text-sky-200/75">User input needed</div>
+          {payload.context ? <p className="mt-1 leading-6 text-muted-foreground">{payload.context}</p> : null}
+        </div>
+      </div>
+
+      <div className="mt-4 space-y-4">
+        {payload.questions.map((question, questionIndex) => {
+          const selected = selectedByQuestion[questionIndex] ?? [];
+          const multiSelect = question.multiSelect === true;
+          return (
+            <div key={`${question.question}:${questionIndex}`} className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {question.header ? (
+                  <span className="rounded-md border border-sky-300/45 bg-background/70 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:border-sky-400/25 dark:text-sky-200">
+                    {question.header}
+                  </span>
+                ) : null}
+                <div className="font-medium leading-6 text-foreground">{question.question}</div>
+              </div>
+              {question.options && question.options.length > 0 ? (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {question.options.map((option) => {
+                    const active = selected.includes(option.label);
+                    return (
+                      <button
+                        key={option.label}
+                        type="button"
+                        onClick={() => toggleOption(questionIndex, option.label, multiSelect)}
+                        className={`rounded-xl border px-3 py-2 text-left transition ${
+                          active
+                            ? "border-sky-400 bg-sky-100 text-sky-950 shadow-sm dark:border-sky-300/50 dark:bg-sky-400/15 dark:text-sky-50"
+                            : "border-border/60 bg-background/75 hover:border-sky-300/60 hover:bg-background"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`flex h-4 w-4 shrink-0 items-center justify-center border ${
+                              multiSelect ? "rounded-[4px]" : "rounded-full"
+                            } ${active ? "border-sky-500 bg-sky-500 text-white" : "border-muted-foreground/35"}`}
+                          >
+                            {active ? <Check className="h-3 w-3" /> : null}
+                          </span>
+                          <span className="font-medium">{option.label}</span>
+                        </div>
+                        {option.description ? <div className="mt-1 pl-6 text-xs leading-5 text-muted-foreground">{option.description}</div> : null}
+                        {option.preview ? <pre className="mt-2 max-h-28 overflow-auto rounded-lg border bg-background/70 p-2 text-[11px] text-muted-foreground">{option.preview}</pre> : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+              {question.freeText !== false ? (
+                <Textarea
+                  value={notesByQuestion[questionIndex] ?? ""}
+                  onChange={(event) =>
+                    setNotesByQuestion((current) => ({
+                      ...current,
+                      [questionIndex]: event.target.value
+                    }))
+                  }
+                  placeholder="Optional notes or another answer"
+                  rows={2}
+                  className="min-h-[52px] resize-none bg-background/75 text-sm"
+                />
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="mt-4 flex items-center justify-end">
+        <Button
+          type="button"
+          size="sm"
+          disabled={!canSubmit || !onAnswer}
+          onClick={() => onAnswer?.(formatAskUserQuestionAnswer(payload, answers))}
+          className="gap-2"
+        >
+          <Send className="h-3.5 w-3.5" />
+          Send answer
+        </Button>
+      </div>
     </div>
   );
 }
@@ -1780,7 +1997,8 @@ function MessageContent({
   messageMetadata,
   isStreaming = false,
   onOpenSession,
-  onInspectRun
+  onInspectRun,
+  onAnswerAskUserQuestion
 }: {
   content: Message["content"];
   isUser?: boolean;
@@ -1789,6 +2007,7 @@ function MessageContent({
   isStreaming?: boolean;
   onOpenSession?: (sessionId: string) => void;
   onInspectRun?: (runId: string) => void;
+  onAnswerAskUserQuestion?: (answer: string) => void;
 }) {
   if (typeof content === "string") {
     const taskReference = parseAgentTaskReference(content);
@@ -1879,6 +2098,7 @@ function MessageContent({
                 key={i}
                 part={part as { type: "tool-result"; toolName?: string; output?: ToolResultOutput }}
                 messageMetadata={messageMetadata}
+                {...(onAnswerAskUserQuestion ? { onAnswerAskUserQuestion } : {})}
               />
             )
           )}
@@ -1956,10 +2176,11 @@ type ConversationMessageRowProps = {
   agentMode?: "primary" | "subagent" | "all";
   onInspectRun: (runId: string) => void;
   onOpenSession?: (sessionId: string) => void;
+  onAnswerAskUserQuestion?: (answer: string) => void;
 };
 
 const ConversationMessageRow = memo(function ConversationMessageRow(props: ConversationMessageRowProps) {
-  const { message, agentName, agentMode, onInspectRun, onOpenSession } = props;
+  const { message, agentName, agentMode, onInspectRun, onOpenSession, onAnswerAskUserQuestion } = props;
   const isTaskNotification = isTaskNotificationMessage(message);
   const isHumanUser = message.role === "user" && !isTaskNotification;
   const isStreaming = message.id.startsWith("live:");
@@ -2011,6 +2232,7 @@ const ConversationMessageRow = memo(function ConversationMessageRow(props: Conve
               isStreaming={isStreaming}
               {...(onOpenSession ? { onOpenSession } : {})}
               onInspectRun={onInspectRun}
+              {...(onAnswerAskUserQuestion ? { onAnswerAskUserQuestion } : {})}
             />
           </div>
         )}
@@ -2062,6 +2284,7 @@ const ConversationMessageRow = memo(function ConversationMessageRow(props: Conve
             isStreaming={isStreaming}
             {...(onOpenSession ? { onOpenSession } : {})}
             onInspectRun={onInspectRun}
+            {...(onAnswerAskUserQuestion ? { onAnswerAskUserQuestion } : {})}
           />
           {isStreaming ? (
             <span className="mt-1 inline-block h-4 w-0.5 animate-pulse bg-current opacity-60" />
@@ -2822,6 +3045,7 @@ type ConversationFeedProps = Pick<
   | "refreshRunById"
   | "refreshRunStepsById"
   | "openSessionById"
+  | "answerAskUserQuestion"
 > & {
   hasMoreMessages: boolean;
   loadingOlderMessages: boolean;
@@ -3119,6 +3343,7 @@ const ConversationFeed = memo(function ConversationFeed(props: ConversationFeedP
                 {...(messageAgentInfo?.mode ? { agentMode: messageAgentInfo.mode } : {})}
                 onInspectRun={handleInspectRun}
                 onOpenSession={props.openSessionById}
+                onAnswerAskUserQuestion={props.answerAskUserQuestion}
               />
             );
           }
@@ -3131,6 +3356,7 @@ const ConversationFeed = memo(function ConversationFeed(props: ConversationFeedP
               {...(messageAgentInfo?.mode ? { agentMode: messageAgentInfo.mode } : {})}
               onInspectRun={handleInspectRun}
               onOpenSession={props.openSessionById}
+              onAnswerAskUserQuestion={props.answerAskUserQuestion}
               onHeightChange={handleMessageRowHeightChange}
             />
           );
@@ -3358,6 +3584,7 @@ function ConversationWorkspaceImpl(props: RuntimeProps) {
             refreshRunById={props.refreshRunById}
             refreshRunStepsById={props.refreshRunStepsById}
             openSessionById={props.openSessionById}
+            answerAskUserQuestion={props.answerAskUserQuestion}
             hasMoreMessages={props.hasMoreMessages}
             loadingOlderMessages={props.loadingOlderMessages}
             onLoadOlderMessages={handleLoadOlderMessages}

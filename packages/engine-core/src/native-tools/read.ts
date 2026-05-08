@@ -2,9 +2,10 @@ import { z } from "zod";
 
 import { AppError } from "../errors.js";
 import { formatToolOutput } from "../capabilities/tool-output.js";
-import type { EngineToolSet } from "../types.js";
+import type { EngineToolSet, WorkspaceFileSystemEntry } from "../types.js";
 import { DEFAULT_READ_LIMIT } from "./constants.js";
 import { formatReadLines } from "./fs-utils.js";
+import { guessImageMimeType, imageToolContent } from "./media.js";
 import { resolveWorkspacePath } from "./paths.js";
 import { getNativeToolRetryPolicy, type NativeToolFactoryContext } from "./types.js";
 
@@ -16,7 +17,8 @@ Usage:
 - By default, it reads up to 2000 lines starting from the beginning of the file
 - You can optionally specify an offset and limit for targeted reads
 - Results are returned with line numbers starting at 1
-- This tool can only read files, not directories. To inspect directories, use Bash.`;
+- Directories are returned as sorted listings
+- Images are returned as visual input content for the model; use ViewImage when you want an explicit image-only tool call.`;
 
 const ReadInputSchema = z
   .object({
@@ -26,6 +28,16 @@ const ReadInputSchema = z
     pages: z.string().optional().describe("Page range for PDF files")
   })
   .strict();
+
+function formatDirectoryEntry(entry: WorkspaceFileSystemEntry): string {
+  const suffix = entry.kind === "directory" ? "/" : "";
+  return [
+    entry.kind,
+    `${entry.name}${suffix}`,
+    ...(typeof entry.sizeBytes === "number" ? [`${entry.sizeBytes} bytes`] : []),
+    ...(entry.updatedAt ? [`updated ${entry.updatedAt}`] : [])
+  ].join("  ");
+}
 
 export function createReadTool(context: NativeToolFactoryContext): EngineToolSet {
   return {
@@ -79,8 +91,50 @@ export function createReadTool(context: NativeToolFactoryContext): EngineToolSet
         return context.withFileSystem("read", input.file_path, async ({ workspaceRoot, fileSystem }) => {
           const resolved = await resolveWorkspacePath(fileSystem, workspaceRoot, input.file_path);
           const entry = await fileSystem.stat(resolved.absolutePath).catch(() => null);
-          if (entry?.kind !== "file") {
+          if (!entry) {
             throw new AppError(404, "native_tool_file_not_found", `File ${input.file_path} was not found.`);
+          }
+
+          if (entry.kind === "directory") {
+            const entries = (await fileSystem.readdir(resolved.absolutePath)).sort((left, right) => {
+              if (left.kind !== right.kind) {
+                return left.kind === "directory" ? -1 : right.kind === "directory" ? 1 : left.kind.localeCompare(right.kind);
+              }
+
+              return left.name.localeCompare(right.name);
+            });
+            return formatToolOutput(
+              [
+                ["path", resolved.relativePath],
+                ["absolute_path", resolved.absolutePath],
+                ["entries", entries.length],
+                ["kind", "directory"]
+              ],
+              [
+                {
+                  title: "contents",
+                  lines: entries.map(formatDirectoryEntry),
+                  emptyText: "(empty directory)"
+                }
+              ]
+            );
+          }
+
+          if (entry.kind !== "file") {
+            throw new AppError(400, "native_tool_entry_not_readable", `Path ${input.file_path} is not a readable file or directory.`);
+          }
+
+          const mediaType = guessImageMimeType(resolved.absolutePath);
+          if (mediaType) {
+            const bytes = await fileSystem.readFile(resolved.absolutePath);
+            await context.rememberRead(resolved.relativePath, workspaceRoot, fileSystem);
+            return imageToolContent({
+              absolutePath: resolved.absolutePath,
+              relativePath: resolved.relativePath,
+              mediaType,
+              sizeBytes: entry.size,
+              bytes
+            });
           }
 
           const content = (await fileSystem.readFile(resolved.absolutePath)).toString("utf8");
